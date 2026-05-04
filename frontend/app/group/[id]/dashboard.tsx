@@ -72,12 +72,22 @@ export default function DashboardScreen() {
     return (per?.outstanding || 0) > 0.01;
   });
 
+  // Withdrawal eligibility:
+  // - Group-funded (Option A): wallet went straight to merchant; lead is owed nothing → no withdraw.
+  // - Lead-funded (Option B): lead loaned full bill → withdraw = repayments collected.
+  // - Shortfall (Option C):  lead covered the gap  → withdraw = repayments collected.
+  const leadFronted =
+    group.status !== 'open' &&
+    (group.funding_mode === 'lead' || group.funding_mode === 'shortfall') &&
+    (group.lead_shortfall || 0) > 0.01;
+  const withdrawable = leadFronted ? group.funding?.total_repaid || 0 : 0;
+
   const withdraw = (kind: 'instant' | 'standard') => {
     Alert.alert(
       kind === 'instant' ? 'Instant Withdraw' : 'Standard Withdraw',
       kind === 'instant'
-        ? `$${totalCollected.toFixed(2)} will arrive in minutes. A 1.5% fee applies.`
-        : `$${totalCollected.toFixed(2)} will arrive in 1–2 business days. No fee.`,
+        ? `$${withdrawable.toFixed(2)} will arrive in minutes. A 1.5% fee applies.`
+        : `$${withdrawable.toFixed(2)} will arrive in 1–2 business days. No fee.`,
       [{ text: 'OK' }],
     );
   };
@@ -105,36 +115,68 @@ export default function DashboardScreen() {
         </View>
 
         <Text style={styles.sectionTitle}>Withdraw</Text>
-        <View style={styles.withdrawRow}>
-          <TouchableOpacity
-            testID="dashboard-withdraw-instant"
-            style={[styles.withdrawCard, { borderColor: COLORS.primary }]}
-            onPress={() => withdraw('instant')}
-            activeOpacity={0.85}
-            disabled={totalCollected <= 0}
-          >
-            <View style={styles.withdrawIcon}>
-              <Zap size={22} color={COLORS.primary} />
+        {leadFronted ? (
+          <>
+            <View style={styles.withdrawHero} testID="dashboard-withdraw-hero">
+              <View style={{ flex: 1 }}>
+                <Text style={styles.withdrawHeroLabel}>Available to withdraw</Text>
+                <Text style={styles.withdrawHeroAmount}>${withdrawable.toFixed(2)}</Text>
+                <Text style={styles.withdrawHeroSub}>
+                  You fronted ${(group.lead_shortfall || 0).toFixed(2)} for the group.
+                  {pendingMembers.length > 0
+                    ? ` ${pendingMembers.length} member${pendingMembers.length === 1 ? '' : 's'} still owe.`
+                    : ' All settled.'}
+                </Text>
+              </View>
             </View>
-            <Text style={styles.withdrawTitle}>Instant</Text>
-            <Text style={styles.withdrawSub}>Arrives in minutes</Text>
-            <Text style={styles.withdrawFee}>1.5% fee</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            testID="dashboard-withdraw-standard"
-            style={styles.withdrawCard}
-            onPress={() => withdraw('standard')}
-            activeOpacity={0.85}
-            disabled={totalCollected <= 0}
-          >
-            <View style={styles.withdrawIcon}>
-              <Landmark size={22} color={COLORS.primary} />
+            <View style={styles.withdrawRow}>
+              <TouchableOpacity
+                testID="dashboard-withdraw-instant"
+                style={[styles.withdrawCard, { borderColor: COLORS.primary }]}
+                onPress={() => withdraw('instant')}
+                activeOpacity={0.85}
+                disabled={withdrawable <= 0}
+              >
+                <View style={styles.withdrawIcon}>
+                  <Zap size={22} color={COLORS.primary} />
+                </View>
+                <Text style={styles.withdrawTitle}>Instant</Text>
+                <Text style={styles.withdrawSub}>Arrives in minutes</Text>
+                <Text style={styles.withdrawFee}>1.5% fee</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="dashboard-withdraw-standard"
+                style={styles.withdrawCard}
+                onPress={() => withdraw('standard')}
+                activeOpacity={0.85}
+                disabled={withdrawable <= 0}
+              >
+                <View style={styles.withdrawIcon}>
+                  <Landmark size={22} color={COLORS.primary} />
+                </View>
+                <Text style={styles.withdrawTitle}>Standard</Text>
+                <Text style={styles.withdrawSub}>1–2 business days</Text>
+                <Text style={[styles.withdrawFee, { color: COLORS.success }]}>Free</Text>
+              </TouchableOpacity>
             </View>
-            <Text style={styles.withdrawTitle}>Standard</Text>
-            <Text style={styles.withdrawSub}>1–2 business days</Text>
-            <Text style={[styles.withdrawFee, { color: COLORS.success }]}>Free</Text>
-          </TouchableOpacity>
-        </View>
+          </>
+        ) : (
+          <View style={styles.noWithdrawCard} testID="dashboard-no-withdraw">
+            <View style={styles.noWithdrawIcon}>
+              <Landmark size={20} color={COLORS.subtext} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.noWithdrawTitle}>No withdrawal needed</Text>
+              <Text style={styles.noWithdrawSub}>
+                {group.status === 'open'
+                  ? 'Withdrawal unlocks once you cover any shortfall when paying the merchant.'
+                  : group.funding_mode === 'group'
+                  ? 'Bill was fully group-funded — the wallet went straight to the merchant, so there is nothing to withdraw.'
+                  : 'No outstanding amount to withdraw.'}
+              </Text>
+            </View>
+          </View>
+        )}
 
         <Text style={styles.sectionTitle}>Members</Text>
         <View style={styles.listCard}>
@@ -250,6 +292,50 @@ const styles = StyleSheet.create({
     marginTop: SPACING.md,
   },
   withdrawRow: { flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.md },
+  withdrawHero: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.successLight,
+    borderRadius: RADIUS.md,
+    padding: SPACING.md,
+    marginBottom: SPACING.md,
+  },
+  withdrawHeroLabel: {
+    color: COLORS.success,
+    fontSize: FONT.sizes.xs,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    fontWeight: FONT.weights.semibold,
+  },
+  withdrawHeroAmount: {
+    color: COLORS.text,
+    fontSize: FONT.sizes.xxl,
+    fontWeight: FONT.weights.heavy,
+    letterSpacing: -0.5,
+    marginTop: 2,
+  },
+  withdrawHeroSub: { color: COLORS.subtext, fontSize: FONT.sizes.xs, marginTop: 4, lineHeight: 16 },
+  noWithdrawCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.md,
+    padding: SPACING.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: SPACING.md,
+  },
+  noWithdrawIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: COLORS.disabledBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  noWithdrawTitle: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },
+  noWithdrawSub: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2, lineHeight: 16 },
   withdrawCard: {
     flex: 1,
     backgroundColor: COLORS.surface,

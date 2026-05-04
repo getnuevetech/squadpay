@@ -95,6 +95,8 @@ export default function SummaryScreen() {
   const memberHasFullyContributed = myContributed >= myShare - 0.01;
   const memberCanContribute = group.status === 'open' && !memberHasFullyContributed && myShare > 0;
   const memberCanRepay = group.status !== 'open' && myOutstanding > 0.01;
+  // Lead-specific: lead must contribute own share before paying merchant
+  const leadShareCovered = isLead && myContributed >= myShare - 0.01;
 
   return (
     <SafeAreaView edges={['bottom']} style={{ flex: 1, backgroundColor: COLORS.bg }}>
@@ -243,11 +245,20 @@ export default function SummaryScreen() {
           </View>
         )}
 
-        {group.status === 'open' && isLead && remaining > 0.01 && (
+        {group.status === 'open' && isLead && !leadShareCovered && (
+          <View style={styles.warnCard} testID="summary-lead-share-banner">
+            <AlertCircle size={18} color={COLORS.warning} />
+            <Text style={styles.warnText}>
+              Contribute your own ${myShare.toFixed(2)} share into the group wallet first. Then you can settle with the merchant.
+            </Text>
+          </View>
+        )}
+
+        {group.status === 'open' && isLead && leadShareCovered && remaining > 0.01 && (
           <View style={styles.infoCard}>
             <AlertCircle size={18} color={COLORS.primary} />
             <Text style={styles.infoText}>
-              You'll cover the remaining ${remaining.toFixed(2)} when you pay the merchant. Group members can repay you after.
+              You'll cover the remaining ${remaining.toFixed(2)} when you pay the merchant — choose how on the next screen.
             </Text>
           </View>
         )}
@@ -276,8 +287,15 @@ export default function SummaryScreen() {
       </ScrollView>
 
       <View style={styles.bottomBar}>
-        {/* Lead actions */}
-        {isLead && group.status === 'open' && (
+        {/* Lead must contribute their own share BEFORE paying the merchant */}
+        {isLead && group.status === 'open' && !leadShareCovered && (
+          <Button
+            title={`Step 1 — Contribute your share $${myShare.toFixed(2)}`}
+            testID="summary-contribute-btn"
+            onPress={handleContribute}
+          />
+        )}
+        {isLead && group.status === 'open' && leadShareCovered && (
           <Button
             title={
               remaining <= 0.01
@@ -289,15 +307,6 @@ export default function SummaryScreen() {
             testID="summary-pay-btn"
             onPress={handleLeadPay}
             disabled={!group.fully_claimed && group.split_mode !== 'fast'}
-          />
-        )}
-        {isLead && group.status === 'open' && memberCanContribute && (
-          <Button
-            title={`Contribute my share $${myShare.toFixed(2)}`}
-            variant="ghost"
-            testID="summary-contribute-btn"
-            onPress={handleContribute}
-            style={{ marginTop: SPACING.sm }}
           />
         )}
         {isLead && group.status !== 'open' && (

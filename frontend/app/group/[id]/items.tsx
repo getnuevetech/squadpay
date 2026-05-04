@@ -270,7 +270,7 @@ export default function ItemsScreen() {
             return (
               <Swipeable
                 key={it.id}
-                enabled={isLead && group.status !== 'closed'}
+                enabled={isLead && group.status !== 'closed' && !itemsLocked}
                 renderLeftActions={() => renderRightActions(it.id, it.name)}
                 renderRightActions={() => renderLeftActions(it.id)}
                 overshootLeft={false}
@@ -354,10 +354,13 @@ export default function ItemsScreen() {
           })
         )}
 
-        {isLead && group.items.length > 0 && group.status !== 'closed' && (
+        {isLead && group.items.length > 0 && group.status !== 'closed' && !itemsLocked && (
           <Text style={styles.swipeHint}>
             ← Swipe right to delete   ·   Swipe left to change quantity →
           </Text>
+        )}
+        {isLead && itemsLocked && (
+          <Text style={styles.swipeHint}>🔒 Items locked — contributions started</Text>
         )}
 
         {group.unclaimed.length > 0 && (

@@ -14,7 +14,8 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { CheckCircle2, AlertCircle, UserCircle2, Plus, Lock } from 'lucide-react-native';
+import { CheckCircle2, AlertCircle, UserCircle2, Plus, Lock, Trash2 } from 'lucide-react-native';
+import { Swipeable } from 'react-native-gesture-handler';
 import { Button } from '../../../src/Button';
 import { api, Group, Item } from '../../../src/api';
 import { loadUser } from '../../../src/session';
@@ -122,6 +123,36 @@ export default function ItemsScreen() {
     }
   };
 
+  const confirmDelete = (itemId: string, name: string) => {
+    Alert.alert('Delete item?', `Remove "${name}" from the bill? This cannot be undone.`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            const g = await api.deleteItem(group.id, itemId, userId);
+            setGroup(g);
+          } catch (e: any) {
+            Alert.alert('Failed', e.message);
+          }
+        },
+      },
+    ]);
+  };
+
+  const renderRightActions = (itemId: string, name: string) => (
+    <TouchableOpacity
+      testID={`items-delete-${itemId}`}
+      onPress={() => confirmDelete(itemId, name)}
+      activeOpacity={0.85}
+      style={styles.swipeDelete}
+    >
+      <Trash2 size={20} color="#fff" />
+      <Text style={styles.swipeDeleteText}>Delete</Text>
+    </TouchableOpacity>
+  );
+
   const myTotal =
     group.per_user.find((p) => p.user_id === userId)?.total || 0;
 
@@ -161,7 +192,14 @@ export default function ItemsScreen() {
               });
 
             return (
-              <View key={it.id} style={styles.itemCard} testID={`items-item-${it.id}`}>
+              <Swipeable
+                key={it.id}
+                enabled={isLead && group.status !== 'closed'}
+                renderRightActions={() => renderRightActions(it.id, it.name)}
+                overshootRight={false}
+                rightThreshold={40}
+              >
+                <View style={styles.itemCard} testID={`items-item-${it.id}`}>
                 <View style={styles.itemHeader}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.itemName}>
@@ -219,9 +257,14 @@ export default function ItemsScreen() {
                     </Text>
                   </View>
                 )}
-              </View>
+                </View>
+              </Swipeable>
             );
           })
+        )}
+
+        {isLead && group.items.length > 0 && group.status !== 'closed' && (
+          <Text style={styles.swipeHint}>← Swipe an item left to delete</Text>
         )}
 
         {group.unclaimed.length > 0 && (
@@ -262,6 +305,28 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
+  },
+  swipeDelete: {
+    backgroundColor: COLORS.danger,
+    width: 96,
+    marginBottom: SPACING.sm,
+    borderTopRightRadius: RADIUS.md,
+    borderBottomRightRadius: RADIUS.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  swipeDeleteText: {
+    color: '#fff',
+    fontWeight: FONT.weights.semibold,
+    fontSize: FONT.sizes.xs,
+  },
+  swipeHint: {
+    color: COLORS.subtext,
+    fontSize: FONT.sizes.xs,
+    fontStyle: 'italic',
+    textAlign: 'center',
+    marginTop: 4,
   },
   itemHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.sm },
   itemName: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, color: COLORS.text },

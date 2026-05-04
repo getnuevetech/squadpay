@@ -177,6 +177,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ user_id, items }),
     }),
+  deleteItem: (id: string, item_id: string, user_id: string) =>
+    request<Group>(`/groups/${id}/items/${item_id}?user_id=${encodeURIComponent(user_id)}`, {
+      method: 'DELETE',
+    }),
   assign: (id: string, user_id: string, item_id: string, quantity: number) =>
     request<Group>(`/groups/${id}/assign`, {
       method: 'POST',

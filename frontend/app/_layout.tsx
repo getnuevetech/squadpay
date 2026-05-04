@@ -1,11 +1,13 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { COLORS } from '../src/theme';
 
 export default function RootLayout() {
   return (
-    <SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
       <StatusBar style="dark" />
       <Stack
         screenOptions={{
@@ -28,5 +30,6 @@ export default function RootLayout() {
         <Stack.Screen name="join/[code]" options={{ title: 'Join Bill' }} />
       </Stack>
     </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }

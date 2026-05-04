@@ -438,6 +438,32 @@ async def append_items(group_id: str, body: AppendItemsIn):
     return await _load_group_enriched(group_id)
 
 
+@api_router.delete("/groups/{group_id}/items/{item_id}")
+async def delete_item(group_id: str, item_id: str, user_id: str):
+    """Lead-only: remove an item from the bill. Deletes any assignments for it
+    and decrements total_amount accordingly. Allowed any time before status='closed'."""
+    group = await db.groups.find_one({"id": group_id}, {"_id": 0})
+    if not group:
+        raise HTTPException(404, "Group not found")
+    if group["lead_id"] != user_id:
+        raise HTTPException(403, "Only lead can delete items")
+    if group.get("status") == "closed":
+        raise HTTPException(400, "Group is closed")
+    items = group.get("items") or []
+    target = next((i for i in items if i["id"] == item_id), None)
+    if not target:
+        raise HTTPException(404, "Item not found")
+    new_items = [i for i in items if i["id"] != item_id]
+    new_assignments = [a for a in (group.get("assignments") or []) if a["item_id"] != item_id]
+    removed = float(target["price"]) * int(target["quantity"])
+    new_total = round(max(0.0, float(group.get("total_amount") or 0) - removed), 2)
+    await db.groups.update_one(
+        {"id": group_id},
+        {"$set": {"items": new_items, "assignments": new_assignments, "total_amount": new_total}},
+    )
+    return await _load_group_enriched(group_id)
+
+
 @api_router.post("/groups/{group_id}/assign")
 async def assign_item(group_id: str, body: AssignIn):
     group = await db.groups.find_one({"id": group_id}, {"_id": 0})

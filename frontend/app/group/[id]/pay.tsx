@@ -428,14 +428,16 @@ const styles = StyleSheet.create({
     borderRadius: RADIUS.pill,
   },
   verifiedText: { color: COLORS.success, fontSize: FONT.sizes.xs, fontWeight: FONT.weights.semibold },
-  bottomBar: {
+  notifyRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: SPACING.sm,
+    marginTop: SPACING.lg,
     padding: SPACING.md,
     backgroundColor: COLORS.surface,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-  },
-});
-r,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
   checkbox: {
     width: 22,

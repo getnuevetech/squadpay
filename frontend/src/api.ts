@@ -210,13 +210,3 @@ export const api = {
 };
 
 export { BACKEND_URL };
-      tax: number;
-      tip: number;
-      total: number;
-    }>('/receipt/scan', {
-      method: 'POST',
-      body: JSON.stringify({ image_base64 }),
-    }),
-};
-
-export { BACKEND_URL };

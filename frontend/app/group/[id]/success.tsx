@@ -15,6 +15,7 @@ export default function SuccessScreen() {
 
   const amt = parseFloat(amount || '0').toFixed(2);
   const isLeadPay = kind === 'lead';
+  const isContribute = kind === 'contribute';
 
   return (
     <SafeAreaView edges={['top', 'bottom']} style={{ flex: 1, backgroundColor: COLORS.bg }}>
@@ -23,12 +24,14 @@ export default function SuccessScreen() {
           <CheckCircle2 color={COLORS.success} size={96} strokeWidth={2.2} />
         </View>
         <Text style={styles.title} testID="success-title">
-          {isLeadPay ? 'Bill paid!' : 'Payment sent!'}
+          {isLeadPay ? 'Bill paid!' : isContribute ? 'Contributed!' : 'Payment sent!'}
         </Text>
         <Text style={styles.amount}>${amt}</Text>
         <Text style={styles.sub} testID="success-subtitle">
           {isLeadPay
             ? "You paid the restaurant. We'll track repayments from your group."
+            : isContribute
+            ? "Your share is now in the group wallet. The lead will pay the merchant."
             : 'Your repayment has been recorded.'}
         </Text>
         <View style={styles.actions}>

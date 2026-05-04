@@ -2,14 +2,16 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Alert, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { CreditCard, Apple, Lock, Smartphone } from 'lucide-react-native';
+import { CreditCard, Lock, Smartphone, Wallet } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { api, Group } from '../../../src/api';
-import { loadUser, refreshUser } from '../../../src/session';
+import { refreshUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 
+type Kind = 'lead' | 'repay' | 'contribute';
+
 export default function PayScreen() {
-  const { id, kind } = useLocalSearchParams<{ id: string; kind?: string }>();
+  const { id, kind } = useLocalSearchParams<{ id: string; kind?: Kind }>();
   const router = useRouter();
   const [group, setGroup] = useState<Group | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
@@ -36,28 +38,67 @@ export default function PayScreen() {
 
   if (!group || !userId) return null;
 
-  const isLead = userId === group.lead_id;
-  const isLeadPay = kind === 'lead' && isLead;
   const myPer = group.per_user.find((p) => p.user_id === userId);
-  const repaid = group.repayments.filter((r) => r.user_id === userId).reduce((s, r) => s + r.amount, 0);
-  const myOutstanding = Math.max(0, (myPer?.total || 0) - repaid);
+  const isLead = userId === group.lead_id;
 
-  const amount = isLeadPay ? group.total : myOutstanding;
-  const label = isLeadPay ? 'Pay restaurant' : 'Pay your share';
+  // Compute amount + label per kind
+  let amount = 0;
+  let title = 'Pay';
+  let summary = '';
+  let actorIcon = <Smartphone color={COLORS.primary} size={18} />;
+  let actorTitle = 'In-app balance';
+  let actorSub = '';
+
+  if (kind === 'lead') {
+    amount = group.funding.remaining_to_collect;
+    title = 'Pay restaurant';
+    summary =
+      group.funding.total_contributed > 0
+        ? `Group already covered $${group.funding.total_contributed.toFixed(2)}. You cover the rest.`
+        : `Single-use virtual card for the full bill.`;
+    actorIcon = <CreditCard color={COLORS.primary} size={18} />;
+    actorTitle = 'Virtual Card';
+    actorSub = 'Single-use card issued for this bill';
+  } else if (kind === 'contribute') {
+    const myShare = myPer?.total || 0;
+    const myContrib = myPer?.contributed || 0;
+    amount = Math.max(0, myShare - myContrib);
+    title = 'Contribute upfront';
+    summary = `Pay your share into the group wallet so the lead doesn't have to cover it.`;
+    actorIcon = <Wallet color={COLORS.primary} size={18} />;
+    actorTitle = 'Group wallet';
+    actorSub = 'Funds held until the merchant is paid';
+  } else {
+    // repay
+    amount = myPer?.outstanding || 0;
+    title = 'Pay your share';
+    summary = `Reimburse the lead for what they covered upfront.`;
+  }
+
+  const blockedNoPhone = !isVerified;
+  const blockedNoAmount = amount <= 0;
 
   const doPay = async () => {
-    if (!isLeadPay && !isVerified) {
-      Alert.alert('Verify phone', 'Phone verification is required to pay. Go to Profile → Sign in and verify.');
+    if (blockedNoPhone) {
+      Alert.alert('Verify phone', 'Phone verification is required before paying.');
+      return;
+    }
+    if (blockedNoAmount) {
+      Alert.alert('Nothing to pay', 'Amount is zero.');
       return;
     }
     setLoading(true);
     try {
-      if (isLeadPay) {
+      if (kind === 'lead') {
         await api.payGroup(group.id, userId);
+      } else if (kind === 'contribute') {
+        await api.contribute(group.id, userId, amount);
       } else {
         await api.repay(group.id, userId, amount);
       }
-      router.replace(`/group/${group.id}/success?amount=${amount.toFixed(2)}&kind=${kind || 'repay'}`);
+      router.replace(
+        `/group/${group.id}/success?amount=${amount.toFixed(2)}&kind=${kind || 'repay'}`,
+      );
     } catch (e: any) {
       Alert.alert('Payment failed', e.message);
     } finally {
@@ -68,41 +109,36 @@ export default function PayScreen() {
   return (
     <SafeAreaView edges={['bottom']} style={{ flex: 1, backgroundColor: COLORS.bg }}>
       <View style={styles.container}>
-        <Text style={styles.label}>{label}</Text>
-        <Text style={styles.amount} testID="pay-amount">${amount.toFixed(2)}</Text>
+        <Text style={styles.label}>{title}</Text>
+        <Text style={styles.amount} testID="pay-amount">
+          ${amount.toFixed(2)}
+        </Text>
+        {summary ? <Text style={styles.summary}>{summary}</Text> : null}
 
         <View style={styles.card}>
           <View style={styles.row}>
-            <View style={styles.icon}>
-              <Smartphone color={COLORS.primary} size={18} />
-            </View>
+            <View style={styles.icon}>{actorIcon}</View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.rowTitle}>
-                {isLeadPay ? 'Virtual Card' : 'In-app balance'}
-              </Text>
-              <Text style={styles.rowSub}>
-                {isLeadPay
-                  ? 'Single-use card issued for this bill'
-                  : 'Repay the lead instantly'}
-              </Text>
+              <Text style={styles.rowTitle}>{actorTitle}</Text>
+              {actorSub ? <Text style={styles.rowSub}>{actorSub}</Text> : null}
             </View>
           </View>
           <View style={styles.divider} />
           <View style={styles.row}>
-            <View style={styles.icon}>
+            <View style={[styles.icon, { backgroundColor: COLORS.disabledBg }]}>
               <Lock color={COLORS.subtext} size={18} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.rowTitle}>Secure</Text>
-              <Text style={styles.rowSub}>Encrypted and reversible</Text>
+              <Text style={styles.rowSub}>Encrypted • reversible</Text>
             </View>
           </View>
         </View>
 
-        {!isVerified && !isLeadPay && (
+        {blockedNoPhone && (
           <View style={styles.warn}>
             <Text style={styles.warnText}>
-              Phone verification required before you can pay. Please sign out and verify.
+              Phone verification required before you can pay. Please sign out from Home and verify your phone.
             </Text>
           </View>
         )}
@@ -110,11 +146,12 @@ export default function PayScreen() {
         <View style={styles.spacer} />
 
         <Button
-          title={isLeadPay ? `Pay $${amount.toFixed(2)}` : `Pay $${amount.toFixed(2)}`}
+          title={`Pay $${amount.toFixed(2)}`}
           loading={loading}
           onPress={doPay}
           testID="pay-submit-btn"
           leftIcon={<CreditCard size={18} color="#fff" />}
+          disabled={blockedNoPhone || blockedNoAmount}
         />
         <Button
           title="Cancel"
@@ -143,6 +180,12 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     letterSpacing: -2,
     marginTop: SPACING.xs,
+  },
+  summary: {
+    marginTop: SPACING.sm,
+    fontSize: FONT.sizes.md,
+    color: COLORS.subtext,
+    lineHeight: 22,
   },
   card: {
     marginTop: SPACING.xl,

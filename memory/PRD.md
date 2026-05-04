@@ -18,10 +18,20 @@ collects repayments.
    Itemized (per-item self-claim with quantity selectors).
 5. **Item assignment**: Real-time self-claim with live per-user totals.
 6. **Summary**: Per-person breakdown (food / tax+tip / total).
-7. **Payment (mocked)**: Lead-funded flow — lead pays the full bill
-   upfront, system flips to "repaying" and tracks balances.
-8. **Repayment**: Members repay via in-app button; repayments are
-   tracked; group auto-closes when fully settled.
+7. **Funding modes (NEW)** — three scenarios from Stage 5 of the spec:
+   - **Group-funded** — every member contributes their share via
+     `POST /api/groups/{id}/contribute` before checkout; once total
+     contributions meet the bill total the group auto-finalizes
+     (`status='paid'`, `funding_mode='group'`, `lead_shortfall=$0`).
+   - **Lead-funded** — no one contributes; lead taps Pay → covers full
+     bill (`funding_mode='lead'`).
+   - **Shortfall** — some members contribute, lead taps Pay → covers
+     only the remaining shortfall (`funding_mode='shortfall'`,
+     `lead_shortfall=remaining`). Members who already contributed don't
+     owe the lead anything.
+8. **Repayment**: Members repay their `outstanding` (= share − contributed
+   − repaid). Group auto-closes when every non-lead member has
+   `outstanding ≤ 0`.
 9. **Lead dashboard**: Progress bar, member list with outstanding
    balances, instant/standard withdraw options (simulated).
 
@@ -39,7 +49,8 @@ Auth: `/auth/register`, `/auth/send-otp`, `/auth/verify-otp`
 Users: `/users/{id}`, `/users/{id}/groups`
 Groups: `/groups` (POST), `/groups/{id}` (GET), `/groups/by-code/{code}`,
         `/groups/{id}/join`, `/groups/{id}/items` (PUT),
-        `/groups/{id}/assign`, `/groups/{id}/pay`, `/groups/{id}/repay`
+        `/groups/{id}/assign`, `/groups/{id}/contribute`,
+        `/groups/{id}/pay`, `/groups/{id}/repay`
 OCR: `/receipt/scan`
 
 ## Business Enhancement
@@ -51,6 +62,5 @@ core use case (splitting itself is free).
 ## Deferred / Not in MVP
 - Real Stripe virtual card issuing (mocked)
 - Real Twilio SMS OTP (mocked `123456`)
-- Shortfall / group-funded modes (currently only lead-funded)
 - Push notifications / automated reminders
 - Merchant-side integration

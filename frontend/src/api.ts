@@ -63,6 +63,9 @@ export type PerUser = {
   food: number;
   tax_tip: number;
   total: number;
+  contributed: number;
+  repaid: number;
+  outstanding: number;
 };
 
 export type Repayment = {
@@ -70,6 +73,20 @@ export type Repayment = {
   user_id: string;
   amount: number;
   at: string;
+};
+
+export type Contribution = {
+  id: string;
+  user_id: string;
+  amount: number;
+  at: string;
+};
+
+export type Funding = {
+  total_contributed: number;
+  total_repaid: number;
+  lead_shortfall: number;
+  remaining_to_collect: number;
 };
 
 export type Group = {
@@ -86,8 +103,10 @@ export type Group = {
   items: Item[];
   assignments: Assignment[];
   members: Member[];
+  contributions: Contribution[];
   repayments: Repayment[];
   lead_paid_at: string | null;
+  lead_shortfall?: number;
   created_at: string;
   // enriched
   subtotal: number;
@@ -95,6 +114,7 @@ export type Group = {
   per_user: PerUser[];
   unclaimed: { item_id: string; name: string; remaining: number; price: number }[];
   fully_claimed: boolean;
+  funding: Funding;
 };
 
 export const api = {
@@ -157,6 +177,11 @@ export const api = {
     request<Group>(`/groups/${id}/pay`, {
       method: 'POST',
       body: JSON.stringify({ user_id }),
+    }),
+  contribute: (id: string, user_id: string, amount?: number) =>
+    request<Group>(`/groups/${id}/contribute`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id, amount }),
     }),
   repay: (id: string, user_id: string, amount: number) =>
     request<Group>(`/groups/${id}/repay`, {

@@ -116,6 +116,11 @@ class RepayIn(BaseModel):
     amount: float
 
 
+class ContributeIn(BaseModel):
+    user_id: str
+    amount: Optional[float] = None  # If None, contributes user's full share
+
+
 class ScanReceiptIn(BaseModel):
     image_base64: str
 
@@ -191,44 +196,66 @@ async def _recompute_group(group: dict) -> dict:
         # Equal split among members
         if members:
             equal = total / len(members)
-            per_user_total = {m["user_id"]: round(equal, 2) for m in members}
-            return {
-                **group,
-                "subtotal": round(subtotal, 2),
-                "total": round(total, 2),
-                "per_user": [
-                    {"user_id": uid, "food": round(total / len(members), 2), "tax_tip": 0.0, "total": per_user_total[uid]}
-                    for uid in per_user_total
-                ],
-                "unclaimed": [],
-                "fully_claimed": True,
-            }
+            per_user = [
+                {"user_id": m["user_id"], "food": round(equal, 2), "tax_tip": 0.0, "total": round(equal, 2)}
+                for m in members
+            ]
+        else:
+            per_user = []
+    else:
+        # Itemized / smart: food via assignments, tax+tip split proportionally
+        for item in items:
+            item_id = item["id"]
+            claimed_qty = sum(a["quantity"] for a in assignments if a["item_id"] == item_id)
+            remaining = item["quantity"] - claimed_qty
+            if remaining > 0:
+                unclaimed_items.append({"item_id": item_id, "name": item["name"], "remaining": remaining, "price": item["price"]})
+            for a in assignments:
+                if a["item_id"] == item_id and a["user_id"] in per_user_food:
+                    per_user_food[a["user_id"]] += a["quantity"] * item["price"]
+        # Proportional tax+tip allocation
+        extras = tax + tip
+        per_user = []
+        for m in members:
+            food = per_user_food.get(m["user_id"], 0.0)
+            share = (food / subtotal) if subtotal > 0 else 0.0
+            extra = round(share * extras, 2)
+            per_user.append({
+                "user_id": m["user_id"],
+                "food": round(food, 2),
+                "tax_tip": extra,
+                "total": round(food + extra, 2),
+            })
 
-    # Itemized / smart: food via assignments, tax+tip split proportionally
-    for item in items:
-        item_id = item["id"]
-        claimed_qty = sum(a["quantity"] for a in assignments if a["item_id"] == item_id)
-        remaining = item["quantity"] - claimed_qty
-        if remaining > 0:
-            unclaimed_items.append({"item_id": item_id, "name": item["name"], "remaining": remaining, "price": item["price"]})
-        for a in assignments:
-            if a["item_id"] == item_id and a["user_id"] in per_user_food:
-                per_user_food[a["user_id"]] += a["quantity"] * item["price"]
+    fully_claimed = (split_mode == "fast") or (len(unclaimed_items) == 0 and subtotal > 0)
 
-    fully_claimed = len(unclaimed_items) == 0 and subtotal > 0
-    # Proportional tax+tip allocation
-    extras = tax + tip
-    per_user = []
-    for m in members:
-        food = per_user_food.get(m["user_id"], 0.0)
-        share = (food / subtotal) if subtotal > 0 else 0.0
-        extra = round(share * extras, 2)
-        per_user.append({
-            "user_id": m["user_id"],
-            "food": round(food, 2),
-            "tax_tip": extra,
-            "total": round(food + extra, 2),
-        })
+    # Funding overlay: contributions, repayments, outstanding per user
+    contributions = group.get("contributions", [])
+    repayments = group.get("repayments", [])
+    contrib_by_user: Dict[str, float] = {}
+    for c in contributions:
+        contrib_by_user[c["user_id"]] = contrib_by_user.get(c["user_id"], 0.0) + float(c["amount"])
+    repaid_by_user: Dict[str, float] = {}
+    for r in repayments:
+        repaid_by_user[r["user_id"]] = repaid_by_user.get(r["user_id"], 0.0) + float(r["amount"])
+
+    lead_id = group.get("lead_id")
+    for p in per_user:
+        uid = p["user_id"]
+        p["contributed"] = round(contrib_by_user.get(uid, 0.0), 2)
+        p["repaid"] = round(repaid_by_user.get(uid, 0.0), 2)
+        if uid == lead_id:
+            # Lead's own share is implicitly covered when they pay the bill (or when fully group-funded).
+            p["outstanding"] = 0.0
+        else:
+            p["outstanding"] = round(max(0.0, p["total"] - p["contributed"] - p["repaid"]), 2)
+
+    total_contributed = round(sum(contrib_by_user.values()), 2)
+    total_repaid = round(sum(repaid_by_user.values()), 2)
+    total_amount = group.get("total_amount") or round(total, 2)
+    lead_shortfall = group.get("lead_shortfall")
+    if lead_shortfall is None:
+        lead_shortfall = round(max(0.0, total_amount - total_contributed), 2)
 
     return {
         **group,
@@ -237,6 +264,12 @@ async def _recompute_group(group: dict) -> dict:
         "per_user": per_user,
         "unclaimed": unclaimed_items,
         "fully_claimed": fully_claimed,
+        "funding": {
+            "total_contributed": total_contributed,
+            "total_repaid": total_repaid,
+            "lead_shortfall": round(lead_shortfall, 2),
+            "remaining_to_collect": round(max(0.0, total_amount - total_contributed), 2),
+        },
     }
 
 
@@ -357,20 +390,89 @@ async def assign_item(group_id: str, body: AssignIn):
     return await _load_group_enriched(group_id)
 
 
+@api_router.post("/groups/{group_id}/contribute")
+async def contribute(group_id: str, body: ContributeIn):
+    """Member (or lead) pays their share upfront into the group wallet, before merchant payment."""
+    group = await db.groups.find_one({"id": group_id}, {"_id": 0})
+    if not group:
+        raise HTTPException(404, "Group not found")
+    if group.get("status") != "open":
+        raise HTTPException(400, "Bill already paid; use repay instead")
+    user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "User not found")
+    if not user.get("verified"):
+        raise HTTPException(403, "Phone verification required before contributing")
+    if not any(m["user_id"] == body.user_id for m in group.get("members", [])):
+        raise HTTPException(403, "Not a member of this group")
+
+    # Default: contribute the user's full share if amount not provided
+    enriched = await _recompute_group(group)
+    per = next((p for p in enriched["per_user"] if p["user_id"] == body.user_id), None)
+    share = per["total"] if per else 0.0
+    already = per["contributed"] if per else 0.0
+    remaining_share = max(0.0, share - already)
+    amount = float(body.amount) if body.amount is not None else remaining_share
+    if amount <= 0:
+        raise HTTPException(400, "Nothing left to contribute")
+
+    contributions = group.get("contributions", [])
+    contributions.append({
+        "id": new_id("c_"),
+        "user_id": body.user_id,
+        "amount": round(amount, 2),
+        "at": now_iso(),
+    })
+    update_doc: Dict[str, Any] = {"contributions": contributions}
+
+    # Auto-finalize if total contributions cover the full bill
+    total_contributed = sum(c["amount"] for c in contributions)
+    if total_contributed + 0.01 >= group.get("total_amount", 0):
+        update_doc.update({
+            "status": "paid",
+            "funding_mode": "group",
+            "lead_paid_at": now_iso(),
+            "lead_shortfall": 0.0,
+        })
+
+    await db.groups.update_one({"id": group_id}, {"$set": update_doc})
+    return await _load_group_enriched(group_id)
+
+
 @api_router.post("/groups/{group_id}/pay")
 async def pay_group(group_id: str, body: PayIn):
-    """Mock: lead pays full total upfront → lead-funded mode."""
+    """Lead settles the bill with the merchant. Pays only the shortfall not yet contributed."""
     group = await db.groups.find_one({"id": group_id}, {"_id": 0})
     if not group:
         raise HTTPException(404, "Group not found")
     if group["lead_id"] != body.user_id:
-        raise HTTPException(403, "Only lead can pay")
+        raise HTTPException(403, "Only lead can pay the merchant")
+    if group.get("status") != "open":
+        raise HTTPException(400, "Bill already paid")
+    user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
+    if not user or not user.get("verified"):
+        raise HTTPException(403, "Lead must verify phone before paying")
+
+    contributions = group.get("contributions", [])
+    total_contributed = sum(float(c["amount"]) for c in contributions)
+    total = float(group.get("total_amount") or 0.0)
+    shortfall = round(max(0.0, total - total_contributed), 2)
+
+    others_contributed = any(c["user_id"] != group["lead_id"] for c in contributions)
+    if shortfall <= 0.01:
+        funding_mode = "group"
+    elif others_contributed:
+        funding_mode = "shortfall"
+    else:
+        funding_mode = "lead"
+
     await db.groups.update_one(
         {"id": group_id},
         {"$set": {
             "status": "paid",
-            "funding_mode": "lead",
+            "funding_mode": funding_mode,
             "lead_paid_at": now_iso(),
+            "lead_shortfall": shortfall,
         }},
     )
     return await _load_group_enriched(group_id)
@@ -381,20 +483,31 @@ async def repay(group_id: str, body: RepayIn):
     group = await db.groups.find_one({"id": group_id}, {"_id": 0})
     if not group:
         raise HTTPException(404, "Group not found")
+    if group.get("status") == "open":
+        raise HTTPException(400, "Bill not yet settled with merchant; use contribute instead")
     user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
     if not user:
         raise HTTPException(404, "User not found")
     if not user.get("verified"):
         raise HTTPException(403, "Phone verification required before payment")
+
+    enriched = await _recompute_group(group)
+    per = next((p for p in enriched["per_user"] if p["user_id"] == body.user_id), None)
+    if not per:
+        raise HTTPException(403, "Not a member of this group")
+    if per["outstanding"] <= 0.01:
+        raise HTTPException(400, "Nothing to repay")
+    if body.amount > per["outstanding"] + 0.01:
+        raise HTTPException(400, f"Amount exceeds outstanding ${per['outstanding']:.2f}")
+
     repayments = group.get("repayments", [])
-    repayments.append({"id": new_id("r_"), "user_id": body.user_id, "amount": body.amount, "at": now_iso()})
+    repayments.append({"id": new_id("r_"), "user_id": body.user_id, "amount": round(body.amount, 2), "at": now_iso()})
     await db.groups.update_one({"id": group_id}, {"$set": {"repayments": repayments}})
-    # Close if fully repaid
+
+    # Auto-close when fully settled
     enriched = await _load_group_enriched(group_id)
-    total_repaid = sum(r["amount"] for r in repayments)
-    # Members who owe (excl lead)
-    owed = sum(p["total"] for p in enriched["per_user"] if p["user_id"] != group["lead_id"])
-    if total_repaid >= owed - 0.01:
+    all_settled = all(p["outstanding"] <= 0.01 for p in enriched["per_user"] if p["user_id"] != group["lead_id"])
+    if all_settled:
         await db.groups.update_one({"id": group_id}, {"$set": {"status": "closed"}})
         enriched = await _load_group_enriched(group_id)
     return enriched

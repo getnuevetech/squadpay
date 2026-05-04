@@ -184,27 +184,43 @@ backend:
 frontend:
   - task: "Items screen — '+' button opens add-item form"
     implemented: true
-    working: "NA"
+    working: true
     file: "frontend/app/group/[id]/items.tsx"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         - working: "NA"
           agent: "main"
           comment: "Header plus button sets showAddForm=true which renders the inline addCard."
+        - working: true
+          agent: "main"
+          comment: |
+            Visually verified via screenshot_tool: signed in as lead, navigated to
+            /group/{id}/items with 2 items. The blue '+' button is visible top-right of the
+            "Who ordered what?" header. Clicking it renders the 'Add a new item' form with
+            name/price/qty inputs and Cancel/Add-to-bill actions.
 
   - task: "Pay screen — Shortfall radio-card UI + member picker persists"
     implemented: true
-    working: "NA"
+    working: true
     file: "frontend/app/group/[id]/pay.tsx"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         - working: "NA"
           agent: "main"
           comment: "Radio cards for lead/member/split_equal, member picker shown when mode=member."
+        - working: true
+          agent: "main"
+          comment: |
+            Visually verified via screenshot_tool with a seeded group that has a shortfall.
+            Shortfall card renders with SHORTFALL label, $29.07 amount, prompt text, and
+            3 radio cards (I cover it / Ask a member / Split equally). Treat-this-as Loan/Gift
+            selector renders beneath. Selecting 'Ask a member' expands the PICK THE MEMBER
+            picker with UX Member avatar and name — picker stays mounted after selection
+            (the previous disappearing bug is gone). Pay button shows correct amount.
 
 metadata:
   created_by: "main_agent"

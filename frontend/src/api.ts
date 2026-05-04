@@ -181,6 +181,11 @@ export const api = {
     request<Group>(`/groups/${id}/items/${item_id}?user_id=${encodeURIComponent(user_id)}`, {
       method: 'DELETE',
     }),
+  patchItemQty: (id: string, item_id: string, user_id: string, quantity_delta: number) =>
+    request<Group>(`/groups/${id}/items/${item_id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ user_id, quantity_delta }),
+    }),
   assign: (id: string, user_id: string, item_id: string, quantity: number) =>
     request<Group>(`/groups/${id}/assign`, {
       method: 'POST',

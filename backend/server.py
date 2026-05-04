@@ -127,6 +127,11 @@ class AppendItemsIn(BaseModel):
     items: List[ItemIn]
 
 
+class ItemPatchIn(BaseModel):
+    user_id: str
+    quantity_delta: int
+
+
 # ------------- Pricing constants -------------
 TRANSACTION_FEE_RATE = 0.03  # 3% per-member surcharge
 PLATFORM_FEE = 0.03  # 3 cents flat per member
@@ -460,6 +465,38 @@ async def delete_item(group_id: str, item_id: str, user_id: str):
     await db.groups.update_one(
         {"id": group_id},
         {"$set": {"items": new_items, "assignments": new_assignments, "total_amount": new_total}},
+    )
+    return await _load_group_enriched(group_id)
+
+
+@api_router.patch("/groups/{group_id}/items/{item_id}")
+async def patch_item(group_id: str, item_id: str, body: ItemPatchIn):
+    """Lead-only: increase or decrease an item's quantity by ±1."""
+    group = await db.groups.find_one({"id": group_id}, {"_id": 0})
+    if not group:
+        raise HTTPException(404, "Group not found")
+    if group["lead_id"] != body.user_id:
+        raise HTTPException(403, "Only lead can change quantity")
+    if group.get("status") == "closed":
+        raise HTTPException(400, "Group is closed")
+    items = group.get("items") or []
+    idx = next((i for i, it in enumerate(items) if it["id"] == item_id), -1)
+    if idx < 0:
+        raise HTTPException(404, "Item not found")
+    target = items[idx]
+    new_qty = int(target["quantity"]) + int(body.quantity_delta)
+    if new_qty < 1:
+        raise HTTPException(400, "Quantity can't go below 1 — use delete instead")
+    claimed = sum(
+        int(a["quantity"]) for a in (group.get("assignments") or []) if a["item_id"] == item_id
+    )
+    if new_qty < claimed:
+        raise HTTPException(400, f"{claimed} already claimed — reduce claims first")
+    items[idx] = {**target, "quantity": new_qty}
+    delta_amt = float(target["price"]) * int(body.quantity_delta)
+    new_total = round(max(0.0, float(group.get("total_amount") or 0) + delta_amt), 2)
+    await db.groups.update_one(
+        {"id": group_id}, {"$set": {"items": items, "total_amount": new_total}}
     )
     return await _load_group_enriched(group_id)
 

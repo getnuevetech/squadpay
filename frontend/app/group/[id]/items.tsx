@@ -14,7 +14,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { CheckCircle2, AlertCircle, UserCircle2, Plus, Lock, Trash2 } from 'lucide-react-native';
+import { CheckCircle2, AlertCircle, UserCircle2, Plus, Lock, Trash2, Minus } from 'lucide-react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { Button } from '../../../src/Button';
 import { api, Group, Item } from '../../../src/api';
@@ -153,6 +153,36 @@ export default function ItemsScreen() {
     </TouchableOpacity>
   );
 
+  const patchQty = async (itemId: string, delta: number) => {
+    try {
+      const g = await api.patchItemQty(group!.id, itemId, userId!, delta);
+      setGroup(g);
+    } catch (e: any) {
+      Alert.alert('Cannot change quantity', e.message);
+    }
+  };
+
+  const renderLeftActions = (itemId: string) => (
+    <View style={styles.swipeQty}>
+      <TouchableOpacity
+        testID={`items-qty-dec-${itemId}`}
+        onPress={() => patchQty(itemId, -1)}
+        style={[styles.swipeQtyBtn, { backgroundColor: COLORS.warning }]}
+      >
+        <Minus size={18} color="#fff" />
+        <Text style={styles.swipeDeleteText}>−1</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        testID={`items-qty-inc-${itemId}`}
+        onPress={() => patchQty(itemId, +1)}
+        style={[styles.swipeQtyBtn, { backgroundColor: COLORS.success }]}
+      >
+        <Plus size={18} color="#fff" />
+        <Text style={styles.swipeDeleteText}>+1</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
   const myTotal =
     group.per_user.find((p) => p.user_id === userId)?.total || 0;
 
@@ -162,7 +192,19 @@ export default function ItemsScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />}
         contentContainerStyle={{ padding: SPACING.md, paddingBottom: 140 }}
       >
-        <Text style={styles.title}>Who ordered what?</Text>
+        <View style={styles.itemsHeader}>
+          <Text style={styles.title}>Who ordered what?</Text>
+          {isLead && group.status !== 'closed' && (
+            <TouchableOpacity
+              testID="items-header-add-btn"
+              onPress={() => setShowAddForm(true)}
+              activeOpacity={0.85}
+              style={styles.headerPlusBtn}
+            >
+              <Plus size={20} color="#fff" />
+            </TouchableOpacity>
+          )}
+        </View>
         <Text style={styles.sub}>Tap the quantity you had.</Text>
 
         {isLead && itemsLocked && (
@@ -195,8 +237,11 @@ export default function ItemsScreen() {
               <Swipeable
                 key={it.id}
                 enabled={isLead && group.status !== 'closed'}
-                renderRightActions={() => renderRightActions(it.id, it.name)}
+                renderLeftActions={() => renderRightActions(it.id, it.name)}
+                renderRightActions={() => renderLeftActions(it.id)}
+                overshootLeft={false}
                 overshootRight={false}
+                leftThreshold={40}
                 rightThreshold={40}
               >
                 <View style={styles.itemCard} testID={`items-item-${it.id}`}>
@@ -264,7 +309,9 @@ export default function ItemsScreen() {
         )}
 
         {isLead && group.items.length > 0 && group.status !== 'closed' && (
-          <Text style={styles.swipeHint}>← Swipe an item left to delete</Text>
+          <Text style={styles.swipeHint}>
+            ← Swipe right to delete   ·   Swipe left to change quantity →
+          </Text>
         )}
 
         {group.unclaimed.length > 0 && (
@@ -310,8 +357,21 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.danger,
     width: 96,
     marginBottom: SPACING.sm,
+    borderTopLeftRadius: RADIUS.md,
+    borderBottomLeftRadius: RADIUS.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  swipeQty: {
+    flexDirection: 'row',
+    marginBottom: SPACING.sm,
     borderTopRightRadius: RADIUS.md,
     borderBottomRightRadius: RADIUS.md,
+    overflow: 'hidden',
+  },
+  swipeQtyBtn: {
+    width: 72,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 4,
@@ -327,6 +387,24 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     textAlign: 'center',
     marginTop: 4,
+  },
+  itemsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  headerPlusBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: COLORS.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
   },
   itemHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.sm },
   itemName: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, color: COLORS.text },

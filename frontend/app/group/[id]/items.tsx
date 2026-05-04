@@ -1,0 +1,283 @@
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { CheckCircle2, AlertCircle, UserCircle2 } from 'lucide-react-native';
+import { Button } from '../../../src/Button';
+import { api, Group, Item } from '../../../src/api';
+import { loadUser } from '../../../src/session';
+import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
+
+export default function ItemsScreen() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const router = useRouter();
+  const [group, setGroup] = useState<Group | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = useCallback(async () => {
+    const u = await loadUser();
+    if (!u) {
+      router.replace('/auth');
+      return;
+    }
+    setUserId(u.id);
+    try {
+      const g = await api.getGroup(id);
+      setGroup(g);
+    } catch (e: any) {
+      Alert.alert('Error', e.message);
+    }
+  }, [id, router]);
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 3000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  };
+
+  const claimed = (item: Item, uid: string) => {
+    return group?.assignments
+      .filter((a) => a.item_id === item.id && a.user_id === uid)
+      .reduce((s, a) => s + a.quantity, 0) || 0;
+  };
+
+  const totalClaimed = (item: Item) =>
+    group?.assignments.filter((a) => a.item_id === item.id).reduce((s, a) => s + a.quantity, 0) || 0;
+
+  const setQty = async (item: Item, qty: number) => {
+    if (!userId || !group) return;
+    setSaving(item.id);
+    try {
+      const g = await api.assign(group.id, userId, item.id, qty);
+      setGroup(g);
+    } catch (e: any) {
+      Alert.alert('Cannot claim', e.message);
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  if (!group || !userId) {
+    return (
+      <SafeAreaView style={styles.center}>
+        <ActivityIndicator color={COLORS.primary} />
+      </SafeAreaView>
+    );
+  }
+
+  const myTotal =
+    group.per_user.find((p) => p.user_id === userId)?.total || 0;
+
+  return (
+    <SafeAreaView edges={['bottom']} style={{ flex: 1, backgroundColor: COLORS.bg }}>
+      <ScrollView
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />}
+        contentContainerStyle={{ padding: SPACING.md, paddingBottom: 140 }}
+      >
+        <Text style={styles.title}>Who ordered what?</Text>
+        <Text style={styles.sub}>Tap the quantity you had.</Text>
+
+        {group.items.length === 0 ? (
+          <View style={styles.empty}>
+            <Text style={styles.emptyText}>No items to claim.</Text>
+          </View>
+        ) : (
+          group.items.map((it) => {
+            const mine = claimed(it, userId);
+            const total = totalClaimed(it);
+            const others = total - mine;
+            const remaining = it.quantity - total;
+            const othersList = group.assignments
+              .filter((a) => a.item_id === it.id && a.user_id !== userId && a.quantity > 0)
+              .map((a) => {
+                const m = group.members.find((x) => x.user_id === a.user_id);
+                return { name: m?.name || '?', qty: a.quantity };
+              });
+
+            return (
+              <View key={it.id} style={styles.itemCard} testID={`items-item-${it.id}`}>
+                <View style={styles.itemHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.itemName}>
+                      {it.name} {it.quantity > 1 ? `×${it.quantity}` : ''}
+                    </Text>
+                    <Text style={styles.itemPrice}>${it.price.toFixed(2)} each</Text>
+                  </View>
+                  {remaining === 0 ? (
+                    <View style={styles.claimedBadge}>
+                      <CheckCircle2 size={14} color={COLORS.success} />
+                      <Text style={styles.claimedBadgeText}>Claimed</Text>
+                    </View>
+                  ) : (
+                    <View style={styles.remainingBadge}>
+                      <Text style={styles.remainingBadgeText}>{remaining} left</Text>
+                    </View>
+                  )}
+                </View>
+
+                <View style={styles.qtyRow}>
+                  {Array.from({ length: it.quantity + 1 }).map((_, q) => {
+                    const allowed = q <= mine + (it.quantity - total);
+                    const active = mine === q;
+                    return (
+                      <TouchableOpacity
+                        key={q}
+                        testID={`items-qty-${it.id}-${q}`}
+                        disabled={!allowed || saving === it.id}
+                        onPress={() => setQty(it, q)}
+                        style={[
+                          styles.qtyBtn,
+                          active && styles.qtyBtnActive,
+                          !allowed && styles.qtyBtnDisabled,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.qtyBtnText,
+                            active && { color: '#fff' },
+                            !allowed && { color: COLORS.disabledText },
+                          ]}
+                        >
+                          {q}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {othersList.length > 0 && (
+                  <View style={styles.othersRow}>
+                    <UserCircle2 size={12} color={COLORS.subtext} />
+                    <Text style={styles.othersText}>
+                      {othersList.map((o) => `${o.name} ×${o.qty}`).join(', ')}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            );
+          })
+        )}
+
+        {group.unclaimed.length > 0 && (
+          <View style={styles.warnCard}>
+            <AlertCircle size={18} color={COLORS.warning} />
+            <Text style={styles.warnText}>
+              {group.unclaimed.length} item{group.unclaimed.length === 1 ? '' : 's'} still unclaimed
+            </Text>
+          </View>
+        )}
+      </ScrollView>
+
+      <View style={styles.bottomBar}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.bottomLabel}>Your share</Text>
+          <Text style={styles.bottomValue} testID="items-my-total">${myTotal.toFixed(2)}</Text>
+        </View>
+        <Button
+          title="Done"
+          testID="items-done-btn"
+          onPress={() => router.push(`/group/${group.id}/summary`)}
+        />
+      </View>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.bg },
+  title: { fontSize: FONT.sizes.xxl, fontWeight: FONT.weights.bold, color: COLORS.text, letterSpacing: -0.5 },
+  sub: { fontSize: FONT.sizes.md, color: COLORS.subtext, marginTop: 4, marginBottom: SPACING.lg },
+  empty: { padding: SPACING.lg, alignItems: 'center' },
+  emptyText: { color: COLORS.subtext },
+  itemCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.md,
+    padding: SPACING.md,
+    marginBottom: SPACING.sm,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  itemHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.sm },
+  itemName: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, color: COLORS.text },
+  itemPrice: { fontSize: FONT.sizes.sm, color: COLORS.subtext, marginTop: 2 },
+  claimedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: COLORS.successLight,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: RADIUS.pill,
+  },
+  claimedBadgeText: { color: COLORS.success, fontSize: FONT.sizes.xs, fontWeight: FONT.weights.semibold },
+  remainingBadge: {
+    backgroundColor: COLORS.warningLight,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: RADIUS.pill,
+  },
+  remainingBadgeText: { color: COLORS.warning, fontSize: FONT.sizes.xs, fontWeight: FONT.weights.semibold },
+  qtyRow: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.disabledBg,
+    borderRadius: RADIUS.md,
+    padding: 4,
+    gap: 4,
+  },
+  qtyBtn: {
+    flex: 1,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: RADIUS.sm,
+  },
+  qtyBtnActive: {
+    backgroundColor: COLORS.primary,
+  },
+  qtyBtnDisabled: { opacity: 0.5 },
+  qtyBtnText: { color: COLORS.text, fontWeight: FONT.weights.semibold },
+  othersRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: SPACING.sm },
+  othersText: { color: COLORS.subtext, fontSize: FONT.sizes.xs },
+  warnCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: COLORS.warningLight,
+    padding: SPACING.md,
+    borderRadius: RADIUS.md,
+    marginTop: SPACING.md,
+  },
+  warnText: { color: '#92400E', fontSize: FONT.sizes.sm, fontWeight: FONT.weights.medium, flex: 1 },
+  bottomBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+    padding: SPACING.md,
+    backgroundColor: COLORS.surface,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
+  bottomLabel: { fontSize: FONT.sizes.xs, color: COLORS.subtext, textTransform: 'uppercase', letterSpacing: 1 },
+  bottomValue: { fontSize: FONT.sizes.xxl, fontWeight: FONT.weights.bold, color: COLORS.text },
+});

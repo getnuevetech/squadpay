@@ -250,6 +250,63 @@ export default function ItemsScreen() {
           </View>
         )}
 
+        {/* Lead-only inline add-item form (shown via the + button) */}
+        {isLead && showAddForm && group.status !== 'closed' && (
+          <View style={styles.addCard} testID="items-add-form">
+            <Text style={styles.addTitle}>Add a new item</Text>
+            <TextInput
+              testID="items-new-name"
+              value={newName}
+              onChangeText={setNewName}
+              placeholder="Item name (e.g. Salad)"
+              placeholderTextColor={COLORS.disabledText}
+              style={styles.addInput}
+              autoFocus
+            />
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <TextInput
+                testID="items-new-price"
+                value={newPrice}
+                onChangeText={setNewPrice}
+                placeholder="Price"
+                placeholderTextColor={COLORS.disabledText}
+                keyboardType="decimal-pad"
+                style={[styles.addInput, { flex: 2 }]}
+              />
+              <TextInput
+                testID="items-new-qty"
+                value={newQty}
+                onChangeText={setNewQty}
+                placeholder="x1"
+                placeholderTextColor={COLORS.disabledText}
+                keyboardType="number-pad"
+                style={[styles.addInput, { flex: 1 }]}
+              />
+            </View>
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
+              <TouchableOpacity
+                testID="items-new-cancel"
+                onPress={() => setShowAddForm(false)}
+                style={[styles.addBtn, { backgroundColor: COLORS.disabledBg, flex: 1 }]}
+              >
+                <Text style={{ color: COLORS.text, fontWeight: FONT.weights.semibold }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="items-new-submit"
+                onPress={submitNewItem}
+                disabled={adding}
+                style={[styles.addBtn, { backgroundColor: COLORS.primary, flex: 2, opacity: adding ? 0.6 : 1 }]}
+              >
+                {adding ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={{ color: '#fff', fontWeight: FONT.weights.semibold }}>Add to bill</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
         {group.items.length === 0 ? (
           <View style={styles.empty}>
             <Text style={styles.emptyText}>No items to claim.</Text>

@@ -18,7 +18,7 @@ export default function RootLayout() {
           contentStyle: { backgroundColor: COLORS.bg },
         }}
       >
-        <Stack.Screen name="index" options={{ headerShown: false }} />
+        <Stack.Screen name="index" options={{ title: 'Home', headerShown: false }} />
         <Stack.Screen name="auth" options={{ title: 'Sign in' }} />
         <Stack.Screen name="create" options={{ title: 'Start a Bill' }} />
         <Stack.Screen name="group/[id]/index" options={{ title: 'Group' }} />

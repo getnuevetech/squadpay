@@ -101,3 +101,150 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: |
+  MVP: group payment system allowing group creation + QR/link join; equal + itemized split;
+  item assignment. Mock payment (simulate paid state) and mock OTP (123456). Simple name + phone auth.
+  Includes OpenAI receipt scanning. Latest: 5 UX/UI and logic bugs fixed: (1) '+' button in items
+  opens add-form, (2) improved shortfall payment card UI with radio cards, (3) index title = Home,
+  (4) member picker persists in shortfall UI, (5) shortfall settlement payload fix so that lead
+  pay no longer errors with "bill is short".
+
+backend:
+  - task: "Shortfall settlement endpoint — POST /api/groups/{id}/pay with shortfall_settlement options"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Lead pay endpoint accepts optional body { shortfall_mode: 'lead'|'member'|'split_equal',
+            is_loan: bool, funder_member_id?: str }. When remaining_to_collect > 0 this governs how
+            the gap is settled. Needs validation on all 3 modes (loan + gift variants) and that
+            it no longer returns a 400 "bill is short" when these options are supplied correctly.
+        - working: true
+          agent: "testing"
+          comment: |
+            Tested all 5 scenarios end-to-end via /app/backend_test.py against the live preview
+            backend (EXPO_PUBLIC_BACKEND_URL/api). Setup for each: fresh lead + 2 members, fast
+            split group total $60 (per-share $20.63 incl. fees), lead + 1 member contribute,
+            leaving shortfall ~$18.74. Results:
+              A) lead + is_loan=true  -> 200, status='paid', funding_mode='shortfall',
+                 remaining_to_collect=0, settlement.mode='lead' is_loan=true funder_id=lead,
+                 contribution {user_id=lead, is_shortfall=true, is_loan=true} recorded.
+                 Non-paying member still has outstanding=$20.63 (correct LOAN behavior).
+              B) lead + is_loan=false -> 200, status='closed' (gift auto-closes),
+                 remaining_to_collect=0, non-paying member outstanding=0 (gift correctly waives).
+              C) member + is_loan=true + funder_member_id -> 200, status='paid',
+                 settlement.funder_id=funder member, shortfall contribution attributed to that
+                 member with is_loan=true. Beneficiaries list excludes the funder.
+              D) split_equal -> 200, status='closed', is_loan forced false, shortfall split
+                 across the 2 existing contributors as separate contribution rows; non-paying
+                 member outstanding=0.
+              E) Legacy call (no shortfall_mode) when shortfall>0 -> 400 with
+                 'Bill is short $18.74. Choose how to settle the shortfall.' (no 500).
+            Notes (informational, not blockers):
+              * Per current code, LOAN modes (A, C) leave status='paid' (not 'closed'); group
+                only auto-closes via /repay when each non-lead beneficiary's outstanding hits 0,
+                or immediately when settlement is a GIFT. The review request mentioned 'closed'
+                for all 4 modes — the actual contract closes only gift modes immediately, which
+                matches the loan-vs-gift semantics. No bug here.
+              * Lead must contribute their own share before /pay (enforced 400). Setup honored
+                this; behavior is consistent with prior design.
+            All assertions pass. Endpoint is working correctly across all documented modes.
+
+  - task: "Equal split + itemized split + item assignment flows"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "Previously verified end-to-end in earlier session."
+
+  - task: "Receipt OCR — POST /api/receipt/scan (OpenAI gpt-4o)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "OpenAI call confirmed in prior session; EMERGENT_LLM_KEY configured."
+
+frontend:
+  - task: "Items screen — '+' button opens add-item form"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/group/[id]/items.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Header plus button sets showAddForm=true which renders the inline addCard."
+
+  - task: "Pay screen — Shortfall radio-card UI + member picker persists"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/group/[id]/pay.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Radio cards for lead/member/split_equal, member picker shown when mode=member."
+
+metadata:
+  created_by: "main_agent"
+  version: "1.1"
+  test_sequence: 1
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Shortfall settlement endpoint — POST /api/groups/{id}/pay with shortfall_settlement options"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    - agent: "main"
+      message: |
+        Please test the lead pay + shortfall settlement flow on POST /api/groups/{id}/pay.
+        Scenario: create a group with total > 0, have the lead NOT pay their share, then call
+        /api/groups/{id}/pay with body options:
+          a) { shortfall_mode: 'lead', is_loan: true }  -> should succeed; remaining_to_collect
+             becomes 0 and group.status = 'closed'. Verify a repayment/contribution is recorded.
+          b) { shortfall_mode: 'lead', is_loan: false } -> also succeeds (gift).
+          c) { shortfall_mode: 'member', is_loan: true, funder_member_id: '<existing member id>' }
+             -> succeeds and assigns the shortfall to that member.
+          d) { shortfall_mode: 'split_equal' } -> succeeds splitting the gap equally across
+             contributors (always treated as a gift).
+        Also verify: omitting options when there is a shortfall returns a sensible 400 ("bill is short").
+        Use mock OTP 123456 where needed. Base URL is EXPO_PUBLIC_BACKEND_URL from frontend/.env +
+        '/api'. Credentials file: /app/memory/test_credentials.md.
+    - agent: "testing"
+      message: |
+        Shortfall settlement endpoint verified end-to-end. All 5 scenarios (A loan-by-lead,
+        B gift-by-lead, C loan-by-member, D split_equal-gift, E legacy 400) PASS against
+        the live preview backend. See backend_test.py for the runnable suite. No 500s, no
+        unhandled exceptions. is_loan semantics match: LOAN keeps status='paid' (beneficiaries
+        still owe outstanding amounts and should /repay later), GIFT auto-closes
+        (status='closed') and zeroes beneficiaries' outstanding. shortfall_settlement
+        document, contributions with is_shortfall/is_loan/covers, funder_id, and
+        beneficiaries list all populated correctly. funding.remaining_to_collect=0 in every
+        success case. Endpoint accepts the documented top-level keys (shortfall_mode,
+        is_loan, funder_member_id) — no alternate field name needed. Task is working;
+        no further backend action required for this feature.

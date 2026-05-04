@@ -149,7 +149,20 @@ export default function PayScreen() {
     setLoading(true);
     try {
       if (kind === 'lead') {
-        await api.payGroup(group.id, userId);
+        const opts: any = {};
+        if ((group.funding?.remaining_to_collect || 0) > 0.01) {
+          opts.shortfall_mode = shortfallMode;
+          opts.is_loan = shortfallMode === 'split_equal' ? false : isLoan;
+          if (shortfallMode === 'member') {
+            if (!funderMemberId) {
+              Alert.alert('Pick a member', 'Choose who will cover the shortfall.');
+              setLoading(false);
+              return;
+            }
+            opts.funder_member_id = funderMemberId;
+          }
+        }
+        await api.payGroup(group.id, userId, opts);
       } else if (kind === 'contribute') {
         await api.contribute(group.id, userId, amount, notifyOnSettled);
       } else {
@@ -288,85 +301,125 @@ export default function PayScreen() {
           {/* Shortfall settlement chooser (lead pay only) */}
           {kind === 'lead' && (group.funding?.remaining_to_collect || 0) > 0.01 && (
             <View style={styles.settlementCard} testID="pay-settlement-card">
-              <Text style={styles.settlementTitle}>
-                ${group.funding.remaining_to_collect.toFixed(2)} shortfall — who covers it?
+              <Text style={styles.settlementHeader}>Shortfall</Text>
+              <Text style={styles.settlementAmount}>
+                ${group.funding.remaining_to_collect.toFixed(2)}
               </Text>
-              <View style={styles.settlementModeRow}>
-                {(
-                  [
-                    { k: 'lead', label: 'I cover it' },
-                    { k: 'member', label: 'Ask a member' },
-                    { k: 'split_equal', label: 'Split equally' },
-                  ] as const
-                ).map((m) => (
+              <Text style={styles.settlementSub}>
+                Some members haven't contributed yet. Pick how to settle the gap:
+              </Text>
+
+              {(
+                [
+                  {
+                    k: 'lead' as const,
+                    title: 'I cover it',
+                    sub: 'You front the shortfall now.',
+                  },
+                  {
+                    k: 'member' as const,
+                    title: 'Ask a member',
+                    sub: 'Pick someone to cover it.',
+                  },
+                  {
+                    k: 'split_equal' as const,
+                    title: 'Split equally',
+                    sub: 'Spread across all who already contributed.',
+                  },
+                ]
+              ).map((m) => {
+                const active = shortfallMode === m.k;
+                return (
                   <TouchableOpacity
                     key={m.k}
                     testID={`pay-settle-mode-${m.k}`}
-                    style={[styles.settlementChip, shortfallMode === m.k && styles.settlementChipActive]}
+                    style={[styles.settlementOption, active && styles.settlementOptionActive]}
                     onPress={() => setShortfallMode(m.k)}
+                    activeOpacity={0.85}
                   >
-                    <Text
-                      style={[
-                        styles.settlementChipText,
-                        shortfallMode === m.k && { color: '#fff' },
-                      ]}
-                    >
-                      {m.label}
-                    </Text>
+                    <View style={[styles.radioOuter, active && styles.radioOuterActive]}>
+                      {active ? <View style={styles.radioInner} /> : null}
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.settlementOptionTitle, active && { color: COLORS.text }]}>
+                        {m.title}
+                      </Text>
+                      <Text style={styles.settlementOptionSub}>{m.sub}</Text>
+                    </View>
                   </TouchableOpacity>
-                ))}
-              </View>
+                );
+              })}
 
               {shortfallMode === 'member' && (
-                <View style={{ marginTop: SPACING.sm }}>
-                  <Text style={styles.fieldLabel}>Who will cover?</Text>
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                    {group.members
-                      .filter((m) => m.user_id !== group.lead_id)
-                      .map((m) => (
-                        <TouchableOpacity
-                          key={m.user_id}
-                          testID={`pay-settle-funder-${m.user_id}`}
-                          style={[
-                            styles.memberChip,
-                            funderMemberId === m.user_id && styles.memberChipActive,
-                          ]}
-                          onPress={() => setFunderMemberId(m.user_id)}
-                        >
-                          <Text
-                            style={[
-                              styles.memberChipText,
-                              funderMemberId === m.user_id && { color: '#fff' },
-                            ]}
+                <View style={styles.funderPicker}>
+                  <Text style={styles.fieldLabel}>Pick the member</Text>
+                  {group.members
+                    .filter((mm) => mm.user_id !== group.lead_id).length === 0 ? (
+                    <Text style={styles.emptyFunders}>
+                      No other members have joined yet. Choose another option.
+                    </Text>
+                  ) : (
+                    group.members
+                      .filter((mm) => mm.user_id !== group.lead_id)
+                      .map((mm) => {
+                        const active = funderMemberId === mm.user_id;
+                        return (
+                          <TouchableOpacity
+                            key={mm.user_id}
+                            testID={`pay-settle-funder-${mm.user_id}`}
+                            style={[styles.funderRow, active && styles.funderRowActive]}
+                            onPress={() => setFunderMemberId(mm.user_id)}
+                            activeOpacity={0.85}
                           >
-                            {m.name}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                  </View>
+                            <View
+                              style={[
+                                styles.funderAvatar,
+                                active && { backgroundColor: COLORS.primary },
+                              ]}
+                            >
+                              <Text style={[styles.funderAvatarText, active && { color: '#fff' }]}>
+                                {(mm.name || '?').slice(0, 1).toUpperCase()}
+                              </Text>
+                            </View>
+                            <Text style={[styles.funderName, active && { color: COLORS.primary }]}>
+                              {mm.name}
+                            </Text>
+                            {active && (
+                              <View style={styles.funderCheck}>
+                                <Check size={14} color="#fff" />
+                              </View>
+                            )}
+                          </TouchableOpacity>
+                        );
+                      })
+                  )}
                 </View>
               )}
 
               {shortfallMode !== 'split_equal' && (
-                <View style={styles.loanRow}>
-                  <Text style={styles.fieldLabel}>Treat as:</Text>
+                <View style={styles.loanGiftRow}>
+                  <Text style={styles.fieldLabel}>Treat this as</Text>
                   <View style={{ flexDirection: 'row', gap: 8 }}>
                     <TouchableOpacity
                       testID="pay-settle-loan"
-                      style={[styles.toggleChip, isLoan && styles.toggleChipActive]}
+                      style={[styles.loanGiftCard, isLoan && styles.loanGiftCardActive]}
                       onPress={() => setIsLoan(true)}
+                      activeOpacity={0.85}
                     >
-                      <Text style={[styles.toggleChipText, isLoan && { color: '#fff' }]}>
-                        Loan (gets repaid)
+                      <Text style={[styles.loanGiftTitle, isLoan && { color: '#fff' }]}>Loan</Text>
+                      <Text style={[styles.loanGiftSub, isLoan && { color: '#E0E7FF' }]}>
+                        Gets repaid
                       </Text>
                     </TouchableOpacity>
                     <TouchableOpacity
                       testID="pay-settle-gift"
-                      style={[styles.toggleChip, !isLoan && styles.toggleChipActive]}
+                      style={[styles.loanGiftCard, !isLoan && styles.loanGiftCardActive]}
                       onPress={() => setIsLoan(false)}
+                      activeOpacity={0.85}
                     >
-                      <Text style={[styles.toggleChipText, !isLoan && { color: '#fff' }]}>
-                        Gift (no repayment)
+                      <Text style={[styles.loanGiftTitle, !isLoan && { color: '#fff' }]}>Gift</Text>
+                      <Text style={[styles.loanGiftSub, !isLoan && { color: '#E0E7FF' }]}>
+                        No repayment
                       </Text>
                     </TouchableOpacity>
                   </View>
@@ -375,7 +428,7 @@ export default function PayScreen() {
 
               {shortfallMode === 'split_equal' && (
                 <Text style={styles.splitNote}>
-                  Shortfall split equally as a gift — non-contributors won't owe anything.
+                  💡 Split-equal is always a gift — non-contributors won't owe anything.
                 </Text>
               )}
             </View>
@@ -553,6 +606,140 @@ const styles = StyleSheet.create({
   checkboxOn: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
   notifyTitle: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, color: COLORS.text },
   notifySub: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2, lineHeight: 16 },
+  settlementCard: {
+    marginTop: SPACING.lg,
+    padding: SPACING.lg,
+    borderRadius: RADIUS.lg,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  settlementHeader: {
+    fontSize: FONT.sizes.xs,
+    color: COLORS.warning,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    fontWeight: FONT.weights.bold,
+  },
+  settlementAmount: {
+    fontSize: 36,
+    fontWeight: FONT.weights.heavy,
+    color: COLORS.text,
+    letterSpacing: -1,
+    marginTop: 2,
+  },
+  settlementSub: {
+    fontSize: FONT.sizes.sm,
+    color: COLORS.subtext,
+    marginTop: 4,
+    marginBottom: SPACING.md,
+  },
+  settlementOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+    padding: SPACING.md,
+    borderRadius: RADIUS.md,
+    backgroundColor: COLORS.bg,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+    marginBottom: 8,
+  },
+  settlementOptionActive: {
+    backgroundColor: COLORS.primaryLight,
+    borderColor: COLORS.primary,
+  },
+  settlementOptionTitle: {
+    fontSize: FONT.sizes.md,
+    fontWeight: FONT.weights.bold,
+    color: COLORS.text,
+  },
+  settlementOptionSub: {
+    fontSize: FONT.sizes.xs,
+    color: COLORS.subtext,
+    marginTop: 2,
+  },
+  radioOuter: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioOuterActive: { borderColor: COLORS.primary },
+  radioInner: { width: 12, height: 12, borderRadius: 6, backgroundColor: COLORS.primary },
+  funderPicker: { marginTop: SPACING.sm, gap: 8 },
+  funderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+    padding: SPACING.sm,
+    borderRadius: RADIUS.md,
+    backgroundColor: COLORS.bg,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+  },
+  funderRowActive: { backgroundColor: COLORS.primaryLight, borderColor: COLORS.primary },
+  funderAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: COLORS.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  funderAvatarText: { color: COLORS.primary, fontWeight: FONT.weights.bold },
+  funderName: {
+    flex: 1,
+    fontSize: FONT.sizes.md,
+    fontWeight: FONT.weights.semibold,
+    color: COLORS.text,
+  },
+  funderCheck: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: COLORS.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyFunders: {
+    fontSize: FONT.sizes.sm,
+    color: COLORS.subtext,
+    fontStyle: 'italic',
+    padding: SPACING.sm,
+  },
+  loanGiftRow: { marginTop: SPACING.md, gap: 8 },
+  loanGiftCard: {
+    flex: 1,
+    padding: SPACING.md,
+    borderRadius: RADIUS.md,
+    backgroundColor: COLORS.bg,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+    alignItems: 'flex-start',
+  },
+  loanGiftCardActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  loanGiftTitle: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },
+  loanGiftSub: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
+  splitNote: {
+    color: COLORS.primary,
+    fontSize: FONT.sizes.xs,
+    marginTop: SPACING.md,
+    lineHeight: 16,
+    fontWeight: FONT.weights.medium,
+  },
+  fieldLabel: {
+    fontSize: FONT.sizes.xs,
+    color: COLORS.subtext,
+    fontWeight: FONT.weights.semibold,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    marginTop: SPACING.sm,
+    marginBottom: 6,
+  },
   bottomBar: {
     padding: SPACING.md,
     backgroundColor: COLORS.surface,

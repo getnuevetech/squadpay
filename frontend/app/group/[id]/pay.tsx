@@ -38,6 +38,11 @@ export default function PayScreen() {
   // Receipt-update opt-in (contribute flow only)
   const [notifyOnSettled, setNotifyOnSettled] = useState(true);
 
+  // Shortfall settlement (lead pay flow only)
+  const [shortfallMode, setShortfallMode] = useState<'lead' | 'member' | 'split_equal'>('lead');
+  const [isLoan, setIsLoan] = useState<boolean>(true);
+  const [funderMemberId, setFunderMemberId] = useState<string | null>(null);
+
   useEffect(() => {
     (async () => {
       const u = await refreshUser();
@@ -277,6 +282,102 @@ export default function PayScreen() {
             <View style={styles.verifiedBadge} testID="pay-verified-badge">
               <ShieldCheck size={14} color={COLORS.success} />
               <Text style={styles.verifiedText}>Phone verified</Text>
+            </View>
+          )}
+
+          {/* Shortfall settlement chooser (lead pay only) */}
+          {kind === 'lead' && (group.funding?.remaining_to_collect || 0) > 0.01 && (
+            <View style={styles.settlementCard} testID="pay-settlement-card">
+              <Text style={styles.settlementTitle}>
+                ${group.funding.remaining_to_collect.toFixed(2)} shortfall — who covers it?
+              </Text>
+              <View style={styles.settlementModeRow}>
+                {(
+                  [
+                    { k: 'lead', label: 'I cover it' },
+                    { k: 'member', label: 'Ask a member' },
+                    { k: 'split_equal', label: 'Split equally' },
+                  ] as const
+                ).map((m) => (
+                  <TouchableOpacity
+                    key={m.k}
+                    testID={`pay-settle-mode-${m.k}`}
+                    style={[styles.settlementChip, shortfallMode === m.k && styles.settlementChipActive]}
+                    onPress={() => setShortfallMode(m.k)}
+                  >
+                    <Text
+                      style={[
+                        styles.settlementChipText,
+                        shortfallMode === m.k && { color: '#fff' },
+                      ]}
+                    >
+                      {m.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              {shortfallMode === 'member' && (
+                <View style={{ marginTop: SPACING.sm }}>
+                  <Text style={styles.fieldLabel}>Who will cover?</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                    {group.members
+                      .filter((m) => m.user_id !== group.lead_id)
+                      .map((m) => (
+                        <TouchableOpacity
+                          key={m.user_id}
+                          testID={`pay-settle-funder-${m.user_id}`}
+                          style={[
+                            styles.memberChip,
+                            funderMemberId === m.user_id && styles.memberChipActive,
+                          ]}
+                          onPress={() => setFunderMemberId(m.user_id)}
+                        >
+                          <Text
+                            style={[
+                              styles.memberChipText,
+                              funderMemberId === m.user_id && { color: '#fff' },
+                            ]}
+                          >
+                            {m.name}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                  </View>
+                </View>
+              )}
+
+              {shortfallMode !== 'split_equal' && (
+                <View style={styles.loanRow}>
+                  <Text style={styles.fieldLabel}>Treat as:</Text>
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <TouchableOpacity
+                      testID="pay-settle-loan"
+                      style={[styles.toggleChip, isLoan && styles.toggleChipActive]}
+                      onPress={() => setIsLoan(true)}
+                    >
+                      <Text style={[styles.toggleChipText, isLoan && { color: '#fff' }]}>
+                        Loan (gets repaid)
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      testID="pay-settle-gift"
+                      style={[styles.toggleChip, !isLoan && styles.toggleChipActive]}
+                      onPress={() => setIsLoan(false)}
+                    >
+                      <Text style={[styles.toggleChipText, !isLoan && { color: '#fff' }]}>
+                        Gift (no repayment)
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+
+              {shortfallMode === 'split_equal' && (
+                <Text style={styles.splitNote}>
+                  Shortfall split equally as a gift — non-contributors won't owe anything.
+                </Text>
+              )}
             </View>
           )}
 

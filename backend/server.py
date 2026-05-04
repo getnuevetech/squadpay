@@ -109,6 +109,9 @@ class AssignIn(BaseModel):
 
 class PayIn(BaseModel):
     user_id: str  # lead user id
+    shortfall_mode: Optional[str] = None  # 'lead' | 'member' | 'split_equal'
+    is_loan: Optional[bool] = True
+    funder_member_id: Optional[str] = None  # required when shortfall_mode == 'member'
 
 
 class RepayIn(BaseModel):
@@ -279,12 +282,18 @@ async def _recompute_group(group: dict) -> dict:
         repaid_by_user[r["user_id"]] = repaid_by_user.get(r["user_id"], 0.0) + float(r["amount"])
 
     lead_id = group.get("lead_id")
+    settlement = group.get("shortfall_settlement") or {}
+    gift_active = bool(settlement) and not settlement.get("is_loan", True)
+    beneficiaries = set(settlement.get("beneficiaries") or [])
     for p in per_user:
         uid = p["user_id"]
         p["contributed"] = round(contrib_by_user.get(uid, 0.0), 2)
         p["repaid"] = round(repaid_by_user.get(uid, 0.0), 2)
         if uid == lead_id:
             # Lead's own share is implicitly covered when they pay the bill (or when fully group-funded).
+            p["outstanding"] = 0.0
+        elif gift_active and uid in beneficiaries:
+            # Shortfall covered as a gift — beneficiary owes nothing.
             p["outstanding"] = 0.0
         else:
             p["outstanding"] = round(max(0.0, p["total"] - p["contributed"] - p["repaid"]), 2)
@@ -445,8 +454,7 @@ async def append_items(group_id: str, body: AppendItemsIn):
 
 @api_router.delete("/groups/{group_id}/items/{item_id}")
 async def delete_item(group_id: str, item_id: str, user_id: str):
-    """Lead-only: remove an item from the bill. Deletes any assignments for it
-    and decrements total_amount accordingly. Allowed any time before status='closed'."""
+    """Lead-only: remove an item from the bill. Blocked once any contribution exists."""
     group = await db.groups.find_one({"id": group_id}, {"_id": 0})
     if not group:
         raise HTTPException(404, "Group not found")
@@ -454,6 +462,11 @@ async def delete_item(group_id: str, item_id: str, user_id: str):
         raise HTTPException(403, "Only lead can delete items")
     if group.get("status") == "closed":
         raise HTTPException(400, "Group is closed")
+    if group.get("contributions"):
+        raise HTTPException(
+            400,
+            "Items can no longer be deleted — contributions already started.",
+        )
     items = group.get("items") or []
     target = next((i for i in items if i["id"] == item_id), None)
     if not target:
@@ -580,7 +593,8 @@ async def contribute(group_id: str, body: ContributeIn):
 
 @api_router.post("/groups/{group_id}/pay")
 async def pay_group(group_id: str, body: PayIn):
-    """Lead settles the bill with the merchant. Pays only the shortfall not yet contributed."""
+    """Lead settles the bill with the merchant. Requires lead to have contributed
+    their own share first; remaining shortfall is handled per `shortfall_mode`."""
     group = await db.groups.find_one({"id": group_id}, {"_id": 0})
     if not group:
         raise HTTPException(404, "Group not found")
@@ -592,12 +606,92 @@ async def pay_group(group_id: str, body: PayIn):
     if not user or not user.get("verified"):
         raise HTTPException(403, "Lead must verify phone before paying")
 
-    contributions = group.get("contributions", [])
+    enriched = await _recompute_group(group)
+    lead_per = next((p for p in enriched["per_user"] if p["user_id"] == body.user_id), None)
+    if lead_per and lead_per["contributed"] + 0.01 < lead_per["total"]:
+        raise HTTPException(
+            400,
+            f"Please contribute your own share first (${lead_per['total'] - lead_per['contributed']:.2f}).",
+        )
+
+    contributions = list(group.get("contributions", []))
     total_contributed = sum(float(c["amount"]) for c in contributions)
     total = float(group.get("total_amount") or 0.0)
     shortfall = round(max(0.0, total - total_contributed), 2)
 
-    others_contributed = any(c["user_id"] != group["lead_id"] for c in contributions)
+    settlement: Optional[dict] = None
+    if shortfall > 0.01:
+        mode = body.shortfall_mode
+        if not mode:
+            raise HTTPException(
+                400,
+                f"Bill is short ${shortfall:.2f}. Choose how to settle the shortfall.",
+            )
+        is_loan = bool(body.is_loan) if body.is_loan is not None else True
+
+        # Determine beneficiaries: members who still owe (outstanding > 0)
+        beneficiaries = [
+            p["user_id"] for p in enriched["per_user"]
+            if p["outstanding"] > 0.01 and p["user_id"] != group["lead_id"]
+        ]
+
+        if mode == "lead":
+            funder_id = group["lead_id"]
+            contributions.append({
+                "id": new_id("c_"),
+                "user_id": funder_id,
+                "amount": shortfall,
+                "is_shortfall": True,
+                "is_loan": is_loan,
+                "covers": beneficiaries,
+                "at": now_iso(),
+            })
+        elif mode == "member":
+            if not body.funder_member_id:
+                raise HTTPException(400, "funder_member_id required for member mode")
+            funder_id = body.funder_member_id
+            if not any(m["user_id"] == funder_id for m in group.get("members", [])):
+                raise HTTPException(400, "Funder is not a member")
+            contributions.append({
+                "id": new_id("c_"),
+                "user_id": funder_id,
+                "amount": shortfall,
+                "is_shortfall": True,
+                "is_loan": is_loan,
+                "covers": [b for b in beneficiaries if b != funder_id],
+                "at": now_iso(),
+            })
+        elif mode == "split_equal":
+            # split shortfall across existing contributors
+            existing_contributors = list({c["user_id"] for c in group.get("contributions", [])})
+            if not existing_contributors:
+                raise HTTPException(400, "No contributors to split shortfall across")
+            per_share = round(shortfall / len(existing_contributors), 2)
+            for uid in existing_contributors:
+                contributions.append({
+                    "id": new_id("c_"),
+                    "user_id": uid,
+                    "amount": per_share,
+                    "is_shortfall": True,
+                    "is_loan": False,  # split-equal is always treated as gift in MVP
+                    "covers": beneficiaries,
+                    "at": now_iso(),
+                })
+            is_loan = False  # enforce
+        else:
+            raise HTTPException(400, "Invalid shortfall_mode")
+
+        settlement = {
+            "mode": mode,
+            "is_loan": is_loan,
+            "amount": shortfall,
+            "beneficiaries": beneficiaries,
+            "at": now_iso(),
+        }
+        if mode in ("lead", "member"):
+            settlement["funder_id"] = funder_id
+
+    others_contributed = any(c["user_id"] != group["lead_id"] for c in group.get("contributions", []))
     if shortfall <= 0.01:
         funding_mode = "group"
     elif others_contributed:
@@ -605,15 +699,22 @@ async def pay_group(group_id: str, body: PayIn):
     else:
         funding_mode = "lead"
 
-    await db.groups.update_one(
-        {"id": group_id},
-        {"$set": {
-            "status": "paid",
-            "funding_mode": funding_mode,
-            "lead_paid_at": now_iso(),
-            "lead_shortfall": shortfall,
-        }},
-    )
+    update_doc = {
+        "status": "paid",
+        "funding_mode": funding_mode,
+        "lead_paid_at": now_iso(),
+        "lead_shortfall": shortfall,
+        "contributions": contributions,
+    }
+    if settlement:
+        update_doc["shortfall_settlement"] = settlement
+
+    await db.groups.update_one({"id": group_id}, {"$set": update_doc})
+
+    # If gift mode, group is fully settled — close it immediately.
+    if settlement and not settlement["is_loan"]:
+        await db.groups.update_one({"id": group_id}, {"$set": {"status": "closed"}})
+
     return await _load_group_enriched(group_id)
 
 

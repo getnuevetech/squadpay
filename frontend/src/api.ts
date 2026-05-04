@@ -191,10 +191,18 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ user_id, item_id, quantity }),
     }),
-  payGroup: (id: string, user_id: string) =>
+  payGroup: (
+    id: string,
+    user_id: string,
+    opts?: {
+      shortfall_mode?: 'lead' | 'member' | 'split_equal';
+      is_loan?: boolean;
+      funder_member_id?: string;
+    },
+  ) =>
     request<Group>(`/groups/${id}/pay`, {
       method: 'POST',
-      body: JSON.stringify({ user_id }),
+      body: JSON.stringify({ user_id, ...(opts || {}) }),
     }),
   contribute: (id: string, user_id: string, amount?: number, notify_on_settled?: boolean) =>
     request<Group>(`/groups/${id}/contribute`, {

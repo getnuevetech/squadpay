@@ -85,6 +85,40 @@ export default function ItemsScreen() {
     }
   };
 
+  const leadAssignToMember = (item: Item) => {
+    if (!group || !userId) return;
+    const remaining =
+      item.quantity -
+      group.assignments
+        .filter((a) => a.item_id === item.id)
+        .reduce((s, a) => s + a.quantity, 0);
+    if (remaining <= 0) {
+      Alert.alert('Already fully claimed');
+      return;
+    }
+    Alert.alert(
+      `Assign 1× ${item.name} to…`,
+      'Pick who ordered this item',
+      [
+        ...group.members.map((m) => ({
+          text: m.name + (m.user_id === userId ? ' (Me)' : ''),
+          onPress: async () => {
+            try {
+              const existing = group.assignments
+                .filter((a) => a.user_id === m.user_id && a.item_id === item.id)
+                .reduce((s, a) => s + a.quantity, 0);
+              const g = await api.assign(group.id, m.user_id, item.id, existing + 1);
+              setGroup(g);
+            } catch (e: any) {
+              Alert.alert('Failed', e.message);
+            }
+          },
+        })),
+        { text: 'Cancel', style: 'cancel' as const },
+      ],
+    );
+  };
+
   if (!group || !userId) {
     return (
       <SafeAreaView style={styles.center}>
@@ -302,6 +336,18 @@ export default function ItemsScreen() {
                     </Text>
                   </View>
                 )}
+                {isLead && remaining > 0 && (
+                  <TouchableOpacity
+                    testID={`items-lead-assign-${it.id}`}
+                    onPress={() => leadAssignToMember(it)}
+                    style={styles.leadAssignRow}
+                  >
+                    <UserCircle2 size={12} color={COLORS.primary} />
+                    <Text style={styles.leadAssignText}>
+                      Assign {remaining} unclaimed to a member →
+                    </Text>
+                  </TouchableOpacity>
+                )}
                 </View>
               </Swipeable>
             );
@@ -447,6 +493,14 @@ const styles = StyleSheet.create({
   qtyBtnText: { color: COLORS.text, fontWeight: FONT.weights.semibold },
   othersRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: SPACING.sm },
   othersText: { color: COLORS.subtext, fontSize: FONT.sizes.xs },
+  leadAssignRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: SPACING.sm,
+    paddingVertical: 6,
+  },
+  leadAssignText: { color: COLORS.primary, fontSize: FONT.sizes.xs, fontWeight: FONT.weights.semibold },
   warnCard: {
     flexDirection: 'row',
     alignItems: 'center',

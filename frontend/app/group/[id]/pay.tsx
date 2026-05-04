@@ -1,14 +1,24 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Alert, StyleSheet, Text, View } from 'react-native';
+import {
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { CreditCard, Lock, Smartphone, Wallet } from 'lucide-react-native';
+import { CreditCard, Lock, Smartphone, Wallet, ShieldCheck } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { api, Group } from '../../../src/api';
-import { refreshUser } from '../../../src/session';
+import { refreshUser, saveUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 
 type Kind = 'lead' | 'repay' | 'contribute';
+type VerifyStep = 'idle' | 'phone' | 'otp';
 
 export default function PayScreen() {
   const { id, kind } = useLocalSearchParams<{ id: string; kind?: Kind }>();
@@ -17,6 +27,12 @@ export default function PayScreen() {
   const [userId, setUserId] = useState<string | null>(null);
   const [isVerified, setIsVerified] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  // Inline verification state
+  const [verifyStep, setVerifyStep] = useState<VerifyStep>('idle');
+  const [phone, setPhone] = useState('');
+  const [otp, setOtp] = useState('');
+  const [verifyLoading, setVerifyLoading] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -27,6 +43,7 @@ export default function PayScreen() {
       }
       setUserId(u.id);
       setIsVerified(u.verified);
+      if (u.phone) setPhone(u.phone);
       try {
         const g = await api.getGroup(id);
         setGroup(g);
@@ -39,7 +56,6 @@ export default function PayScreen() {
   if (!group || !userId) return null;
 
   const myPer = group.per_user.find((p) => p.user_id === userId);
-  const isLead = userId === group.lead_id;
 
   // Compute amount + label per kind
   let amount = 0;
@@ -69,18 +85,52 @@ export default function PayScreen() {
     actorTitle = 'Group wallet';
     actorSub = 'Funds held until the merchant is paid';
   } else {
-    // repay
     amount = myPer?.outstanding || 0;
     title = 'Pay your share';
     summary = `Reimburse the lead for what they covered upfront.`;
   }
 
-  const blockedNoPhone = !isVerified;
   const blockedNoAmount = amount <= 0;
 
+  const sendOtp = async () => {
+    const cleaned = phone.trim();
+    if (cleaned.length < 7) {
+      Alert.alert('Enter a valid phone number');
+      return;
+    }
+    setVerifyLoading(true);
+    try {
+      await api.sendOtp(userId, cleaned);
+      setVerifyStep('otp');
+    } catch (e: any) {
+      Alert.alert('Error', e.message);
+    } finally {
+      setVerifyLoading(false);
+    }
+  };
+
+  const verifyCode = async () => {
+    if (otp.length !== 6) {
+      Alert.alert('Enter the 6-digit code');
+      return;
+    }
+    setVerifyLoading(true);
+    try {
+      const u = await api.verifyOtp(userId, phone.trim(), otp);
+      await saveUser(u);
+      setIsVerified(true);
+      setVerifyStep('idle');
+      setOtp('');
+    } catch (e: any) {
+      Alert.alert('Invalid code', e.message);
+    } finally {
+      setVerifyLoading(false);
+    }
+  };
+
   const doPay = async () => {
-    if (blockedNoPhone) {
-      Alert.alert('Verify phone', 'Phone verification is required before paying.');
+    if (!isVerified) {
+      setVerifyStep('phone');
       return;
     }
     if (blockedNoAmount) {
@@ -107,66 +157,159 @@ export default function PayScreen() {
   };
 
   return (
-    <SafeAreaView edges={['bottom']} style={{ flex: 1, backgroundColor: COLORS.bg }}>
-      <View style={styles.container}>
-        <Text style={styles.label}>{title}</Text>
-        <Text style={styles.amount} testID="pay-amount">
-          ${amount.toFixed(2)}
-        </Text>
-        {summary ? <Text style={styles.summary}>{summary}</Text> : null}
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      style={{ flex: 1, backgroundColor: COLORS.bg }}
+    >
+      <SafeAreaView edges={['bottom']} style={{ flex: 1 }}>
+        <ScrollView
+          contentContainerStyle={styles.scroll}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Text style={styles.label}>{title}</Text>
+          <Text style={styles.amount} testID="pay-amount">
+            ${amount.toFixed(2)}
+          </Text>
+          {summary ? <Text style={styles.summary}>{summary}</Text> : null}
 
-        <View style={styles.card}>
-          <View style={styles.row}>
-            <View style={styles.icon}>{actorIcon}</View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.rowTitle}>{actorTitle}</Text>
-              {actorSub ? <Text style={styles.rowSub}>{actorSub}</Text> : null}
+          <View style={styles.card}>
+            <View style={styles.row}>
+              <View style={styles.icon}>{actorIcon}</View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowTitle}>{actorTitle}</Text>
+                {actorSub ? <Text style={styles.rowSub}>{actorSub}</Text> : null}
+              </View>
+            </View>
+            <View style={styles.divider} />
+            <View style={styles.row}>
+              <View style={[styles.icon, { backgroundColor: COLORS.disabledBg }]}>
+                <Lock color={COLORS.subtext} size={18} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowTitle}>Secure</Text>
+                <Text style={styles.rowSub}>Encrypted • reversible</Text>
+              </View>
             </View>
           </View>
-          <View style={styles.divider} />
-          <View style={styles.row}>
-            <View style={[styles.icon, { backgroundColor: COLORS.disabledBg }]}>
-              <Lock color={COLORS.subtext} size={18} />
+
+          {/* Inline verification block */}
+          {!isVerified && verifyStep !== 'idle' && (
+            <View style={styles.verifyCard} testID="pay-verify-card">
+              <View style={styles.verifyHeader}>
+                <View style={styles.verifyHeaderIcon}>
+                  <ShieldCheck size={18} color={COLORS.primary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.verifyTitle}>Verify your phone</Text>
+                  <Text style={styles.verifySub}>Required before any money moves.</Text>
+                </View>
+              </View>
+
+              {verifyStep === 'phone' && (
+                <>
+                  <Text style={styles.fieldLabel}>Phone number</Text>
+                  <TextInput
+                    testID="pay-verify-phone-input"
+                    value={phone}
+                    onChangeText={setPhone}
+                    placeholder="+1 555 123 4567"
+                    placeholderTextColor={COLORS.disabledText}
+                    keyboardType="phone-pad"
+                    style={styles.input}
+                    autoFocus
+                    returnKeyType="next"
+                    onSubmitEditing={sendOtp}
+                  />
+                  <Button
+                    title="Send code"
+                    onPress={sendOtp}
+                    loading={verifyLoading}
+                    testID="pay-verify-send-btn"
+                    style={{ marginTop: SPACING.sm }}
+                  />
+                </>
+              )}
+
+              {verifyStep === 'otp' && (
+                <>
+                  <Text style={styles.fieldLabel}>
+                    Enter the code sent to {phone}.{' '}
+                    <Text style={{ fontWeight: '700' }}>(Demo: 123456)</Text>
+                  </Text>
+                  <TextInput
+                    testID="pay-verify-otp-input"
+                    value={otp}
+                    onChangeText={(t) => setOtp(t.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="123456"
+                    placeholderTextColor={COLORS.disabledText}
+                    keyboardType="number-pad"
+                    style={[styles.input, styles.otpInput]}
+                    autoFocus
+                    maxLength={6}
+                  />
+                  <Button
+                    title="Verify"
+                    onPress={verifyCode}
+                    loading={verifyLoading}
+                    testID="pay-verify-confirm-btn"
+                    style={{ marginTop: SPACING.sm }}
+                  />
+                  <Button
+                    title="Use a different number"
+                    variant="ghost"
+                    onPress={() => {
+                      setOtp('');
+                      setVerifyStep('phone');
+                    }}
+                    testID="pay-verify-back-btn"
+                    style={{ marginTop: 4 }}
+                  />
+                </>
+              )}
             </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.rowTitle}>Secure</Text>
-              <Text style={styles.rowSub}>Encrypted • reversible</Text>
+          )}
+
+          {isVerified && (
+            <View style={styles.verifiedBadge} testID="pay-verified-badge">
+              <ShieldCheck size={14} color={COLORS.success} />
+              <Text style={styles.verifiedText}>Phone verified</Text>
             </View>
-          </View>
+          )}
+        </ScrollView>
+
+        <View style={styles.bottomBar}>
+          {!isVerified && verifyStep === 'idle' ? (
+            <Button
+              title="Verify phone to continue"
+              onPress={() => setVerifyStep('phone')}
+              testID="pay-start-verify-btn"
+              leftIcon={<ShieldCheck size={18} color="#fff" />}
+            />
+          ) : (
+            <Button
+              title={`Pay $${amount.toFixed(2)}`}
+              loading={loading}
+              onPress={doPay}
+              testID="pay-submit-btn"
+              leftIcon={<CreditCard size={18} color="#fff" />}
+              disabled={!isVerified || blockedNoAmount}
+            />
+          )}
+          <Button
+            title="Cancel"
+            variant="ghost"
+            onPress={() => router.back()}
+            testID="pay-cancel-btn"
+            style={{ marginTop: SPACING.sm }}
+          />
         </View>
-
-        {blockedNoPhone && (
-          <View style={styles.warn}>
-            <Text style={styles.warnText}>
-              Phone verification required before you can pay. Please sign out from Home and verify your phone.
-            </Text>
-          </View>
-        )}
-
-        <View style={styles.spacer} />
-
-        <Button
-          title={`Pay $${amount.toFixed(2)}`}
-          loading={loading}
-          onPress={doPay}
-          testID="pay-submit-btn"
-          leftIcon={<CreditCard size={18} color="#fff" />}
-          disabled={blockedNoPhone || blockedNoAmount}
-        />
-        <Button
-          title="Cancel"
-          variant="ghost"
-          onPress={() => router.back()}
-          testID="pay-cancel-btn"
-          style={{ marginTop: SPACING.sm }}
-        />
-      </View>
-    </SafeAreaView>
+      </SafeAreaView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: SPACING.lg, justifyContent: 'space-between' },
+  scroll: { padding: SPACING.lg, paddingBottom: SPACING.xl },
   label: {
     fontSize: FONT.sizes.xs,
     color: COLORS.subtext,
@@ -207,12 +350,64 @@ const styles = StyleSheet.create({
   rowTitle: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, color: COLORS.text },
   rowSub: { fontSize: FONT.sizes.sm, color: COLORS.subtext, marginTop: 2 },
   divider: { height: 1, backgroundColor: COLORS.border, marginVertical: SPACING.sm },
-  warn: {
+  verifyCard: {
     marginTop: SPACING.md,
     padding: SPACING.md,
-    borderRadius: RADIUS.md,
-    backgroundColor: COLORS.warningLight,
+    borderRadius: RADIUS.lg,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1.5,
+    borderColor: COLORS.primary,
   },
-  warnText: { color: '#92400E', fontSize: FONT.sizes.sm, lineHeight: 20 },
-  spacer: { flex: 1 },
+  verifyHeader: { flexDirection: 'row', alignItems: 'center', gap: SPACING.md, marginBottom: SPACING.md },
+  verifyHeaderIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: COLORS.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  verifyTitle: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },
+  verifySub: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
+  fieldLabel: {
+    fontSize: FONT.sizes.xs,
+    color: COLORS.subtext,
+    fontWeight: FONT.weights.medium,
+    marginBottom: 6,
+    lineHeight: 18,
+  },
+  input: {
+    height: 48,
+    borderRadius: RADIUS.md,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.surface,
+    paddingHorizontal: SPACING.md,
+    fontSize: FONT.sizes.md,
+    color: COLORS.text,
+  },
+  otpInput: {
+    letterSpacing: 8,
+    textAlign: 'center',
+    fontWeight: FONT.weights.bold,
+    fontSize: FONT.sizes.lg,
+  },
+  verifiedBadge: {
+    flexDirection: 'row',
+    alignSelf: 'flex-start',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: SPACING.md,
+    backgroundColor: COLORS.successLight,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: RADIUS.pill,
+  },
+  verifiedText: { color: COLORS.success, fontSize: FONT.sizes.xs, fontWeight: FONT.weights.semibold },
+  bottomBar: {
+    padding: SPACING.md,
+    backgroundColor: COLORS.surface,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
 });

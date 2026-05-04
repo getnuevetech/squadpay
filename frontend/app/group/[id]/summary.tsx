@@ -7,10 +7,11 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Receipt, CheckCircle2, Clock, LayoutDashboard, Wallet, AlertCircle } from 'lucide-react-native';
+import { Receipt, CheckCircle2, Clock, LayoutDashboard, Wallet, AlertCircle, Plus } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
@@ -250,6 +251,28 @@ export default function SummaryScreen() {
             </Text>
           </View>
         )}
+
+        {/* Lead-only: add more items as long as bill is not settled */}
+        {isLead && group.status !== 'closed' && (
+          <TouchableOpacity
+            testID="summary-add-items-btn"
+            style={styles.addItemsBtn}
+            onPress={() => router.push(`/group/${group.id}/items`)}
+            activeOpacity={0.8}
+          >
+            <View style={styles.addItemsIcon}>
+              <Plus size={16} color={COLORS.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.addItemsTitle}>Add more items</Text>
+              <Text style={styles.addItemsSub}>
+                {group.status === 'open'
+                  ? 'Forgot something? Lead can still update the bill.'
+                  : 'Lead can keep appending items until the bill is fully settled.'}
+              </Text>
+            </View>
+          </TouchableOpacity>
+        )}
       </ScrollView>
 
       <View style={styles.bottomBar}>
@@ -422,6 +445,28 @@ const styles = StyleSheet.create({
     marginTop: SPACING.md,
   },
   infoText: { color: COLORS.primary, fontSize: FONT.sizes.sm, flex: 1, lineHeight: 18 },
+  addItemsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+    backgroundColor: COLORS.surface,
+    padding: SPACING.md,
+    borderRadius: RADIUS.md,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+    borderStyle: 'dashed',
+    marginTop: SPACING.md,
+  },
+  addItemsIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: COLORS.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addItemsTitle: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, color: COLORS.text },
+  addItemsSub: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2, lineHeight: 16 },
   bottomBar: {
     position: 'absolute',
     bottom: 0,

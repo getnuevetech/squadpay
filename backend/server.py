@@ -119,6 +119,32 @@ class RepayIn(BaseModel):
 class ContributeIn(BaseModel):
     user_id: str
     amount: Optional[float] = None  # If None, contributes user's full share
+    notify_on_settled: Optional[bool] = False
+
+
+class AppendItemsIn(BaseModel):
+    user_id: str
+    items: List[ItemIn]
+
+
+# ------------- Pricing constants -------------
+TRANSACTION_FEE_RATE = 0.03  # 3% per-member surcharge
+PLATFORM_FEE = 0.03  # 3 cents flat per member
+
+
+def gen_virtual_card() -> dict:
+    digits = "".join(secrets.choice(string.digits) for _ in range(16))
+    return {
+        "id": new_id("vc_"),
+        "number": digits,
+        "last4": digits[-4:],
+        "exp_month": 12,
+        "exp_year": 2028,
+        "cvv": "".join(secrets.choice(string.digits) for _ in range(3)),
+        "balance": 0.0,
+        "currency": "USD",
+        "issued_at": now_iso(),
+    }
 
 
 class ScanReceiptIn(BaseModel):
@@ -229,6 +255,14 @@ async def _recompute_group(group: dict) -> dict:
 
     fully_claimed = (split_mode == "fast") or (len(unclaimed_items) == 0 and subtotal > 0)
 
+    # Apply per-user platform + transaction fees (itemized, immutable)
+    for p in per_user:
+        merchant_share = round(p["total"], 2)
+        p["merchant_share"] = merchant_share
+        p["transaction_fee"] = round(merchant_share * TRANSACTION_FEE_RATE, 2)
+        p["platform_fee"] = round(PLATFORM_FEE, 2)
+        p["total"] = round(merchant_share + p["transaction_fee"] + p["platform_fee"], 2)
+
     # Funding overlay: contributions, repayments, outstanding per user
     contributions = group.get("contributions", [])
     repayments = group.get("repayments", [])
@@ -257,8 +291,14 @@ async def _recompute_group(group: dict) -> dict:
     if lead_shortfall is None:
         lead_shortfall = round(max(0.0, total_amount - total_contributed), 2)
 
+    # Refresh virtual card balance from contributions (mocked)
+    virtual_card = group.get("virtual_card")
+    if virtual_card:
+        virtual_card = {**virtual_card, "balance": total_contributed}
+
     return {
         **group,
+        "virtual_card": virtual_card,
         "subtotal": round(subtotal, 2),
         "total": round(total, 2),
         "per_user": per_user,
@@ -269,6 +309,7 @@ async def _recompute_group(group: dict) -> dict:
             "total_repaid": total_repaid,
             "lead_shortfall": round(lead_shortfall, 2),
             "remaining_to_collect": round(max(0.0, total_amount - total_contributed), 2),
+            "fees_total": round(sum(p["transaction_fee"] + p["platform_fee"] for p in per_user), 2),
         },
     }
 
@@ -311,6 +352,7 @@ async def create_group(body: CreateGroupIn):
         "split_mode": body.split_mode,
         "status": "open",  # open | paid | closed
         "funding_mode": None,  # group | lead | shortfall
+        "virtual_card": gen_virtual_card(),
         "items": items,
         "assignments": [],
         "members": [{"user_id": body.lead_id, "role": "lead", "joined_at": now_iso()}],
@@ -353,6 +395,14 @@ async def join_group(group_id: str, body: JoinGroupIn):
 
 @api_router.put("/groups/{group_id}/items")
 async def update_items(group_id: str, body: UpdateItemsIn):
+    group = await db.groups.find_one({"id": group_id}, {"_id": 0})
+    if not group:
+        raise HTTPException(404, "Group not found")
+    if group.get("contributions"):
+        raise HTTPException(
+            400,
+            "Items can no longer be replaced — contributions already started. Add new items instead.",
+        )
     items = [
         {"id": new_id("it_"), "name": it.name, "price": it.price, "quantity": it.quantity}
         for it in body.items
@@ -360,6 +410,31 @@ async def update_items(group_id: str, body: UpdateItemsIn):
     await db.groups.update_one(
         {"id": group_id}, {"$set": {"items": items, "assignments": []}}
     )
+    return await _load_group_enriched(group_id)
+
+
+@api_router.post("/groups/{group_id}/items/append")
+async def append_items(group_id: str, body: AppendItemsIn):
+    """Lead-only: add new items to an existing group, preserving existing items + assignments."""
+    group = await db.groups.find_one({"id": group_id}, {"_id": 0})
+    if not group:
+        raise HTTPException(404, "Group not found")
+    if group["lead_id"] != body.user_id:
+        raise HTTPException(403, "Only lead can add items")
+    if group.get("status") == "closed":
+        raise HTTPException(400, "Group is closed")
+    new_items = [
+        {"id": new_id("it_"), "name": it.name, "price": it.price, "quantity": it.quantity}
+        for it in body.items
+    ]
+    items = (group.get("items") or []) + new_items
+    # Bump total_amount to include the new items' subtotal so funding logic stays accurate
+    extra = sum(it["price"] * it["quantity"] for it in new_items)
+    new_total = round(float(group.get("total_amount") or 0) + extra, 2)
+    update_doc = {"items": items, "total_amount": new_total}
+    # If group was already 'paid' (group-funded) but new items push it back into shortfall,
+    # let the lead know via the funding recompute. We don't auto-revert status.
+    await db.groups.update_one({"id": group_id}, {"$set": update_doc})
     return await _load_group_enriched(group_id)
 
 
@@ -421,6 +496,7 @@ async def contribute(group_id: str, body: ContributeIn):
         "id": new_id("c_"),
         "user_id": body.user_id,
         "amount": round(amount, 2),
+        "notify_on_settled": bool(body.notify_on_settled),
         "at": now_iso(),
     })
     update_doc: Dict[str, Any] = {"contributions": contributions}

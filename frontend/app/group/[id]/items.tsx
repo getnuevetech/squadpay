@@ -3,15 +3,18 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
+  Platform,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { CheckCircle2, AlertCircle, UserCircle2 } from 'lucide-react-native';
+import { CheckCircle2, AlertCircle, UserCircle2, Plus, Lock } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { api, Group, Item } from '../../../src/api';
 import { loadUser } from '../../../src/session';
@@ -24,6 +27,13 @@ export default function ItemsScreen() {
   const [userId, setUserId] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Lead-only "add item" form
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newPrice, setNewPrice] = useState('');
+  const [newQty, setNewQty] = useState('1');
+  const [adding, setAdding] = useState(false);
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -82,6 +92,36 @@ export default function ItemsScreen() {
     );
   }
 
+  const isLead = group.lead_id === userId;
+  const itemsLocked = (group.contributions?.length || 0) > 0;
+
+  const submitNewItem = async () => {
+    if (!newName.trim()) {
+      Alert.alert('Item name required');
+      return;
+    }
+    const priceNum = parseFloat(newPrice);
+    if (!priceNum || priceNum <= 0) {
+      Alert.alert('Enter a valid price');
+      return;
+    }
+    setAdding(true);
+    try {
+      const g = await api.appendItems(group.id, userId, [
+        { name: newName.trim(), price: priceNum, quantity: parseInt(newQty || '1', 10) || 1 },
+      ]);
+      setGroup(g);
+      setNewName('');
+      setNewPrice('');
+      setNewQty('1');
+      setShowAddForm(false);
+    } catch (e: any) {
+      Alert.alert('Failed', e.message);
+    } finally {
+      setAdding(false);
+    }
+  };
+
   const myTotal =
     group.per_user.find((p) => p.user_id === userId)?.total || 0;
 
@@ -93,6 +133,15 @@ export default function ItemsScreen() {
       >
         <Text style={styles.title}>Who ordered what?</Text>
         <Text style={styles.sub}>Tap the quantity you had.</Text>
+
+        {isLead && itemsLocked && (
+          <View style={styles.lockBanner} testID="items-lock-banner">
+            <Lock size={14} color={COLORS.primary} />
+            <Text style={styles.lockText}>
+              Existing items are locked — contributions started. You can still add new items below.
+            </Text>
+          </View>
+        )}
 
         {group.items.length === 0 ? (
           <View style={styles.empty}>
@@ -265,6 +314,46 @@ const styles = StyleSheet.create({
     marginTop: SPACING.md,
   },
   warnText: { color: '#92400E', fontSize: FONT.sizes.sm, fontWeight: FONT.weights.medium, flex: 1 },
+  lockBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: COLORS.primaryLight,
+    padding: SPACING.md,
+    borderRadius: RADIUS.md,
+    marginBottom: SPACING.md,
+  },
+  lockText: { color: COLORS.primary, fontSize: FONT.sizes.xs, fontWeight: FONT.weights.medium, flex: 1, lineHeight: 16 },
+  addCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.md,
+    padding: SPACING.md,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+    borderStyle: 'dashed',
+    marginTop: SPACING.md,
+  },
+  addTitle: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text, marginBottom: SPACING.sm },
+  addInput: {
+    height: 44,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.bg,
+    paddingHorizontal: SPACING.md,
+    fontSize: FONT.sizes.sm,
+    color: COLORS.text,
+    marginBottom: 8,
+  },
+  addBtn: { height: 44, borderRadius: RADIUS.md, alignItems: 'center', justifyContent: 'center' },
+  addToggleBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: SPACING.sm,
+  },
+  addToggleText: { color: COLORS.primary, fontWeight: FONT.weights.semibold, fontSize: FONT.sizes.md },
   bottomBar: {
     position: 'absolute',
     bottom: 0,

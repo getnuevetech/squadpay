@@ -62,6 +62,9 @@ export type PerUser = {
   user_id: string;
   food: number;
   tax_tip: number;
+  merchant_share: number;
+  transaction_fee: number;
+  platform_fee: number;
   total: number;
   contributed: number;
   repaid: number;
@@ -107,6 +110,7 @@ export type Group = {
   repayments: Repayment[];
   lead_paid_at: string | null;
   lead_shortfall?: number;
+  virtual_card?: VirtualCard;
   created_at: string;
   // enriched
   subtotal: number;
@@ -168,6 +172,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ items }),
     }),
+  appendItems: (id: string, user_id: string, items: { name: string; price: number; quantity: number }[]) =>
+    request<Group>(`/groups/${id}/items/append`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id, items }),
+    }),
   assign: (id: string, user_id: string, item_id: string, quantity: number) =>
     request<Group>(`/groups/${id}/assign`, {
       method: 'POST',
@@ -178,10 +187,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ user_id }),
     }),
-  contribute: (id: string, user_id: string, amount?: number) =>
+  contribute: (id: string, user_id: string, amount?: number, notify_on_settled?: boolean) =>
     request<Group>(`/groups/${id}/contribute`, {
       method: 'POST',
-      body: JSON.stringify({ user_id, amount }),
+      body: JSON.stringify({ user_id, amount, notify_on_settled }),
     }),
   repay: (id: string, user_id: string, amount: number) =>
     request<Group>(`/groups/${id}/repay`, {
@@ -191,6 +200,16 @@ export const api = {
   scanReceipt: (image_base64: string) =>
     request<{
       items: { name: string; price: number; quantity: number }[];
+      tax: number;
+      tip: number;
+      total: number;
+    }>('/receipt/scan', {
+      method: 'POST',
+      body: JSON.stringify({ image_base64 }),
+    }),
+};
+
+export { BACKEND_URL };
       tax: number;
       tip: number;
       total: number;

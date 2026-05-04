@@ -85,11 +85,12 @@ export default function CreateBillScreen() {
   };
 
   const computedTotal = () => {
-    if (totalStr) return parseFloat(totalStr) || 0;
-    const sub = items.reduce(
-      (s, it) => s + (parseFloat(it.price) || 0) * (parseInt(it.quantity || '1', 10) || 1),
-      0,
-    );
+    const sub = totalStr
+      ? parseFloat(totalStr) || 0
+      : items.reduce(
+          (s, it) => s + (parseFloat(it.price) || 0) * (parseInt(it.quantity || '1', 10) || 1),
+          0,
+        );
     return sub + (parseFloat(tax) || 0) + (parseFloat(tip) || 0);
   };
 
@@ -152,7 +153,7 @@ export default function CreateBillScreen() {
 
           <View style={styles.row2}>
             <View style={{ flex: 2 }}>
-              <Text style={styles.label}>Total ($)</Text>
+              <Text style={styles.label}>Subtotal ($)</Text>
               <TextInput
                 testID="create-total-input"
                 value={totalStr}

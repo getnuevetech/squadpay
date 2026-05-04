@@ -14,7 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import QRCode from 'react-native-qrcode-svg';
 import * as Clipboard from 'expo-clipboard';
-import { CheckCircle2, Copy, Share2, UserCircle2, Crown, ArrowRight, Users } from 'lucide-react-native';
+import { CheckCircle2, Copy, Share2, UserCircle2, Crown, ArrowRight, Users, CreditCard } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { api, BACKEND_URL, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
@@ -122,6 +122,40 @@ export default function GroupLobbyScreen() {
           </View>
         </View>
 
+        {/* Virtual card (lead-only) */}
+        {isLead && group.virtual_card && (
+          <View style={styles.cardWrap} testID="lobby-virtual-card">
+            <Text style={styles.cardLabel}>Virtual card · {group.funding?.total_contributed >= group.total ? 'fully funded' : 'funding…'}</Text>
+            <View style={styles.cardFace}>
+              <View style={styles.cardChip} />
+              <View style={styles.cardRow}>
+                <CreditCard size={20} color="rgba(255,255,255,0.9)" />
+                <Text style={styles.cardBrand}>GroupPay</Text>
+              </View>
+              <Text style={styles.cardNumber}>•••• •••• •••• {group.virtual_card.last4}</Text>
+              <View style={styles.cardFooter}>
+                <View>
+                  <Text style={styles.cardTinyLabel}>Balance</Text>
+                  <Text style={styles.cardValue}>${group.virtual_card.balance.toFixed(2)}</Text>
+                </View>
+                <View>
+                  <Text style={styles.cardTinyLabel}>Exp</Text>
+                  <Text style={styles.cardValue}>
+                    {String(group.virtual_card.exp_month).padStart(2, '0')}/{String(group.virtual_card.exp_year).slice(-2)}
+                  </Text>
+                </View>
+                <View>
+                  <Text style={styles.cardTinyLabel}>CVV</Text>
+                  <Text style={styles.cardValue}>{group.virtual_card.cvv}</Text>
+                </View>
+              </View>
+            </View>
+            <Text style={styles.cardHint}>
+              Funded by group contributions. Use it to pay the merchant.
+            </Text>
+          </View>
+        )}
+
         <View style={styles.membersCard}>
           <View style={styles.membersHeader}>
             <Users size={18} color={COLORS.text} />
@@ -226,6 +260,51 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primaryLight,
   },
   shareBtnText: { color: COLORS.primary, fontWeight: FONT.weights.semibold, fontSize: FONT.sizes.sm },
+  cardWrap: { marginBottom: SPACING.md },
+  cardLabel: {
+    fontSize: FONT.sizes.xs,
+    color: COLORS.subtext,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    fontWeight: FONT.weights.semibold,
+    marginBottom: 8,
+  },
+  cardFace: {
+    backgroundColor: COLORS.primary,
+    borderRadius: RADIUS.lg,
+    padding: SPACING.md,
+    overflow: 'hidden',
+    minHeight: 180,
+    justifyContent: 'space-between',
+  },
+  cardChip: {
+    position: 'absolute',
+    right: -40,
+    top: -40,
+    width: 160,
+    height: 160,
+    borderRadius: 80,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+  },
+  cardRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  cardBrand: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: FONT.sizes.md, letterSpacing: 0.5 },
+  cardNumber: {
+    color: '#fff',
+    fontSize: FONT.sizes.lg,
+    letterSpacing: 3,
+    fontWeight: FONT.weights.medium,
+    marginTop: SPACING.md,
+  },
+  cardFooter: { flexDirection: 'row', justifyContent: 'space-between', marginTop: SPACING.md },
+  cardTinyLabel: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    marginBottom: 2,
+  },
+  cardValue: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: FONT.sizes.sm },
+  cardHint: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 8, lineHeight: 16 },
   membersCard: {
     backgroundColor: COLORS.surface,
     borderRadius: RADIUS.lg,

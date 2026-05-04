@@ -60,24 +60,24 @@ export default function DashboardScreen() {
 
   const repaidByUser = (uid: string) =>
     group.repayments.filter((r) => r.user_id === uid).reduce((s, r) => s + r.amount, 0);
-  const totalRepaid = group.repayments.reduce((s, r) => s + r.amount, 0);
+  // Reflects both upfront contributions and post-payment repayments via per_user.outstanding.
+  const totalCollected = (group.funding?.total_contributed || 0) + (group.funding?.total_repaid || 0);
   const totalOwed = group.per_user
     .filter((p) => p.user_id !== group.lead_id)
     .reduce((s, p) => s + p.total, 0);
-  const pct = totalOwed > 0 ? (totalRepaid / totalOwed) * 100 : 100;
+  const pct = totalOwed > 0 ? Math.min(100, (totalCollected / totalOwed) * 100) : 100;
   const pendingMembers = group.members.filter((m) => {
     if (m.user_id === group.lead_id) return false;
     const per = group.per_user.find((p) => p.user_id === m.user_id);
-    const paid = repaidByUser(m.user_id);
-    return (per?.total || 0) > paid + 0.01;
+    return (per?.outstanding || 0) > 0.01;
   });
 
   const withdraw = (kind: 'instant' | 'standard') => {
     Alert.alert(
       kind === 'instant' ? 'Instant Withdraw' : 'Standard Withdraw',
       kind === 'instant'
-        ? `$${totalRepaid.toFixed(2)} will arrive in minutes. A 1.5% fee applies.`
-        : `$${totalRepaid.toFixed(2)} will arrive in 1–2 business days. No fee.`,
+        ? `$${totalCollected.toFixed(2)} will arrive in minutes. A 1.5% fee applies.`
+        : `$${totalCollected.toFixed(2)} will arrive in 1–2 business days. No fee.`,
       [{ text: 'OK' }],
     );
   };
@@ -91,7 +91,7 @@ export default function DashboardScreen() {
         <View style={styles.heroCard} testID="dashboard-hero">
           <Text style={styles.heroLabel}>Collected</Text>
           <View style={styles.heroRow}>
-            <Text style={styles.heroAmount}>${totalRepaid.toFixed(2)}</Text>
+            <Text style={styles.heroAmount}>${totalCollected.toFixed(2)}</Text>
             <Text style={styles.heroOf}>/ ${totalOwed.toFixed(2)}</Text>
           </View>
           <View style={styles.progressBar}>
@@ -111,7 +111,7 @@ export default function DashboardScreen() {
             style={[styles.withdrawCard, { borderColor: COLORS.primary }]}
             onPress={() => withdraw('instant')}
             activeOpacity={0.85}
-            disabled={totalRepaid <= 0}
+            disabled={totalCollected <= 0}
           >
             <View style={styles.withdrawIcon}>
               <Zap size={22} color={COLORS.primary} />
@@ -125,7 +125,7 @@ export default function DashboardScreen() {
             style={styles.withdrawCard}
             onPress={() => withdraw('standard')}
             activeOpacity={0.85}
-            disabled={totalRepaid <= 0}
+            disabled={totalCollected <= 0}
           >
             <View style={styles.withdrawIcon}>
               <Landmark size={22} color={COLORS.primary} />
@@ -142,9 +142,11 @@ export default function DashboardScreen() {
             if (m.user_id === group.lead_id) return null;
             const per = group.per_user.find((p) => p.user_id === m.user_id);
             const owed = per?.total || 0;
+            const contributed = per?.contributed || 0;
             const paid = repaidByUser(m.user_id);
-            const outstanding = Math.max(0, owed - paid);
+            const outstanding = per?.outstanding || 0;
             const done = outstanding <= 0.01;
+            const settledLabel = contributed >= owed - 0.01 ? 'Contributed' : 'Paid';
             return (
               <View
                 key={m.user_id}
@@ -160,7 +162,7 @@ export default function DashboardScreen() {
                     {done ? (
                       <>
                         <CheckCircle2 size={12} color={COLORS.success} />
-                        <Text style={[styles.statusText, { color: COLORS.success }]}>Paid</Text>
+                        <Text style={[styles.statusText, { color: COLORS.success }]}>{settledLabel}</Text>
                       </>
                     ) : (
                       <>

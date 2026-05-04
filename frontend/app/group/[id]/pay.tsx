@@ -8,10 +8,11 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  TouchableOpacity,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { CreditCard, Lock, Smartphone, Wallet, ShieldCheck } from 'lucide-react-native';
+import { Check, CreditCard, Lock, Smartphone, Wallet, ShieldCheck } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { api, Group } from '../../../src/api';
 import { refreshUser, saveUser } from '../../../src/session';
@@ -33,6 +34,9 @@ export default function PayScreen() {
   const [phone, setPhone] = useState('');
   const [otp, setOtp] = useState('');
   const [verifyLoading, setVerifyLoading] = useState(false);
+
+  // Receipt-update opt-in (contribute flow only)
+  const [notifyOnSettled, setNotifyOnSettled] = useState(true);
 
   useEffect(() => {
     (async () => {
@@ -142,7 +146,7 @@ export default function PayScreen() {
       if (kind === 'lead') {
         await api.payGroup(group.id, userId);
       } else if (kind === 'contribute') {
-        await api.contribute(group.id, userId, amount);
+        await api.contribute(group.id, userId, amount, notifyOnSettled);
       } else {
         await api.repay(group.id, userId, amount);
       }
@@ -275,6 +279,26 @@ export default function PayScreen() {
               <Text style={styles.verifiedText}>Phone verified</Text>
             </View>
           )}
+
+          {/* Receipt opt-in (contribute kind only) */}
+          {kind === 'contribute' && (
+            <TouchableOpacity
+              testID="pay-notify-toggle"
+              activeOpacity={0.8}
+              onPress={() => setNotifyOnSettled((v) => !v)}
+              style={styles.notifyRow}
+            >
+              <View style={[styles.checkbox, notifyOnSettled && styles.checkboxOn]}>
+                {notifyOnSettled ? <Check size={14} color="#fff" /> : null}
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.notifyTitle}>Send me the final receipt</Text>
+                <Text style={styles.notifySub}>
+                  We'll text you a payment update when this bill is fully settled.
+                </Text>
+              </View>
+            </TouchableOpacity>
+          )}
         </ScrollView>
 
         <View style={styles.bottomBar}>
@@ -404,6 +428,28 @@ const styles = StyleSheet.create({
     borderRadius: RADIUS.pill,
   },
   verifiedText: { color: COLORS.success, fontSize: FONT.sizes.xs, fontWeight: FONT.weights.semibold },
+  bottomBar: {
+    padding: SPACING.md,
+    backgroundColor: COLORS.surface,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
+});
+r,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  checkboxOn: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  notifyTitle: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, color: COLORS.text },
+  notifySub: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2, lineHeight: 16 },
   bottomBar: {
     padding: SPACING.md,
     backgroundColor: COLORS.surface,

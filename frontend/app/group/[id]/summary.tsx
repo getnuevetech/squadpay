@@ -63,6 +63,8 @@ export default function SummaryScreen() {
   const myShare = myPer?.total || 0;
   const myFood = myPer?.food || 0;
   const myExtras = myPer?.tax_tip || 0;
+  const myTransactionFee = myPer?.transaction_fee || 0;
+  const myPlatformFee = myPer?.platform_fee || 0;
   const myContributed = myPer?.contributed || 0;
   const myRepaid = myPer?.repaid || 0;
   const myOutstanding = myPer?.outstanding || 0;
@@ -110,6 +112,14 @@ export default function SummaryScreen() {
           <View style={styles.breakdownRow}>
             <Text style={styles.breakdownKey}>Tax & tip</Text>
             <Text style={styles.breakdownVal}>${myExtras.toFixed(2)}</Text>
+          </View>
+          <View style={styles.breakdownRow}>
+            <Text style={styles.breakdownKey}>Transaction fee (3%)</Text>
+            <Text style={styles.breakdownVal}>${myTransactionFee.toFixed(2)}</Text>
+          </View>
+          <View style={styles.breakdownRow}>
+            <Text style={styles.breakdownKey}>Platform fee</Text>
+            <Text style={styles.breakdownVal}>${myPlatformFee.toFixed(2)}</Text>
           </View>
           {myContributed > 0 && (
             <View style={styles.breakdownRow}>

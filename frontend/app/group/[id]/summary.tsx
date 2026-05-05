@@ -74,8 +74,26 @@ export default function SummaryScreen() {
   const collectedPct = group.total > 0 ? Math.min(100, (funding.total_contributed / group.total) * 100) : 0;
   const remaining = funding.remaining_to_collect;
 
+  const memberName = (uid?: string) => {
+    if (!uid) return '';
+    const m = group.members.find((x) => x.user_id === uid);
+    return m?.name || 'a member';
+  };
+
   const fundingModeLabel = (() => {
     if (group.status === 'open') return null;
+    const settlement = group.shortfall_settlement;
+    if (settlement && settlement.amount > 0.01) {
+      if (settlement.mode === 'lead') {
+        return { text: `Shortfall covered by lead${settlement.is_loan ? '' : ' (gift)'}`, color: COLORS.warning, bg: COLORS.warningLight };
+      }
+      if (settlement.mode === 'member') {
+        return { text: `Shortfall covered by ${memberName(settlement.funder_id)}`, color: COLORS.warning, bg: COLORS.warningLight };
+      }
+      if (settlement.mode === 'split_equal') {
+        return { text: 'Shortfall split among all members', color: COLORS.warning, bg: COLORS.warningLight };
+      }
+    }
     if (group.funding_mode === 'group') return { text: 'Group-funded', color: COLORS.success, bg: COLORS.successLight };
     if (group.funding_mode === 'shortfall') return { text: 'Shortfall covered by lead', color: COLORS.warning, bg: COLORS.warningLight };
     return { text: 'Lead-funded', color: COLORS.primary, bg: COLORS.primaryLight };
@@ -216,11 +234,21 @@ export default function SummaryScreen() {
 
             let status: { icon: any; text: string; color: string };
             const obligationOwed = per?.shortfall_owed || 0;
+            const settlement = group.shortfall_settlement;
             if (isLeadRow) {
               if (group.status === 'open') {
-                status = { icon: <Clock size={12} color={COLORS.subtext} />, text: 'Shortfall to be decided', color: COLORS.subtext };
-              } else if (group.lead_shortfall && group.lead_shortfall > 0.01) {
-                status = { icon: <CheckCircle2 size={12} color={COLORS.primary} />, text: `Covered $${group.lead_shortfall.toFixed(2)} shortfall`, color: COLORS.primary };
+                if (obligationOwed > 0.01 && outstanding > 0.01) {
+                  // Lead got a split-shortfall obligation too
+                  status = { icon: <AlertCircle size={12} color={COLORS.warning} />, text: `Shortfall +$${obligationOwed.toFixed(2)} due`, color: COLORS.warning };
+                } else {
+                  status = { icon: <Clock size={12} color={COLORS.subtext} />, text: 'Shortfall to be decided', color: COLORS.subtext };
+                }
+              } else if (settlement && settlement.amount > 0.01 && settlement.mode === 'lead') {
+                status = { icon: <CheckCircle2 size={12} color={COLORS.primary} />, text: `Covered $${settlement.amount.toFixed(2)} shortfall${settlement.is_loan ? '' : ' (gift)'}`, color: COLORS.primary };
+              } else if (settlement && settlement.amount > 0.01 && settlement.mode === 'member') {
+                status = { icon: <CheckCircle2 size={12} color={COLORS.success} />, text: `Paid merchant • shortfall by ${memberName(settlement.funder_id)}`, color: COLORS.success };
+              } else if (settlement && settlement.amount > 0.01 && settlement.mode === 'split_equal') {
+                status = { icon: <CheckCircle2 size={12} color={COLORS.success} />, text: 'Paid merchant • shortfall split among all', color: COLORS.success };
               } else {
                 status = { icon: <CheckCircle2 size={12} color={COLORS.success} />, text: 'Paid merchant', color: COLORS.success };
               }

@@ -1446,6 +1446,13 @@ from admin_routes import build_admin_router  # noqa: E402
 
 api_router.include_router(build_admin_router(db))
 
+# Phase E: Stripe Checkout payment routes (attach before app.include_router)
+try:
+    from payments import attach_payment_routes  # noqa: E402
+    attach_payment_routes(api_router, db)
+except Exception as _e:
+    print("[startup] payment routes attach failed:", _e)
+
 app.include_router(api_router)
 
 app.add_middleware(
@@ -1475,6 +1482,14 @@ async def _seed_admins():
         start_reminder_loop(db, interval_seconds=900)
     except Exception as e:
         print("[startup] reminder loop failed:", e)
+    # Phase E: mount Stripe payment routes
+    try:
+        from payments import attach_payment_routes
+        attach_payment_routes(api_router, db)
+        # Re-include router so new routes are registered
+        # (FastAPI doesn't allow remount; instead we attach BEFORE first include)
+    except Exception as e:
+        print("[startup] payment routes attach failed:", e)
 
 
 @app.on_event("shutdown")

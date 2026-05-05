@@ -22,12 +22,19 @@ type Kind = 'lead' | 'repay' | 'contribute';
 type VerifyStep = 'idle' | 'phone' | 'otp';
 
 export default function PayScreen() {
-  const { id, kind } = useLocalSearchParams<{ id: string; kind?: Kind }>();
+  const { id, kind, session_id: sessionIdFromUrl, stripe_cancel } = useLocalSearchParams<{
+    id: string;
+    kind?: Kind;
+    session_id?: string;
+    stripe_cancel?: string;
+  }>();
   const router = useRouter();
   const [group, setGroup] = useState<Group | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [isVerified, setIsVerified] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [stripeBusy, setStripeBusy] = useState(false);
+  const [stripeBanner, setStripeBanner] = useState<string | null>(null);
 
   // Inline verification state
   const [verifyStep, setVerifyStep] = useState<VerifyStep>('idle');
@@ -61,6 +68,78 @@ export default function PayScreen() {
       }
     })();
   }, [id, router]);
+
+  // Phase E: handle return from Stripe Checkout
+  useEffect(() => {
+    if (!sessionIdFromUrl || !id) return;
+    let cancelled = false;
+    let attempts = 0;
+    const maxAttempts = 8;
+    const poll = async () => {
+      try {
+        const r = await api.getCheckoutStatus(sessionIdFromUrl);
+        if (cancelled) return;
+        if (r.payment_status === 'paid' || r.applied) {
+          setStripeBanner('✅ Payment confirmed via Stripe.');
+          // Refresh group to reflect paid status
+          try { setGroup(await api.getGroup(id)); } catch {}
+          // Also navigate to success
+          setTimeout(() => router.replace(`/group/${id}/success?amount=${(r.amount_total/100).toFixed(2)}&kind=lead&via=stripe`), 1200);
+          return;
+        }
+        if (r.status === 'expired') {
+          setStripeBanner('⚠️ Stripe session expired. Please try again.');
+          return;
+        }
+        attempts += 1;
+        if (attempts < maxAttempts) {
+          setStripeBanner(`Confirming with Stripe… (${attempts}/${maxAttempts})`);
+          setTimeout(poll, 2000);
+        } else {
+          setStripeBanner('Status check timed out — refresh the page if your bill is not marked paid.');
+        }
+      } catch (e: any) {
+        if (!cancelled) setStripeBanner(`Status error: ${e?.message || 'unknown'}`);
+      }
+    };
+    setStripeBanner('Confirming with Stripe…');
+    poll();
+    return () => { cancelled = true; };
+  }, [sessionIdFromUrl, id, router]);
+
+  // Phase E: cancel banner
+  useEffect(() => {
+    if (stripe_cancel) setStripeBanner('Stripe payment was cancelled.');
+  }, [stripe_cancel]);
+
+  const onPayWithStripe = async () => {
+    if (!group || !id) return;
+    if (group.funding && (group.funding.remaining_to_collect || 0) <= 0.01) {
+      Alert.alert('Already covered', 'There is no remaining balance to charge.');
+      return;
+    }
+    setStripeBusy(true);
+    try {
+      const origin = Platform.OS === 'web' && typeof window !== 'undefined'
+        ? window.location.origin
+        : (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/api$/, '');
+      const r = await api.createCheckoutSession(id, origin);
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.location.href = r.url;
+      } else {
+        try {
+          const WebBrowser = require('expo-web-browser');
+          await WebBrowser.openBrowserAsync(r.url);
+        } catch {
+          Alert.alert('Open in browser', r.url);
+        }
+      }
+    } catch (e: any) {
+      Alert.alert('Stripe error', e?.message || 'Could not start Stripe checkout.');
+    } finally {
+      setStripeBusy(false);
+    }
+  };
 
   if (!group || !userId) return null;
 
@@ -479,6 +558,11 @@ export default function PayScreen() {
         </ScrollView>
 
         <View style={styles.bottomBar}>
+          {stripeBanner ? (
+            <View style={styles.stripeBanner} testID="stripe-banner">
+              <Text style={styles.stripeBannerText}>{stripeBanner}</Text>
+            </View>
+          ) : null}
           {!isVerified && verifyStep === 'idle' ? (
             <Button
               title="Verify phone to continue"
@@ -487,14 +571,27 @@ export default function PayScreen() {
               leftIcon={<ShieldCheck size={18} color="#fff" />}
             />
           ) : (
-            <Button
-              title={`Pay $${amount.toFixed(2)}`}
-              loading={loading}
-              onPress={doPay}
-              testID="pay-submit-btn"
-              leftIcon={<CreditCard size={18} color="#fff" />}
-              disabled={!isVerified || blockedNoAmount}
-            />
+            <>
+              <Button
+                title={`Pay $${amount.toFixed(2)}`}
+                loading={loading}
+                onPress={doPay}
+                testID="pay-submit-btn"
+                leftIcon={<CreditCard size={18} color="#fff" />}
+                disabled={!isVerified || blockedNoAmount}
+              />
+              {kind === 'lead' && isVerified && !blockedNoAmount && (group.funding?.remaining_to_collect || 0) > 0.01 ? (
+                <Button
+                  title={stripeBusy ? 'Opening Stripe…' : `Pay with Stripe — $${amount.toFixed(2)}`}
+                  variant="secondary"
+                  onPress={onPayWithStripe}
+                  loading={stripeBusy}
+                  testID="pay-stripe-btn"
+                  leftIcon={<Lock size={16} color={COLORS.primary} />}
+                  style={{ marginTop: SPACING.sm }}
+                />
+              ) : null}
+            </>
           )}
           <Button
             title="Cancel"
@@ -768,5 +865,19 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
+  },
+  stripeBanner: {
+    padding: SPACING.sm,
+    marginBottom: SPACING.sm,
+    backgroundColor: COLORS.primaryLight,
+    borderRadius: RADIUS.sm,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+  },
+  stripeBannerText: {
+    color: COLORS.primary,
+    fontSize: FONT.sizes.xs,
+    fontWeight: FONT.weights.semibold,
+    textAlign: 'center',
   },
 });

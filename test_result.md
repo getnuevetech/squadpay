@@ -722,7 +722,8 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus: []
+  current_focus:
+    - "Phase E — Real Stripe Checkout payment flow (POST /api/groups/{id}/checkout-session, GET /api/checkout/status/{id}, POST /api/webhook/stripe + frontend Pay-with-Stripe button on lead pay screen)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"

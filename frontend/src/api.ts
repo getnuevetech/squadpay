@@ -302,6 +302,17 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ user_id, amount }),
     }),
+
+  // Phase E: Stripe Checkout
+  createCheckoutSession: (groupId: string, originUrl: string) =>
+    request<{ url: string; session_id: string; amount: number }>(
+      `/groups/${groupId}/checkout-session`,
+      { method: 'POST', body: JSON.stringify({ origin_url: originUrl }) },
+    ),
+  getCheckoutStatus: (sessionId: string) =>
+    request<{ session_id: string; status: string; payment_status: string; amount_total: number; currency: string; applied: boolean; group_id: string }>(
+      `/checkout/status/${encodeURIComponent(sessionId)}`,
+    ),
   scanReceipt: (image_base64: string) =>
     request<{
       items: { name: string; price: number; quantity: number }[];

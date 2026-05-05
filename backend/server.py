@@ -1013,6 +1013,10 @@ async def root():
     return {"message": "GroupPay API", "ok": True}
 
 
+from admin_routes import build_admin_router  # noqa: E402
+
+api_router.include_router(build_admin_router(db))
+
 app.include_router(api_router)
 
 app.add_middleware(
@@ -1022,6 +1026,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def _seed_admins():
+    from admin import ensure_seed_admin
+    try:
+        await ensure_seed_admin(db)
+    except Exception as e:
+        print("[startup] seed admin failed:", e)
 
 
 @app.on_event("shutdown")

@@ -69,6 +69,7 @@ export type PerUser = {
   contributed: number;
   repaid: number;
   shortfall_owed: number;
+  loan_balance: number;
   outstanding: number;
 };
 
@@ -256,10 +257,21 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ user_id, ...(opts || {}) }),
     }),
-  contribute: (id: string, user_id: string, amount?: number, notify_on_settled?: boolean) =>
+  contribute: (
+    id: string,
+    user_id: string,
+    amount?: number,
+    notify_on_settled?: boolean,
+    opts?: { cover_shortfall?: boolean; is_loan?: boolean },
+  ) =>
     request<Group>(`/groups/${id}/contribute`, {
       method: 'POST',
-      body: JSON.stringify({ user_id, amount, notify_on_settled }),
+      body: JSON.stringify({ user_id, amount, notify_on_settled, ...(opts || {}) }),
+    }),
+  withdrawLoan: (id: string, user_id: string, amount: number) =>
+    request<Group>(`/groups/${id}/withdraw-loan`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id, amount }),
     }),
   repay: (id: string, user_id: string, amount: number) =>
     request<Group>(`/groups/${id}/repay`, {

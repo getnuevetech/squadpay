@@ -147,7 +147,10 @@ export default function GroupLobbyScreen() {
               <View style={styles.cardChip} />
               <View style={styles.cardRow}>
                 <CreditCard size={20} color="rgba(255,255,255,0.9)" />
-                <Text style={styles.cardBrand}>GroupPay</Text>
+                <View>
+                  <Text style={styles.cardBrand}>GroupPay</Text>
+                  <Text style={styles.cardGroupName} numberOfLines={1}>{group.title}</Text>
+                </View>
               </View>
               <Text style={styles.cardNumber}>•••• •••• •••• {group.virtual_card.last4}</Text>
               <View style={styles.cardFooter}>
@@ -315,6 +318,7 @@ const styles = StyleSheet.create({
   },
   cardRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   cardBrand: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: FONT.sizes.md, letterSpacing: 0.5 },
+  cardGroupName: { color: 'rgba(255,255,255,0.85)', fontSize: FONT.sizes.xs, fontWeight: FONT.weights.medium, marginTop: 1, maxWidth: 220 },
   cardNumber: {
     color: '#fff',
     fontSize: FONT.sizes.lg,

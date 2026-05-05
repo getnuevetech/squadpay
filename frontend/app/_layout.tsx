@@ -1,8 +1,25 @@
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { TouchableOpacity, StyleSheet } from 'react-native';
+import { Home } from 'lucide-react-native';
 import { COLORS } from '../src/theme';
+
+function HeaderHomeButton() {
+  const router = useRouter();
+  return (
+    <TouchableOpacity
+      testID="header-home-btn"
+      onPress={() => router.replace('/')}
+      activeOpacity={0.85}
+      hitSlop={8}
+      style={styles.btn}
+    >
+      <Home size={20} color={COLORS.text} />
+    </TouchableOpacity>
+  );
+}
 
 export default function RootLayout() {
   return (
@@ -16,10 +33,11 @@ export default function RootLayout() {
           headerTitleStyle: { fontWeight: '700', color: COLORS.text },
           headerTintColor: COLORS.text,
           contentStyle: { backgroundColor: COLORS.bg },
+          headerRight: () => <HeaderHomeButton />,
         }}
       >
         <Stack.Screen name="index" options={{ title: 'Home', headerShown: false }} />
-        <Stack.Screen name="auth" options={{ title: 'Sign in' }} />
+        <Stack.Screen name="auth" options={{ title: 'Sign in', headerRight: undefined }} />
         <Stack.Screen name="create" options={{ title: 'Start a Bill' }} />
         <Stack.Screen name="group/[id]/index" options={{ title: 'Group' }} />
         <Stack.Screen name="group/[id]/items" options={{ title: 'Assign Items' }} />
@@ -33,3 +51,7 @@ export default function RootLayout() {
     </GestureHandlerRootView>
   );
 }
+
+const styles = StyleSheet.create({
+  btn: { paddingHorizontal: 12, paddingVertical: 6 },
+});

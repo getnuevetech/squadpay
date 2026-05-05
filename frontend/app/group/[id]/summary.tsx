@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Receipt, CheckCircle2, Clock, LayoutDashboard, Wallet, AlertCircle, Plus, Pencil } from 'lucide-react-native';
+import { Receipt, CheckCircle2, Clock, LayoutDashboard, Wallet, AlertCircle, Plus, Pencil, ChevronDown } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
@@ -26,6 +26,7 @@ export default function SummaryScreen() {
   const [userId, setUserId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [editTaxTipVisible, setEditTaxTipVisible] = useState(false);
+  const [itemsExpanded, setItemsExpanded] = useState(false);
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -304,6 +305,69 @@ export default function SummaryScreen() {
           })}
         </View>
 
+        {/* Item 14 — Collapsible per-member items breakdown (post-contribution, smart/itemized only) */}
+        {group.split_mode !== 'fast' &&
+          group.derived_status &&
+          ['contributed', 'repaying', 'settled'].includes(group.derived_status) &&
+          group.items.length > 0 && (
+            <View style={styles.breakdownCard} testID="summary-items-breakdown">
+              <TouchableOpacity
+                onPress={() => setItemsExpanded((v) => !v)}
+                style={styles.breakdownToggle}
+                activeOpacity={0.85}
+                testID="summary-items-breakdown-toggle"
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.breakdownTitle}>Who paid for what</Text>
+                  <Text style={styles.breakdownSubtitle}>
+                    Tap to {itemsExpanded ? 'collapse' : 'expand'} the per-member item list
+                  </Text>
+                </View>
+                <View style={[styles.chev, itemsExpanded && { transform: [{ rotate: '180deg' }] }]}>
+                  <ChevronDown size={18} color={COLORS.subtext} />
+                </View>
+              </TouchableOpacity>
+              {itemsExpanded && (
+                <View style={styles.breakdownBody}>
+                  {group.members.map((m) => {
+                    // For each member, find their claimed items
+                    const claims = group.assignments.filter((a) => a.user_id === m.user_id);
+                    if (claims.length === 0) {
+                      return (
+                        <View key={m.user_id} style={styles.breakdownMember}>
+                          <Text style={styles.breakdownMemberName}>
+                            {m.name} {m.user_id === userId ? '(You)' : ''}
+                          </Text>
+                          <Text style={styles.breakdownEmpty}>No items claimed</Text>
+                        </View>
+                      );
+                    }
+                    return (
+                      <View key={m.user_id} style={styles.breakdownMember}>
+                        <Text style={styles.breakdownMemberName}>
+                          {m.name} {m.user_id === userId ? '(You)' : ''}
+                        </Text>
+                        {claims.map((a) => {
+                          const it = group.items.find((i) => i.id === a.item_id);
+                          if (!it) return null;
+                          const cost = (it.price || 0) * (a.quantity || 0);
+                          return (
+                            <View key={`${a.item_id}-${m.user_id}`} style={styles.breakdownItemRow}>
+                              <Text style={styles.breakdownItemName}>
+                                {it.name} × {a.quantity}
+                              </Text>
+                              <Text style={styles.breakdownItemAmt}>${cost.toFixed(2)}</Text>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
+            </View>
+          )}
+
         {group.unclaimed.length > 0 && group.split_mode !== 'fast' && group.status === 'open' && (
           <View style={styles.warnCard}>
             <Receipt size={18} color={COLORS.warning} />
@@ -492,6 +556,36 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
   },
   editTaxTipText: { color: COLORS.primary, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold },
+  breakdownCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: SPACING.md,
+    overflow: 'hidden',
+  },
+  breakdownToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: SPACING.md,
+    gap: SPACING.sm,
+  },
+  chev: {},
+  breakdownTitle: { color: COLORS.text, fontWeight: FONT.weights.bold, fontSize: FONT.sizes.md },
+  breakdownSubtitle: { color: COLORS.subtext, fontSize: FONT.sizes.xs, marginTop: 2 },
+  breakdownBody: {
+    paddingHorizontal: SPACING.md,
+    paddingBottom: SPACING.md,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    paddingTop: SPACING.sm,
+  },
+  breakdownMember: { marginTop: SPACING.sm, paddingTop: SPACING.sm, borderTopWidth: 1, borderTopColor: COLORS.border },
+  breakdownMemberName: { color: COLORS.text, fontWeight: FONT.weights.semibold, fontSize: FONT.sizes.sm, marginBottom: 4 },
+  breakdownEmpty: { color: COLORS.subtext, fontSize: FONT.sizes.xs, fontStyle: 'italic' },
+  breakdownItemRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
+  breakdownItemName: { color: COLORS.text, fontSize: FONT.sizes.sm, flex: 1 },
+  breakdownItemAmt: { color: COLORS.text, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold },
   progressBar: {
     height: 8,
     backgroundColor: COLORS.border,

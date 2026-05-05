@@ -204,6 +204,30 @@ async def verify_otp(body: VerifyOtpIn):
     record = await db.otp_codes.find_one({"user_id": body.user_id}, {"_id": 0})
     if not record or record.get("code") != body.code or record.get("phone") != body.phone:
         raise HTTPException(400, "Invalid OTP code")
+    # PERSISTENT USERS: if a verified user already exists with this phone,
+    # collapse to that user (do not create a duplicate). The throwaway
+    # placeholder created by /auth/register is removed and the existing
+    # user_id is returned. The session client will switch to it.
+    existing = await db.users.find_one(
+        {"phone": body.phone, "verified": True, "id": {"$ne": body.user_id}}, {"_id": 0}
+    )
+    if existing:
+        # If client supplied a different name, refresh the existing user's name.
+        try:
+            placeholder = await db.users.find_one({"id": body.user_id}, {"_id": 0})
+            if placeholder and placeholder.get("name") and placeholder["name"] != existing["name"]:
+                await db.users.update_one(
+                    {"id": existing["id"]}, {"$set": {"name": placeholder["name"]}}
+                )
+                existing["name"] = placeholder["name"]
+        except Exception:
+            pass
+        # Drop the throwaway placeholder
+        await db.users.delete_one({"id": body.user_id})
+        existing["verified"] = True
+        existing["phone"] = body.phone
+        return UserOut(**existing)
+
     await db.users.update_one(
         {"id": body.user_id}, {"$set": {"phone": body.phone, "verified": True}}
     )

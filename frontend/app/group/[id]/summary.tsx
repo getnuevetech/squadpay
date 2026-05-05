@@ -11,14 +11,13 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Receipt, CheckCircle2, Clock, LayoutDashboard, Wallet, AlertCircle, Plus, Pencil, ChevronDown, HandCoins, ArrowDownToLine } from 'lucide-react-native';
+import { Receipt, CheckCircle2, Clock, LayoutDashboard, Wallet, AlertCircle, Plus, Pencil, ChevronDown } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 import { StatusBadge } from '../../../src/StatusBadge';
 import { EditMetaModal } from '../../../src/EditMetaModal';
-import { CoverShortfallModal } from '../../../src/CoverShortfallModal';
 
 export default function SummaryScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -28,7 +27,6 @@ export default function SummaryScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [editTaxTipVisible, setEditTaxTipVisible] = useState(false);
   const [itemsExpanded, setItemsExpanded] = useState(false);
-  const [coverVisible, setCoverVisible] = useState(false);
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -478,78 +476,20 @@ export default function SummaryScreen() {
             onPress={handleRepay}
           />
         )}
-
-        {/* Cover-shortfall CTA — any member, when wallet is short and you've already paid your share */}
-        {!isLead && group.status === 'open' && remaining > 0.01 && (myPer?.outstanding || 0) <= 0.01 && (
-          <View style={styles.coverCard} testID="summary-cover-card">
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-              <HandCoins size={18} color={COLORS.warning} />
-              <Text style={styles.coverCardTitle}>The bill is ${remaining.toFixed(2)} short</Text>
-            </View>
-            <Text style={styles.coverCardBody}>
-              Lead hasn't covered the gap yet. You can step in (loan or gift) so the bill can be settled.
-            </Text>
-            <Button
-              title="Cover the shortfall"
-              variant="secondary"
-              onPress={() => setCoverVisible(true)}
-              testID="summary-cover-btn"
-            />
-          </View>
-        )}
-
-        {/* Loan balance — withdraw CTA */}
-        {(myPer?.loan_balance || 0) > 0.01 && (
-          <View style={styles.loanCard} testID="summary-loan-card">
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-              <ArrowDownToLine size={18} color={COLORS.primary} />
-              <Text style={styles.loanCardTitle}>You loaned ${(myPer?.loan_balance || 0).toFixed(2)} to this group</Text>
-            </View>
-            <Text style={styles.loanCardBody}>
-              Withdraw it back from the wallet. If the bill is already settled this will reopen it.
-            </Text>
-            <Button
-              title={`Withdraw $${(myPer?.loan_balance || 0).toFixed(2)}`}
-              variant="primary"
-              onPress={async () => {
-                if (!userId || !group) return;
-                try {
-                  const updated = await api.withdrawLoan(group.id, userId, myPer?.loan_balance || 0);
-                  setGroup(updated);
-                  Alert.alert('Withdrawn', `Returned $${(myPer?.loan_balance || 0).toFixed(2)} to you.`);
-                } catch (e: any) {
-                  Alert.alert('Could not withdraw', e?.message || 'Try again later.');
-                }
-              }}
-              testID="summary-withdraw-loan-btn"
-            />
-          </View>
-        )}
-
-        {!isLead && group.status !== 'open' && myOutstanding <= 0.01 && (myPer?.loan_balance || 0) <= 0.01 && (
+        {!isLead && group.status !== 'open' && myOutstanding <= 0.01 && (
           <Button title="All settled" onPress={() => router.replace('/')} variant="secondary" testID="summary-settled-btn" />
         )}
       </View>
 
       {userId && (
-        <>
-          <EditMetaModal
-            visible={editTaxTipVisible}
-            onClose={() => setEditTaxTipVisible(false)}
-            onSaved={(g) => setGroup(g)}
-            group={group}
-            userId={userId}
-            field="tax_tip"
-          />
-          <CoverShortfallModal
-            visible={coverVisible}
-            onClose={() => setCoverVisible(false)}
-            onSaved={(g) => setGroup(g)}
-            group={group}
-            userId={userId}
-            maxAmount={remaining}
-          />
-        </>
+        <EditMetaModal
+          visible={editTaxTipVisible}
+          onClose={() => setEditTaxTipVisible(false)}
+          onSaved={(g) => setGroup(g)}
+          group={group}
+          userId={userId}
+          field="tax_tip"
+        />
       )}
     </SafeAreaView>
   );
@@ -646,28 +586,6 @@ const styles = StyleSheet.create({
   breakdownItemRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
   breakdownItemName: { color: COLORS.text, fontSize: FONT.sizes.sm, flex: 1 },
   breakdownItemAmt: { color: COLORS.text, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold },
-  coverCard: {
-    padding: SPACING.md,
-    borderRadius: RADIUS.md,
-    borderWidth: 1,
-    borderColor: COLORS.warning,
-    backgroundColor: COLORS.warningLight,
-    marginBottom: SPACING.sm,
-    gap: SPACING.sm,
-  },
-  coverCardTitle: { color: '#92400E', fontWeight: FONT.weights.bold, fontSize: FONT.sizes.md },
-  coverCardBody: { color: '#92400E', fontSize: FONT.sizes.sm, lineHeight: 18 },
-  loanCard: {
-    padding: SPACING.md,
-    borderRadius: RADIUS.md,
-    borderWidth: 1,
-    borderColor: COLORS.primary,
-    backgroundColor: COLORS.primaryLight,
-    marginBottom: SPACING.sm,
-    gap: SPACING.sm,
-  },
-  loanCardTitle: { color: COLORS.primary, fontWeight: FONT.weights.bold, fontSize: FONT.sizes.md },
-  loanCardBody: { color: COLORS.text, fontSize: FONT.sizes.sm, lineHeight: 18 },
   progressBar: {
     height: 8,
     backgroundColor: COLORS.border,

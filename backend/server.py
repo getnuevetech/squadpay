@@ -131,14 +131,6 @@ class ContributeIn(BaseModel):
     user_id: str
     amount: Optional[float] = None  # If None, contributes user's full share
     notify_on_settled: bool = False
-    # New: shortfall-cover flow
-    cover_shortfall: bool = False
-    is_loan: Optional[bool] = None  # required when cover_shortfall=True
-
-
-class WithdrawLoanIn(BaseModel):
-    user_id: str
-    amount: float
     notify_on_settled: Optional[bool] = False
 
 
@@ -298,15 +290,6 @@ async def _recompute_group(group: dict) -> dict:
     for r in repayments:
         repaid_by_user[r["user_id"]] = repaid_by_user.get(r["user_id"], 0.0) + float(r["amount"])
 
-    # Loan balance: net of shortfall_cover loans + withdrawals per user
-    loan_by_user: Dict[str, float] = {}
-    for c in contributions:
-        if c.get("kind") == "shortfall_cover" and c.get("is_loan"):
-            loan_by_user[c["user_id"]] = loan_by_user.get(c["user_id"], 0.0) + float(c["amount"])
-        elif c.get("kind") == "loan_withdrawal":
-            # withdrawal amounts are stored as negative; subtract their abs from the loan balance
-            loan_by_user[c["user_id"]] = loan_by_user.get(c["user_id"], 0.0) + float(c["amount"])
-
     lead_id = group.get("lead_id")
     settlement = group.get("shortfall_settlement") or {}
     gift_active = bool(settlement) and not settlement.get("is_loan", True)
@@ -324,7 +307,6 @@ async def _recompute_group(group: dict) -> dict:
         p["contributed"] = round(contrib_by_user.get(uid, 0.0), 2)
         p["repaid"] = round(repaid_by_user.get(uid, 0.0), 2)
         p["shortfall_owed"] = round(obligation_by_user.get(uid, 0.0), 2)
-        p["loan_balance"] = round(max(0.0, loan_by_user.get(uid, 0.0)), 2)
         if uid == lead_id:
             # Lead's own share is implicitly covered when they pay the bill (or when fully group-funded).
             # Lead can still owe a shortfall obligation (rare, only if assigned to themselves).
@@ -690,25 +672,14 @@ async def contribute(group_id: str, body: ContributeIn):
     if amount <= 0:
         raise HTTPException(400, "Nothing left to contribute")
 
-    # If marked as cover_shortfall, the amount must be EXTRA on top of remaining_share.
-    # We tag the contribution with kind='shortfall_cover' + is_loan=true|false.
-    is_cover = bool(body.cover_shortfall)
-    is_loan = bool(body.is_loan) if body.is_loan is not None else None
-    if is_cover and is_loan is None:
-        raise HTTPException(400, "is_loan required when cover_shortfall=true")
-
     contributions = group.get("contributions", [])
-    contrib_record: Dict[str, Any] = {
+    contributions.append({
         "id": new_id("c_"),
         "user_id": body.user_id,
         "amount": round(amount, 2),
         "notify_on_settled": bool(body.notify_on_settled),
         "at": now_iso(),
-    }
-    if is_cover:
-        contrib_record["kind"] = "shortfall_cover"
-        contrib_record["is_loan"] = is_loan
-    contributions.append(contrib_record)
+    })
     update_doc: Dict[str, Any] = {"contributions": contributions}
 
     # Auto-finalize if total contributions cover the full bill
@@ -720,75 +691,6 @@ async def contribute(group_id: str, body: ContributeIn):
             "lead_paid_at": now_iso(),
             "lead_shortfall": 0.0,
         })
-
-    await db.groups.update_one({"id": group_id}, {"$set": update_doc})
-    return await _load_group_enriched(group_id)
-
-
-@api_router.post("/groups/{group_id}/withdraw-loan")
-async def withdraw_loan(group_id: str, body: WithdrawLoanIn):
-    """Member withdraws part/all of their outstanding shortfall-cover LOAN.
-
-    Reduces the wallet balance and total_contributed, may move group from 'paid'
-    back to 'open' if the wallet drops below total. Only loans (is_loan=True
-    shortfall_cover contributions) are eligible.
-    """
-    group = await db.groups.find_one({"id": group_id}, {"_id": 0})
-    if not group:
-        raise HTTPException(404, "Group not found")
-    if not any(m["user_id"] == body.user_id for m in group.get("members", [])):
-        raise HTTPException(403, "Not a member of this group")
-    if body.amount <= 0:
-        raise HTTPException(400, "Amount must be positive")
-
-    enriched = await _recompute_group(group)
-    per = next((p for p in enriched["per_user"] if p["user_id"] == body.user_id), None)
-    if not per:
-        raise HTTPException(404, "User not found in group")
-    loan_balance = float(per.get("loan_balance", 0))
-    if body.amount > loan_balance + 0.01:
-        raise HTTPException(400, f"Withdraw amount exceeds your loan balance (${loan_balance:.2f})")
-
-    # Add a negative contribution tagged as a withdrawal — so the wallet shrinks
-    # and the user's loan_balance decreases accordingly.
-    contributions = group.get("contributions", [])
-    contributions.append({
-        "id": new_id("w_"),
-        "user_id": body.user_id,
-        "amount": -round(float(body.amount), 2),
-        "kind": "loan_withdrawal",
-        "at": now_iso(),
-    })
-    update_doc: Dict[str, Any] = {"contributions": contributions}
-
-    # Reopen the bill if wallet now falls short
-    new_total_contributed = sum(c["amount"] for c in contributions)
-    if new_total_contributed + 0.01 < float(group.get("total_amount") or 0):
-        if group.get("status") == "paid":
-            update_doc["status"] = "open"
-            update_doc["lead_paid_at"] = None
-
-    notifications = list(group.get("notifications") or [])
-    notifications.append({
-        "id": new_id("n_"),
-        "user_id": body.user_id,
-        "kind": "loan_withdrawn",
-        "amount": float(body.amount),
-        "message": f"You withdrew ${body.amount:.2f} from the group wallet (loan refund).",
-        "at": now_iso(),
-        "delivered_via": "sms_mock",
-    })
-    # Notify lead too
-    notifications.append({
-        "id": new_id("n_"),
-        "user_id": group["lead_id"],
-        "kind": "loan_withdrawn",
-        "amount": float(body.amount),
-        "message": f"A member withdrew ${body.amount:.2f} of their shortfall loan from the wallet.",
-        "at": now_iso(),
-        "delivered_via": "sms_mock",
-    })
-    update_doc["notifications"] = notifications
 
     await db.groups.update_one({"id": group_id}, {"$set": update_doc})
     return await _load_group_enriched(group_id)

@@ -85,12 +85,17 @@ export default function PayScreen() {
     actorTitle = 'Virtual Card';
     actorSub = 'Single-use card issued for this bill';
   } else if (kind === 'contribute') {
-    // outstanding already accounts for shortfall_owed obligations
-    amount = myPer?.outstanding || 0;
-    const hasShortfall = (myPer?.shortfall_owed || 0) > 0.01;
+    // Both lead and members use this flow to fund the wallet upfront.
+    // Lead's outstanding is force-zeroed in backend (they pay merchant), so we compute
+    // contribute amount as: their share + any shortfall obligation - already contributed.
+    const myShare = myPer?.total || 0;
+    const myContrib = myPer?.contributed || 0;
+    const myShortfallOwed = myPer?.shortfall_owed || 0;
+    amount = Math.max(0, myShare + myShortfallOwed - myContrib);
+    const hasShortfall = myShortfallOwed > 0.01;
     title = hasShortfall ? 'Pay your share + shortfall' : 'Contribute upfront';
     summary = hasShortfall
-      ? `Includes your shortfall obligation of $${(myPer?.shortfall_owed || 0).toFixed(2)}. Pay so the bill can be settled.`
+      ? `Includes your shortfall obligation of $${myShortfallOwed.toFixed(2)}. Pay so the bill can be settled.`
       : `Pay your share into the group wallet so the lead doesn't have to cover it.`;
     actorIcon = <Wallet color={COLORS.primary} size={18} />;
     actorTitle = 'Group wallet';

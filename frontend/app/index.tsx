@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Receipt, Plus, Link2, QrCode, ChevronRight, Sparkles, LogOut } from 'lucide-react-native';
+import { Receipt, Plus, Link2, QrCode, ChevronRight, Sparkles, LogOut, Gift } from 'lucide-react-native';
 import { Button } from '../src/Button';
 import { api } from '../src/api';
 import { clearUser, loadUser, refreshUser } from '../src/session';
@@ -158,6 +158,25 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* C1: invite friends entry point */}
+        <TouchableOpacity
+          testID="home-invite-btn"
+          style={styles.inviteCard}
+          onPress={() => router.push('/invite')}
+          activeOpacity={0.85}
+        >
+          <View style={styles.inviteIcon}>
+            <Gift color={COLORS.primary} size={20} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.inviteTitle}>Invite friends</Text>
+            <Text style={styles.inviteSub}>
+              {user.referral_code ? `Your code: ${user.referral_code}` : 'Share your code & track invites'}
+            </Text>
+          </View>
+          <ChevronRight color={COLORS.subtext} size={18} />
+        </TouchableOpacity>
+
         <Text style={styles.sectionTitle}>Recent Activity</Text>
         {groups.length === 0 ? (
           <View style={styles.empty}>
@@ -273,6 +292,10 @@ const styles = StyleSheet.create({
   heroFooter: { marginTop: SPACING.md },
   heroFooterText: { color: '#9CA3AF', fontSize: FONT.sizes.sm },
   actionsRow: { flexDirection: 'row', gap: SPACING.md, marginBottom: SPACING.lg },
+  inviteCard: { flexDirection: 'row', alignItems: 'center', gap: SPACING.md, padding: SPACING.md, marginBottom: SPACING.lg, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.primary, borderRadius: RADIUS.md },
+  inviteIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: COLORS.primaryLight, alignItems: 'center', justifyContent: 'center' },
+  inviteTitle: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },
+  inviteSub: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
   actionCard: {
     flex: 1,
     borderRadius: RADIUS.lg,

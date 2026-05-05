@@ -45,6 +45,90 @@ def new_short_code(length: int = 8) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
+# C1: referral code helpers — 6-char uppercase, drop confusing chars (0/O/1/I)
+_REFERRAL_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def _gen_referral_code(length: int = 6) -> str:
+    return "".join(secrets.choice(_REFERRAL_ALPHABET) for _ in range(length))
+
+
+async def generate_unique_referral_code(db_) -> str:
+    for _ in range(20):
+        code = _gen_referral_code()
+        exists = await db_.users.find_one({"referral_code": code}, {"_id": 0, "id": 1})
+        if not exists:
+            return code
+    # Vanishingly unlikely fallback
+    return _gen_referral_code(8)
+
+
+async def _get_referral_settings() -> dict:
+    """Read referral system settings (created lazily with safe defaults)."""
+    rec = await db.app_settings.find_one({"key": "referrals"}, {"_id": 0})
+    if not rec:
+        rec = {
+            "key": "referrals",
+            "enabled": False,
+            "referrer_credit": 0.0,
+            "referee_credit": 0.0,
+            "updated_at": now_iso(),
+        }
+        await db.app_settings.insert_one(rec.copy())
+    return rec
+
+
+async def _maybe_grant_referral_rewards(user: dict):
+    """Grant pending credits to referrer + referee on FIRST verify, idempotent.
+
+    Stores credit ledger rows in `db.credits`. Activation/consumption is handled
+    by Phase C2 (credits/discounts). For now we record `pending` rows that the
+    admin can see and Phase C2 will turn into spendable credits.
+    """
+    if not user or not user.get("referred_by_user_id"):
+        return
+    if user.get("referral_reward_granted"):
+        return
+    settings = await _get_referral_settings()
+    if not settings.get("enabled"):
+        # Mark as granted=True so we don't keep checking; rewards are 0 anyway.
+        await db.users.update_one({"id": user["id"]}, {"$set": {"referral_reward_granted": True}})
+        return
+
+    referrer_amt = float(settings.get("referrer_credit") or 0)
+    referee_amt = float(settings.get("referee_credit") or 0)
+    referrer_id = user["referred_by_user_id"]
+
+    rows = []
+    if referrer_amt > 0:
+        rows.append({
+            "id": new_id("cr_"),
+            "user_id": referrer_id,
+            "amount": round(referrer_amt, 2),
+            "kind": "referral_referrer",
+            "source_user_id": user["id"],
+            "status": "pending",  # C2 will toggle to 'active'
+            "note": f"Referral reward: {user.get('name')} signed up with your code.",
+            "created_at": now_iso(),
+        })
+    if referee_amt > 0:
+        rows.append({
+            "id": new_id("cr_"),
+            "user_id": user["id"],
+            "amount": round(referee_amt, 2),
+            "kind": "referral_referee",
+            "source_user_id": referrer_id,
+            "status": "pending",
+            "note": "Welcome bonus for using a referral code.",
+            "created_at": now_iso(),
+        })
+    if rows:
+        await db.credits.insert_many([r.copy() for r in rows])
+    await db.users.update_one(
+        {"id": user["id"]}, {"$set": {"referral_reward_granted": True}}
+    )
+
+
 def clean_mongo(doc: dict) -> dict:
     if doc is None:
         return None
@@ -56,6 +140,7 @@ def clean_mongo(doc: dict) -> dict:
 
 class RegisterIn(BaseModel):
     name: str
+    referral_code: Optional[str] = None  # C1: optional invite code from another user
 
 
 class UserOut(BaseModel):
@@ -64,6 +149,8 @@ class UserOut(BaseModel):
     phone: Optional[str] = None
     verified: bool = False
     created_at: str
+    referral_code: Optional[str] = None  # C1
+    referred_by_user_id: Optional[str] = None  # C1
 
 
 class SendOtpIn(BaseModel):
@@ -174,12 +261,31 @@ class ScanReceiptIn(BaseModel):
 async def register(body: RegisterIn):
     if not body.name or not body.name.strip():
         raise HTTPException(400, "Name is required")
+
+    # C1: validate optional referral code
+    referred_by_user_id: Optional[str] = None
+    if body.referral_code:
+        rc = body.referral_code.strip().upper()
+        if rc:
+            referrer = await db.users.find_one(
+                {"referral_code": rc, "is_blocked": {"$ne": True}}, {"_id": 0}
+            )
+            if not referrer:
+                raise HTTPException(400, "Invalid referral code")
+            referred_by_user_id = referrer["id"]
+
+    # C1: every user gets a unique referral code at signup
+    referral_code = await generate_unique_referral_code(db)
+
     user = {
         "id": new_id("u_"),
         "name": body.name.strip(),
         "phone": None,
         "verified": False,
         "created_at": now_iso(),
+        "referral_code": referral_code,
+        "referred_by_user_id": referred_by_user_id,
+        "referral_reward_granted": False,
     }
     await db.users.insert_one(user.copy())
     return UserOut(**user)
@@ -219,23 +325,45 @@ async def verify_otp(body: VerifyOtpIn):
         # If client supplied a different name, refresh the existing user's name.
         try:
             placeholder = await db.users.find_one({"id": body.user_id}, {"_id": 0})
+            patch: dict = {}
             if placeholder and placeholder.get("name") and placeholder["name"] != existing["name"]:
-                await db.users.update_one(
-                    {"id": existing["id"]}, {"$set": {"name": placeholder["name"]}}
-                )
+                patch["name"] = placeholder["name"]
                 existing["name"] = placeholder["name"]
+            # C1: transfer referral linkage from placeholder if existing has none yet
+            if placeholder and placeholder.get("referred_by_user_id") and not existing.get("referred_by_user_id"):
+                # Avoid self-referral loop
+                if placeholder["referred_by_user_id"] != existing["id"]:
+                    patch["referred_by_user_id"] = placeholder["referred_by_user_id"]
+                    existing["referred_by_user_id"] = placeholder["referred_by_user_id"]
+            # C1: backfill referral_code on legacy users
+            if not existing.get("referral_code"):
+                code = await generate_unique_referral_code(db)
+                patch["referral_code"] = code
+                existing["referral_code"] = code
+            if patch:
+                await db.users.update_one({"id": existing["id"]}, {"$set": patch})
         except Exception:
             pass
         # Drop the throwaway placeholder
         await db.users.delete_one({"id": body.user_id})
         existing["verified"] = True
         existing["phone"] = body.phone
+        # C1: grant referral rewards on first verify (idempotent)
+        await _maybe_grant_referral_rewards(existing)
         return UserOut(**existing)
 
     await db.users.update_one(
         {"id": body.user_id}, {"$set": {"phone": body.phone, "verified": True}}
     )
     user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
+    # C1: backfill referral_code if missing (legacy users)
+    if user and not user.get("referral_code"):
+        code = await generate_unique_referral_code(db)
+        await db.users.update_one({"id": user["id"]}, {"$set": {"referral_code": code}})
+        user["referral_code"] = code
+    # C1: grant referral rewards on first verify
+    if user:
+        await _maybe_grant_referral_rewards(user)
     return UserOut(**user)
 
 
@@ -984,6 +1112,83 @@ async def get_user_groups(user_id: str):
             "member_count": len(g.get("members", [])),
         })
     return enriched
+
+
+# ------------- Referrals (Phase C1) -------------
+
+@api_router.get("/users/{user_id}/referrals")
+async def get_user_referrals(user_id: str):
+    """Referral summary for a user: their code, who referred them, who they referred."""
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "User not found")
+    # Backfill missing code so existing users instantly get one when they open the screen
+    if not user.get("referral_code"):
+        code = await generate_unique_referral_code(db)
+        await db.users.update_one({"id": user_id}, {"$set": {"referral_code": code}})
+        user["referral_code"] = code
+
+    referrer = None
+    if user.get("referred_by_user_id"):
+        ref = await db.users.find_one(
+            {"id": user["referred_by_user_id"]}, {"_id": 0, "id": 1, "name": 1, "referral_code": 1}
+        )
+        if ref:
+            referrer = {"id": ref["id"], "name": ref.get("name"), "code": ref.get("referral_code")}
+
+    referees_cursor = db.users.find(
+        {"referred_by_user_id": user_id},
+        {"_id": 0, "id": 1, "name": 1, "verified": 1, "created_at": 1, "phone": 1},
+    ).sort("created_at", -1)
+    referees = await referees_cursor.to_list(length=None)
+    # Mask phone for privacy: keep last 4 digits only.
+    for r in referees:
+        if r.get("phone"):
+            ph = r["phone"]
+            r["phone"] = ("*" * max(0, len(ph) - 4)) + ph[-4:] if len(ph) > 4 else ph
+
+    settings = await _get_referral_settings()
+    pending = await db.credits.count_documents({"user_id": user_id, "status": "pending"})
+    return {
+        "user_id": user_id,
+        "referral_code": user.get("referral_code"),
+        "referred_by": referrer,
+        "referees_count": len(referees),
+        "verified_referees_count": sum(1 for r in referees if r.get("verified")),
+        "referees": referees,
+        "settings": {
+            "enabled": bool(settings.get("enabled")),
+            "referrer_credit": float(settings.get("referrer_credit") or 0),
+            "referee_credit": float(settings.get("referee_credit") or 0),
+        },
+        "pending_credits": pending,
+    }
+
+
+@api_router.get("/referrals/lookup/{code}")
+async def referral_lookup(code: str):
+    """Public-ish: look up the referrer by code so the signup screen can show
+    "You're being invited by Alice" without exposing personal data."""
+    rc = (code or "").strip().upper()
+    if not rc:
+        raise HTTPException(400, "Code required")
+    referrer = await db.users.find_one(
+        {"referral_code": rc, "is_blocked": {"$ne": True}},
+        {"_id": 0, "id": 1, "name": 1, "referral_code": 1},
+    )
+    if not referrer:
+        raise HTTPException(404, "Referral code not found")
+    settings = await _get_referral_settings()
+    return {
+        "valid": True,
+        "referrer_name": referrer["name"],
+        "referrer_code": referrer["referral_code"],
+        "settings": {
+            "enabled": bool(settings.get("enabled")),
+            "referee_credit": float(settings.get("referee_credit") or 0),
+        },
+    }
+
 
 
 # ------------- Receipt OCR -------------

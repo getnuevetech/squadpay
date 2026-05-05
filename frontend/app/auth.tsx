@@ -25,15 +25,41 @@ export default function AuthScreen() {
   const [otp, setOtp] = useState('');
   const [userId, setUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // C1: optional referral code at signup
+  const [showRefCode, setShowRefCode] = useState(false);
+  const [refCode, setRefCode] = useState('');
+  const [refValidated, setRefValidated] = useState<{ name: string; bonus: number } | null>(null);
+  const [refError, setRefError] = useState<string | null>(null);
+
+  const validateRefCode = async (code: string) => {
+    const c = code.trim().toUpperCase();
+    if (!c) {
+      setRefValidated(null);
+      setRefError(null);
+      return;
+    }
+    try {
+      const r = await api.lookupReferral(c);
+      setRefValidated({ name: r.referrer_name, bonus: r.settings?.enabled ? r.settings.referee_credit : 0 });
+      setRefError(null);
+    } catch (e: any) {
+      setRefValidated(null);
+      setRefError(e?.message || 'Invalid code');
+    }
+  };
 
   const submitName = async () => {
     if (!name.trim()) {
       Alert.alert('Name required');
       return;
     }
+    if (refError) {
+      Alert.alert('Referral code', refError);
+      return;
+    }
     setLoading(true);
     try {
-      const u = await api.register(name.trim());
+      const u = await api.register(name.trim(), refCode.trim() ? refCode.trim().toUpperCase() : undefined);
       setUserId(u.id);
       await saveUser(u);
       setStep('phone');
@@ -106,6 +132,44 @@ export default function AuthScreen() {
               returnKeyType="next"
               onSubmitEditing={submitName}
             />
+            {/* C1: optional referral code */}
+            {!showRefCode ? (
+              <Text
+                onPress={() => setShowRefCode(true)}
+                style={styles.refToggle}
+                testID="auth-ref-toggle"
+              >
+                Have a referral code?
+              </Text>
+            ) : (
+              <View style={styles.refBox} testID="auth-ref-box">
+                <Text style={styles.refLabel}>Referral code (optional)</Text>
+                <TextInput
+                  testID="auth-ref-input"
+                  value={refCode}
+                  onChangeText={(t) => {
+                    const v = t.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 8);
+                    setRefCode(v);
+                  }}
+                  onBlur={() => validateRefCode(refCode)}
+                  placeholder="ABC123"
+                  placeholderTextColor={COLORS.disabledText}
+                  style={[styles.input, { letterSpacing: 4, textAlign: 'center', height: 48, fontSize: FONT.sizes.lg }]}
+                  autoCapitalize="characters"
+                  maxLength={8}
+                />
+                {refValidated ? (
+                  <Text style={styles.refOk} testID="auth-ref-valid">
+                    ✓ Invited by {refValidated.name}
+                    {refValidated.bonus > 0 ? ` — get $${refValidated.bonus.toFixed(2)} welcome bonus` : ''}
+                  </Text>
+                ) : refError ? (
+                  <Text style={styles.refErr} testID="auth-ref-err">{refError}</Text>
+                ) : (
+                  <Text style={styles.refHint}>Code given by a friend? Paste it here.</Text>
+                )}
+              </View>
+            )}
             <Button
               title="Continue"
               onPress={submitName}
@@ -207,4 +271,10 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontWeight: FONT.weights.bold,
   },
+  refToggle: { color: COLORS.primary, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold, marginTop: SPACING.md, textDecorationLine: 'underline' },
+  refBox: { marginTop: SPACING.md, padding: SPACING.md, backgroundColor: COLORS.primaryLight, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.primary },
+  refLabel: { fontSize: FONT.sizes.xs, color: COLORS.primary, fontWeight: FONT.weights.bold, textTransform: 'uppercase', marginBottom: SPACING.sm },
+  refOk: { color: COLORS.success, fontSize: FONT.sizes.sm, marginTop: SPACING.sm, fontWeight: FONT.weights.semibold },
+  refErr: { color: COLORS.danger, fontSize: FONT.sizes.sm, marginTop: SPACING.sm, fontWeight: FONT.weights.semibold },
+  refHint: { color: COLORS.subtext, fontSize: FONT.sizes.xs, marginTop: SPACING.sm, fontStyle: 'italic' },
 });

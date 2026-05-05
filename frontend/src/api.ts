@@ -34,6 +34,19 @@ export type User = {
   phone: string | null;
   verified: boolean;
   created_at: string;
+  referral_code?: string | null;
+  referred_by_user_id?: string | null;
+};
+
+export type ReferralSummary = {
+  user_id: string;
+  referral_code: string | null;
+  referred_by: { id: string; name?: string; code?: string } | null;
+  referees_count: number;
+  verified_referees_count: number;
+  referees: Array<{ id: string; name?: string; phone?: string | null; verified: boolean; created_at: string }>;
+  settings: { enabled: boolean; referrer_credit: number; referee_credit: number };
+  pending_credits: number;
 };
 
 export type Item = {
@@ -165,8 +178,16 @@ export type Group = {
 };
 
 export const api = {
-  register: (name: string) =>
-    request<User>('/auth/register', { method: 'POST', body: JSON.stringify({ name }) }),
+  register: (name: string, referral_code?: string) =>
+    request<User>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ name, ...(referral_code ? { referral_code } : {}) }),
+    }),
+  lookupReferral: (code: string) =>
+    request<{ valid: boolean; referrer_name: string; referrer_code: string; settings: { enabled: boolean; referee_credit: number } }>(
+      `/referrals/lookup/${encodeURIComponent(code)}`,
+    ),
+  getReferralSummary: (user_id: string) => request<ReferralSummary>(`/users/${user_id}/referrals`),
   sendOtp: (user_id: string, phone: string) =>
     request<{ ok: boolean; message: string }>('/auth/send-otp', {
       method: 'POST',

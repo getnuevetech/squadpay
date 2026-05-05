@@ -297,6 +297,141 @@ backend:
                  returns just the blocked users matching; GET /admin/groups?status=open
                  returns only open groups; pagination skip/limit works.
 
+  - task: "Phase C1 — Referral system (codes, signup-with-code, admin leaderboard, settings, pending credits)"
+    implemented: true
+    working: true
+    file: "backend/server.py, backend/admin_referrals.py, backend/admin_routes.py, backend/admin.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Phase C1 (Referrals) end-to-end tested via /app/backend_test.py against the live
+            preview backend. 65/66 assertions PASS. No 5xx errors.
+
+            Coverage by scenario (PASS unless noted):
+              A) Code generation: AliceC1<ts> + BobC1<ts> both registered, each got a
+                 distinct 6-char referral_code drawn from the safe alphabet
+                 ABCDEFGHJKLMNPQRSTUVWXYZ23456789 (sample: 9RZ9ZH, QLV82E). ✅
+              B) Public lookup: GET /referrals/lookup/<alice_code> → 200 valid:true,
+                 referrer_name & referrer_code match. /referrals/lookup/NOPE99 → 404
+                 with detail "Referral code not found". ✅
+              C) Register-with-code: BobBob<ts> with Alice's code → response.referred_by_user_id
+                 == alice.id, own referral_code is non-empty and != alice's. Bogus code XXXX99
+                 → 400 "Invalid referral code". ✅
+              D) Reward DISABLED: settings reset to {enabled:false}; DanD<ts> registered with
+                 Alice's code, send-otp + verify-otp on +1555<epoch>. verify-otp succeeded;
+                 alice.pending_credits stayed at 0 before/after. Re-verify (idempotency) also
+                 left it at 0. Confirms _maybe_grant_referral_rewards short-circuits when
+                 settings.enabled=false. ✅
+              E) Reward ENABLED: POST /admin/referrals/settings {enabled:true,
+                 referrer_credit:5, referee_credit:2} as super_admin → 200. Registered
+                 EvaE<ts> with Alice's code + verified fresh phone → after verify,
+                 alice.pending_credits incremented (0 → 1) and eva.pending_credits == 1.
+                 Re-running send-otp + verify-otp for Eva (same phone) did NOT increment
+                 either count — idempotency holds. ✅
+              F) Persistent collapse referral transfer: OldUser<ts> verified phone Y with
+                 no code; FreshPlaceholder<ts> registered with Alice's code, then verified
+                 Y → collapsed to OldUser id, referred_by_user_id transferred to Alice.
+                 Re-attempt (FreshPlaceholder2 with Bob's code, verify Y) did NOT change
+                 OldUser.referred_by — guard works. ✅
+              G) Self-refer guard: registered Self<ts>, verified self_phone, captured
+                 self_code; SelfPlaceholder<ts> registered with self_code (placeholder
+                 referred_by == self.id) → verify-otp same phone collapsed to Self;
+                 existing.referred_by_user_id stayed None (self-refer suppressed). ✅
+              H) Phone masking: GET /users/{alice_id}/referrals → referees with phone
+                 returned as "********8422" (only last 4 digits visible, prefix '*'). ✅
+              I) Admin auth/RBAC: GET /admin/referrals without Bearer → 401 "Admin auth
+                 required". Created support admin via POST /admin/admins (super_admin),
+                 logged in. POST /admin/referrals/settings as support → 403 "Requires
+                 one of roles: manager,super_admin". GET /admin/referrals as support →
+                 200 (read allowed). ✅
+              J) Leaderboard + stats: GET /admin/referrals?q=alice → Alice present with
+                 total_referrals=4, verified_referrals=3, referral_code matches.
+                 stats.conversion_rate=83.3 == round(verified/total*100,1). ✅
+              K) Audit log: 4 admin.update_referral_settings entries from D/E settings
+                 writes, with target_type='settings' and target_id='referrals'. Note on
+                 destructive flag below.
+              L) Cleanup: POST /admin/referrals/settings {enabled:false, ...} → 200. ✅
+
+            BUG (minor) — audit destructive flag:
+              The single failing assertion is K.destructive_true. The review request
+              explicitly says admin.update_referral_settings should record
+              destructive=true, but admin.AUDIT_ACTIONS_DESTRUCTIVE in /app/backend/admin.py
+              (lines 188–201) does NOT include 'admin.update_referral_settings'. As a
+              result every audit row for that action is written with destructive=False.
+              Fix: add "admin.update_referral_settings" to AUDIT_ACTIONS_DESTRUCTIVE.
+              All other audit fields (action, target_type='settings', target_id='referrals')
+              are correct.
+
+            Backend log (informational, not blocking):
+              - passlib bcrypt cosmetic warning ("module 'bcrypt' has no attribute
+                '__about__'") — auth still works.
+              - jwt.InsecureKeyLengthWarning: HMAC key is 31 bytes (recommended ≥32);
+                same as Phase B.
+
+            Marking C1 task as working — only the destructive flag tweak is outstanding.
+        - working: "NA"
+          agent: "main"
+          comment: |
+            PHASE C1 — needs backend test.
+
+            Models:
+              - User: referral_code (6-char A–Z2–9 unique), referred_by_user_id, referral_reward_granted (idempotency).
+              - app_settings collection: doc {key:'referrals', enabled, referrer_credit, referee_credit}.
+              - credits collection: ledger rows {id, user_id, amount, kind, source_user_id, status:'pending', note, created_at}.
+
+            User-facing endpoints (under /api):
+              - POST /auth/register: optional referral_code; 400 on invalid; sets referred_by_user_id; always
+                generates a unique referral_code on the new user.
+              - POST /auth/verify-otp: on persistent collapse, transfers placeholder.referred_by_user_id into
+                the existing user (only if existing has none); avoids self-refer; backfills referral_code on
+                legacy users; calls _maybe_grant_referral_rewards (idempotent) — when settings.enabled and
+                amount>0 it writes pending credit rows for referrer and/or referee, then sets
+                referral_reward_granted=True.
+              - GET /users/{id}/referrals → {referral_code, referred_by, referees[], counts, settings, pending_credits}.
+                Phones in referees[] are masked (last 4 digits only).
+              - GET /referrals/lookup/{code} → {valid, referrer_name, referrer_code, settings} or 404.
+
+            Admin endpoints (require Bearer; under /api/admin):
+              - GET  /admin/referrals/settings           → current settings.
+              - POST /admin/referrals/settings {enabled, referrer_credit, referee_credit}
+                                                           super_admin/manager only; emits
+                                                           admin.update_referral_settings audit (destructive=true).
+              - GET  /admin/referrals?q=&limit=&skip=    → leaderboard {items[{user_id,name,phone,referral_code,
+                                                           is_blocked,total_referrals,verified_referrals}], total,
+                                                           stats:{total_referred,verified_referred,conversion_rate,pending_credits}}.
+              - GET  /admin/referrals/{user_id}          → {id,name,phone,referral_code,is_blocked,referred_by,
+                                                           referees[]+groups_joined, pending_credits}.
+
+            TEST SCOPE:
+              A) Code gen: register two fresh users → both get distinct 6-char referral_code from the safe alphabet.
+              B) Lookup: GET /referrals/lookup/<code> → 200 valid, GET /referrals/lookup/INVALID → 404.
+              C) Register-with-code: valid sets referred_by_user_id; invalid → 400.
+              D) Reward — DISABLED settings: register "Bob" with Alice's code → verify-otp on fresh phone
+                 → NO credits rows created, user.referral_reward_granted=True. Repeat verify (manual)
+                 → still no double-grant.
+              E) Reward — ENABLED: POST /admin/referrals/settings {enabled:true, referrer_credit:5, referee_credit:2}.
+                 Register "Dan" with Alice's code, verify-otp on fresh phone → exactly 2 credits rows: one
+                 with kind='referral_referrer' for Alice (amount 5) and one 'referral_referee' for Dan (amount 2),
+                 both status='pending'. user.referral_reward_granted=True. Re-verify is no-op.
+              F) Persistent collapse referral transfer: register placeholder with code, then verify-otp where
+                 existing verified user has no referred_by → existing user's referred_by gets set; if it already
+                 has a referred_by it MUST stay unchanged.
+              G) Self-refer guard: registering with own future code is impossible (code unknown); but in
+                 collapse, if placeholder's referred_by_user_id == existing.id, do not set.
+              H) GET /users/{alice_id}/referrals → referral_code present, referees count matches db, pending_credits
+                 reflects pending rows for that user (e.g., Alice has at least the referrer rewards). Phones masked.
+              I) Admin endpoints auth: GET /admin/referrals without Bearer → 401. POST /admin/referrals/settings
+                 as a non-super_admin/non-manager admin (e.g., 'support' role) → 403.
+              J) Admin leaderboard: GET /admin/referrals?q=alice → returns Alice with total_referrals >= 2,
+                 verified_referrals = number who actually verified phones. stats.conversion_rate sane.
+              K) Audit: after POST settings, GET /admin/audit-log lists admin.update_referral_settings with
+                 destructive=true and target_type='settings', target_id='referrals'.
+              L) Cleanup: POST /admin/referrals/settings {enabled:false, referrer_credit:0, referee_credit:0}.
+
 frontend:
   - task: "Items screen — '+' button opens add-item form"
     implemented: true
@@ -367,7 +502,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Phase B — Persistent users (collapse on phone) + Admin Users/Groups + Block/Unblock"
+    - "Phase C1 — Referral system (codes, signup-with-code, admin leaderboard, settings, pending credits)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -496,3 +631,47 @@ agent_communication:
             in production .env.
 
         Marking the Phase B task as working. No further backend action required.
+    - agent: "testing"
+      message: |
+        Phase C1 (Referrals) verified end-to-end via /app/backend_test.py against
+        the live preview backend. 65/66 assertions PASS. No 5xx.
+
+        Highlights:
+          A) Code generation — both fresh users get 6-char unique codes from the
+             safe alphabet (sample: 9RZ9ZH, QLV82E). ✅
+          B) Lookup — valid code returns referrer_name/referrer_code; unknown → 404
+             "Referral code not found". ✅
+          C) Register-with-code — sets referred_by_user_id; bogus code → 400
+             "Invalid referral code". ✅
+          D) Reward DISABLED — no pending credits created; idempotent on re-verify. ✅
+          E) Reward ENABLED (5/2) — Alice.pending_credits 0→1, Eva.pending_credits=1
+             after first verify; re-verify is a no-op. ✅
+          F) Persistent collapse referral transfer — placeholder.referred_by lifts
+             into existing user when existing has none; never overwrites. ✅
+          G) Self-refer guard — verifying with own code on existing user does not
+             set referred_by_user_id. ✅
+          H) Phone masking — referees[].phone returned as "********8422". ✅
+          I) Admin auth/RBAC — 401 without Bearer; support admin can READ
+             /admin/referrals (200) but POST /admin/referrals/settings → 403
+             "Requires one of roles: manager,super_admin". ✅
+          J) Leaderboard + stats — Alice listed with total_referrals=4,
+             verified_referrals=3; conversion_rate=83.3 matches formula. ✅
+          K) Audit log — admin.update_referral_settings entries created with
+             target_type='settings' and target_id='referrals'. ❌ destructive
+             flag is FALSE (review request requires true).
+          L) Cleanup — settings reset to disabled. ✅
+
+        ❗ ONE BUG (minor backend fix):
+          /app/backend/admin.py AUDIT_ACTIONS_DESTRUCTIVE (lines 188–201) does
+          NOT include "admin.update_referral_settings". As a result every
+          settings-update audit entry is written with destructive=False even
+          though the spec/review-request says destructive=true. Two-character
+          fix: add "admin.update_referral_settings" to the set. After fix, no
+          retest of the rest is required — only the destructive flag changes.
+
+        Backend log notes (informational only):
+          - passlib bcrypt cosmetic warning (no functional impact).
+          - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes, ≥32 recommended).
+
+        Test suite saved at /app/backend_test.py and is idempotent (uses ts-based
+        names + fresh phones each run).

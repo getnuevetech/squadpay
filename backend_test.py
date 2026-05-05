@@ -1,421 +1,410 @@
-"""Phase B backend tests: persistent users + admin block/unblock + group block.
+"""Phase C1 — Referrals backend test suite.
 
-Runs end-to-end against the live preview backend at EXPO_PUBLIC_BACKEND_URL/api.
+Run: python /app/backend_test.py
+Reads EXPO_PUBLIC_BACKEND_URL from /app/frontend/.env, all calls under /api.
+Admin credentials: super_admin from /app/memory/test_credentials.md.
 """
+from __future__ import annotations
+
+import json
 import os
+import re
 import sys
-import uuid
+import time
+import traceback
+from typing import Any, Dict, Optional, Tuple
+
 import requests
-from typing import Optional
 
-# ---------- Resolve base URL ----------
-ENV_PATH = "/app/frontend/.env"
-BASE = None
-with open(ENV_PATH) as fh:
-    for line in fh:
-        if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
-            BASE = line.strip().split("=", 1)[1].strip().strip('"').rstrip("/")
-            break
-if not BASE:
-    print("FATAL: EXPO_PUBLIC_BACKEND_URL not found")
-    sys.exit(2)
-API = f"{BASE}/api"
-print(f"[setup] API base = {API}")
+# ----- Config -----
+def _load_backend_url() -> str:
+    env_path = "/app/frontend/.env"
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    raise RuntimeError("EXPO_PUBLIC_BACKEND_URL not found in /app/frontend/.env")
 
+
+BASE = _load_backend_url().rstrip("/") + "/api"
 ADMIN_EMAIL = "[email protected]"
 ADMIN_PASSWORD = "ChangeMe123!"
 
-RUN_TAG = uuid.uuid4().hex[:6]
+REFERRAL_ALPHABET = set("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
 
-def _phone(seed: int) -> str:
-    digits = "".join(c for c in RUN_TAG if c.isdigit()).ljust(3, "0")[:3]
-    return f"+1555{digits}{seed:04d}"
+# ----- Test runner -----
+RESULTS = []  # list of (name, ok, msg)
 
-PHONE_A = _phone(9001)
-PHONE_C = _phone(9002)
 
-PASS = []
-FAIL = []
+def record(name: str, ok: bool, msg: str = ""):
+    RESULTS.append((name, ok, msg))
+    sym = "PASS" if ok else "FAIL"
+    print(f"[{sym}] {name}: {msg}")
 
-def _record(name: str, ok: bool, detail: str = ""):
-    icon = "PASS" if ok else "FAIL"
-    line = f"[{icon}] {name}"
-    if detail:
-        line += f" — {detail}"
-    print(line)
-    (PASS if ok else FAIL).append(name)
 
-def expect(name: str, cond: bool, detail: str = ""):
-    _record(name, bool(cond), detail)
+def expect(cond: bool, name: str, msg: str = ""):
+    record(name, bool(cond), msg)
     return bool(cond)
 
-def http(method: str, path: str, *, json_body=None, headers=None, params=None,
-         expect_status: Optional[int] = None, name: Optional[str] = None):
-    url = f"{API}{path}"
+
+def http(method: str, path: str, **kw) -> requests.Response:
+    url = f"{BASE}{path}"
+    return requests.request(method, url, timeout=30, **kw)
+
+
+def jdump(r: requests.Response) -> str:
     try:
-        r = requests.request(method, url, json=json_body, headers=headers, params=params, timeout=30)
-    except Exception as e:
-        _record(name or f"{method} {path}", False, f"network error: {e}")
-        return None
-    if expect_status is not None:
-        ok = r.status_code == expect_status
-        _record(name or f"{method} {path} → {expect_status}", ok,
-                f"got {r.status_code} body={r.text[:200]}")
-    return r
+        return json.dumps(r.json())[:300]
+    except Exception:
+        return r.text[:300]
 
 
-def admin_login() -> str:
-    r = http("POST", "/admin/auth/login",
-             json_body={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
-             expect_status=200, name="admin/auth/login super_admin")
-    if r is None or r.status_code != 200:
-        print("FATAL: admin login failed"); sys.exit(2)
+# ----- Auth helpers -----
+def admin_login(email: str = ADMIN_EMAIL, pw: str = ADMIN_PASSWORD) -> str:
+    r = http("POST", "/admin/auth/login", json={"email": email, "password": pw})
+    assert r.status_code == 200, f"admin login failed {r.status_code} {r.text}"
     return r.json()["token"]
 
 
-def auth_headers(token: str) -> dict:
+def auth_headers(token: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def register(name: str) -> str:
-    r = requests.post(f"{API}/auth/register", json={"name": name}, timeout=15)
-    r.raise_for_status()
-    return r.json()["id"]
+def register_user(name: str, referral_code: Optional[str] = None) -> requests.Response:
+    payload: Dict[str, Any] = {"name": name}
+    if referral_code is not None:
+        payload["referral_code"] = referral_code
+    return http("POST", "/auth/register", json=payload)
 
 
-def send_otp(user_id: str, phone: str):
-    r = requests.post(f"{API}/auth/send-otp", json={"user_id": user_id, "phone": phone}, timeout=15)
-    r.raise_for_status()
+def send_otp(user_id: str, phone: str) -> requests.Response:
+    return http("POST", "/auth/send-otp", json={"user_id": user_id, "phone": phone})
 
 
 def verify_otp(user_id: str, phone: str, code: str = "123456") -> requests.Response:
-    return requests.post(f"{API}/auth/verify-otp",
-                         json={"user_id": user_id, "phone": phone, "code": code}, timeout=15)
+    return http("POST", "/auth/verify-otp", json={"user_id": user_id, "phone": phone, "code": code})
 
 
-# ============ Scenario A ============
-def scenario_A():
-    print("\n=== Scenario A: persistent user collapse ===")
-    placeholder_a = register("Foo")
-    send_otp(placeholder_a, PHONE_A)
-    r1 = verify_otp(placeholder_a, PHONE_A)
-    expect("A: first verify-otp 200", r1.status_code == 200, f"{r1.status_code} {r1.text[:200]}")
-    if r1.status_code != 200:
-        return None, None
-    A1 = r1.json()["id"]
-    expect("A: first verify-otp returns own placeholder id (no prior collapse)", A1 == placeholder_a,
-           f"A1={A1} placeholder={placeholder_a}")
-
-    gbody = {
-        "lead_id": A1,
-        "title": "Pizza Night",
-        "total_amount": 30.0,
-        "split_mode": "fast",
-        "tax": 0.0, "tip": 0.0,
-        "items": [{"name": "Pizza", "price": 30.0, "quantity": 1}],
-    }
-    rg = requests.post(f"{API}/groups", json=gbody, timeout=15)
-    expect("A: create group as A1", rg.status_code == 200, f"{rg.status_code} {rg.text[:200]}")
-    if rg.status_code != 200:
-        return A1, None
-    G1 = rg.json()["id"]
-
-    placeholder_b = register("Bar")
-    expect("A: placeholder_b distinct from A1", placeholder_b != A1)
-    send_otp(placeholder_b, PHONE_A)
-    r2 = verify_otp(placeholder_b, PHONE_A)
-    expect("A: 2nd verify-otp 200 (collapse)", r2.status_code == 200, f"{r2.status_code} {r2.text[:200]}")
-    if r2.status_code == 200:
-        body = r2.json()
-        expect("A: collapsed user_id == A1", body["id"] == A1, f"got {body['id']}")
-        expect("A: name refreshed to 'Bar'", body.get("name") == "Bar", f"name={body.get('name')}")
-
-    r3 = requests.get(f"{API}/users/{placeholder_b}", timeout=15)
-    expect("A: placeholder_b deleted (GET → 404)", r3.status_code == 404, f"{r3.status_code}")
-
-    r4 = requests.get(f"{API}/users/{A1}/groups", timeout=15)
-    has = r4.status_code == 200 and any(g["id"] == G1 for g in r4.json())
-    expect("A: A1/groups still includes original group", has, f"{r4.status_code} {r4.text[:200]}")
-
-    r5 = requests.get(f"{API}/users/{A1}", timeout=15)
-    expect("A: GET /users/A1 name == Bar",
-           r5.status_code == 200 and r5.json().get("name") == "Bar",
-           f"{r5.status_code} {r5.text[:120]}")
-    return A1, G1
+def fresh_phone(seq: int = 0) -> str:
+    # +1555 + 7 digits
+    base = int(time.time())
+    return f"+1555{(base + seq) % 10000000:07d}"
 
 
-# ============ Scenario B ============
-def scenario_B(token, A1, G1):
-    print("\n=== Scenario B: admin list + detail ===")
-    digits = PHONE_A.lstrip("+")[1:]  # drop leading 1
-    r = http("GET", "/admin/users", params={"q": digits},
-             headers=auth_headers(token), expect_status=200, name="B: admin/users search by phone")
-    if r is None or r.status_code != 200:
-        return
-    items = r.json().get("items", [])
-    a_row = next((u for u in items if u["id"] == A1), None)
-    expect("B: search results contain A1", a_row is not None,
-           f"items={[u['id'] for u in items][:5]} total={r.json().get('total')}")
-    if a_row:
-        expect("B: A1 groups_led >= 1", a_row.get("groups_led", 0) >= 1, f"groups_led={a_row.get('groups_led')}")
-
-    r2 = http("GET", f"/admin/users/{A1}", headers=auth_headers(token),
-              expect_status=200, name="B: admin/users/{A1}")
-    if r2 and r2.status_code == 200:
-        led = r2.json().get("led_groups", [])
-        expect("B: led_groups includes G1", any(g["id"] == G1 for g in led),
-               f"led_ids={[g['id'] for g in led]}")
-
-
-# ============ Scenario C ============
-def scenario_C(token, A1):
-    print("\n=== Scenario C: block A1 then verify enforcement ===")
-    r = http("POST", f"/admin/users/{A1}/block",
-             json_body={"is_blocked": True, "reason": "test"},
-             headers=auth_headers(token), expect_status=200, name="C: block A1")
-    if r and r.status_code == 200:
-        expect("C: response is_blocked=true", r.json().get("is_blocked") is True)
-        expect("C: response blocked_reason='test'", r.json().get("blocked_reason") == "test")
-
-    r2 = http("GET", f"/admin/users/{A1}", headers=auth_headers(token),
-              expect_status=200, name="C: GET admin user shows blocked")
-    if r2 and r2.status_code == 200:
-        b = r2.json()
-        expect("C: detail blocked=true", b.get("is_blocked") is True)
-        expect("C: detail reason='test'", b.get("blocked_reason") == "test")
-
-    pid = register("Baz")
-    send_otp(pid, PHONE_A)
-    r3 = verify_otp(pid, PHONE_A)
-    try:
-        body3 = r3.json().get("detail", "")
-    except Exception:
-        body3 = r3.text
-    expect("C: blocked user verify-otp → 403", r3.status_code == 403, f"{r3.status_code} {r3.text[:200]}")
-    expect("C: response message contains 'blocked'", "block" in str(body3).lower(), f"detail={body3}")
-
-    rg = requests.post(f"{API}/groups", json={
-        "lead_id": A1, "title": "Should Fail", "total_amount": 10.0,
-        "split_mode": "fast", "items": [{"name": "X", "price": 10.0, "quantity": 1}],
-    }, timeout=15)
-    expect("C: create group as blocked A1 → 403", rg.status_code == 403, f"{rg.status_code} {rg.text[:200]}")
-
-    cid = register("Cara")
-    send_otp(cid, PHONE_C)
-    rc = verify_otp(cid, PHONE_C)
-    if rc.status_code != 200:
-        expect("C: setup user C verified", False, rc.text[:200])
-        return None
-    Cuid = rc.json()["id"]
-    rgc = requests.post(f"{API}/groups", json={
-        "lead_id": Cuid, "title": "Cara's Bill", "total_amount": 20.0,
-        "split_mode": "fast", "items": [{"name": "Soup", "price": 20.0, "quantity": 1}],
-    }, timeout=15)
-    expect("C: setup create C's group", rgc.status_code == 200, f"{rgc.status_code} {rgc.text[:200]}")
-    if rgc.status_code != 200:
-        return Cuid
-    Cgid = rgc.json()["id"]
-
-    rj = requests.post(f"{API}/groups/{Cgid}/join", json={"user_id": A1}, timeout=15)
-    expect("C: join with blocked A1 → 403", rj.status_code == 403, f"{rj.status_code} {rj.text[:200]}")
-
-    rcontr = requests.post(f"{API}/groups/{Cgid}/contribute", json={"user_id": A1}, timeout=15)
-    expect("C: contribute with blocked A1 → 403", rcontr.status_code == 403, f"{rcontr.status_code} {rcontr.text[:200]}")
-    return Cuid
-
-
-# ============ Scenario D ============
-def scenario_D(token, A1):
-    print("\n=== Scenario D: unblock restores access ===")
-    r = http("POST", f"/admin/users/{A1}/block",
-             json_body={"is_blocked": False},
-             headers=auth_headers(token), expect_status=200, name="D: unblock A1")
-    if r and r.status_code == 200:
-        expect("D: response is_blocked=false", r.json().get("is_blocked") is False)
-
-    pid = register("BarAgain")
-    send_otp(pid, PHONE_A)
-    r2 = verify_otp(pid, PHONE_A)
-    expect("D: verify-otp after unblock → 200", r2.status_code == 200, f"{r2.status_code} {r2.text[:200]}")
-    if r2.status_code == 200:
-        expect("D: collapse still maps to A1", r2.json()["id"] == A1, f"got {r2.json()['id']}")
-        expect("D: A1 verified=true", r2.json().get("verified") is True)
-
-    rg = requests.post(f"{API}/groups", json={
-        "lead_id": A1, "title": "Post-Unblock Bill", "total_amount": 12.0,
-        "split_mode": "fast", "items": [{"name": "Cake", "price": 12.0, "quantity": 1}],
-    }, timeout=15)
-    expect("D: create group after unblock → 200", rg.status_code == 200, f"{rg.status_code} {rg.text[:200]}")
-
-
-# ============ Scenario E ============
-def scenario_E(token, A1, G1, Cuid):
-    print("\n=== Scenario E: group block ===")
-    if not G1:
-        expect("E: G1 exists", False, "skipped"); return
-    r = http("POST", f"/admin/groups/{G1}/block",
-             json_body={"is_blocked": True, "reason": "dispute"},
-             headers=auth_headers(token), expect_status=200, name="E: block group G1")
-    if r and r.status_code == 200:
-        expect("E: group is_blocked=true", r.json().get("is_blocked") is True)
-        expect("E: group blocked_reason='dispute'", r.json().get("blocked_reason") == "dispute")
-
-    if Cuid:
-        rj = requests.post(f"{API}/groups/{G1}/join", json={"user_id": Cuid}, timeout=15)
-        expect("E: join blocked group → 403", rj.status_code == 403, f"{rj.status_code} {rj.text[:200]}")
-
-    rco = requests.post(f"{API}/groups/{G1}/contribute", json={"user_id": A1}, timeout=15)
-    expect("E: contribute on blocked group → 403", rco.status_code == 403, f"{rco.status_code} {rco.text[:200]}")
-
-    rp = requests.post(f"{API}/groups/{G1}/pay", json={"user_id": A1}, timeout=15)
-    expect("E: pay blocked group → 403", rp.status_code == 403, f"{rp.status_code} {rp.text[:200]}")
-
-    ru = http("POST", f"/admin/groups/{G1}/block",
-              json_body={"is_blocked": False},
-              headers=auth_headers(token), expect_status=200, name="E: unblock group G1")
-    if ru and ru.status_code == 200:
-        expect("E: group is_blocked=false", ru.json().get("is_blocked") is False)
-
-    if Cuid:
-        rj2 = requests.post(f"{API}/groups/{G1}/join", json={"user_id": Cuid}, timeout=15)
-        expect("E: join after unblock not 403", rj2.status_code != 403, f"{rj2.status_code} {rj2.text[:200]}")
-
-    rco2 = requests.post(f"{API}/groups/{G1}/contribute", json={"user_id": A1}, timeout=15)
-    expect("E: contribute after unblock not 403", rco2.status_code != 403, f"{rco2.status_code} {rco2.text[:200]}")
-
-
-# ============ Scenario F ============
-def scenario_F(super_token, A1):
-    print("\n=== Scenario F: admin auth + RBAC ===")
-    r = requests.get(f"{API}/admin/users", timeout=15)
-    expect("F: GET /admin/users without Bearer → 401", r.status_code == 401, f"{r.status_code} {r.text[:200]}")
-
-    support_email = f"support+{RUN_TAG}@example.com"
-    rc = http("POST", "/admin/admins",
-              json_body={"email": support_email, "password": "Support123!", "name": "Support User", "role": "support"},
-              headers=auth_headers(super_token), expect_status=200, name="F: create support admin")
-    if rc is None or rc.status_code != 200:
-        return None
-
-    rl = http("POST", "/admin/auth/login",
-              json_body={"email": support_email, "password": "Support123!"},
-              expect_status=200, name="F: login as support")
-    if rl is None or rl.status_code != 200:
-        return None
-    sup_token = rl.json()["token"]
-
-    rb = http("POST", f"/admin/users/{A1}/block",
-              json_body={"is_blocked": True, "reason": "rbac test"},
-              headers=auth_headers(sup_token), name="F: block as support")
-    expect("F: support block_user is 403", rb is not None and rb.status_code == 403,
-           f"{rb.status_code if rb is not None else 'no resp'} {rb.text[:200] if rb is not None else ''}")
-    if rb is not None and rb.status_code == 403:
-        try:
-            detail = rb.json().get("detail", "")
-        except Exception:
-            detail = rb.text
-        expect("F: support 403 mentions roles", "role" in detail.lower(), f"detail={detail}")
-    return sup_token
-
-
-# ============ Scenario G ============
-def scenario_G(token, A1, G1):
-    print("\n=== Scenario G: audit log ===")
-    r = http("GET", "/admin/audit-log", params={"limit": 100},
-             headers=auth_headers(token), expect_status=200, name="G: GET audit-log")
-    if r is None or r.status_code != 200:
-        return
-    items = r.json().get("items", [])
-    actions = [i["action"] for i in items]
-    print(f"   audit actions sample: {actions[:15]}")
-
-    block_user = next((i for i in items if i["action"] == "admin.block_user" and i.get("target_id") == A1), None)
-    unblock_user = next((i for i in items if i["action"] == "admin.unblock_user" and i.get("target_id") == A1), None)
-    block_group = next((i for i in items if i["action"] == "admin.block_group" and i.get("target_id") == G1), None)
-    unblock_group = next((i for i in items if i["action"] == "admin.unblock_group" and i.get("target_id") == G1), None)
-
-    expect("G: admin.block_user entry for A1", block_user is not None)
-    if block_user:
-        expect("G: block_user destructive=true", block_user.get("destructive") is True)
-        expect("G: block_user target_type=user", block_user.get("target_type") == "user")
-    expect("G: admin.unblock_user entry for A1", unblock_user is not None)
-    if unblock_user:
-        expect("G: unblock_user destructive=true", unblock_user.get("destructive") is True)
-    expect("G: admin.block_group entry for G1", block_group is not None)
-    if block_group:
-        expect("G: block_group destructive=true", block_group.get("destructive") is True)
-        expect("G: block_group target_type=group", block_group.get("target_type") == "group")
-    expect("G: admin.unblock_group entry for G1", unblock_group is not None)
-    if unblock_group:
-        expect("G: unblock_group destructive=true", unblock_group.get("destructive") is True)
-
-
-# ============ Scenario H ============
-def scenario_H(token, A1, G1):
-    print("\n=== Scenario H: search & filters ===")
-    http("POST", f"/admin/users/{A1}/block",
-         json_body={"is_blocked": True, "reason": "filter test"},
-         headers=auth_headers(token), expect_status=200, name="H: re-block A1 for filter")
-    r1 = http("GET", "/admin/users", params={"blocked": "true"},
-              headers=auth_headers(token), expect_status=200, name="H: list blocked=true")
-    if r1 and r1.status_code == 200:
-        items = r1.json().get("items", [])
-        all_blocked = all(u.get("is_blocked") is True for u in items)
-        expect("H: blocked=true returns only blocked users", all_blocked,
-               f"items={[u['id'] + ':' + str(u.get('is_blocked')) for u in items[:5]]}")
-        expect("H: A1 included in blocked filter", any(u["id"] == A1 for u in items))
-    http("POST", f"/admin/users/{A1}/block",
-         json_body={"is_blocked": False},
-         headers=auth_headers(token), expect_status=200, name="H: unblock A1 after filter")
-
-    r2 = http("GET", "/admin/users", params={"verified": "true", "limit": 50},
-              headers=auth_headers(token), expect_status=200, name="H: list verified=true")
-    if r2 and r2.status_code == 200:
-        items = r2.json().get("items", [])
-        all_v = all(u.get("verified") is True for u in items)
-        expect("H: verified=true returns only verified", all_v,
-               f"sample={[u.get('verified') for u in items[:5]]}")
-
-    r3 = http("GET", "/admin/groups", params={"status": "open", "limit": 50},
-              headers=auth_headers(token), expect_status=200, name="H: list groups status=open")
-    if r3 and r3.status_code == 200:
-        items = r3.json().get("items", [])
-        all_open = all(g.get("status") == "open" for g in items)
-        expect("H: status=open returns only open groups", all_open,
-               f"sample={[g.get('status') for g in items[:5]]}")
-
-    r4 = http("GET", "/admin/users", params={"skip": 0, "limit": 2},
-              headers=auth_headers(token), expect_status=200, name="H: pagination users limit=2")
-    if r4 and r4.status_code == 200:
-        items = r4.json().get("items", [])
-        expect("H: at most 2 items returned", len(items) <= 2, f"got {len(items)}")
-
-
+# ----- Scenarios -----
 def main():
-    token = admin_login()
-    A1, G1 = scenario_A()
-    if not A1:
-        print("\nFATAL: scenario A failed; aborting")
-        sys.exit(2)
-    scenario_B(token, A1, G1)
-    Cuid = scenario_C(token, A1)
-    scenario_D(token, A1)
-    scenario_E(token, A1, G1, Cuid)
-    scenario_F(token, A1)
-    scenario_G(token, A1, G1)
-    scenario_H(token, A1, G1)
+    print(f"BASE = {BASE}")
+    ts = int(time.time())
 
+    # Admin login (used throughout)
+    token = admin_login()
+    H = auth_headers(token)
+    expect(bool(token), "admin_login", "got token")
+
+    # Get current settings (and remember to restore at cleanup)
+    r = http("GET", "/admin/referrals/settings", headers=H)
+    expect(r.status_code == 200, "settings.get_initial", f"{r.status_code} {jdump(r)}")
+    initial_settings = r.json() if r.status_code == 200 else {}
+
+    # Reset to default disabled state to start
+    r = http("POST", "/admin/referrals/settings",
+             headers=H, json={"enabled": False, "referrer_credit": 0, "referee_credit": 0})
+    expect(r.status_code == 200, "settings.reset_disabled", f"{r.status_code}")
+
+    # ----- A) Code generation -----
+    r1 = register_user(f"AliceC1{ts}")
+    r2 = register_user(f"BobC1{ts}")
+    expect(r1.status_code == 200, "A.register_alice", f"{r1.status_code} {jdump(r1)}")
+    expect(r2.status_code == 200, "A.register_bob", f"{r2.status_code} {jdump(r2)}")
+    alice = r1.json()
+    bob = r2.json()
+    alice_code = alice.get("referral_code")
+    bob_code = bob.get("referral_code")
+    expect(isinstance(alice_code, str) and len(alice_code) == 6,
+           "A.alice_code_len6", f"code={alice_code}")
+    expect(isinstance(bob_code, str) and len(bob_code) == 6,
+           "A.bob_code_len6", f"code={bob_code}")
+    expect(all(c in REFERRAL_ALPHABET for c in (alice_code or "")),
+           "A.alice_code_alphabet", f"code={alice_code}")
+    expect(all(c in REFERRAL_ALPHABET for c in (bob_code or "")),
+           "A.bob_code_alphabet", f"code={bob_code}")
+    expect(alice_code != bob_code, "A.codes_distinct",
+           f"alice={alice_code} bob={bob_code}")
+
+    # ----- B) Public lookup -----
+    r = http("GET", f"/referrals/lookup/{alice_code}")
+    ok = r.status_code == 200 and r.json().get("valid") is True \
+        and r.json().get("referrer_name") == alice["name"] \
+        and r.json().get("referrer_code") == alice_code
+    expect(ok, "B.lookup_valid", f"{r.status_code} {jdump(r)}")
+
+    r = http("GET", "/referrals/lookup/NOPE99")
+    ok = r.status_code == 404 and "Referral code not found" in (r.json().get("detail", "") or "")
+    expect(ok, "B.lookup_unknown_404", f"{r.status_code} {jdump(r)}")
+
+    # ----- C) Register-with-code -----
+    r = register_user(f"BobBob{ts}", alice_code)
+    expect(r.status_code == 200, "C.register_with_code_status", f"{r.status_code} {jdump(r)}")
+    bb = r.json() if r.status_code == 200 else {}
+    expect(bb.get("referred_by_user_id") == alice["id"],
+           "C.referred_by_set", f"got={bb.get('referred_by_user_id')} expect={alice['id']}")
+    expect(isinstance(bb.get("referral_code"), str)
+           and bb.get("referral_code") != alice_code,
+           "C.own_code_distinct", f"own={bb.get('referral_code')} alice={alice_code}")
+
+    r = register_user(f"BogusRef{ts}", "XXXX99")
+    ok = r.status_code == 400 and "Invalid referral code" in (r.json().get("detail", "") or "")
+    expect(ok, "C.invalid_code_400", f"{r.status_code} {jdump(r)}")
+
+    # ----- D) Reward DISABLED -----
+    # Already disabled above. Register Dan with Alice's code.
+    rd = register_user(f"DanD{ts}", alice_code)
+    expect(rd.status_code == 200, "D.register_dan", f"{rd.status_code}")
+    dan = rd.json()
+    dan_phone = fresh_phone(seq=1)
+    s = send_otp(dan["id"], dan_phone)
+    expect(s.status_code == 200, "D.send_otp_dan", f"{s.status_code}")
+    v = verify_otp(dan["id"], dan_phone)
+    expect(v.status_code == 200, "D.verify_otp_dan", f"{v.status_code} {jdump(v)}")
+    dan_real = v.json() if v.status_code == 200 else {}
+
+    # Capture Alice's pending_credits BEFORE checking via the user-facing endpoint:
+    r = http("GET", f"/users/{alice['id']}/referrals")
+    alice_pc_after_dan = r.json().get("pending_credits", -1) if r.status_code == 200 else -1
+    expect(r.status_code == 200, "D.alice_referrals_get", f"{r.status_code}")
+    expect(alice_pc_after_dan == 0, "D.no_pending_credits_when_disabled",
+           f"alice.pending_credits={alice_pc_after_dan} (expected 0)")
+
+    # Idempotency: re-send + re-verify same Dan phone — should not create credits
+    s2 = send_otp(dan_real["id"], dan_phone)
+    v2 = verify_otp(dan_real["id"], dan_phone)
+    expect(v2.status_code == 200, "D.reverify_dan", f"{v2.status_code}")
+    r = http("GET", f"/users/{alice['id']}/referrals")
+    alice_pc_after_dan2 = r.json().get("pending_credits", -1) if r.status_code == 200 else -1
+    expect(alice_pc_after_dan2 == 0, "D.idempotent_disabled",
+           f"alice.pending_credits={alice_pc_after_dan2}")
+
+    # ----- E) Reward ENABLED -----
+    r = http("POST", "/admin/referrals/settings",
+             headers=H, json={"enabled": True, "referrer_credit": 5, "referee_credit": 2})
+    expect(r.status_code == 200, "E.enable_settings", f"{r.status_code} {jdump(r)}")
+
+    # Get baseline
+    r = http("GET", f"/users/{alice['id']}/referrals")
+    alice_pc_before_eva = r.json().get("pending_credits", 0) if r.status_code == 200 else 0
+
+    re_ = register_user(f"EvaE{ts}", alice_code)
+    expect(re_.status_code == 200, "E.register_eva", f"{re_.status_code}")
+    eva = re_.json()
+    eva_phone = fresh_phone(seq=2)
+    s = send_otp(eva["id"], eva_phone)
+    v = verify_otp(eva["id"], eva_phone)
+    expect(v.status_code == 200, "E.verify_eva", f"{v.status_code} {jdump(v)}")
+    eva_real = v.json() if v.status_code == 200 else {}
+
+    r = http("GET", f"/users/{alice['id']}/referrals")
+    alice_pc_after_eva = r.json().get("pending_credits", 0) if r.status_code == 200 else 0
+    expect(alice_pc_after_eva >= alice_pc_before_eva + 1,
+           "E.alice_pending_increased",
+           f"before={alice_pc_before_eva} after={alice_pc_after_eva}")
+
+    r = http("GET", f"/users/{eva_real.get('id')}/referrals")
+    expect(r.status_code == 200, "E.eva_referrals_get", f"{r.status_code}")
+    eva_pc = r.json().get("pending_credits", 0) if r.status_code == 200 else 0
+    expect(eva_pc >= 1, "E.eva_pending_credit", f"eva.pending_credits={eva_pc}")
+
+    # Idempotency: re-verify Eva — pending should NOT increase
+    s = send_otp(eva_real["id"], eva_phone)
+    v = verify_otp(eva_real["id"], eva_phone)
+    expect(v.status_code == 200, "E.reverify_eva", f"{v.status_code}")
+    r = http("GET", f"/users/{alice['id']}/referrals")
+    alice_pc_after_eva2 = r.json().get("pending_credits", 0) if r.status_code == 200 else 0
+    expect(alice_pc_after_eva2 == alice_pc_after_eva,
+           "E.idempotent_enabled",
+           f"after_eva={alice_pc_after_eva} after_re={alice_pc_after_eva2}")
+
+    # ----- F) Persistent collapse referral transfer -----
+    # 1. OldUser, no code, verified with phone Y.
+    ro = register_user(f"OldUser{ts}")
+    expect(ro.status_code == 200, "F.register_old", f"{ro.status_code}")
+    old = ro.json()
+    phone_y = fresh_phone(seq=3)
+    s = send_otp(old["id"], phone_y)
+    v = verify_otp(old["id"], phone_y)
+    expect(v.status_code == 200, "F.verify_old", f"{v.status_code}")
+    old_real = v.json() if v.status_code == 200 else {}
+    expect(not old_real.get("referred_by_user_id"),
+           "F.old_no_initial_referrer", f"{old_real.get('referred_by_user_id')}")
+
+    # 2. Fresh placeholder with Alice's code, verify with phone Y → collapses; transfer.
+    rp = register_user(f"FreshPlaceholder{ts}", alice_code)
+    expect(rp.status_code == 200, "F.register_placeholder", f"{rp.status_code}")
+    ph = rp.json()
+    expect(ph.get("referred_by_user_id") == alice["id"],
+           "F.placeholder_set", f"{ph.get('referred_by_user_id')}")
+    s = send_otp(ph["id"], phone_y)
+    v = verify_otp(ph["id"], phone_y)
+    expect(v.status_code == 200, "F.collapse_to_old", f"{v.status_code} {jdump(v)}")
+    collapsed = v.json() if v.status_code == 200 else {}
+    expect(collapsed.get("id") == old_real.get("id"),
+           "F.collapse_same_id",
+           f"got={collapsed.get('id')} old={old_real.get('id')}")
+    expect(collapsed.get("referred_by_user_id") == alice["id"],
+           "F.referrer_transferred",
+           f"collapsed.referred_by={collapsed.get('referred_by_user_id')}")
+
+    # 3. Re-register with Bob's code, verify Y again — referred_by should NOT change.
+    rp2 = register_user(f"FreshPlaceholder2{ts}", bob_code)
+    ph2 = rp2.json() if rp2.status_code == 200 else {}
+    s = send_otp(ph2["id"], phone_y)
+    v = verify_otp(ph2["id"], phone_y)
+    expect(v.status_code == 200, "F.collapse_again", f"{v.status_code}")
+    collapsed2 = v.json() if v.status_code == 200 else {}
+    expect(collapsed2.get("referred_by_user_id") == alice["id"],
+           "F.referrer_unchanged_on_recollapse",
+           f"got={collapsed2.get('referred_by_user_id')}")
+
+    # ----- G) Self-refer guard -----
+    rs = register_user(f"Self{ts}")
+    expect(rs.status_code == 200, "G.register_self", f"{rs.status_code}")
+    self_user = rs.json()
+    self_phone = fresh_phone(seq=4)
+    s = send_otp(self_user["id"], self_phone)
+    v = verify_otp(self_user["id"], self_phone)
+    expect(v.status_code == 200, "G.verify_self", f"{v.status_code}")
+    self_real = v.json() if v.status_code == 200 else {}
+    self_code = self_real.get("referral_code") or self_user.get("referral_code")
+
+    # Now register a placeholder using self's own code, then verify with same phone
+    rsp = register_user(f"SelfPlaceholder{ts}", self_code)
+    sph = rsp.json() if rsp.status_code == 200 else {}
+    expect(sph.get("referred_by_user_id") == self_real.get("id"),
+           "G.placeholder_self_set", f"{sph.get('referred_by_user_id')}")
+    s = send_otp(sph["id"], self_phone)
+    v = verify_otp(sph["id"], self_phone)
+    expect(v.status_code == 200, "G.verify_self_collapse", f"{v.status_code}")
+    sc = v.json() if v.status_code == 200 else {}
+    expect(sc.get("id") == self_real.get("id"),
+           "G.collapsed_to_self", f"got={sc.get('id')} self={self_real.get('id')}")
+    expect(not sc.get("referred_by_user_id"),
+           "G.self_refer_blocked",
+           f"referred_by={sc.get('referred_by_user_id')} (must be None)")
+
+    # ----- H) Phone masking -----
+    r = http("GET", f"/users/{alice['id']}/referrals")
+    expect(r.status_code == 200, "H.alice_referrals", f"{r.status_code}")
+    body = r.json() if r.status_code == 200 else {}
+    referees = body.get("referees", [])
+    referees_with_phone = [x for x in referees if x.get("phone")]
+    if not referees_with_phone:
+        record("H.has_phone_referees", False, f"no referees with phone — referees={referees}")
+    else:
+        all_masked = True
+        for ree in referees_with_phone:
+            ph_str = ree.get("phone") or ""
+            ok_mask = "*" in ph_str and re.search(r"\d{4}$", ph_str) is not None
+            if not ok_mask:
+                all_masked = False
+                break
+        expect(all_masked, "H.phones_masked",
+               f"sample={referees_with_phone[0].get('phone')}")
+
+    # ----- I) Admin auth/RBAC -----
+    r = http("GET", "/admin/referrals")
+    expect(r.status_code == 401, "I.no_bearer_401", f"{r.status_code} {jdump(r)}")
+
+    # Create support admin (super_admin only)
+    support_email = f"support_c1_{ts}@example.com"
+    support_pw = "SupportPass123!"
+    r = http("POST", "/admin/admins", headers=H,
+             json={"email": support_email, "password": support_pw,
+                   "name": "C1 Support", "role": "support"})
+    expect(r.status_code == 200, "I.create_support", f"{r.status_code} {jdump(r)}")
+
+    # Login as support
+    r = http("POST", "/admin/auth/login",
+             json={"email": support_email, "password": support_pw})
+    expect(r.status_code == 200, "I.support_login", f"{r.status_code}")
+    support_token = r.json().get("token") if r.status_code == 200 else None
+    SH = auth_headers(support_token) if support_token else {}
+
+    # Support POST settings → 403
+    r = http("POST", "/admin/referrals/settings", headers=SH,
+             json={"enabled": False, "referrer_credit": 0, "referee_credit": 0})
+    ok = r.status_code == 403 and "Requires one of roles" in (r.json().get("detail", "") or "")
+    expect(ok, "I.support_post_settings_403",
+           f"{r.status_code} {jdump(r)}")
+
+    # Support GET leaderboard → 200
+    r = http("GET", "/admin/referrals", headers=SH)
+    expect(r.status_code == 200, "I.support_get_leaderboard_200",
+           f"{r.status_code} {jdump(r)}")
+
+    # ----- J) Admin leaderboard + stats -----
+    r = http("GET", "/admin/referrals", params={"q": "alice"}, headers=H)
+    expect(r.status_code == 200, "J.leaderboard_status", f"{r.status_code}")
+    payload = r.json() if r.status_code == 200 else {}
+    items = payload.get("items", [])
+    alice_row = next((x for x in items if x.get("user_id") == alice["id"]), None)
+    expect(alice_row is not None, "J.alice_in_leaderboard",
+           f"items_count={len(items)}; user_ids={[x.get('user_id') for x in items[:5]]}")
+    if alice_row:
+        expect(alice_row.get("referral_code") == alice_code,
+               "J.alice_code_matches",
+               f"row.code={alice_row.get('referral_code')} alice_code={alice_code}")
+        expect((alice_row.get("total_referrals") or 0) >= 2,
+               "J.alice_total_ge_2",
+               f"total={alice_row.get('total_referrals')}")
+        # verified_referrals reflects actual verified referees from /users/{id}/referrals
+        ru = http("GET", f"/users/{alice['id']}/referrals")
+        actual_verified = ru.json().get("verified_referees_count", -1) if ru.status_code == 200 else -1
+        expect(alice_row.get("verified_referrals") == actual_verified,
+               "J.verified_matches",
+               f"row.verified={alice_row.get('verified_referrals')} actual={actual_verified}")
+    stats = payload.get("stats", {}) or {}
+    if stats.get("total_referred", 0) > 0:
+        expected_cr = round(stats["verified_referred"] / stats["total_referred"] * 100, 1)
+        expect(stats.get("conversion_rate") == expected_cr,
+               "J.conversion_rate_correct",
+               f"got={stats.get('conversion_rate')} expected={expected_cr}")
+
+    # ----- K) Audit log -----
+    r = http("GET", "/admin/audit-log", params={"limit": 20}, headers=H)
+    expect(r.status_code == 200, "K.audit_log_status", f"{r.status_code}")
+    entries = r.json().get("items", []) if r.status_code == 200 else []
+    upd_entries = [e for e in entries if e.get("action") == "admin.update_referral_settings"]
+    expect(len(upd_entries) >= 1, "K.audit_has_update",
+           f"count={len(upd_entries)}")
+    if upd_entries:
+        e0 = upd_entries[0]
+        expect(e0.get("destructive") is True, "K.destructive_true",
+               f"destructive={e0.get('destructive')}")
+        expect(e0.get("target_type") == "settings",
+               "K.target_type_settings", f"target_type={e0.get('target_type')}")
+        expect(e0.get("target_id") == "referrals",
+               "K.target_id_referrals", f"target_id={e0.get('target_id')}")
+
+    # ----- L) Cleanup -----
+    r = http("POST", "/admin/referrals/settings", headers=H,
+             json={"enabled": False, "referrer_credit": 0, "referee_credit": 0})
+    expect(r.status_code == 200, "L.cleanup_disable", f"{r.status_code}")
+
+    # ----- Summary -----
     print("\n========== SUMMARY ==========")
-    print(f"PASS: {len(PASS)}")
-    print(f"FAIL: {len(FAIL)}")
-    if FAIL:
-        print("\nFailing assertions:")
-        for f in FAIL:
-            print(" -", f)
-        sys.exit(1)
-    print("All Phase B assertions passed.")
-    sys.exit(0)
+    fails = [r for r in RESULTS if not r[1]]
+    print(f"Total: {len(RESULTS)}, Pass: {len(RESULTS) - len(fails)}, Fail: {len(fails)}")
+    if fails:
+        print("\nFailing tests:")
+        for name, _ok, msg in fails:
+            print(f"  - {name}: {msg}")
+    return 0 if not fails else 1
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        sys.exit(main())
+    except Exception as e:
+        traceback.print_exc()
+        print(f"\nFATAL: {e}")
+        sys.exit(2)

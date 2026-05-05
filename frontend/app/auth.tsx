@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  TouchableOpacity,
   View,
 } from 'react-native';
 import { Button } from '../src/Button';
@@ -30,6 +31,28 @@ export default function AuthScreen() {
   const [refCode, setRefCode] = useState('');
   const [refValidated, setRefValidated] = useState<{ name: string; bonus: number } | null>(null);
   const [refError, setRefError] = useState<string | null>(null);
+  // Polish: resend timer for OTP
+  const [resendIn, setResendIn] = useState(0);
+  const [resending, setResending] = useState(false);
+  useEffect(() => {
+    if (step !== 'otp') return;
+    if (resendIn <= 0) return;
+    const t = setTimeout(() => setResendIn((s) => Math.max(0, s - 1)), 1000);
+    return () => clearTimeout(t);
+  }, [step, resendIn]);
+  const startResendCooldown = () => setResendIn(30);
+  const onResend = async () => {
+    if (!userId || !phone || resendIn > 0) return;
+    setResending(true);
+    try {
+      await api.sendOtp(userId, phone);
+      startResendCooldown();
+    } catch (e: any) {
+      Alert.alert('Could not resend', e?.message || 'Try again');
+    } finally {
+      setResending(false);
+    }
+  };
 
   const validateRefCode = async (code: string) => {
     const c = code.trim().toUpperCase();
@@ -81,6 +104,7 @@ export default function AuthScreen() {
     try {
       await api.sendOtp(userId, cleaned);
       setStep('otp');
+      startResendCooldown();
     } catch (e: any) {
       Alert.alert('Error', e.message);
     } finally {
@@ -239,6 +263,17 @@ export default function AuthScreen() {
               testID="auth-otp-verify-btn"
               style={{ marginTop: SPACING.lg }}
             />
+            <TouchableOpacity
+              onPress={onResend}
+              disabled={resendIn > 0 || resending}
+              activeOpacity={0.7}
+              style={{ alignSelf: 'center', marginTop: SPACING.md }}
+              testID="auth-otp-resend"
+            >
+              <Text style={[styles.resendText, (resendIn > 0 || resending) && { color: COLORS.disabledText }]}>
+                {resending ? 'Sending…' : resendIn > 0 ? `Resend code in ${resendIn}s` : 'Didn\u2019t get the code? Resend'}
+              </Text>
+            </TouchableOpacity>
           </View>
         )}
       </ScrollView>
@@ -277,4 +312,5 @@ const styles = StyleSheet.create({
   refOk: { color: COLORS.success, fontSize: FONT.sizes.sm, marginTop: SPACING.sm, fontWeight: FONT.weights.semibold },
   refErr: { color: COLORS.danger, fontSize: FONT.sizes.sm, marginTop: SPACING.sm, fontWeight: FONT.weights.semibold },
   refHint: { color: COLORS.subtext, fontSize: FONT.sizes.xs, marginTop: SPACING.sm, fontStyle: 'italic' },
+  resendText: { color: COLORS.primary, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold, textDecorationLine: 'underline' },
 });

@@ -65,6 +65,10 @@ export default function SummaryScreen() {
 
   const isLead = group.lead_id === userId;
   const myPer = group.per_user.find((p) => p.user_id === userId);
+  // C2: aggregate credit_applied for this user across their contributions on this bill
+  const myCreditApplied = (group.contributions || [])
+    .filter((c: any) => c.user_id === userId)
+    .reduce((s: number, c: any) => s + Number(c.credit_applied || 0), 0);
   const myShare = myPer?.total || 0;
   const myFood = myPer?.food || 0;
   const myExtras = myPer?.tax_tip || 0;
@@ -183,6 +187,12 @@ export default function SummaryScreen() {
             <View style={styles.breakdownRow}>
               <Text style={styles.breakdownKey}>Repaid</Text>
               <Text style={[styles.breakdownVal, { color: '#A7F3D0' }]}>−${myRepaid.toFixed(2)}</Text>
+            </View>
+          )}
+          {myCreditApplied > 0 && (
+            <View style={styles.breakdownRow}>
+              <Text style={[styles.breakdownKey, { color: '#A7F3D0' }]}>Credit applied</Text>
+              <Text style={[styles.breakdownVal, { color: '#A7F3D0' }]}>−${myCreditApplied.toFixed(2)}</Text>
             </View>
           )}
           {(myContributed > 0 || myRepaid > 0) && (

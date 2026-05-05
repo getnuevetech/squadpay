@@ -6,16 +6,18 @@ import { Button } from '../../../src/Button';
 import { COLORS, FONT, SPACING } from '../../../src/theme';
 
 export default function SuccessScreen() {
-  const { id, amount, kind } = useLocalSearchParams<{
+  const { id, amount, kind, via } = useLocalSearchParams<{
     id: string;
     amount?: string;
     kind?: string;
+    via?: string;
   }>();
   const router = useRouter();
 
   const amt = parseFloat(amount || '0').toFixed(2);
   const isLeadPay = kind === 'lead';
   const isContribute = kind === 'contribute';
+  const viaStripe = via === 'stripe';
 
   return (
     <SafeAreaView edges={['top', 'bottom']} style={{ flex: 1, backgroundColor: COLORS.bg }}>
@@ -27,9 +29,16 @@ export default function SuccessScreen() {
           {isLeadPay ? 'Bill paid!' : isContribute ? 'Contributed!' : 'Payment sent!'}
         </Text>
         <Text style={styles.amount}>${amt}</Text>
+        {viaStripe ? (
+          <View style={styles.stripeChip} testID="success-via-stripe">
+            <Text style={styles.stripeChipText}>✓ Paid via Stripe</Text>
+          </View>
+        ) : null}
         <Text style={styles.sub} testID="success-subtitle">
           {isLeadPay
-            ? "You paid the restaurant. We'll track repayments from your group."
+            ? viaStripe
+              ? "Stripe charged the bill in full. We'll continue tracking repayments from your group."
+              : "You paid the restaurant. We'll track repayments from your group."
             : isContribute
             ? "Your share is now in the group wallet. The lead will pay the merchant."
             : 'Your repayment has been recorded.'}
@@ -99,4 +108,6 @@ const styles = StyleSheet.create({
     maxWidth: 320,
   },
   actions: { alignSelf: 'stretch', marginTop: SPACING.xxl },
+  stripeChip: { marginTop: SPACING.sm, paddingHorizontal: 12, paddingVertical: 4, borderRadius: 999, backgroundColor: '#635BFF' + '22', borderWidth: 1, borderColor: '#635BFF' },
+  stripeChipText: { color: '#635BFF', fontSize: FONT.sizes.xs, fontWeight: FONT.weights.bold, letterSpacing: 0.5 },
 });

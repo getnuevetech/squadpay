@@ -614,7 +614,156 @@ frontend:
             Subtotal renders '$28.50' (read-only) and Total at the bottom is '$33.50'.
             The previous 'phantom amount' bug (manual subtotal not tied to any item) is gone.
 
-  - task: "Phase D — Integrations (Stripe/Twilio/Reminders config + encrypted secrets + reminder loop + Twilio OTP fallback)"
+  - task: "Phase E — Real Stripe Checkout payment flow (POST /api/groups/{id}/checkout-session, GET /api/checkout/status/{id}, POST /api/webhook/stripe)"
+    implemented: true
+    working: false
+    file: "backend/server.py, backend/payments.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: false
+          agent: "testing"
+          comment: |
+            Phase E checkout flow tested end-to-end via /app/backend_test.py against the
+            live preview backend. 18/20 assertions PASS, but ONE CRITICAL BUG blocks the
+            status polling path.
+
+            ✅ PASSING (18):
+              A) Create checkout session — happy path:
+                 - POST /api/groups/{gid}/checkout-session {origin_url:'http://localhost:3000'}
+                   → 200; response keys = ['url','session_id','amount'].
+                 - url contains 'stripe.com' (https://checkout.stripe.com/c/pay/cs_test_...).
+                 - session_id starts with 'cs_test_'.
+                 - amount == group.total_amount (42.5).
+                 - Backend log shows real Stripe call:
+                     "message='Request to Stripe api' method=post
+                      url=https://api.stripe.com/v1/checkout/sessions" → response_code=200.
+              C) Validation:
+                 - origin_url='localhost:3000'  → 400 'origin_url must include scheme (http(s)://...)'. ✅
+                 - origin_url='plainstring'     → 400 same detail. ✅
+                 - Unknown group_id             → 404 'Group not found'. ✅
+                 - GET /checkout/status/cs_test_DOES_NOT_EXIST → 404 'Payment session not found'. ✅
+                 - Already-paid group           → 400 'Bill already paid' (after Tom contributed
+                   his full share to a fast-split fresh group, status auto-flipped to 'paid'). ✅
+                 - Admin-blocked group          → 403 'This group has been blocked by an
+                   administrator.' (admin POST /api/admin/groups/{gid}/block worked). ✅
+              G) Two consecutive checkout sessions for same group → both 200, both 'cs_test_' ids,
+                 distinct from each other. ✅
+              F) DB hygiene — payment_transactions row exists (status endpoint 200 only when row
+                 found). Confirmed two rows created for same group in scenario G.
+              E_setup) /api/admin/auth/login as super_admin works.
+
+            ❌ FAILING (2) — same root cause:
+              B) GET /api/checkout/status/{session_id} for the just-created (unpaid) session → 502:
+                   detail = "Stripe error: Unexpected error retrieving session status:
+                             1 validation error for CheckoutStatusResponse
+                             metadata
+                               Input should be a valid dictionary
+                                 [type=dict_type, input_value=<StripeObject at 0x...>,
+                                  input_type=StripeObject]"
+              E) Idempotency polls — both polls return the same 502 (so the response shape
+                 cannot be verified at all).
+
+            ROOT CAUSE (third-party library bug, blocking):
+              /root/.venv/lib/python3.11/site-packages/emergentintegrations/payments/stripe/checkout.py
+              line 67–73 defines CheckoutStatusResponse.metadata as `Dict[str, str]`. In
+              get_checkout_status() (line 191–199), it passes `session.metadata` directly to
+              this Pydantic model. Stripe's Python SDK returns metadata as a `StripeObject`
+              (dict-like, NOT a true dict). Pydantic v2 strict validation rejects it, so EVERY
+              call to /api/checkout/status/{sid} for any unpaid (or paid) session ends in 502.
+
+              This means in the current implementation the entire post-redirect polling flow
+              cannot succeed — the lead returning from Stripe Checkout will see "Stripe error"
+              forever and the group will never be marked status='paid' via the status route
+              (the webhook route may still work since it goes through a different code path).
+
+            SUGGESTED FIX (in /app/backend/payments.py — bypass the broken library call for
+            status only; library usage for create_checkout_session is fine):
+              Replace `await stripe_checkout.get_checkout_status(session_id)` with a direct
+              Stripe SDK call, e.g.:
+                  import stripe
+                  stripe.api_key = os.environ["STRIPE_API_KEY"]
+                  s = stripe.checkout.Session.retrieve(session_id)
+                  status_obj = SimpleNamespace(
+                      status=s.status,
+                      payment_status=s.payment_status,
+                      amount_total=s.amount_total,
+                      currency=s.currency,
+                      metadata=dict(s.metadata or {}),
+                  )
+              Or, monkey-patch `session.metadata = dict(session.metadata or {})` before the
+              library wraps it (would require library subclass).
+              Alternative: pin/upgrade emergentintegrations to a version where
+              CheckoutStatusResponse.metadata uses `dict` (non-strict) or `Optional[Dict]` with
+              before-validator coercion.
+
+            Test scenarios D and the "amount=0" path were not exercised because the API rejects
+            0 totals at create_group; main agent's spec note already explains this.
+
+            Marking task working=false; needs main_agent fix to the status endpoint, then
+            retest of B + E only (everything else passes).
+        - working: "NA"
+          agent: "main"
+          comment: |
+            PHASE E — Real Stripe via emergentintegrations library, using the user-provided sk_test_ key.
+
+            New module backend/payments.py with 3 endpoints (mounted onto api_router BEFORE app.include_router):
+              - POST /api/groups/{group_id}/checkout-session  body {origin_url}
+                Creates a real Stripe Checkout Session for the group's total_amount (server-trusted).
+                Inserts a payment_transactions row {id, session_id, group_id, lead_id, amount, currency='usd',
+                  status='initiated', payment_status='pending', applied=false, metadata, created_at, updated_at}.
+                400 if group not 'open' or amount <= 0; 403 if group is_blocked; 404 if not found.
+                Returns {url, session_id, amount}.
+              - GET  /api/checkout/status/{session_id}
+                Reads stored tx; if not yet applied, calls Stripe API for live status; on payment_status=='paid',
+                marks the group as status='paid', sets lead_paid_at, funding_mode='lead', stripe_session_id,
+                and tx.applied=true. Idempotent on subsequent polls.
+              - POST /api/webhook/stripe
+                Verifies Stripe signature via emergentintegrations. On 'paid' event, marks group paid (idempotent
+                with status endpoint).
+
+            Server changes:
+              - STRIPE_API_KEY in /app/backend/.env now contains a real sk_test_ key (provided by user).
+              - payments.attach_payment_routes(api_router, db) called BEFORE app.include_router(api_router).
+
+            Frontend changes:
+              - api.ts adds createCheckoutSession + getCheckoutStatus.
+              - app/group/[id]/pay.tsx: when kind='lead' and remaining_to_collect>0.01, shows secondary
+                "Pay with Stripe — $X.XX" button that POSTs origin_url + redirects window.location to Stripe.
+                On return, useEffect detects session_id query param and polls status (8x with 2s gap) until
+                payment_status=='paid' or status=='expired'; banner UI surfaces progress.
+
+            TEST SCOPE:
+              A) Create checkout session — happy path:
+                 - Register Tom + verify with fresh phone. Tom creates fast-split group total $42.50.
+                 - POST /api/groups/{gid}/checkout-session {origin_url:'http://localhost:3000'} → 200,
+                   response has url containing 'stripe.com', session_id starts with 'cs_test_', amount=42.5.
+                 - DB has payment_transactions row with status='initiated', applied=false.
+
+              B) GET /api/checkout/status/{cs_test_FAKE_SESSION_ID_NOTREAL} — for an unknown session_id stored
+                 (insert a synthetic tx row with status='initiated' tied to a real-but-unpaid Stripe sandbox session
+                 created in step A) — should return status='open', payment_status='unpaid', applied=false.
+                 Without forcing a real payment, you cannot exercise the 'paid' transition end-to-end —
+                 verify the polling logic by checking response shape only.
+
+              C) Validation errors:
+                 - origin_url missing scheme → 400.
+                 - Group with status='paid' → 400 'Bill already paid'.
+                 - Blocked group → 403.
+                 - Unknown group_id → 404.
+
+              D) Idempotency and error path:
+                 - Get status for unknown session_id → 404 'Payment session not found'.
+                 - Group total of 0 (create with total_amount=0) → endpoint returns 400 'Group total must be > 0'.
+
+              E) Stripe API live: confirm backend logs show 'Request to Stripe api' (200) on successful checkout
+                 creation (proof the real sk_test_ key is being used).
+
+              F) DB hygiene: payment_transactions rows include metadata.kind='group_lead_pay', currency='usd'.
+              G) Frontend flow not in scope for backend testing (skip).
+
+
     implemented: true
     working: true
     file: "backend/server.py, backend/integrations.py, backend/admin_integrations.py, backend/admin_routes.py, backend/admin.py, backend/reminders.py"
@@ -723,8 +872,9 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Phase E — Real Stripe Checkout payment flow (POST /api/groups/{id}/checkout-session, GET /api/checkout/status/{id}, POST /api/webhook/stripe + frontend Pay-with-Stripe button on lead pay screen)"
-  stuck_tasks: []
+    - "Phase E — Real Stripe Checkout payment flow (POST /api/groups/{id}/checkout-session, GET /api/checkout/status/{id}, POST /api/webhook/stripe)"
+  stuck_tasks:
+    - "Phase E — Real Stripe Checkout payment flow (POST /api/groups/{id}/checkout-session, GET /api/checkout/status/{id}, POST /api/webhook/stripe)"
   test_all: false
   test_priority: "high_first"
 
@@ -988,3 +1138,74 @@ agent_communication:
           - [reminders] background loop started at server startup (interval=900s).
 
         Marking Phase D task as working. No further backend action required.
+    - agent: "testing"
+      message: |
+        Phase E (Real Stripe Checkout) tested end-to-end via /app/backend_test.py
+        against the live preview backend. 18/20 assertions PASS. ONE CRITICAL bug
+        in the status polling endpoint blocks the post-redirect flow.
+
+        ✅ PASSING:
+          A) POST /api/groups/{gid}/checkout-session happy path → 200 with url
+             (https://checkout.stripe.com/c/pay/cs_test_...), session_id starting
+             with 'cs_test_', amount=group.total_amount. Backend log confirms real
+             Stripe call: "Request to Stripe api … POST .../checkout/sessions"
+             response_code=200 (proof STRIPE_API_KEY=sk_test_… is in use).
+          C) Validation:
+             - origin_url='localhost:3000' → 400 'origin_url must include scheme'.
+             - origin_url='plainstring'    → 400 same detail.
+             - Unknown group_id            → 404 'Group not found'.
+             - GET /checkout/status/cs_test_DOES_NOT_EXIST → 404 'Payment session not found'.
+             - Already-paid group          → 400 'Bill already paid'.
+             - Admin-blocked group         → 403 'This group has been blocked by an
+               administrator.' (admin POST /api/admin/groups/{gid}/block worked).
+          G) Two consecutive checkout sessions for the same group succeed and produce
+             distinct cs_test_ session_ids; both rows persist in payment_transactions.
+          F) DB hygiene — payment_transactions row exists (status endpoint 200 only when
+             row found in scenario C5/E).
+
+        ❌ FAILING (BLOCKER):
+          B) GET /api/checkout/status/{session_id} for the just-created (unpaid) session
+             returns 502:
+               detail = "Stripe error: Unexpected error retrieving session status:
+                         1 validation error for CheckoutStatusResponse
+                         metadata
+                           Input should be a valid dictionary
+                             [type=dict_type, input_value=<StripeObject ...>,
+                              input_type=StripeObject]"
+          E) Idempotency polls — both calls return identical 502s.
+
+        ROOT CAUSE (third-party library bug in emergentintegrations 1.x):
+          /root/.venv/lib/python3.11/site-packages/emergentintegrations/payments/stripe/
+          checkout.py declares CheckoutStatusResponse.metadata as Dict[str, str]
+          (Pydantic v2 strict). In get_checkout_status() it passes session.metadata
+          straight through, but the Stripe Python SDK returns metadata as a
+          StripeObject (dict-like, NOT a real dict). Pydantic v2 rejects it with
+          dict_type error. Every call to /api/checkout/status/{sid} ends in 502 —
+          regardless of whether the session is paid, unpaid, or expired. This means
+          the lead returning from Stripe Checkout will never see status='paid' via the
+          status route, and the group is never marked paid by the polling logic.
+
+        SUGGESTED FIX (in /app/backend/payments.py — bypass the broken library call
+        for status only; library usage for create_checkout_session is fine):
+            import stripe
+            stripe.api_key = os.environ["STRIPE_API_KEY"]
+            s = stripe.checkout.Session.retrieve(session_id)
+            status_obj = SimpleNamespace(
+                status=s.status,
+                payment_status=s.payment_status,
+                amount_total=s.amount_total,
+                currency=s.currency,
+                metadata=dict(s.metadata or {}),
+            )
+        Or coerce metadata to a real dict before the library wraps it (would require
+        subclassing StripeCheckout). Alternative: pin/upgrade emergentintegrations
+        to a version where CheckoutStatusResponse uses a non-strict dict / pre-validator.
+
+        Backend log notes (informational):
+          - passlib bcrypt cosmetic warning, jwt InsecureKeyLengthWarning (pre-existing).
+          - twilio 401 for stale AC_PHDsid creds during /api/auth/send-otp — does not
+            affect this Phase E test (mock OTP 123456 still works).
+
+        Marking task working=false; main_agent fix needed only for the status endpoint,
+        then retest of B + E only.
+

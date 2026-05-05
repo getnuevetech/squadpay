@@ -159,10 +159,10 @@ export default function PayScreen() {
     summary =
       group.funding.total_contributed > 0
         ? `Group already covered $${group.funding.total_contributed.toFixed(2)}. You cover the rest.`
-        : `Single-use virtual card for the full bill.`;
+        : `Charge the bill to a real Stripe checkout, or fall back to the virtual card.`;
     actorIcon = <CreditCard color={COLORS.primary} size={18} />;
-    actorTitle = 'Virtual Card';
-    actorSub = 'Single-use card issued for this bill';
+    actorTitle = 'Stripe Checkout (or Virtual Card)';
+    actorSub = 'Real card payment via Stripe — virtual card fallback for shortfalls';
   } else if (kind === 'contribute') {
     // Both lead and members use this flow to fund the wallet upfront.
     // Lead's outstanding is force-zeroed in backend (they pay merchant), so we compute

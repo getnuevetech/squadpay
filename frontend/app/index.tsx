@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Receipt, Plus, Link2, QrCode, ChevronRight, Sparkles, LogOut, Gift } from 'lucide-react-native';
+import { Receipt, Plus, Link2, QrCode, ChevronRight, Sparkles, LogOut, Gift, Wallet } from 'lucide-react-native';
 import { Button } from '../src/Button';
 import { api } from '../src/api';
 import { clearUser, loadUser, refreshUser } from '../src/session';
@@ -159,23 +159,39 @@ export default function HomeScreen() {
         </View>
 
         {/* C1: invite friends entry point */}
-        <TouchableOpacity
-          testID="home-invite-btn"
-          style={styles.inviteCard}
-          onPress={() => router.push('/invite')}
-          activeOpacity={0.85}
-        >
-          <View style={styles.inviteIcon}>
-            <Gift color={COLORS.primary} size={20} />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.inviteTitle}>Invite friends</Text>
-            <Text style={styles.inviteSub}>
-              {user.referral_code ? `Your code: ${user.referral_code}` : 'Share your code & track invites'}
-            </Text>
-          </View>
-          <ChevronRight color={COLORS.subtext} size={18} />
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.lg }}>
+          <TouchableOpacity
+            testID="home-invite-btn"
+            style={[styles.inviteCard, { flex: 2 }]}
+            onPress={() => router.push('/invite')}
+            activeOpacity={0.85}
+          >
+            <View style={styles.inviteIcon}>
+              <Gift color={COLORS.primary} size={20} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.inviteTitle}>Invite friends</Text>
+              <Text style={styles.inviteSub} numberOfLines={1}>
+                {user.referral_code ? `Code: ${user.referral_code}` : 'Share your code'}
+              </Text>
+            </View>
+            <ChevronRight color={COLORS.subtext} size={18} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            testID="home-credits-btn"
+            style={[styles.inviteCard, { flex: 1, borderColor: COLORS.success }]}
+            onPress={() => router.push('/credits')}
+            activeOpacity={0.85}
+          >
+            <View style={[styles.inviteIcon, { backgroundColor: COLORS.successLight }]}>
+              <Wallet color={COLORS.success} size={18} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.inviteTitle, { color: COLORS.success }]}>Credits</Text>
+              <Text style={styles.inviteSub}>View wallet</Text>
+            </View>
+          </TouchableOpacity>
+        </View>
 
         <Text style={styles.sectionTitle}>Recent Activity</Text>
         {groups.length === 0 ? (

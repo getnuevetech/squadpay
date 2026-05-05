@@ -107,7 +107,7 @@ async def _maybe_grant_referral_rewards(user: dict):
             "amount": round(referrer_amt, 2),
             "kind": "referral_referrer",
             "source_user_id": user["id"],
-            "status": "pending",  # C2 will toggle to 'active'
+            "status": "active",  # C2: spendable immediately
             "note": f"Referral reward: {user.get('name')} signed up with your code.",
             "created_at": now_iso(),
         })
@@ -118,7 +118,7 @@ async def _maybe_grant_referral_rewards(user: dict):
             "amount": round(referee_amt, 2),
             "kind": "referral_referee",
             "source_user_id": referrer_id,
-            "status": "pending",
+            "status": "active",
             "note": "Welcome bonus for using a referral code.",
             "created_at": now_iso(),
         })
@@ -127,6 +127,112 @@ async def _maybe_grant_referral_rewards(user: dict):
     await db.users.update_one(
         {"id": user["id"]}, {"$set": {"referral_reward_granted": True}}
     )
+
+
+# ---------------- Phase C2: credits + discounts helpers ----------------
+
+async def _activate_pending_credits():
+    """One-shot migration: flip any leftover 'pending' credits to 'active'.
+
+    Pre-C2 referral rewards were stored as pending. C2 makes them spendable.
+    Idempotent — safe to call on every startup. Sets consumed_amount=0 if missing.
+    """
+    try:
+        # backfill consumed_amount on any old rows
+        await db.credits.update_many(
+            {"consumed_amount": {"$exists": False}},
+            {"$set": {"consumed_amount": 0}},
+        )
+        res = await db.credits.update_many(
+            {"status": "pending"}, {"$set": {"status": "active"}}
+        )
+        if res.modified_count:
+            logger.info(f"[c2] activated {res.modified_count} pending credits")
+    except Exception as e:
+        logger.warning(f"[c2] pending->active migration failed: {e}")
+
+
+async def _user_credit_balance(user_id: str) -> float:
+    """Sum of (amount - consumed_amount) across active credits for a user."""
+    rows = await db.credits.find(
+        {"user_id": user_id, "status": "active"},
+        {"_id": 0, "amount": 1, "consumed_amount": 1},
+    ).to_list(length=None)
+    bal = 0.0
+    for r in rows:
+        bal += float(r.get("amount") or 0) - float(r.get("consumed_amount") or 0)
+    return round(max(0.0, bal), 2)
+
+
+async def _consume_user_credits(user_id: str, amount: float, group_id: str, contribution_id: str) -> tuple[float, list]:
+    """Consume up to `amount` from user's active credits, FIFO by created_at.
+
+    Returns (actually_consumed, list_of_consumption_records).
+    Each consumption record: {credit_id, amount, group_id, contribution_id, at}.
+    """
+    if amount <= 0:
+        return 0.0, []
+    rows = await db.credits.find(
+        {"user_id": user_id, "status": "active"}, {"_id": 0}
+    ).sort("created_at", 1).to_list(length=None)
+    remaining = round(float(amount), 2)
+    consumed_total = 0.0
+    consumption_log: list = []
+    for r in rows:
+        if remaining <= 0:
+            break
+        avail = round(float(r.get("amount") or 0) - float(r.get("consumed_amount") or 0), 2)
+        if avail <= 0:
+            continue
+        take = min(avail, remaining)
+        new_consumed = round(float(r.get("consumed_amount") or 0) + take, 2)
+        new_status = "consumed" if new_consumed + 0.001 >= float(r["amount"]) else "active"
+        await db.credits.update_one(
+            {"id": r["id"]},
+            {"$set": {
+                "consumed_amount": new_consumed,
+                "status": new_status,
+                "last_consumed_at": now_iso(),
+            },
+             "$push": {
+                "consumption_events": {
+                    "amount": round(take, 2),
+                    "group_id": group_id,
+                    "contribution_id": contribution_id,
+                    "at": now_iso(),
+                }
+            }},
+        )
+        consumption_log.append({
+            "credit_id": r["id"],
+            "amount": round(take, 2),
+            "group_id": group_id,
+            "contribution_id": contribution_id,
+            "at": now_iso(),
+        })
+        remaining = round(remaining - take, 2)
+        consumed_total = round(consumed_total + take, 2)
+    return consumed_total, consumption_log
+
+
+def _apply_group_discount(subtotal_with_tax_tip: float, discount: dict | None) -> tuple[float, float]:
+    """Return (final_total, discount_amount). discount = {type: 'flat'|'percent', value: number}.
+
+    'flat' = flat $ off, capped at subtotal. 'percent' = percentage off (0–100).
+    """
+    if not discount:
+        return round(subtotal_with_tax_tip, 2), 0.0
+    dtype = discount.get("type")
+    val = float(discount.get("value") or 0)
+    if val <= 0:
+        return round(subtotal_with_tax_tip, 2), 0.0
+    if dtype == "percent":
+        amount = round(subtotal_with_tax_tip * min(val, 100) / 100.0, 2)
+    else:
+        amount = min(round(val, 2), round(subtotal_with_tax_tip, 2))
+    final = max(0.0, round(subtotal_with_tax_tip - amount, 2))
+    return final, round(amount, 2)
+
 
 
 def clean_mongo(doc: dict) -> dict:
@@ -559,12 +665,30 @@ async def create_group(body: CreateGroupIn):
     items = []
     for it in body.items:
         items.append({"id": new_id("it_"), "name": it.name, "price": it.price, "quantity": it.quantity})
+    # Phase C2: apply lead's auto-discount (if any) to this group at creation
+    discount_doc = None
+    discount_applied = 0.0
+    final_total = float(body.total_amount or 0)
+    auto = user.get("lead_auto_discount") or None
+    if auto and auto.get("value", 0) > 0:
+        final_total, discount_applied = _apply_group_discount(float(body.total_amount or 0), auto)
+        if discount_applied > 0:
+            discount_doc = {
+                "type": auto.get("type", "flat"),
+                "value": float(auto.get("value") or 0),
+                "amount": discount_applied,
+                "note": auto.get("note") or "Lead auto-discount",
+                "source": "lead_auto",
+                "applied_at": now_iso(),
+                "applied_by": "system",
+            }
     group = {
         "id": gid,
         "code": code,
         "lead_id": body.lead_id,
         "title": body.title or "Group Bill",
-        "total_amount": body.total_amount,
+        "total_amount": round(final_total, 2),
+        "original_total_amount": float(body.total_amount or 0),
         "tax": body.tax,
         "tip": body.tip,
         "split_mode": body.split_mode,
@@ -574,9 +698,10 @@ async def create_group(body: CreateGroupIn):
         "items": items,
         "assignments": [],
         "members": [{"user_id": body.lead_id, "role": "lead", "joined_at": now_iso()}],
-        "contributions": [],  # {user_id, amount, status}
+        "contributions": [],  # {user_id, amount, cash_paid, credit_applied, ...}
         "repayments": [],  # {user_id, amount, at}
         "lead_paid_at": None,
+        "discount": discount_doc,  # {type, value, amount, note, source, applied_at, applied_by}
         "created_at": now_iso(),
     }
     await db.groups.insert_one(group.copy())
@@ -839,10 +964,18 @@ async def contribute(group_id: str, body: ContributeIn):
         raise HTTPException(400, "Nothing left to contribute")
 
     contributions = group.get("contributions", [])
+    contrib_id = new_id("c_")
+    # Phase C2: auto-apply user's active credits (FIFO) up to `amount`.
+    credit_applied, _events = await _consume_user_credits(
+        body.user_id, float(amount), group_id, contrib_id
+    )
+    cash_paid = round(float(amount) - float(credit_applied), 2)
     contributions.append({
-        "id": new_id("c_"),
+        "id": contrib_id,
         "user_id": body.user_id,
         "amount": round(amount, 2),
+        "cash_paid": cash_paid,
+        "credit_applied": round(float(credit_applied), 2),
         "notify_on_settled": bool(body.notify_on_settled),
         "at": now_iso(),
     })
@@ -1190,6 +1323,39 @@ async def referral_lookup(code: str):
     }
 
 
+# ------------- Credits & discounts (Phase C2) -------------
+
+@api_router.get("/users/{user_id}/credits")
+async def get_user_credits(user_id: str):
+    """User wallet: balance + recent ledger rows + lead auto-discount info."""
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "User not found")
+    rows = await db.credits.find(
+        {"user_id": user_id}, {"_id": 0}
+    ).sort("created_at", -1).limit(50).to_list(length=None)
+    balance = await _user_credit_balance(user_id)
+    items = []
+    for r in rows:
+        items.append({
+            "id": r.get("id"),
+            "amount": float(r.get("amount") or 0),
+            "consumed_amount": float(r.get("consumed_amount") or 0),
+            "remaining": round(float(r.get("amount") or 0) - float(r.get("consumed_amount") or 0), 2),
+            "kind": r.get("kind"),
+            "status": r.get("status"),
+            "note": r.get("note"),
+            "created_at": r.get("created_at"),
+            "last_consumed_at": r.get("last_consumed_at"),
+        })
+    return {
+        "user_id": user_id,
+        "balance": balance,
+        "items": items,
+        "lead_auto_discount": user.get("lead_auto_discount"),
+    }
+
+
 
 # ------------- Receipt OCR -------------
 
@@ -1282,6 +1448,11 @@ async def _seed_admins():
         await ensure_seed_admin(db)
     except Exception as e:
         print("[startup] seed admin failed:", e)
+    # Phase C2: activate any pending credits left from C1
+    try:
+        await _activate_pending_credits()
+    except Exception as e:
+        print("[startup] activate credits failed:", e)
 
 
 @app.on_event("shutdown")

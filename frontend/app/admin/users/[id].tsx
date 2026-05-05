@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Platform, TextInput } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ArrowLeft, Ban, ShieldCheck, Crown, Users as UsersIcon } from 'lucide-react-native';
-import { adminApi, AdminUserDetail, AdminGroupRow } from '../../../src/adminApi';
+import { ArrowLeft, Ban, ShieldCheck, Crown, Users as UsersIcon, Wallet, Plus, X as XIcon, Percent, DollarSign, Trash2 } from 'lucide-react-native';
+import { adminApi, AdminUserDetail, AdminGroupRow, UserCreditWallet, LeadAutoDiscount } from '../../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 
 function confirm(title: string, message: string, onYes: () => void) {
@@ -22,16 +22,79 @@ export default function AdminUserDetailPage() {
   const [user, setUser] = useState<AdminUserDetail | null>(null);
   const [busy, setBusy] = useState(true);
   const [reason, setReason] = useState('');
+  // C2 — credits + lead discount
+  const [wallet, setWallet] = useState<UserCreditWallet | null>(null);
+  const [grantAmt, setGrantAmt] = useState('');
+  const [grantNote, setGrantNote] = useState('');
+  const [granting, setGranting] = useState(false);
+  const [ldType, setLdType] = useState<'flat' | 'percent'>('flat');
+  const [ldValue, setLdValue] = useState('');
+  const [ldNote, setLdNote] = useState('');
 
   const load = useCallback(async () => {
     if (!id) return;
     setBusy(true);
-    try { setUser(await adminApi.getUser(id)); }
+    try {
+      const [u, w] = await Promise.all([
+        adminApi.getUser(id),
+        adminApi.getUserCredits(id).catch(() => null),
+      ]);
+      setUser(u);
+      setWallet(w);
+      const ld = w?.lead_auto_discount;
+      if (ld) {
+        setLdType(ld.type);
+        setLdValue(String(ld.value));
+        setLdNote(ld.note || '');
+      } else {
+        setLdValue('');
+        setLdNote('');
+      }
+    }
     catch (e: any) { Alert.alert('Error', e?.message || 'Failed to load user'); }
     finally { setBusy(false); }
   }, [id]);
 
   useEffect(() => { load(); }, [load]);
+
+  const onGrantCredit = async () => {
+    const amt = parseFloat(grantAmt);
+    if (!amt || amt <= 0) { Alert.alert('Invalid', 'Amount must be > 0'); return; }
+    setGranting(true);
+    try {
+      await adminApi.grantUserCredit(id!, amt, grantNote || undefined);
+      setGrantAmt('');
+      setGrantNote('');
+      await load();
+    } catch (e: any) { Alert.alert('Error', e?.message || 'Grant failed'); }
+    finally { setGranting(false); }
+  };
+
+  const onRevokeCredit = async (creditId: string) => {
+    confirm('Revoke credit?', 'This credit will no longer be spendable. Already-consumed amount stays consumed.', async () => {
+      try { await adminApi.revokeUserCredit(id!, creditId); await load(); }
+      catch (e: any) { Alert.alert('Error', e?.message || 'Revoke failed'); }
+    });
+  };
+
+  const onSaveLeadDiscount = async () => {
+    const v = parseFloat(ldValue);
+    if (!v || v <= 0) { Alert.alert('Invalid', 'Discount value must be > 0'); return; }
+    if (ldType === 'percent' && v > 100) { Alert.alert('Invalid', 'Percent must be ≤ 100'); return; }
+    try {
+      await adminApi.setLeadDiscount(id!, { type: ldType, value: v, note: ldNote || undefined, enabled: true });
+      await load();
+    } catch (e: any) { Alert.alert('Error', e?.message || 'Save failed'); }
+  };
+
+  const onClearLeadDiscount = async () => {
+    confirm('Clear lead auto-discount?', 'New groups by this lead will not get an automatic discount.', async () => {
+      try {
+        await adminApi.setLeadDiscount(id!, { enabled: false });
+        await load();
+      } catch (e: any) { Alert.alert('Error', e?.message || 'Clear failed'); }
+    });
+  };
 
   const onBlock = () => {
     if (!user) return;
@@ -103,9 +166,9 @@ export default function AdminUserDetailPage() {
       </View>
 
       <View style={styles.statsRow}>
-        <View style={styles.statCard}><Text style={styles.statLabel}>As lead</Text><Text style={styles.statValue}>{user.led_groups.length}</Text></View>
-        <View style={styles.statCard}><Text style={styles.statLabel}>As member</Text><Text style={styles.statValue}>{user.joined_groups.length}</Text></View>
-        <View style={styles.statCard}><Text style={styles.statLabel}>Lead billed</Text><Text style={styles.statValue}>${user.total_billed_as_lead.toFixed(2)}</Text></View>
+        <View style={styles.statCard}><Text style={styles.statLabel}>As lead</Text><Text style={styles.statValue}>{(user.led_groups || []).length}</Text></View>
+        <View style={styles.statCard}><Text style={styles.statLabel}>As member</Text><Text style={styles.statValue}>{(user.joined_groups || []).length}</Text></View>
+        <View style={styles.statCard}><Text style={styles.statLabel}>Lead billed</Text><Text style={styles.statValue}>${Number(user.total_billed_as_lead || (user.led_groups || []).reduce((s, g) => s + Number(g?.total_amount || 0), 0) || 0).toFixed(2)}</Text></View>
       </View>
 
       <View style={styles.actionsCard}>
@@ -129,6 +192,125 @@ export default function AdminUserDetailPage() {
             </TouchableOpacity>
           </View>
         )}
+      </View>
+
+      <View style={styles.section}>
+        <View style={styles.sectionHeader}><Wallet size={14} color={COLORS.text} /><Text style={styles.sectionTitle}>Credits — balance ${(wallet?.balance ?? 0).toFixed(2)}</Text></View>
+        <View style={styles.formRow}>
+          <TextInput
+            style={[styles.input, { flex: 1 }]}
+            placeholder="Amount"
+            placeholderTextColor={COLORS.disabledText}
+            keyboardType="decimal-pad"
+            value={grantAmt}
+            onChangeText={setGrantAmt}
+            testID="admin-credit-amount"
+          />
+          <TextInput
+            style={[styles.input, { flex: 2 }]}
+            placeholder="Note (optional)"
+            placeholderTextColor={COLORS.disabledText}
+            value={grantNote}
+            onChangeText={setGrantNote}
+            testID="admin-credit-note"
+          />
+          <TouchableOpacity
+            onPress={onGrantCredit}
+            disabled={granting}
+            style={[styles.smallBtn, { backgroundColor: COLORS.success, opacity: granting ? 0.6 : 1 }]}
+            activeOpacity={0.85}
+            testID="admin-credit-grant"
+          >
+            <Plus size={14} color="#fff" /><Text style={styles.smallBtnText}>Grant</Text>
+          </TouchableOpacity>
+        </View>
+        {(wallet?.items || []).length === 0 ? (
+          <Text style={styles.empty}>No credits yet.</Text>
+        ) : (
+          (wallet!.items).slice(0, 12).map((c) => (
+            <View key={c.id} style={styles.creditRow} testID={`admin-credit-row-${c.id}`}>
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <Text style={styles.creditAmt}>${Number(c.amount || 0).toFixed(2)}</Text>
+                  <View style={[styles.kindPill,
+                    c.status === 'active' && { backgroundColor: COLORS.successLight },
+                    c.status === 'consumed' && { backgroundColor: COLORS.disabledBg },
+                    c.status === 'revoked' && { backgroundColor: COLORS.dangerLight },
+                  ]}>
+                    <Text style={[styles.kindPillText,
+                      c.status === 'active' && { color: COLORS.success },
+                      c.status === 'consumed' && { color: COLORS.subtext },
+                      c.status === 'revoked' && { color: COLORS.danger },
+                    ]}>{c.status?.toUpperCase()}</Text>
+                  </View>
+                  <Text style={styles.creditKind}>{c.kind?.replace('_', ' ')}</Text>
+                </View>
+                {Number(c.consumed_amount || 0) > 0 ? (
+                  <Text style={styles.metaSmall}>Used ${Number(c.consumed_amount || 0).toFixed(2)} • Remaining ${Math.max(0, Number(c.amount || 0) - Number(c.consumed_amount || 0)).toFixed(2)}</Text>
+                ) : null}
+                {c.note ? <Text style={styles.metaSmall}>{c.note}</Text> : null}
+              </View>
+              {c.status === 'active' ? (
+                <TouchableOpacity onPress={() => onRevokeCredit(c.id)} style={styles.iconBtn} activeOpacity={0.7} testID={`admin-credit-revoke-${c.id}`}>
+                  <Trash2 size={14} color={COLORS.danger} />
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          ))
+        )}
+      </View>
+
+      <View style={styles.section}>
+        <View style={styles.sectionHeader}><Crown size={14} color={COLORS.text} /><Text style={styles.sectionTitle}>Lead auto-discount</Text></View>
+        <Text style={styles.metaSmall}>Auto-applied to every NEW group this user creates as lead. Leave empty to disable.</Text>
+        <View style={[styles.formRow, { marginTop: SPACING.sm }]}>
+          <TouchableOpacity
+            onPress={() => setLdType('flat')}
+            style={[styles.toggle, ldType === 'flat' && styles.toggleActive]}
+            activeOpacity={0.85}
+          >
+            <DollarSign size={12} color={ldType === 'flat' ? '#fff' : COLORS.text} />
+            <Text style={[styles.toggleText, ldType === 'flat' && { color: '#fff' }]}>Flat</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setLdType('percent')}
+            style={[styles.toggle, ldType === 'percent' && styles.toggleActive]}
+            activeOpacity={0.85}
+          >
+            <Percent size={12} color={ldType === 'percent' ? '#fff' : COLORS.text} />
+            <Text style={[styles.toggleText, ldType === 'percent' && { color: '#fff' }]}>Percent</Text>
+          </TouchableOpacity>
+          <TextInput
+            style={[styles.input, { flex: 1 }]}
+            placeholder={ldType === 'percent' ? '10' : '5'}
+            placeholderTextColor={COLORS.disabledText}
+            keyboardType="decimal-pad"
+            value={ldValue}
+            onChangeText={setLdValue}
+            testID="admin-lead-discount-value"
+          />
+          <TextInput
+            style={[styles.input, { flex: 2 }]}
+            placeholder="Note (e.g. VIP)"
+            placeholderTextColor={COLORS.disabledText}
+            value={ldNote}
+            onChangeText={setLdNote}
+            testID="admin-lead-discount-note"
+          />
+          <TouchableOpacity onPress={onSaveLeadDiscount} style={[styles.smallBtn, { backgroundColor: COLORS.primary }]} activeOpacity={0.85} testID="admin-lead-discount-save">
+            <Text style={styles.smallBtnText}>Save</Text>
+          </TouchableOpacity>
+          {wallet?.lead_auto_discount ? (
+            <TouchableOpacity onPress={onClearLeadDiscount} style={[styles.smallBtn, { backgroundColor: COLORS.danger }]} activeOpacity={0.85} testID="admin-lead-discount-clear">
+              <XIcon size={14} color="#fff" />
+            </TouchableOpacity>
+          ) : null}
+        </View>
+        {wallet?.lead_auto_discount ? (
+          <Text style={styles.activeNote}>
+            Active: {wallet.lead_auto_discount.type === 'percent' ? `${wallet.lead_auto_discount.value}%` : `$${Number(wallet.lead_auto_discount.value || 0).toFixed(2)}`} off — {wallet.lead_auto_discount.note || 'no note'} (set by {wallet.lead_auto_discount.set_by})
+          </Text>
+        ) : null}
       </View>
 
       <View style={styles.section}>
@@ -174,4 +356,18 @@ const styles = StyleSheet.create({
   groupTitle: { fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold, color: COLORS.text },
   groupMeta: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
   groupAmount: { fontSize: FONT.sizes.sm, fontWeight: FONT.weights.bold, color: COLORS.text },
+  // C2 styles
+  formRow: { flexDirection: 'row', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
+  smallBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, height: 38, borderRadius: RADIUS.md, justifyContent: 'center' },
+  smallBtnText: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: FONT.sizes.sm },
+  creditRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: COLORS.border, gap: 8 },
+  creditAmt: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },
+  kindPill: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  kindPillText: { fontSize: 10, fontWeight: FONT.weights.bold },
+  creditKind: { fontSize: FONT.sizes.xs, color: COLORS.subtext, textTransform: 'capitalize' },
+  iconBtn: { padding: 8 },
+  toggle: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, height: 38, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.surface },
+  toggleActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  toggleText: { fontSize: FONT.sizes.xs, fontWeight: FONT.weights.semibold, color: COLORS.text },
+  activeNote: { fontSize: FONT.sizes.xs, color: COLORS.success, fontWeight: FONT.weights.semibold, marginTop: SPACING.sm },
 });

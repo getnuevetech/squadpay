@@ -37,6 +37,8 @@ def build_admin_router(db):
     from admin_users_groups import attach_users_and_groups_routes  # noqa: F401
     # Phase C1: referrals admin routes
     from admin_referrals import attach_referrals_routes  # noqa: F401
+    # Phase C2: credits + discounts admin routes
+    from admin_credits import attach_credits_routes  # noqa: F401
 
     # ----- Auth -----
     @router.post("/auth/login", response_model=AdminAuthResponse)
@@ -197,6 +199,8 @@ def build_admin_router(db):
     attach_users_and_groups_routes(router, db, _attach_admin)
     # Mount Phase C1 referrals admin routes
     attach_referrals_routes(router, db, _attach_admin)
+    # Mount Phase C2 credits + discounts admin routes
+    attach_credits_routes(router, db, _attach_admin)
 
     return router
 

@@ -156,6 +156,15 @@ export default function SummaryScreen() {
             <Text style={styles.breakdownKey}>Tax & tip</Text>
             <Text style={styles.breakdownVal}>${myExtras.toFixed(2)}</Text>
           </View>
+          {group.discount && Number(group.discount.amount || 0) > 0 ? (
+            <View style={styles.breakdownRow}>
+              <Text style={[styles.breakdownKey, { color: '#A7F3D0' }]}>
+                Discount {group.discount.type === 'percent' ? `(${group.discount.value}%)` : ''}
+                {group.discount.note ? ` — ${group.discount.note}` : ''}
+              </Text>
+              <Text style={[styles.breakdownVal, { color: '#A7F3D0' }]}>−${Number(group.discount.amount).toFixed(2)}</Text>
+            </View>
+          ) : null}
           <View style={styles.breakdownRow}>
             <Text style={styles.breakdownKey}>Transaction fee (3%)</Text>
             <Text style={styles.breakdownVal}>${myTransactionFee.toFixed(2)}</Text>

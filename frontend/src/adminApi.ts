@@ -145,6 +145,22 @@ export const adminApi = {
   blockGroup: (id: string, is_blocked: boolean, reason?: string) =>
     request<AdminGroupRow>(`/groups/${id}/block`, { method: 'POST', body: JSON.stringify({ is_blocked, reason }) }),
 
+  // ---- Phase C2: Credits & Discounts ----
+  getUserCredits: (id: string) => request<UserCreditWallet>(`/users/${id}/credits`),
+  grantUserCredit: (id: string, amount: number, note?: string) =>
+    request<CreditRow>(`/users/${id}/credits/grant`, { method: 'POST', body: JSON.stringify({ amount, note }) }),
+  revokeUserCredit: (user_id: string, credit_id: string) =>
+    request<CreditRow>(`/users/${user_id}/credits/${credit_id}/revoke`, { method: 'POST' }),
+  setGroupDiscount: (id: string, discount: { type: 'flat' | 'percent'; value: number; note?: string }) =>
+    request<{ discount: GroupDiscount; total_amount: number; original_total_amount: number }>(
+      `/groups/${id}/discount`,
+      { method: 'POST', body: JSON.stringify(discount) },
+    ),
+  clearGroupDiscount: (id: string) =>
+    request<{ discount: null; total_amount: number }>(`/groups/${id}/discount`, { method: 'DELETE' }),
+  setLeadDiscount: (id: string, body: { type?: 'flat' | 'percent'; value?: number; note?: string; enabled: boolean }) =>
+    request<{ lead_auto_discount: LeadAutoDiscount | null }>(`/users/${id}/lead-discount`, { method: 'POST', body: JSON.stringify(body) }),
+
   // ---- Phase C1: Referrals ----
   getReferralSettings: () => request<ReferralSettings>('/referrals/settings'),
   setReferralSettings: (s: ReferralSettings) =>
@@ -247,9 +263,53 @@ export type AdminGroupDetail = AdminGroupRow & {
   items: { id: string; name: string; price: number; quantity: number }[];
   assignments: { id?: string; user_id: string; item_id: string; quantity: number }[];
   members: { user_id: string; role: string; joined_at: string; name?: string; phone?: string | null; verified: boolean; is_blocked: boolean }[];
-  contributions: { id: string; user_id: string; amount: number; at: string }[];
+  contributions: { id: string; user_id: string; amount: number; at: string; cash_paid?: number; credit_applied?: number }[];
   repayments: { user_id: string; amount: number; at: string }[];
   split_mode?: string;
   funding_mode?: string | null;
   lead_paid_at?: string | null;
+  discount?: GroupDiscount | null;
+  original_total_amount?: number;
+};
+
+export type GroupDiscount = {
+  type: 'flat' | 'percent';
+  value: number;
+  amount: number;
+  note?: string | null;
+  source?: string | null;
+  applied_at?: string;
+  applied_by?: string;
+};
+
+export type LeadAutoDiscount = {
+  type: 'flat' | 'percent';
+  value: number;
+  note?: string | null;
+  set_at?: string;
+  set_by?: string;
+};
+
+export type CreditRow = {
+  id: string;
+  user_id: string;
+  amount: number;
+  consumed_amount: number;
+  kind: string;
+  status: 'active' | 'consumed' | 'revoked' | 'pending';
+  note?: string | null;
+  created_at: string;
+  source_user_id?: string | null;
+  granted_by?: string;
+  revoked_at?: string;
+  revoked_by?: string;
+  last_consumed_at?: string;
+};
+
+export type UserCreditWallet = {
+  user_id: string;
+  name?: string;
+  balance: number;
+  items: CreditRow[];
+  lead_auto_discount?: LeadAutoDiscount | null;
 };

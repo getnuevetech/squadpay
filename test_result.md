@@ -432,6 +432,126 @@ backend:
                  destructive=true and target_type='settings', target_id='referrals'.
               L) Cleanup: POST /admin/referrals/settings {enabled:false, referrer_credit:0, referee_credit:0}.
 
+  - task: "Phase C2 — Credits & Discounts (admin grant/revoke, group discount, lead auto-discount, contribute auto-applies credits, pending->active migration)"
+    implemented: true
+    working: true
+    file: "backend/server.py, backend/admin_credits.py, backend/admin_routes.py, backend/admin.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Phase C2 (Credits & Discounts) end-to-end tested via /app/backend_test.py against
+            the live preview backend. 87/87 assertions PASS. No 5xx errors.
+
+            Coverage by scenario (all PASS):
+              A) Migration idempotency — no leftover status='pending' non-zero credit rows
+                 visible on a fresh user wallet. _activate_pending_credits ran on startup.
+              B) Admin grant credit — super_admin POST /admin/users/{tom}/credits/grant
+                 {amount:10} → 200, row.status='active', kind='admin_grant',
+                 consumed_amount=0; GET /api/users/{tom}/credits balance=10.0.
+              C) Auto-apply at contribute (full) — fast-split $30 group, contribute $30 →
+                 contributions[0]: amount=30, cash_paid=20, credit_applied=10. Wallet
+                 balance=0, grant row consumed_amount=10 status='consumed'.
+              D) Partial credit — granted $5; $30 group; contribute $30 → cash_paid=25,
+                 credit_applied=5, balance=0.
+              E) FIFO order — $3 first then $5 (granted ~50ms apart). $4 group, contribute $4 →
+                 first row consumed_amount=3 status='consumed', second row consumed_amount=1
+                 status='active', balance=4. cash_paid=0 credit_applied=4.
+              F) Revoke — POST .../credits/{id}/revoke → status='revoked', balance excludes.
+                 Re-revoke same id → 200 row still 'revoked', AND no new admin.revoke_credit
+                 audit entry written (idempotent — count before == count after).
+              G) Group discount flat $5 on $100 → total_amount=95, original_total_amount=100,
+                 discount.amount=5, GET /groups/{id} reflects.
+              H) Group discount percent 20% on $100 → total=80, discount.amount=20.
+              I) Discount on settled group → 400 (used a paid auto-finalized group from D).
+              J) DELETE /admin/groups/{g}/discount → total_amount restored to 100, discount=null,
+                 reflected on subsequent GET.
+              K) Lead auto-discount — POST /admin/users/{tom}/lead-discount {flat,5,enabled:true}
+                 → 200 lead_auto_discount stored. New $50 group by Tom →
+                 group.total_amount=45, original_total_amount=50, discount.source='lead_auto',
+                 discount.amount=5. Disable {enabled:false} → user.lead_auto_discount=null and
+                 a subsequent $50 group has total_amount=50, discount=null.
+              L) Audit log destructive=true verified for all 6 C2 actions:
+                 admin.grant_credit, admin.revoke_credit, admin.set_group_discount,
+                 admin.clear_group_discount, admin.set_lead_discount, admin.clear_lead_discount.
+                 admin.AUDIT_ACTIONS_DESTRUCTIVE includes them all.
+              M) RBAC — support admin (created via POST /admin/admins as super_admin, then
+                 logged in) returned 403 on grant, revoke, set_group_discount,
+                 DELETE group_discount, set lead-discount. Read endpoints succeed:
+                 GET /admin/users/{id}/credits → 200 for support; GET /api/users/{id}/credits
+                 → 200 (public). Admin wallet without bearer → 401.
+              N) Cleanup — Tom's lead_auto_discount cleared at end.
+
+            Backend log notes (informational, not blockers):
+              - passlib bcrypt cosmetic warning (no functional impact).
+              - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes; ≥32 recommended).
+
+            Test suite saved at /app/backend_test.py and is idempotent (uses ts-based
+            names + fresh phones + fresh support admin email each run).
+        - working: "NA"
+          agent: "main"
+          comment: |
+            PHASE C2 — needs backend test.
+
+            Models additions:
+              - User: lead_auto_discount = {type:'flat'|'percent', value, note, set_at, set_by} | None.
+              - Group: discount = {type, value, amount, note, source:'admin'|'lead_auto', applied_at, applied_by} | None;
+                       original_total_amount (so discount can be cleared).
+              - credits row: now also has consumed_amount (default 0), last_consumed_at, consumption_events[],
+                             status ∈ {'active','consumed','revoked','pending'}.
+              - Startup migration: any leftover status='pending' credits → 'active'; backfills consumed_amount=0.
+              - C1 referral rewards now write status='active' directly.
+              - contribute response now records cash_paid + credit_applied per contribution.
+
+            New endpoints (Bearer required for admin ones; super_admin/manager for write):
+              - GET  /api/users/{id}/credits → wallet {balance, items[], lead_auto_discount}
+              - GET  /api/admin/users/{id}/credits → admin wallet view (all rows + balance)
+              - POST /api/admin/users/{id}/credits/grant {amount, note} → creates active row, audit 'admin.grant_credit'
+              - POST /api/admin/users/{id}/credits/{credit_id}/revoke → marks revoked, audit 'admin.revoke_credit'
+              - POST /api/admin/groups/{id}/discount {type, value, note} → recomputes total, stores discount,
+                     audit 'admin.set_group_discount'. 400 if group not 'open'.
+              - DELETE /api/admin/groups/{id}/discount → restores original_total_amount, audit 'admin.clear_group_discount'
+              - POST /api/admin/users/{id}/lead-discount {type, value, note, enabled} → stores on user.lead_auto_discount
+                     (or clears if !enabled). Audit 'admin.set_lead_discount' / 'admin.clear_lead_discount'.
+
+            Behavior changes:
+              - POST /api/groups/{id}/contribute now FIFO-consumes user's active credits up to `amount`. Each
+                contribution row contains cash_paid (= amount - credit_applied) and credit_applied (>= 0).
+              - POST /api/groups (create_group) now applies lead's lead_auto_discount automatically: stores
+                original_total_amount + discount object + reduces total_amount.
+
+            TEST SCOPE:
+              A) Migration: existing 'pending' credits flipped to 'active' on startup; idempotent.
+              B) Admin grant credit: super_admin grants $10 to user. GET /api/users/{id}/credits → balance=$10,
+                 1 active row. As 'support' admin (read-only) → grant returns 403.
+              C) Auto-apply at contribute: user with $10 credit contributes $30 to a $30 bill →
+                 - contribution.amount = 30
+                 - contribution.cash_paid = 20
+                 - contribution.credit_applied = 10
+                 - GET wallet balance = 0; the credit row is consumed_amount=10 status='consumed'.
+              D) Partial credit: user with $5 credit contributes $30 → cash_paid=25, credit_applied=5,
+                 row status='consumed'; balance=0.
+              E) FIFO order: user with two active credits ($3 created first, $5 created later) contributes $4 →
+                 first row fully consumed, second row consumed_amount=1, balance=4.
+              F) Revoke: super_admin revokes a row → status='revoked'; balance excludes it. Already-consumed
+                 amount is preserved.
+              G) Group discount flat: super_admin POST .../groups/{g}/discount {type:'flat', value:5} where
+                 original=$100 → total_amount becomes 95; discount.amount=5; group.original_total_amount=100.
+              H) Group discount percent: type:'percent', value:20 on $100 → amount=20, total_amount=80.
+              I) Discount on settled bill: try setting on a 'paid' or 'closed' group → 400.
+              J) Clear discount: DELETE → total restored to original_total_amount; discount=null.
+              K) Lead auto-discount: super_admin sets type:'flat' value:5 on lead U. U creates a NEW group
+                 with original=50 → group.total_amount=45, group.discount.source='lead_auto', amount=5.
+                 Disable lead_auto: POST {enabled:false} → user.lead_auto_discount=None.
+              L) Audit: GET /api/admin/audit-log entries for admin.grant_credit / admin.revoke_credit /
+                 admin.set_group_discount / admin.clear_group_discount / admin.set_lead_discount /
+                 admin.clear_lead_discount with destructive=true.
+              M) RBAC: support-role admin → grant/revoke/set-discount/set-lead-discount all return 403.
+              N) Idempotency on revoke: revoking already-revoked row → 200 returns row, no double-audit.
+
 frontend:
   - task: "Items screen — '+' button opens add-item form"
     implemented: true
@@ -501,8 +621,7 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Phase C1 — Referral system (codes, signup-with-code, admin leaderboard, settings, pending credits)"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -626,6 +745,44 @@ agent_communication:
         Backend log notes (informational only, not blockers):
           - passlib bcrypt version warning ("module 'bcrypt' has no attribute
             '__about__'") — cosmetic; password verification works correctly.
+    - agent: "testing"
+      message: |
+        Phase C2 (Credits & Discounts) verified end-to-end via /app/backend_test.py
+        against the live preview backend. 87/87 assertions PASS. No 5xx.
+
+        All 14 review scenarios (A–N + admin-wallet auth Z) PASSED:
+          A) Migration idempotent — no leftover pending non-zero rows.
+          B) Admin grant $10 → row.status='active', kind='admin_grant',
+             consumed_amount=0; wallet balance=10.0.
+          C) Auto-apply at contribute (full): $30 contribute → cash_paid=20,
+             credit_applied=10, balance=0, grant row consumed.
+          D) Partial credit ($5 + $30 contribute) → cash_paid=25, credit_applied=5.
+          E) FIFO order ($3 then $5; consume $4) → first row fully consumed,
+             second row consumed_amount=1 still active, balance=4.
+          F) Revoke → status='revoked', balance excludes; re-revoke is idempotent
+             (no new audit row written).
+          G) Group discount flat $5 on $100 → total=95, original=100, discount.amount=5.
+          H) Group discount percent 20% on $100 → total=80, discount.amount=20.
+          I) Discount on settled (paid) group → 400.
+          J) DELETE discount → total restored to 100, discount=null.
+          K) Lead auto-discount {flat,5,enabled:true} → applied to new $50 group
+             (total=45, original=50, discount.source='lead_auto'). Disable →
+             user.lead_auto_discount=null and future groups carry no discount.
+          L) Audit destructive=true verified for all 6 C2 actions: grant_credit,
+             revoke_credit, set_group_discount, clear_group_discount,
+             set_lead_discount, clear_lead_discount.
+          M) RBAC: support admin → 403 on grant/revoke/set_group_discount/
+             clear_group_discount/set_lead_discount; READ endpoints (admin wallet
+             + public wallet) succeed.
+          N) Cleanup: lead_auto_discount cleared.
+          Z) Admin wallet without bearer → 401.
+
+        Backend log notes (informational, not blockers):
+          - passlib bcrypt cosmetic warning.
+          - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes, ≥32 recommended).
+
+        Marking Phase C2 task as working. No further backend action required.
+
           - jwt.InsecureKeyLengthWarning: HMAC key is 31 bytes (recommended ≥32).
             Cosmetic for the dev-secret default; consider lengthening JWT_SECRET
             in production .env.

@@ -199,6 +199,12 @@ AUDIT_ACTIONS_DESTRUCTIVE = {
     "admin.create_admin",
     "admin.delete_admin",
     "admin.update_referral_settings",
+    "admin.grant_credit",
+    "admin.revoke_credit",
+    "admin.set_group_discount",
+    "admin.clear_group_discount",
+    "admin.set_lead_discount",
+    "admin.clear_lead_discount",
 }
 
 

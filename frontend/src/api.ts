@@ -167,6 +167,16 @@ export type Group = {
   lead_paid_at: string | null;
   lead_shortfall?: number;
   virtual_card?: VirtualCard;
+  // C2 fields
+  discount?: {
+    type: 'flat' | 'percent';
+    value: number;
+    amount: number;
+    note?: string | null;
+    source?: string | null;
+    applied_by?: string;
+  } | null;
+  original_total_amount?: number;
   created_at: string;
   // enriched
   subtotal: number;

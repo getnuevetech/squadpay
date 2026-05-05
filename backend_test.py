@@ -1,4 +1,4 @@
-"""Phase C1 — Referrals backend test suite.
+"""Phase C2 — Credits & Discounts backend test suite.
 
 Run: python /app/backend_test.py
 Reads EXPO_PUBLIC_BACKEND_URL from /app/frontend/.env, all calls under /api.
@@ -6,15 +6,13 @@ Admin credentials: super_admin from /app/memory/test_credentials.md.
 """
 from __future__ import annotations
 
-import json
-import os
-import re
 import sys
 import time
 import traceback
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import requests
+
 
 # ----- Config -----
 def _load_backend_url() -> str:
@@ -28,377 +26,457 @@ def _load_backend_url() -> str:
 
 
 BASE = _load_backend_url().rstrip("/") + "/api"
-ADMIN_EMAIL = "[email protected]"
-ADMIN_PASSWORD = "ChangeMe123!"
+SUPER_EMAIL = "[email protected]"
+SUPER_PASS = "ChangeMe123!"
+OTP = "123456"
+TS = int(time.time())
 
-REFERRAL_ALPHABET = set("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
-
-# ----- Test runner -----
-RESULTS = []  # list of (name, ok, msg)
-
-
-def record(name: str, ok: bool, msg: str = ""):
-    RESULTS.append((name, ok, msg))
-    sym = "PASS" if ok else "FAIL"
-    print(f"[{sym}] {name}: {msg}")
+PASSED: List[str] = []
+FAILED: List[str] = []
 
 
-def expect(cond: bool, name: str, msg: str = ""):
-    record(name, bool(cond), msg)
-    return bool(cond)
+def check(label: str, ok: bool, detail: str = ""):
+    if ok:
+        print(f"  PASS {label}")
+        PASSED.append(label)
+    else:
+        print(f"  FAIL {label} :: {detail}")
+        FAILED.append(f"{label} :: {detail}")
 
 
-def http(method: str, path: str, **kw) -> requests.Response:
-    url = f"{BASE}{path}"
-    return requests.request(method, url, timeout=30, **kw)
+def post(path, json_body=None, token=None, expect=None):
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    r = requests.post(f"{BASE}{path}", json=json_body, headers=headers, timeout=30)
+    if expect is not None and r.status_code != expect:
+        print(f"    [DEBUG] POST {path} expected {expect} got {r.status_code} body={r.text[:300]}")
+    return r
 
 
-def jdump(r: requests.Response) -> str:
-    try:
-        return json.dumps(r.json())[:300]
-    except Exception:
-        return r.text[:300]
+def get(path, token=None, expect=None, params=None):
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    r = requests.get(f"{BASE}{path}", headers=headers, params=params, timeout=30)
+    if expect is not None and r.status_code != expect:
+        print(f"    [DEBUG] GET {path} expected {expect} got {r.status_code} body={r.text[:300]}")
+    return r
 
 
-# ----- Auth helpers -----
-def admin_login(email: str = ADMIN_EMAIL, pw: str = ADMIN_PASSWORD) -> str:
-    r = http("POST", "/admin/auth/login", json={"email": email, "password": pw})
-    assert r.status_code == 200, f"admin login failed {r.status_code} {r.text}"
+def delete(path, token=None, expect=None):
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    r = requests.delete(f"{BASE}{path}", headers=headers, timeout=30)
+    if expect is not None and r.status_code != expect:
+        print(f"    [DEBUG] DELETE {path} expected {expect} got {r.status_code} body={r.text[:300]}")
+    return r
+
+
+def admin_login(email, password):
+    r = post("/admin/auth/login", {"email": email, "password": password})
+    r.raise_for_status()
     return r.json()["token"]
 
 
-def auth_headers(token: str) -> Dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
+def register_user(name, referral_code=None):
+    body = {"name": name}
+    if referral_code:
+        body["referral_code"] = referral_code
+    r = post("/auth/register", body)
+    r.raise_for_status()
+    return r.json()
 
 
-def register_user(name: str, referral_code: Optional[str] = None) -> requests.Response:
-    payload: Dict[str, Any] = {"name": name}
-    if referral_code is not None:
-        payload["referral_code"] = referral_code
-    return http("POST", "/auth/register", json=payload)
+def send_otp(uid, phone):
+    r = post("/auth/send-otp", {"user_id": uid, "phone": phone})
+    r.raise_for_status()
 
 
-def send_otp(user_id: str, phone: str) -> requests.Response:
-    return http("POST", "/auth/send-otp", json={"user_id": user_id, "phone": phone})
+def verify_otp(uid, phone):
+    r = post("/auth/verify-otp", {"user_id": uid, "phone": phone, "code": OTP})
+    r.raise_for_status()
+    return r.json()
 
 
-def verify_otp(user_id: str, phone: str, code: str = "123456") -> requests.Response:
-    return http("POST", "/auth/verify-otp", json={"user_id": user_id, "phone": phone, "code": code})
+def fresh_phone():
+    n = int(time.time() * 1000) % 9999999
+    return f"+1555{n:07d}"
 
 
-def fresh_phone(seq: int = 0) -> str:
-    # +1555 + 7 digits
-    base = int(time.time())
-    return f"+1555{(base + seq) % 10000000:07d}"
-
-
-# ----- Scenarios -----
 def main():
-    print(f"BASE = {BASE}")
-    ts = int(time.time())
+    print("=== Phase C2 — Credits & Discounts Backend Tests ===")
+    print(f"BASE: {BASE}")
+    print(f"TS: {TS}")
 
-    # Admin login (used throughout)
-    token = admin_login()
-    H = auth_headers(token)
-    expect(bool(token), "admin_login", "got token")
+    super_tok = admin_login(SUPER_EMAIL, SUPER_PASS)
+    print(f"super_admin token acquired ({len(super_tok)} chars)")
 
-    # Get current settings (and remember to restore at cleanup)
-    r = http("GET", "/admin/referrals/settings", headers=H)
-    expect(r.status_code == 200, "settings.get_initial", f"{r.status_code} {jdump(r)}")
-    initial_settings = r.json() if r.status_code == 200 else {}
+    # ===== Register Tom =====
+    tom = register_user(f"TomC2T{TS}")
+    tom_id = tom["id"]
+    tom_phone = fresh_phone()
+    send_otp(tom_id, tom_phone)
+    tom = verify_otp(tom_id, tom_phone)
+    tom_id = tom["id"]
+    print(f"Tom: id={tom_id} phone={tom_phone}")
 
-    # Reset to default disabled state to start
-    r = http("POST", "/admin/referrals/settings",
-             headers=H, json={"enabled": False, "referrer_credit": 0, "referee_credit": 0})
-    expect(r.status_code == 200, "settings.reset_disabled", f"{r.status_code}")
+    # ===== A) Migration idempotency =====
+    print("\n[A] Migration idempotency")
+    wallet = get(f"/users/{tom_id}/credits").json()
+    pending_rows = [r for r in wallet["items"] if r.get("status") == "pending" and float(r.get("amount", 0)) > 0]
+    check("A: no pending non-zero rows for fresh user", len(pending_rows) == 0,
+          f"pending_rows={pending_rows}")
 
-    # ----- A) Code generation -----
-    r1 = register_user(f"AliceC1{ts}")
-    r2 = register_user(f"BobC1{ts}")
-    expect(r1.status_code == 200, "A.register_alice", f"{r1.status_code} {jdump(r1)}")
-    expect(r2.status_code == 200, "A.register_bob", f"{r2.status_code} {jdump(r2)}")
-    alice = r1.json()
-    bob = r2.json()
-    alice_code = alice.get("referral_code")
-    bob_code = bob.get("referral_code")
-    expect(isinstance(alice_code, str) and len(alice_code) == 6,
-           "A.alice_code_len6", f"code={alice_code}")
-    expect(isinstance(bob_code, str) and len(bob_code) == 6,
-           "A.bob_code_len6", f"code={bob_code}")
-    expect(all(c in REFERRAL_ALPHABET for c in (alice_code or "")),
-           "A.alice_code_alphabet", f"code={alice_code}")
-    expect(all(c in REFERRAL_ALPHABET for c in (bob_code or "")),
-           "A.bob_code_alphabet", f"code={bob_code}")
-    expect(alice_code != bob_code, "A.codes_distinct",
-           f"alice={alice_code} bob={bob_code}")
+    # ===== B) Admin grant credit =====
+    print("\n[B] Admin grant credit ($10)")
+    r = post(f"/admin/users/{tom_id}/credits/grant", {"amount": 10, "note": "Welcome"}, token=super_tok)
+    check("B: grant 200", r.status_code == 200, f"got {r.status_code} {r.text[:200]}")
+    grant_row = r.json()
+    check("B: row has status=active", grant_row.get("status") == "active",
+          f"status={grant_row.get('status')}")
+    check("B: row kind=admin_grant", grant_row.get("kind") == "admin_grant")
 
-    # ----- B) Public lookup -----
-    r = http("GET", f"/referrals/lookup/{alice_code}")
-    ok = r.status_code == 200 and r.json().get("valid") is True \
-        and r.json().get("referrer_name") == alice["name"] \
-        and r.json().get("referrer_code") == alice_code
-    expect(ok, "B.lookup_valid", f"{r.status_code} {jdump(r)}")
+    wallet = get(f"/users/{tom_id}/credits").json()
+    check("B: balance == 10.0", abs(wallet["balance"] - 10.0) < 0.001,
+          f"balance={wallet['balance']}")
+    items_active = [it for it in wallet["items"] if it["status"] == "active"]
+    check("B: items[0].kind == admin_grant", bool(items_active) and items_active[0]["kind"] == "admin_grant")
+    check("B: items[0].consumed_amount == 0",
+          bool(items_active) and abs(items_active[0]["consumed_amount"]) < 0.001)
 
-    r = http("GET", "/referrals/lookup/NOPE99")
-    ok = r.status_code == 404 and "Referral code not found" in (r.json().get("detail", "") or "")
-    expect(ok, "B.lookup_unknown_404", f"{r.status_code} {jdump(r)}")
+    # ===== C) Auto-apply at contribute (full) =====
+    print("\n[C] Auto-apply at contribute — full")
+    r = post(f"/admin/users/{tom_id}/lead-discount", {"enabled": False}, token=super_tok)
+    check("C-pre: clear lead_auto_discount 200", r.status_code == 200)
 
-    # ----- C) Register-with-code -----
-    r = register_user(f"BobBob{ts}", alice_code)
-    expect(r.status_code == 200, "C.register_with_code_status", f"{r.status_code} {jdump(r)}")
-    bb = r.json() if r.status_code == 200 else {}
-    expect(bb.get("referred_by_user_id") == alice["id"],
-           "C.referred_by_set", f"got={bb.get('referred_by_user_id')} expect={alice['id']}")
-    expect(isinstance(bb.get("referral_code"), str)
-           and bb.get("referral_code") != alice_code,
-           "C.own_code_distinct", f"own={bb.get('referral_code')} alice={alice_code}")
+    r = post("/groups", {
+        "lead_id": tom_id, "title": f"C2-C-{TS}", "total_amount": 30,
+        "split_mode": "fast", "tax": 0, "tip": 0, "items": [],
+    })
+    check("C: create group 200", r.status_code == 200, r.text[:200])
+    g = r.json()
+    gid_c = g["id"]
+    check("C: group total_amount == 30", abs(g["total_amount"] - 30) < 0.01,
+          f"total={g.get('total_amount')}")
+    r = post(f"/groups/{gid_c}/contribute", {"user_id": tom_id, "amount": 30})
+    check("C: contribute 200", r.status_code == 200, r.text[:200])
+    g = r.json()
+    contribs = g.get("contributions", [])
+    check("C: 1 contribution", len(contribs) == 1, f"contribs={contribs}")
+    if contribs:
+        c0 = contribs[0]
+        check("C: amount == 30", abs(float(c0["amount"]) - 30) < 0.01, f"amount={c0.get('amount')}")
+        check("C: cash_paid == 20", abs(float(c0.get("cash_paid", 0)) - 20) < 0.01,
+              f"cash_paid={c0.get('cash_paid')}")
+        check("C: credit_applied == 10",
+              abs(float(c0.get("credit_applied", 0)) - 10) < 0.01,
+              f"credit_applied={c0.get('credit_applied')}")
+    wallet = get(f"/users/{tom_id}/credits").json()
+    check("C: balance == 0", abs(wallet["balance"]) < 0.01, f"balance={wallet['balance']}")
+    grant_after = next((it for it in wallet["items"] if it["id"] == grant_row["id"]), None)
+    check("C: grant row consumed_amount==10",
+          grant_after is not None and abs(grant_after["consumed_amount"] - 10) < 0.01,
+          f"row={grant_after}")
+    check("C: grant row status == consumed",
+          grant_after is not None and grant_after["status"] == "consumed",
+          f"row.status={grant_after and grant_after['status']}")
 
-    r = register_user(f"BogusRef{ts}", "XXXX99")
-    ok = r.status_code == 400 and "Invalid referral code" in (r.json().get("detail", "") or "")
-    expect(ok, "C.invalid_code_400", f"{r.status_code} {jdump(r)}")
+    # ===== D) Partial credit =====
+    print("\n[D] Partial credit ($5 then contribute $30)")
+    r = post(f"/admin/users/{tom_id}/credits/grant", {"amount": 5, "note": "More"}, token=super_tok)
+    check("D: grant 200", r.status_code == 200)
+    r = post("/groups", {
+        "lead_id": tom_id, "title": f"C2-D-{TS}", "total_amount": 30,
+        "split_mode": "fast", "tax": 0, "tip": 0, "items": [],
+    })
+    gid_d = r.json()["id"]
+    r = post(f"/groups/{gid_d}/contribute", {"user_id": tom_id, "amount": 30})
+    check("D: contribute 200", r.status_code == 200, r.text[:200])
+    contribs = r.json().get("contributions", [])
+    if contribs:
+        c0 = contribs[0]
+        check("D: cash_paid == 25", abs(float(c0.get("cash_paid", 0)) - 25) < 0.01,
+              f"cash_paid={c0.get('cash_paid')}")
+        check("D: credit_applied == 5",
+              abs(float(c0.get("credit_applied", 0)) - 5) < 0.01,
+              f"credit_applied={c0.get('credit_applied')}")
+    wallet = get(f"/users/{tom_id}/credits").json()
+    check("D: balance == 0", abs(wallet["balance"]) < 0.01, f"balance={wallet['balance']}")
 
-    # ----- D) Reward DISABLED -----
-    # Already disabled above. Register Dan with Alice's code.
-    rd = register_user(f"DanD{ts}", alice_code)
-    expect(rd.status_code == 200, "D.register_dan", f"{rd.status_code}")
-    dan = rd.json()
-    dan_phone = fresh_phone(seq=1)
-    s = send_otp(dan["id"], dan_phone)
-    expect(s.status_code == 200, "D.send_otp_dan", f"{s.status_code}")
-    v = verify_otp(dan["id"], dan_phone)
-    expect(v.status_code == 200, "D.verify_otp_dan", f"{v.status_code} {jdump(v)}")
-    dan_real = v.json() if v.status_code == 200 else {}
+    # ===== E) FIFO order =====
+    print("\n[E] FIFO order ($3 first, $5 second; consume $4)")
+    r1 = post(f"/admin/users/{tom_id}/credits/grant", {"amount": 3, "note": "first"}, token=super_tok)
+    grant_e1_id = r1.json()["id"]
+    time.sleep(0.05)
+    r2 = post(f"/admin/users/{tom_id}/credits/grant", {"amount": 5, "note": "second"}, token=super_tok)
+    grant_e2_id = r2.json()["id"]
+    r = post("/groups", {
+        "lead_id": tom_id, "title": f"C2-E-{TS}", "total_amount": 4,
+        "split_mode": "fast", "tax": 0, "tip": 0, "items": [],
+    })
+    check("E: create $4 group 200", r.status_code == 200, r.text[:200])
+    gid_e = r.json()["id"]
+    r = post(f"/groups/{gid_e}/contribute", {"user_id": tom_id, "amount": 4})
+    check("E: contribute $4 200", r.status_code == 200, r.text[:200])
+    contribs = r.json().get("contributions", [])
+    if contribs:
+        c0 = contribs[0]
+        check("E: cash_paid == 0", abs(float(c0.get("cash_paid", 0)) - 0) < 0.01,
+              f"cash_paid={c0.get('cash_paid')}")
+        check("E: credit_applied == 4",
+              abs(float(c0.get("credit_applied", 0)) - 4) < 0.01,
+              f"credit_applied={c0.get('credit_applied')}")
+    wallet = get(f"/users/{tom_id}/credits").json()
+    e1 = next((it for it in wallet["items"] if it["id"] == grant_e1_id), None)
+    e2 = next((it for it in wallet["items"] if it["id"] == grant_e2_id), None)
+    check("E: first grant fully consumed",
+          e1 is not None and abs(e1["consumed_amount"] - 3) < 0.01 and e1["status"] == "consumed",
+          f"e1={e1}")
+    check("E: second grant consumed_amount=1, active",
+          e2 is not None and abs(e2["consumed_amount"] - 1) < 0.01 and e2["status"] == "active",
+          f"e2={e2}")
+    check("E: balance == 4", abs(wallet["balance"] - 4) < 0.01, f"balance={wallet['balance']}")
 
-    # Capture Alice's pending_credits BEFORE checking via the user-facing endpoint:
-    r = http("GET", f"/users/{alice['id']}/referrals")
-    alice_pc_after_dan = r.json().get("pending_credits", -1) if r.status_code == 200 else -1
-    expect(r.status_code == 200, "D.alice_referrals_get", f"{r.status_code}")
-    expect(alice_pc_after_dan == 0, "D.no_pending_credits_when_disabled",
-           f"alice.pending_credits={alice_pc_after_dan} (expected 0)")
+    # ===== F) Revoke =====
+    print("\n[F] Revoke")
+    r = post(f"/admin/users/{tom_id}/credits/{grant_e2_id}/revoke", token=super_tok)
+    check("F: revoke 200", r.status_code == 200, r.text[:200])
+    revoked = r.json()
+    check("F: status == revoked", revoked.get("status") == "revoked",
+          f"status={revoked.get('status')}")
+    wallet = get(f"/users/{tom_id}/credits").json()
+    check("F: balance excludes revoked (== 0)",
+          abs(wallet["balance"]) < 0.01, f"balance={wallet['balance']}")
+    audit_before = get("/admin/audit-log", token=super_tok,
+                       params={"action": "admin.revoke_credit", "limit": 200}).json()
+    n_before = len(audit_before.get("items", []))
+    r = post(f"/admin/users/{tom_id}/credits/{grant_e2_id}/revoke", token=super_tok)
+    check("F: re-revoke 200 (idempotent)", r.status_code == 200, r.text[:200])
+    check("F: re-revoke still status=revoked",
+          r.json().get("status") == "revoked", f"row={r.json()}")
+    audit_after = get("/admin/audit-log", token=super_tok,
+                      params={"action": "admin.revoke_credit", "limit": 200}).json()
+    n_after = len(audit_after.get("items", []))
+    check("F: re-revoke does NOT add new audit row",
+          n_after == n_before, f"before={n_before} after={n_after}")
 
-    # Idempotency: re-send + re-verify same Dan phone — should not create credits
-    s2 = send_otp(dan_real["id"], dan_phone)
-    v2 = verify_otp(dan_real["id"], dan_phone)
-    expect(v2.status_code == 200, "D.reverify_dan", f"{v2.status_code}")
-    r = http("GET", f"/users/{alice['id']}/referrals")
-    alice_pc_after_dan2 = r.json().get("pending_credits", -1) if r.status_code == 200 else -1
-    expect(alice_pc_after_dan2 == 0, "D.idempotent_disabled",
-           f"alice.pending_credits={alice_pc_after_dan2}")
+    # ===== G) Group discount flat =====
+    print("\n[G] Group discount flat ($5 off $100)")
+    r = post("/groups", {
+        "lead_id": tom_id, "title": f"C2-G-{TS}", "total_amount": 100,
+        "split_mode": "itemized", "tax": 0, "tip": 0,
+        "items": [{"name": "BigItem", "price": 100, "quantity": 1}],
+    })
+    check("G: create group 200", r.status_code == 200, r.text[:200])
+    gid_g = r.json()["id"]
+    r = post(f"/admin/groups/{gid_g}/discount",
+             {"type": "flat", "value": 5, "note": "promo"}, token=super_tok)
+    check("G: set flat discount 200", r.status_code == 200, r.text[:200])
+    body = r.json()
+    check("G: total_amount == 95", abs(body["total_amount"] - 95) < 0.01,
+          f"total_amount={body.get('total_amount')}")
+    check("G: original_total_amount == 100",
+          abs(body["original_total_amount"] - 100) < 0.01, f"orig={body.get('original_total_amount')}")
+    check("G: discount.amount == 5",
+          abs(body["discount"]["amount"] - 5) < 0.01, f"discount={body.get('discount')}")
+    g_get = get(f"/groups/{gid_g}").json()
+    check("G: GET group total_amount == 95",
+          abs(g_get["total_amount"] - 95) < 0.01, f"got {g_get.get('total_amount')}")
 
-    # ----- E) Reward ENABLED -----
-    r = http("POST", "/admin/referrals/settings",
-             headers=H, json={"enabled": True, "referrer_credit": 5, "referee_credit": 2})
-    expect(r.status_code == 200, "E.enable_settings", f"{r.status_code} {jdump(r)}")
+    # ===== H) Group discount percent =====
+    print("\n[H] Group discount percent (20%)")
+    r = post("/groups", {
+        "lead_id": tom_id, "title": f"C2-H-{TS}", "total_amount": 100,
+        "split_mode": "itemized", "tax": 0, "tip": 0,
+        "items": [{"name": "Pizza", "price": 100, "quantity": 1}],
+    })
+    gid_h = r.json()["id"]
+    r = post(f"/admin/groups/{gid_h}/discount",
+             {"type": "percent", "value": 20, "note": "20%"}, token=super_tok)
+    check("H: set percent discount 200", r.status_code == 200, r.text[:200])
+    body = r.json()
+    check("H: total == 80", abs(body["total_amount"] - 80) < 0.01,
+          f"total={body.get('total_amount')}")
+    check("H: discount.amount == 20",
+          abs(body["discount"]["amount"] - 20) < 0.01, f"discount={body.get('discount')}")
 
-    # Get baseline
-    r = http("GET", f"/users/{alice['id']}/referrals")
-    alice_pc_before_eva = r.json().get("pending_credits", 0) if r.status_code == 200 else 0
+    # ===== I) Discount on settled group => 400 =====
+    print("\n[I] Discount on settled group → 400")
+    settled_gid = gid_d
+    settled_get = get(f"/groups/{settled_gid}").json()
+    if settled_get.get("status") == "open":
+        settled_gid = gid_c
+        settled_get = get(f"/groups/{settled_gid}").json()
+    check("I: settled group status != open",
+          settled_get.get("status") != "open",
+          f"status={settled_get.get('status')}")
+    r = post(f"/admin/groups/{settled_gid}/discount",
+             {"type": "flat", "value": 5}, token=super_tok)
+    check("I: discount on settled → 400", r.status_code == 400,
+          f"got {r.status_code} {r.text[:200]}")
 
-    re_ = register_user(f"EvaE{ts}", alice_code)
-    expect(re_.status_code == 200, "E.register_eva", f"{re_.status_code}")
-    eva = re_.json()
-    eva_phone = fresh_phone(seq=2)
-    s = send_otp(eva["id"], eva_phone)
-    v = verify_otp(eva["id"], eva_phone)
-    expect(v.status_code == 200, "E.verify_eva", f"{v.status_code} {jdump(v)}")
-    eva_real = v.json() if v.status_code == 200 else {}
+    # ===== J) Clear discount =====
+    print("\n[J] Clear discount on group H")
+    r = delete(f"/admin/groups/{gid_h}/discount", token=super_tok)
+    check("J: DELETE 200", r.status_code == 200, r.text[:200])
+    body = r.json()
+    check("J: total restored to 100", abs(body["total_amount"] - 100) < 0.01,
+          f"total={body.get('total_amount')}")
+    check("J: discount is null", body.get("discount") is None,
+          f"discount={body.get('discount')}")
+    g_get = get(f"/groups/{gid_h}").json()
+    check("J: GET shows total==100", abs(g_get["total_amount"] - 100) < 0.01,
+          f"got {g_get.get('total_amount')}")
+    check("J: GET discount is null", g_get.get("discount") is None)
 
-    r = http("GET", f"/users/{alice['id']}/referrals")
-    alice_pc_after_eva = r.json().get("pending_credits", 0) if r.status_code == 200 else 0
-    expect(alice_pc_after_eva >= alice_pc_before_eva + 1,
-           "E.alice_pending_increased",
-           f"before={alice_pc_before_eva} after={alice_pc_after_eva}")
+    # ===== K) Lead auto-discount =====
+    print("\n[K] Lead auto-discount")
+    r = post(f"/admin/users/{tom_id}/lead-discount",
+             {"type": "flat", "value": 5, "note": "VIP", "enabled": True}, token=super_tok)
+    check("K: set lead_auto_discount 200", r.status_code == 200, r.text[:200])
+    lad = r.json().get("lead_auto_discount")
+    check("K: lead_auto_discount.type == flat", bool(lad) and lad.get("type") == "flat",
+          f"lad={lad}")
+    check("K: lead_auto_discount.value == 5", bool(lad) and abs(float(lad.get("value", 0)) - 5) < 0.01)
+    r = post("/groups", {
+        "lead_id": tom_id, "title": f"C2-K-{TS}", "total_amount": 50,
+        "split_mode": "itemized", "tax": 0, "tip": 0,
+        "items": [{"name": "Burger", "price": 50, "quantity": 1}],
+    })
+    check("K: create group 200", r.status_code == 200, r.text[:200])
+    g = r.json()
+    check("K: group total_amount == 45", abs(g["total_amount"] - 45) < 0.01,
+          f"total={g.get('total_amount')}")
+    check("K: original_total_amount == 50",
+          abs(g.get("original_total_amount", 0) - 50) < 0.01,
+          f"orig={g.get('original_total_amount')}")
+    check("K: discount.source == lead_auto",
+          (g.get("discount") or {}).get("source") == "lead_auto",
+          f"discount={g.get('discount')}")
+    check("K: discount.amount == 5",
+          abs((g.get("discount") or {}).get("amount", 0) - 5) < 0.01,
+          f"discount={g.get('discount')}")
 
-    r = http("GET", f"/users/{eva_real.get('id')}/referrals")
-    expect(r.status_code == 200, "E.eva_referrals_get", f"{r.status_code}")
-    eva_pc = r.json().get("pending_credits", 0) if r.status_code == 200 else 0
-    expect(eva_pc >= 1, "E.eva_pending_credit", f"eva.pending_credits={eva_pc}")
+    r = post(f"/admin/users/{tom_id}/lead-discount", {"enabled": False}, token=super_tok)
+    check("K: clear lead_auto_discount 200", r.status_code == 200)
+    check("K: response lead_auto_discount is null",
+          r.json().get("lead_auto_discount") is None)
+    r = post("/groups", {
+        "lead_id": tom_id, "title": f"C2-K2-{TS}", "total_amount": 50,
+        "split_mode": "itemized", "tax": 0, "tip": 0,
+        "items": [{"name": "Salad", "price": 50, "quantity": 1}],
+    })
+    g2 = r.json()
+    check("K: post-clear group total_amount == 50",
+          abs(g2["total_amount"] - 50) < 0.01, f"total={g2.get('total_amount')}")
+    check("K: post-clear group has no discount",
+          g2.get("discount") is None, f"discount={g2.get('discount')}")
 
-    # Idempotency: re-verify Eva — pending should NOT increase
-    s = send_otp(eva_real["id"], eva_phone)
-    v = verify_otp(eva_real["id"], eva_phone)
-    expect(v.status_code == 200, "E.reverify_eva", f"{v.status_code}")
-    r = http("GET", f"/users/{alice['id']}/referrals")
-    alice_pc_after_eva2 = r.json().get("pending_credits", 0) if r.status_code == 200 else 0
-    expect(alice_pc_after_eva2 == alice_pc_after_eva,
-           "E.idempotent_enabled",
-           f"after_eva={alice_pc_after_eva} after_re={alice_pc_after_eva2}")
+    # ===== L) Audit log destructive flag =====
+    print("\n[L] Audit log destructive=true for C2 actions")
+    needed_actions = [
+        "admin.grant_credit",
+        "admin.revoke_credit",
+        "admin.set_group_discount",
+        "admin.clear_group_discount",
+        "admin.set_lead_discount",
+        "admin.clear_lead_discount",
+    ]
+    audit = get("/admin/audit-log", token=super_tok, params={"limit": 200}).json()
+    items = audit.get("items", [])
+    seen_destructive = set()
+    seen_any = set()
+    for it in items:
+        action = it.get("action")
+        if action in needed_actions:
+            seen_any.add(action)
+            if it.get("destructive") is True:
+                seen_destructive.add(action)
+    for action in needed_actions:
+        check(f"L: audit '{action}' present", action in seen_any,
+              "missing in last 200 entries")
+        check(f"L: audit '{action}' destructive=true", action in seen_destructive,
+              "destructive flag missing or false")
 
-    # ----- F) Persistent collapse referral transfer -----
-    # 1. OldUser, no code, verified with phone Y.
-    ro = register_user(f"OldUser{ts}")
-    expect(ro.status_code == 200, "F.register_old", f"{ro.status_code}")
-    old = ro.json()
-    phone_y = fresh_phone(seq=3)
-    s = send_otp(old["id"], phone_y)
-    v = verify_otp(old["id"], phone_y)
-    expect(v.status_code == 200, "F.verify_old", f"{v.status_code}")
-    old_real = v.json() if v.status_code == 200 else {}
-    expect(not old_real.get("referred_by_user_id"),
-           "F.old_no_initial_referrer", f"{old_real.get('referred_by_user_id')}")
+    # ===== M) RBAC — support admin =====
+    print("\n[M] RBAC — support admin")
+    support_email = f"support_c2_{TS}@example.com"
+    support_pass = "SupportPass123!"
+    r = post("/admin/admins", {
+        "email": support_email, "password": support_pass,
+        "name": f"SupportC2{TS}", "role": "support",
+    }, token=super_tok)
+    if r.status_code != 200:
+        print(f"    [info] /admin/admins create returned {r.status_code} {r.text[:200]}")
+    support_tok = admin_login(support_email, support_pass)
 
-    # 2. Fresh placeholder with Alice's code, verify with phone Y → collapses; transfer.
-    rp = register_user(f"FreshPlaceholder{ts}", alice_code)
-    expect(rp.status_code == 200, "F.register_placeholder", f"{rp.status_code}")
-    ph = rp.json()
-    expect(ph.get("referred_by_user_id") == alice["id"],
-           "F.placeholder_set", f"{ph.get('referred_by_user_id')}")
-    s = send_otp(ph["id"], phone_y)
-    v = verify_otp(ph["id"], phone_y)
-    expect(v.status_code == 200, "F.collapse_to_old", f"{v.status_code} {jdump(v)}")
-    collapsed = v.json() if v.status_code == 200 else {}
-    expect(collapsed.get("id") == old_real.get("id"),
-           "F.collapse_same_id",
-           f"got={collapsed.get('id')} old={old_real.get('id')}")
-    expect(collapsed.get("referred_by_user_id") == alice["id"],
-           "F.referrer_transferred",
-           f"collapsed.referred_by={collapsed.get('referred_by_user_id')}")
+    r = post(f"/admin/users/{tom_id}/credits/grant",
+             {"amount": 1, "note": "x"}, token=support_tok)
+    check("M: support grant → 403", r.status_code == 403,
+          f"got {r.status_code} {r.text[:200]}")
 
-    # 3. Re-register with Bob's code, verify Y again — referred_by should NOT change.
-    rp2 = register_user(f"FreshPlaceholder2{ts}", bob_code)
-    ph2 = rp2.json() if rp2.status_code == 200 else {}
-    s = send_otp(ph2["id"], phone_y)
-    v = verify_otp(ph2["id"], phone_y)
-    expect(v.status_code == 200, "F.collapse_again", f"{v.status_code}")
-    collapsed2 = v.json() if v.status_code == 200 else {}
-    expect(collapsed2.get("referred_by_user_id") == alice["id"],
-           "F.referrer_unchanged_on_recollapse",
-           f"got={collapsed2.get('referred_by_user_id')}")
+    wallet = get(f"/users/{tom_id}/credits").json()
+    active_id = None
+    for it in wallet["items"]:
+        if it["status"] == "active":
+            active_id = it["id"]
+            break
+    if not active_id:
+        r = post(f"/admin/users/{tom_id}/credits/grant",
+                 {"amount": 2, "note": "rbac"}, token=super_tok)
+        active_id = r.json()["id"]
 
-    # ----- G) Self-refer guard -----
-    rs = register_user(f"Self{ts}")
-    expect(rs.status_code == 200, "G.register_self", f"{rs.status_code}")
-    self_user = rs.json()
-    self_phone = fresh_phone(seq=4)
-    s = send_otp(self_user["id"], self_phone)
-    v = verify_otp(self_user["id"], self_phone)
-    expect(v.status_code == 200, "G.verify_self", f"{v.status_code}")
-    self_real = v.json() if v.status_code == 200 else {}
-    self_code = self_real.get("referral_code") or self_user.get("referral_code")
+    r = post(f"/admin/users/{tom_id}/credits/{active_id}/revoke", token=support_tok)
+    check("M: support revoke → 403", r.status_code == 403,
+          f"got {r.status_code} {r.text[:200]}")
 
-    # Now register a placeholder using self's own code, then verify with same phone
-    rsp = register_user(f"SelfPlaceholder{ts}", self_code)
-    sph = rsp.json() if rsp.status_code == 200 else {}
-    expect(sph.get("referred_by_user_id") == self_real.get("id"),
-           "G.placeholder_self_set", f"{sph.get('referred_by_user_id')}")
-    s = send_otp(sph["id"], self_phone)
-    v = verify_otp(sph["id"], self_phone)
-    expect(v.status_code == 200, "G.verify_self_collapse", f"{v.status_code}")
-    sc = v.json() if v.status_code == 200 else {}
-    expect(sc.get("id") == self_real.get("id"),
-           "G.collapsed_to_self", f"got={sc.get('id')} self={self_real.get('id')}")
-    expect(not sc.get("referred_by_user_id"),
-           "G.self_refer_blocked",
-           f"referred_by={sc.get('referred_by_user_id')} (must be None)")
+    open_gid = g2["id"]
+    r = post(f"/admin/groups/{open_gid}/discount",
+             {"type": "flat", "value": 1}, token=support_tok)
+    check("M: support set group discount → 403", r.status_code == 403,
+          f"got {r.status_code} {r.text[:200]}")
+    r = delete(f"/admin/groups/{open_gid}/discount", token=support_tok)
+    check("M: support DELETE group discount → 403", r.status_code == 403,
+          f"got {r.status_code} {r.text[:200]}")
+    r = post(f"/admin/users/{tom_id}/lead-discount",
+             {"type": "flat", "value": 5, "enabled": True}, token=support_tok)
+    check("M: support set lead-discount → 403", r.status_code == 403,
+          f"got {r.status_code} {r.text[:200]}")
 
-    # ----- H) Phone masking -----
-    r = http("GET", f"/users/{alice['id']}/referrals")
-    expect(r.status_code == 200, "H.alice_referrals", f"{r.status_code}")
-    body = r.json() if r.status_code == 200 else {}
-    referees = body.get("referees", [])
-    referees_with_phone = [x for x in referees if x.get("phone")]
-    if not referees_with_phone:
-        record("H.has_phone_referees", False, f"no referees with phone — referees={referees}")
-    else:
-        all_masked = True
-        for ree in referees_with_phone:
-            ph_str = ree.get("phone") or ""
-            ok_mask = "*" in ph_str and re.search(r"\d{4}$", ph_str) is not None
-            if not ok_mask:
-                all_masked = False
-                break
-        expect(all_masked, "H.phones_masked",
-               f"sample={referees_with_phone[0].get('phone')}")
+    r = get(f"/admin/users/{tom_id}/credits", token=support_tok)
+    check("M: support GET admin wallet → 200", r.status_code == 200,
+          f"got {r.status_code} {r.text[:200]}")
+    r = get(f"/users/{tom_id}/credits")
+    check("M: public GET wallet → 200", r.status_code == 200,
+          f"got {r.status_code} {r.text[:200]}")
 
-    # ----- I) Admin auth/RBAC -----
-    r = http("GET", "/admin/referrals")
-    expect(r.status_code == 401, "I.no_bearer_401", f"{r.status_code} {jdump(r)}")
+    # ===== Z) Admin wallet auth =====
+    r = get(f"/admin/users/{tom_id}/credits", token=super_tok)
+    check("Z: admin GET wallet 200", r.status_code == 200, r.text[:200])
+    awallet = r.json()
+    check("Z: admin wallet has balance & items",
+          "balance" in awallet and "items" in awallet)
 
-    # Create support admin (super_admin only)
-    support_email = f"support_c1_{ts}@example.com"
-    support_pw = "SupportPass123!"
-    r = http("POST", "/admin/admins", headers=H,
-             json={"email": support_email, "password": support_pw,
-                   "name": "C1 Support", "role": "support"})
-    expect(r.status_code == 200, "I.create_support", f"{r.status_code} {jdump(r)}")
+    r = get(f"/admin/users/{tom_id}/credits")
+    check("Z: admin wallet without bearer → 401", r.status_code == 401,
+          f"got {r.status_code}")
 
-    # Login as support
-    r = http("POST", "/admin/auth/login",
-             json={"email": support_email, "password": support_pw})
-    expect(r.status_code == 200, "I.support_login", f"{r.status_code}")
-    support_token = r.json().get("token") if r.status_code == 200 else None
-    SH = auth_headers(support_token) if support_token else {}
+    # ===== N) Cleanup =====
+    print("\n[N] Cleanup")
+    r = post(f"/admin/users/{tom_id}/lead-discount", {"enabled": False}, token=super_tok)
+    check("N: clear Tom's lead-discount", r.status_code == 200)
 
-    # Support POST settings → 403
-    r = http("POST", "/admin/referrals/settings", headers=SH,
-             json={"enabled": False, "referrer_credit": 0, "referee_credit": 0})
-    ok = r.status_code == 403 and "Requires one of roles" in (r.json().get("detail", "") or "")
-    expect(ok, "I.support_post_settings_403",
-           f"{r.status_code} {jdump(r)}")
-
-    # Support GET leaderboard → 200
-    r = http("GET", "/admin/referrals", headers=SH)
-    expect(r.status_code == 200, "I.support_get_leaderboard_200",
-           f"{r.status_code} {jdump(r)}")
-
-    # ----- J) Admin leaderboard + stats -----
-    r = http("GET", "/admin/referrals", params={"q": "alice"}, headers=H)
-    expect(r.status_code == 200, "J.leaderboard_status", f"{r.status_code}")
-    payload = r.json() if r.status_code == 200 else {}
-    items = payload.get("items", [])
-    alice_row = next((x for x in items if x.get("user_id") == alice["id"]), None)
-    expect(alice_row is not None, "J.alice_in_leaderboard",
-           f"items_count={len(items)}; user_ids={[x.get('user_id') for x in items[:5]]}")
-    if alice_row:
-        expect(alice_row.get("referral_code") == alice_code,
-               "J.alice_code_matches",
-               f"row.code={alice_row.get('referral_code')} alice_code={alice_code}")
-        expect((alice_row.get("total_referrals") or 0) >= 2,
-               "J.alice_total_ge_2",
-               f"total={alice_row.get('total_referrals')}")
-        # verified_referrals reflects actual verified referees from /users/{id}/referrals
-        ru = http("GET", f"/users/{alice['id']}/referrals")
-        actual_verified = ru.json().get("verified_referees_count", -1) if ru.status_code == 200 else -1
-        expect(alice_row.get("verified_referrals") == actual_verified,
-               "J.verified_matches",
-               f"row.verified={alice_row.get('verified_referrals')} actual={actual_verified}")
-    stats = payload.get("stats", {}) or {}
-    if stats.get("total_referred", 0) > 0:
-        expected_cr = round(stats["verified_referred"] / stats["total_referred"] * 100, 1)
-        expect(stats.get("conversion_rate") == expected_cr,
-               "J.conversion_rate_correct",
-               f"got={stats.get('conversion_rate')} expected={expected_cr}")
-
-    # ----- K) Audit log -----
-    r = http("GET", "/admin/audit-log", params={"limit": 20}, headers=H)
-    expect(r.status_code == 200, "K.audit_log_status", f"{r.status_code}")
-    entries = r.json().get("items", []) if r.status_code == 200 else []
-    upd_entries = [e for e in entries if e.get("action") == "admin.update_referral_settings"]
-    expect(len(upd_entries) >= 1, "K.audit_has_update",
-           f"count={len(upd_entries)}")
-    if upd_entries:
-        e0 = upd_entries[0]
-        expect(e0.get("destructive") is True, "K.destructive_true",
-               f"destructive={e0.get('destructive')}")
-        expect(e0.get("target_type") == "settings",
-               "K.target_type_settings", f"target_type={e0.get('target_type')}")
-        expect(e0.get("target_id") == "referrals",
-               "K.target_id_referrals", f"target_id={e0.get('target_id')}")
-
-    # ----- L) Cleanup -----
-    r = http("POST", "/admin/referrals/settings", headers=H,
-             json={"enabled": False, "referrer_credit": 0, "referee_credit": 0})
-    expect(r.status_code == 200, "L.cleanup_disable", f"{r.status_code}")
-
-    # ----- Summary -----
-    print("\n========== SUMMARY ==========")
-    fails = [r for r in RESULTS if not r[1]]
-    print(f"Total: {len(RESULTS)}, Pass: {len(RESULTS) - len(fails)}, Fail: {len(fails)}")
-    if fails:
-        print("\nFailing tests:")
-        for name, _ok, msg in fails:
-            print(f"  - {name}: {msg}")
-    return 0 if not fails else 1
+    print()
+    print("=" * 60)
+    print(f"PASSED: {len(PASSED)}  FAILED: {len(FAILED)}")
+    if FAILED:
+        print("\nFAILED items:")
+        for f in FAILED:
+            print(f"  - {f}")
+    print("=" * 60)
+    return 0 if not FAILED else 1
 
 
 if __name__ == "__main__":
@@ -406,5 +484,4 @@ if __name__ == "__main__":
         sys.exit(main())
     except Exception as e:
         traceback.print_exc()
-        print(f"\nFATAL: {e}")
         sys.exit(2)

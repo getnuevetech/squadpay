@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Platform, TextInput } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ArrowLeft, Ban, ShieldCheck, Crown, Users as UsersIcon, ListChecks, Wallet } from 'lucide-react-native';
+import { ArrowLeft, Ban, ShieldCheck, Crown, Users as UsersIcon, ListChecks, Wallet, Percent, DollarSign, X as XIcon, Tag } from 'lucide-react-native';
 import { adminApi, AdminGroupDetail } from '../../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 
@@ -22,6 +22,10 @@ export default function AdminGroupDetailPage() {
   const [group, setGroup] = useState<AdminGroupDetail | null>(null);
   const [busy, setBusy] = useState(true);
   const [reason, setReason] = useState('');
+  // C2: discount form
+  const [dType, setDType] = useState<'flat' | 'percent'>('percent');
+  const [dValue, setDValue] = useState('');
+  const [dNote, setDNote] = useState('');
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -48,6 +52,23 @@ export default function AdminGroupDetailPage() {
     confirm('Unblock group?', `"${group.title}" will accept contributions and payments again.`, async () => {
       try { await adminApi.blockGroup(group.id, false); await load(); }
       catch (e: any) { Alert.alert('Error', e?.message || 'Failed to unblock'); }
+    });
+  };
+
+  const onSetDiscount = async () => {
+    const v = parseFloat(dValue);
+    if (!v || v <= 0) { Alert.alert('Invalid', 'Value must be > 0'); return; }
+    if (dType === 'percent' && v > 100) { Alert.alert('Invalid', 'Percent must be ≤ 100'); return; }
+    try {
+      await adminApi.setGroupDiscount(group!.id, { type: dType, value: v, note: dNote || undefined });
+      setDValue(''); setDNote('');
+      await load();
+    } catch (e: any) { Alert.alert('Error', e?.message || 'Failed'); }
+  };
+  const onClearDiscount = () => {
+    confirm('Clear discount?', 'The bill total will revert to the original amount.', async () => {
+      try { await adminApi.clearGroupDiscount(group!.id); await load(); }
+      catch (e: any) { Alert.alert('Error', e?.message || 'Failed'); }
     });
   };
 
@@ -122,6 +143,60 @@ export default function AdminGroupDetailPage() {
             <TouchableOpacity onPress={onBlock} style={[styles.actionBtn, { backgroundColor: COLORS.danger }]} activeOpacity={0.85} testID="admin-group-block">
               <Ban size={16} color="#fff" /><Text style={styles.actionBtnText}>Block group</Text>
             </TouchableOpacity>
+          </View>
+        )}
+      </View>
+
+      <View style={styles.section}>
+        <View style={styles.sectionHeader}><Tag size={14} color={COLORS.text} /><Text style={styles.sectionTitle}>Discount</Text></View>
+        {group.discount ? (
+          <View style={styles.discountActive} testID="admin-group-discount-active">
+            <View style={{ flex: 1 }}>
+              <Text style={styles.discountValueText}>
+                -{group.discount.type === 'percent' ? `${group.discount.value}%` : `$${group.discount.value.toFixed(2)}`}
+                {' '}({`-$${group.discount.amount.toFixed(2)}`})
+              </Text>
+              <Text style={styles.metaSmall}>{group.discount.note || 'No note'} • applied by {group.discount.applied_by}</Text>
+              {group.original_total_amount ? (
+                <Text style={styles.metaSmall}>Original ${group.original_total_amount.toFixed(2)} → New ${group.total_amount.toFixed(2)}</Text>
+              ) : null}
+            </View>
+            <TouchableOpacity onPress={onClearDiscount} style={[styles.smallBtn, { backgroundColor: COLORS.danger }]} activeOpacity={0.85} testID="admin-group-discount-clear">
+              <XIcon size={14} color="#fff" />
+              <Text style={styles.smallBtnText}>Clear</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <View style={{ gap: 8 }}>
+            <Text style={styles.metaSmall}>Reduces total amount before split. One discount per group.</Text>
+            <View style={styles.formRow}>
+              <TouchableOpacity onPress={() => setDType('flat')} style={[styles.toggle, dType === 'flat' && styles.toggleActive]} activeOpacity={0.85}>
+                <DollarSign size={12} color={dType === 'flat' ? '#fff' : COLORS.text} /><Text style={[styles.toggleText, dType === 'flat' && { color: '#fff' }]}>Flat</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setDType('percent')} style={[styles.toggle, dType === 'percent' && styles.toggleActive]} activeOpacity={0.85}>
+                <Percent size={12} color={dType === 'percent' ? '#fff' : COLORS.text} /><Text style={[styles.toggleText, dType === 'percent' && { color: '#fff' }]}>Percent</Text>
+              </TouchableOpacity>
+              <TextInput
+                style={[styles.input, { flex: 1 }]}
+                placeholder={dType === 'percent' ? '20' : '5'}
+                placeholderTextColor={COLORS.disabledText}
+                keyboardType="decimal-pad"
+                value={dValue}
+                onChangeText={setDValue}
+                testID="admin-group-discount-value"
+              />
+              <TextInput
+                style={[styles.input, { flex: 2 }]}
+                placeholder="Note (e.g. promo)"
+                placeholderTextColor={COLORS.disabledText}
+                value={dNote}
+                onChangeText={setDNote}
+                testID="admin-group-discount-note"
+              />
+              <TouchableOpacity onPress={onSetDiscount} style={[styles.smallBtn, { backgroundColor: COLORS.primary }]} activeOpacity={0.85} testID="admin-group-discount-apply">
+                <Text style={styles.smallBtnText}>Apply</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         )}
       </View>
@@ -210,4 +285,13 @@ const styles = StyleSheet.create({
   contribRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   blockedPill: { backgroundColor: COLORS.dangerLight, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4 },
   blockedPillText: { fontSize: 9, color: COLORS.danger, fontWeight: FONT.weights.bold },
+  // C2 styles
+  formRow: { flexDirection: 'row', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
+  smallBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, height: 38, borderRadius: RADIUS.md, justifyContent: 'center' },
+  smallBtnText: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: FONT.sizes.sm },
+  toggle: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, height: 38, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.surface },
+  toggleActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  toggleText: { fontSize: FONT.sizes.xs, fontWeight: FONT.weights.semibold, color: COLORS.text },
+  discountActive: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: SPACING.sm, backgroundColor: COLORS.successLight, borderRadius: RADIUS.sm, borderWidth: 1, borderColor: COLORS.success },
+  discountValueText: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.success },
 });

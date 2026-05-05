@@ -16,7 +16,7 @@ function confirm(title: string, message: string, onYes: () => void) {
   }
 }
 
-export default function AdminUserDetail() {
+export default function AdminUserDetailPage() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [user, setUser] = useState<AdminUserDetail | null>(null);

@@ -451,7 +451,7 @@ export default function PayScreen() {
 
               {shortfallMode === 'split_equal' && (
                 <Text style={styles.splitNote}>
-                  💡 The shortfall will be split equally across all non-lead members. Each gets an SMS and sees their share as an additional bill.
+                  💡 The shortfall will be split equally across all members (including you, the lead). Each person gets an SMS and sees their share as an additional bill.
                 </Text>
               )}
             </View>

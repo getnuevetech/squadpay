@@ -738,8 +738,8 @@ async def pay_group(group_id: str, body: PayIn):
             })
             awaiting_obligations = True
         elif mode == "split_equal":
-            # Distribute obligations equally across non-lead members. Don't pay merchant yet.
-            split_targets = [m["user_id"] for m in group.get("members", []) if m["user_id"] != group["lead_id"]]
+            # Distribute obligations equally across ALL members (including lead). Don't pay merchant yet.
+            split_targets = [m["user_id"] for m in group.get("members", [])]
             if not split_targets:
                 raise HTTPException(400, "No members to split shortfall across")
             per_share = round(shortfall / len(split_targets), 2)

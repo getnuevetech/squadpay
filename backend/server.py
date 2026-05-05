@@ -653,8 +653,16 @@ async def pay_group(group_id: str, body: PayIn):
         )
 
     contributions = list(group.get("contributions", []))
-    obligations = list(group.get("shortfall_obligations", []) or [])
-    notifications = list(group.get("notifications", []) or [])
+    # IMPORTANT: shortfall obligations + notifications are RESET on each /pay call,
+    # so changing the shortfall mode replaces (not stacks) the previous assignment.
+    obligations = [
+        o for o in (group.get("shortfall_obligations") or [])
+        if o.get("kind") not in ("shortfall_member", "shortfall_split")
+    ]
+    notifications = [
+        n for n in (group.get("notifications") or [])
+        if n.get("kind") not in ("shortfall_assigned", "shortfall_lead_covered")
+    ]
     total_contributed = sum(float(c["amount"]) for c in contributions)
     total = float(group.get("total_amount") or 0.0)
     shortfall = round(max(0.0, total - total_contributed), 2)

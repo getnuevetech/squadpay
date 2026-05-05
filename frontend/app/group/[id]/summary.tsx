@@ -91,9 +91,8 @@ export default function SummaryScreen() {
     router.push(`/group/${group.id}/pay?kind=repay`);
   };
 
-  // Member CTA logic
-  const memberHasFullyContributed = myContributed >= myShare - 0.01;
-  const memberCanContribute = group.status === 'open' && !memberHasFullyContributed && myShare > 0;
+  // Member CTA logic — outstanding already includes shortfall obligations
+  const memberCanContribute = group.status === 'open' && myOutstanding > 0.01 && !isLead;
   const memberCanRepay = group.status !== 'open' && myOutstanding > 0.01;
   // Lead-specific: lead must contribute own share before paying merchant
   const leadShareCovered = isLead && myContributed >= myShare - 0.01;
@@ -340,14 +339,18 @@ export default function SummaryScreen() {
         {/* Member actions */}
         {!isLead && memberCanContribute && (
           <Button
-            title={`Contribute $${(myShare - myContributed).toFixed(2)} now`}
+            title={
+              (myPer?.shortfall_owed || 0) > 0.01
+                ? `Pay $${myOutstanding.toFixed(2)} (incl. shortfall)`
+                : `Contribute $${myOutstanding.toFixed(2)} now`
+            }
             testID="summary-contribute-btn"
             onPress={handleContribute}
           />
         )}
-        {!isLead && group.status === 'open' && memberHasFullyContributed && (
+        {!isLead && group.status === 'open' && !memberCanContribute && myShare > 0 && (
           <Button
-            title={`Contributed ${myContributed.toFixed(2) === myShare.toFixed(2) ? '✓' : `$${myContributed.toFixed(2)}`} — waiting for lead`}
+            title={`Contributed ✓ — waiting for lead`}
             onPress={() => {}}
             disabled
             testID="summary-waiting"

@@ -115,7 +115,30 @@ def attach_payment_routes(api_router: APIRouter, db):
 
         stripe_checkout = _stripe(http_request)
         try:
-            status = await stripe_checkout.get_checkout_status(session_id)
+            # Workaround: emergentintegrations' get_checkout_status fails with Pydantic v2
+            # rejecting Stripe's StripeObject metadata. Call Stripe SDK directly.
+            import stripe as _stripe_sdk
+            from types import SimpleNamespace
+            _stripe_sdk.api_key = os.environ.get("STRIPE_API_KEY") or "sk_test_emergent"
+            s = _stripe_sdk.checkout.Session.retrieve(session_id)
+            # stripe.checkout.Session is a StripeObject; access fields by attribute
+            _meta = getattr(s, "metadata", None)
+            if _meta is None:
+                meta_dict = {}
+            elif hasattr(_meta, "to_dict"):
+                meta_dict = _meta.to_dict()
+            else:
+                try:
+                    meta_dict = {k: _meta[k] for k in (list(_meta.keys()) if hasattr(_meta, "keys") else [])}
+                except Exception:
+                    meta_dict = {}
+            status = SimpleNamespace(
+                status=getattr(s, "status", None),
+                payment_status=getattr(s, "payment_status", None),
+                amount_total=getattr(s, "amount_total", None),
+                currency=getattr(s, "currency", None),
+                metadata=meta_dict,
+            )
         except Exception as e:
             logger.exception(f"[stripe] get_checkout_status failed: {e}")
             raise HTTPException(502, f"Stripe error: {e}")

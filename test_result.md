@@ -222,6 +222,27 @@ frontend:
             picker with UX Member avatar and name — picker stays mounted after selection
             (the previous disappearing bug is gone). Pay button shows correct amount.
 
+  - task: "Create Bill — Subtotal becomes read-only, derived from items"
+    implemented: true
+    working: true
+    file: "frontend/app/create.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Removed the editable Subtotal TextInput and replaced it with a non-editable
+            'SUBTOTAL (AUTO)' display that shows the live sum of items (price × quantity)
+            with a 'from items' hint. computedTotal() = computedSubtotal() + tax + tip.
+            Receipt-scan no longer pushes a phantom total; only items + tax + tip are seeded.
+            Create-bill validation now requires items (subtotal > 0). Empty state copy
+            updated to 'Add items to start the bill. Subtotal updates automatically.'
+            Verified visually: with Pasta×2 @ $12 + Drink×1 @ $4.50 + tax $2 + tip $3,
+            Subtotal renders '$28.50' (read-only) and Total at the bottom is '$33.50'.
+            The previous 'phantom amount' bug (manual subtotal not tied to any item) is gone.
+
 metadata:
   created_by: "main_agent"
   version: "1.1"

@@ -27,7 +27,6 @@ type DraftItem = { name: string; price: string; quantity: string };
 export default function CreateBillScreen() {
   const router = useRouter();
   const [title, setTitle] = useState('Group Bill');
-  const [totalStr, setTotalStr] = useState('');
   const [tax, setTax] = useState('');
   const [tip, setTip] = useState('');
   const [mode, setMode] = useState<Mode>('smart');
@@ -75,7 +74,6 @@ export default function CreateBillScreen() {
       );
       setTax(parsed.tax ? String(parsed.tax) : '');
       setTip(parsed.tip ? String(parsed.tip) : '');
-      if (parsed.total) setTotalStr(String(parsed.total));
       setMode('itemized');
     } catch (e: any) {
       Alert.alert('Scan failed', e.message);
@@ -84,21 +82,21 @@ export default function CreateBillScreen() {
     }
   };
 
-  const computedTotal = () => {
-    const sub = totalStr
-      ? parseFloat(totalStr) || 0
-      : items.reduce(
-          (s, it) => s + (parseFloat(it.price) || 0) * (parseInt(it.quantity || '1', 10) || 1),
-          0,
-        );
-    return sub + (parseFloat(tax) || 0) + (parseFloat(tip) || 0);
-  };
+  const computedSubtotal = () =>
+    items.reduce(
+      (s, it) => s + (parseFloat(it.price) || 0) * (parseInt(it.quantity || '1', 10) || 1),
+      0,
+    );
+
+  const computedTotal = () =>
+    computedSubtotal() + (parseFloat(tax) || 0) + (parseFloat(tip) || 0);
 
   const create = async () => {
     if (!userId) return;
+    const subtotal = computedSubtotal();
     const total = computedTotal();
-    if (total <= 0) {
-      Alert.alert('Add a total', 'Enter a total or add items.');
+    if (subtotal <= 0) {
+      Alert.alert('Add items', 'Add at least one item to start the bill.');
       return;
     }
     if (mode === 'itemized' && items.length === 0) {
@@ -153,16 +151,16 @@ export default function CreateBillScreen() {
 
           <View style={styles.row2}>
             <View style={{ flex: 2 }}>
-              <Text style={styles.label}>Subtotal ($)</Text>
-              <TextInput
-                testID="create-total-input"
-                value={totalStr}
-                onChangeText={setTotalStr}
-                placeholder="180.00"
-                placeholderTextColor={COLORS.disabledText}
-                keyboardType="decimal-pad"
-                style={styles.input}
-              />
+              <Text style={styles.label}>Subtotal (auto)</Text>
+              <View
+                testID="create-subtotal-readonly"
+                style={[styles.input, styles.readonly]}
+              >
+                <Text style={styles.readonlyText}>
+                  ${computedSubtotal().toFixed(2)}
+                </Text>
+                <Text style={styles.readonlyHint}>from items</Text>
+              </View>
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.label}>Tax</Text>
@@ -241,7 +239,7 @@ export default function CreateBillScreen() {
             <View style={styles.emptyItems}>
               <Edit3 size={32} color={COLORS.border} />
               <Text style={styles.emptyItemsText}>
-                Add items for itemized split or leave blank for equal/smart split.
+                Add items to start the bill. Subtotal updates automatically.
               </Text>
             </View>
           ) : (
@@ -324,6 +322,22 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     fontSize: FONT.sizes.md,
     marginBottom: SPACING.md,
+  },
+  readonly: {
+    backgroundColor: COLORS.disabledBg,
+    borderColor: COLORS.border,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  readonlyText: {
+    color: COLORS.text,
+    fontSize: FONT.sizes.md,
+    fontWeight: FONT.weights.semibold,
+  },
+  readonlyHint: {
+    color: COLORS.subtext,
+    fontSize: FONT.sizes.xs,
   },
   row2: { flexDirection: 'row', gap: SPACING.sm },
   modeRow: { flexDirection: 'row', gap: SPACING.sm },

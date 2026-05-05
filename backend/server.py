@@ -869,6 +869,7 @@ async def get_user_groups(user_id: str):
             "title": g["title"],
             "total": e["total"],
             "status": g["status"],
+            "derived_status": e["derived_status"],
             "lead_id": g["lead_id"],
             "created_at": g["created_at"],
             "member_count": len(g.get("members", [])),

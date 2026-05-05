@@ -19,6 +19,7 @@ import { Button } from '../../../src/Button';
 import { api, BACKEND_URL, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
+import { StatusBadge } from '../../../src/StatusBadge';
 
 export default function GroupLobbyScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -93,7 +94,10 @@ export default function GroupLobbyScreen() {
         contentContainerStyle={{ padding: SPACING.md, paddingBottom: 120 }}
       >
         <View style={styles.headerCard}>
-          <Text style={styles.title} testID="lobby-title">{group.title}</Text>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
+            <Text style={styles.title} testID="lobby-title">{group.title}</Text>
+            <StatusBadge status={group.derived_status} testID="lobby-status-badge" />
+          </View>
           <Text style={styles.total}>${group.total.toFixed(2)}</Text>
           <Text style={styles.modeLabel}>
             {group.split_mode === 'fast'

@@ -16,6 +16,7 @@ import { Button } from '../src/Button';
 import { api } from '../src/api';
 import { clearUser, loadUser, refreshUser } from '../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../src/theme';
+import { StatusBadge } from '../src/StatusBadge';
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -121,10 +122,10 @@ export default function HomeScreen() {
 
         <View style={styles.heroCard} testID="home-hero-card">
           <Text style={styles.heroLabel}>Active bills</Text>
-          <Text style={styles.heroAmount}>{groups.filter(g => g.status !== 'closed').length}</Text>
+          <Text style={styles.heroAmount}>{groups.filter(g => ((g as any).derived_status || g.status) !== 'settled' && g.status !== 'closed').length}</Text>
           <View style={styles.heroFooter}>
             <Text style={styles.heroFooterText}>
-              {groups.filter(g => g.status === 'closed').length} settled • {groups.length} total
+              {groups.filter(g => ((g as any).derived_status || (g.status === 'closed' ? 'settled' : '')) === 'settled').length} settled • {groups.length} total
             </Text>
           </View>
         </View>
@@ -185,29 +186,7 @@ export default function HomeScreen() {
                     {item.member_count} {item.member_count === 1 ? 'member' : 'members'} • ${Number(item.total || 0).toFixed(2)}
                   </Text>
                 </View>
-                <View
-                  style={[
-                    styles.statusPill,
-                    item.status === 'closed'
-                      ? styles.statusClosed
-                      : item.status === 'paid'
-                      ? styles.statusPaid
-                      : styles.statusOpen,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.statusPillText,
-                      item.status === 'closed'
-                        ? { color: COLORS.success }
-                        : item.status === 'paid'
-                        ? { color: COLORS.primary }
-                        : { color: COLORS.warning },
-                    ]}
-                  >
-                    {item.status === 'closed' ? 'Settled' : item.status === 'paid' ? 'Repaying' : 'Open'}
-                  </Text>
-                </View>
+                <StatusBadge status={(item as any).derived_status || (item.status === 'closed' ? 'settled' : item.status === 'paid' ? 'repaying' : 'contributing')} testID={`home-status-${item.id}`} />
                 <ChevronRight color={COLORS.subtext} size={18} />
               </TouchableOpacity>
             )}

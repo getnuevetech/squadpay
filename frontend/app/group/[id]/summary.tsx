@@ -16,6 +16,7 @@ import { Button } from '../../../src/Button';
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
+import { StatusBadge } from '../../../src/StatusBadge';
 
 export default function SummaryScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -139,7 +140,10 @@ export default function SummaryScreen() {
         })()}
         {/* Your share card */}
         <View style={styles.yourCard} testID="summary-your-card">
-          <Text style={styles.yourLabel}>Your share</Text>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+            <Text style={styles.yourLabel}>Your share</Text>
+            <StatusBadge status={group.derived_status} size="sm" testID="summary-status-badge" />
+          </View>
           <Text style={styles.yourAmount} testID="summary-your-amount">${myShare.toFixed(2)}</Text>
           <View style={styles.breakdownRow}>
             <Text style={styles.breakdownKey}>Items</Text>

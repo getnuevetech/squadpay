@@ -33,6 +33,9 @@ def build_admin_router(db):
         request.state.admin = admin
         return admin
 
+    # Phase B: users + groups admin routes (registered at end of factory)
+    from admin_users_groups import attach_users_and_groups_routes  # noqa: F401
+
     # ----- Auth -----
     @router.post("/auth/login", response_model=AdminAuthResponse)
     async def login(body: AdminLoginIn, request: Request):
@@ -187,6 +190,9 @@ def build_admin_router(db):
         )
         target["is_active"] = body.is_active
         return _strip(target)
+
+    # Mount Phase B users + groups admin routes
+    attach_users_and_groups_routes(router, db, _attach_admin)
 
     return router
 

@@ -1,441 +1,420 @@
-"""
-Backend tests for the redesigned shortfall settlement + 4-state derived status machine.
-"""
+"""Phase B backend tests: persistent users + admin block/unblock + group block.
 
+Runs end-to-end against the live preview backend at EXPO_PUBLIC_BACKEND_URL/api.
+"""
 import os
 import sys
-import json
-from typing import Any, Dict, List, Optional, Tuple
-
+import uuid
 import requests
+from typing import Optional
 
-def _read_env(path: str, key: str) -> Optional[str]:
-    try:
-        with open(path) as f:
-            for line in f:
-                if line.startswith(key + "="):
-                    return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except Exception:
-        return None
-    return None
+# ---------- Resolve base URL ----------
+ENV_PATH = "/app/frontend/.env"
+BASE = None
+with open(ENV_PATH) as fh:
+    for line in fh:
+        if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
+            BASE = line.strip().split("=", 1)[1].strip().strip('"').rstrip("/")
+            break
+if not BASE:
+    print("FATAL: EXPO_PUBLIC_BACKEND_URL not found")
+    sys.exit(2)
+API = f"{BASE}/api"
+print(f"[setup] API base = {API}")
 
-BASE_URL = (_read_env("/app/frontend/.env", "EXPO_PUBLIC_BACKEND_URL") or "").rstrip("/")
-if not BASE_URL:
-    print("FATAL: EXPO_PUBLIC_BACKEND_URL not set")
-    sys.exit(1)
-API = f"{BASE_URL}/api"
-print(f"API base = {API}\n")
+ADMIN_EMAIL = "[email protected]"
+ADMIN_PASSWORD = "ChangeMe123!"
 
+RUN_TAG = uuid.uuid4().hex[:6]
 
-class TestError(Exception):
-    pass
+def _phone(seed: int) -> str:
+    digits = "".join(c for c in RUN_TAG if c.isdigit()).ljust(3, "0")[:3]
+    return f"+1555{digits}{seed:04d}"
 
+PHONE_A = _phone(9001)
+PHONE_C = _phone(9002)
 
-def _req(method: str, path: str, **kw) -> Tuple[int, Any]:
+PASS = []
+FAIL = []
+
+def _record(name: str, ok: bool, detail: str = ""):
+    icon = "PASS" if ok else "FAIL"
+    line = f"[{icon}] {name}"
+    if detail:
+        line += f" — {detail}"
+    print(line)
+    (PASS if ok else FAIL).append(name)
+
+def expect(name: str, cond: bool, detail: str = ""):
+    _record(name, bool(cond), detail)
+    return bool(cond)
+
+def http(method: str, path: str, *, json_body=None, headers=None, params=None,
+         expect_status: Optional[int] = None, name: Optional[str] = None):
     url = f"{API}{path}"
-    r = requests.request(method, url, timeout=30, **kw)
     try:
-        body = r.json()
-    except Exception:
-        body = r.text
-    return r.status_code, body
-
-
-def post(path: str, payload: dict) -> Tuple[int, Any]:
-    return _req("POST", path, json=payload)
-
-
-def get(path: str) -> Tuple[int, Any]:
-    return _req("GET", path)
-
-
-def register_and_verify(name: str, phone: str) -> dict:
-    sc, user = post("/auth/register", {"name": name})
-    if sc != 200:
-        raise TestError(f"register {name} failed {sc} {user}")
-    uid = user["id"]
-    sc, _ = post("/auth/send-otp", {"user_id": uid, "phone": phone})
-    if sc != 200:
-        raise TestError(f"send-otp failed {sc}")
-    sc, user = post("/auth/verify-otp", {"user_id": uid, "phone": phone, "code": "123456"})
-    if sc != 200:
-        raise TestError(f"verify-otp failed {sc} {user}")
-    return user
-
-
-def make_itemized_group(lead: dict, members: List[dict], items: List[dict],
-                       title: str = "Dinner", tax: float = 0.0, tip: float = 0.0,
-                       total_amount: Optional[float] = None) -> dict:
-    subtotal = sum(it["price"] * it["quantity"] for it in items)
-    if total_amount is None:
-        total_amount = subtotal + tax + tip
-    sc, group = post("/groups", {
-        "lead_id": lead["id"], "title": title, "total_amount": total_amount,
-        "split_mode": "itemized", "tax": tax, "tip": tip, "items": items,
-    })
-    if sc != 200:
-        raise TestError(f"create group failed {sc} {group}")
-    for m in members:
-        sc, group = post(f"/groups/{group['id']}/join", {"user_id": m["id"]})
-        if sc != 200:
-            raise TestError(f"join failed {sc} {group}")
-    return group
-
-
-def assign(group_id: str, user_id: str, item_id: str, quantity: int) -> dict:
-    sc, g = post(f"/groups/{group_id}/assign",
-                 {"user_id": user_id, "item_id": item_id, "quantity": quantity})
-    if sc != 200:
-        raise TestError(f"assign failed {sc} {g}")
-    return g
-
-
-def contribute(group_id: str, user_id: str, amount: Optional[float] = None) -> Tuple[int, Any]:
-    payload = {"user_id": user_id}
-    if amount is not None:
-        payload["amount"] = amount
-    return post(f"/groups/{group_id}/contribute", payload)
-
-
-def per_user_for(group: dict, user_id: str) -> dict:
-    return next((p for p in group["per_user"] if p["user_id"] == user_id), {})
-
-
-RESULTS = []
-
-
-def report(name: str, ok: bool, details: str = ""):
-    RESULTS.append({"name": name, "ok": ok, "details": details})
-    flag = "PASS" if ok else "FAIL"
-    print(f"  [{flag}] {name}")
-    if details and not ok:
-        for line in details.splitlines():
-            print(f"          {line}")
-
-
-def summarize_group(g: dict) -> str:
-    notif = [(n.get("kind"), n.get("user_id"), n.get("delivered_via")) for n in (g.get("notifications") or [])]
-    obs = [(o.get("kind"), o.get("user_id"), o.get("amount")) for o in (g.get("shortfall_obligations") or [])]
-    pu = [{"user": p["user_id"][-6:], "total": p["total"], "contributed": p["contributed"],
-           "shortfall_owed": p.get("shortfall_owed"), "outstanding": p["outstanding"]}
-          for p in g["per_user"]]
-    return (f"status={g.get('status')} derived={g.get('derived_status')} "
-            f"funding_mode={g.get('funding_mode')} "
-            f"remaining={g['funding']['remaining_to_collect']} "
-            f"total_contributed={g['funding']['total_contributed']}\n"
-            f"per_user={json.dumps(pu)}\nobligations={obs}\nnotifications={notif}")
-
-
-def fresh_trio_with_shortfall(scenario: str):
-    """Lead+2 members, 3 $20 items each assigned to one. Lead+m1 contribute, m2 doesn't."""
-    lead = register_and_verify(f"Lead {scenario}", "+12025550100")
-    m1 = register_and_verify(f"Avery {scenario}", "+12025550101")
-    m2 = register_and_verify(f"Riley {scenario}", "+12025550102")
-    items = [
-        {"name": "Pasta", "price": 20.0, "quantity": 1},
-        {"name": "Pizza", "price": 20.0, "quantity": 1},
-        {"name": "Burger", "price": 20.0, "quantity": 1},
-    ]
-    group = make_itemized_group(lead, [m1, m2], items, title=f"Test {scenario}")
-    gid = group["id"]
-    item_ids = [it["id"] for it in group["items"]]
-    assign(gid, lead["id"], item_ids[0], 1)
-    assign(gid, m1["id"], item_ids[1], 1)
-    g = assign(gid, m2["id"], item_ids[2], 1)
-    sc, _ = contribute(gid, lead["id"])
-    if sc != 200:
-        raise TestError(f"lead contribute failed {sc}")
-    sc, _ = contribute(gid, m1["id"])
-    if sc != 200:
-        raise TestError(f"m1 contribute failed {sc}")
-    return lead, m1, m2, gid
-
-
-def scenario_A():
-    print("\n=== A: shortfall_mode='lead' is_loan=true ===")
-    lead, m1, m2, gid = fresh_trio_with_shortfall("A")
-    sc, body = post(f"/groups/{gid}/pay", {
-        "user_id": lead["id"], "shortfall_mode": "lead", "is_loan": True,
-    })
-    print(f"  HTTP {sc}")
-    if sc != 200:
-        report("A: pay returns 200", False, str(body))
-        return
-    print("  " + summarize_group(body))
-    report("A: status='paid'", body.get("status") == "paid", f"got {body.get('status')}")
-    report("A: derived_status='repaying'", body.get("derived_status") == "repaying",
-           f"got {body.get('derived_status')}")
-    report("A: remaining_to_collect=0", body["funding"]["remaining_to_collect"] <= 0.01,
-           f"got {body['funding']['remaining_to_collect']}")
-    notif = body.get("notifications") or []
-    lead_covered = [n for n in notif if n.get("kind") == "shortfall_lead_covered"]
-    report("A: notifications include shortfall_lead_covered for beneficiary",
-           len(lead_covered) >= 1 and any(n.get("user_id") == m2["id"] for n in lead_covered),
-           f"lead_covered={lead_covered}")
-    report("A: notifications delivered_via=sms_mock",
-           all(n.get("delivered_via") == "sms_mock" for n in lead_covered), "")
-    m2p = per_user_for(body, m2["id"])
-    report("A: m2 still has outstanding (loan)", m2p["outstanding"] > 0.01,
-           f"m2 outstanding={m2p['outstanding']}")
-    settlement = body.get("shortfall_settlement") or {}
-    report("A: settlement.mode/is_loan/funder_id correct",
-           settlement.get("mode") == "lead" and settlement.get("is_loan") is True
-           and settlement.get("funder_id") == lead["id"],
-           f"settlement={settlement}")
-
-
-def scenario_B():
-    print("\n=== B: shortfall_mode='lead' is_loan=false ===")
-    lead, m1, m2, gid = fresh_trio_with_shortfall("B")
-    sc, body = post(f"/groups/{gid}/pay", {
-        "user_id": lead["id"], "shortfall_mode": "lead", "is_loan": False,
-    })
-    print(f"  HTTP {sc}")
-    if sc != 200:
-        report("B: pay returns 200", False, str(body))
-        return
-    print("  " + summarize_group(body))
-    report("B: status='closed'", body.get("status") == "closed", f"got {body.get('status')}")
-    report("B: derived_status='settled'", body.get("derived_status") == "settled",
-           f"got {body.get('derived_status')}")
-    notif = body.get("notifications") or []
-    gift_notifs = [n for n in notif if n.get("kind") == "shortfall_lead_covered"]
-    msg_ok = any("gift" in (n.get("message") or "").lower() for n in gift_notifs)
-    report("B: gift wording in lead-covered notification", msg_ok, f"notifs={gift_notifs}")
-    m2p = per_user_for(body, m2["id"])
-    report("B: m2 outstanding=0 (gift waives)", m2p["outstanding"] <= 0.01,
-           f"m2 outstanding={m2p['outstanding']}")
-
-
-def scenario_C():
-    print("\n=== C: shortfall_mode='member' is_loan=true funder_member_id=m1 ===")
-    lead, m1, m2, gid = fresh_trio_with_shortfall("C")
-    sc, before = get(f"/groups/{gid}")
-    shortfall = before["funding"]["remaining_to_collect"]
-    funder_total = per_user_for(before, m1["id"])["total"]
-    funder_already = per_user_for(before, m1["id"])["contributed"]
-    sc, body = post(f"/groups/{gid}/pay", {
-        "user_id": lead["id"], "shortfall_mode": "member",
-        "is_loan": True, "funder_member_id": m1["id"],
-    })
-    print(f"  HTTP {sc}, shortfall was ${shortfall}")
-    if sc != 200:
-        report("C: pay returns 200", False, str(body))
+        r = requests.request(method, url, json=json_body, headers=headers, params=params, timeout=30)
+    except Exception as e:
+        _record(name or f"{method} {path}", False, f"network error: {e}")
         return None
-    print("  " + summarize_group(body))
-    report("C: status stays 'open'", body.get("status") == "open", f"got {body.get('status')}")
-    report("C: derived_status='contributing'", body.get("derived_status") == "contributing",
-           f"got {body.get('derived_status')}")
-    obs = body.get("shortfall_obligations") or []
-    funder_ob = next((o for o in obs if o["user_id"] == m1["id"]), None)
-    report("C: shortfall_obligation kind=shortfall_member for funder",
-           funder_ob is not None and funder_ob.get("kind") == "shortfall_member",
-           f"funder_ob={funder_ob}")
-    if funder_ob:
-        report("C: obligation amount equals shortfall",
-               abs(funder_ob["amount"] - shortfall) < 0.02,
-               f"got {funder_ob['amount']} expected {shortfall}")
-    notif = body.get("notifications") or []
-    funder_notif = [n for n in notif
-                    if n.get("user_id") == m1["id"] and n.get("kind") == "shortfall_assigned"]
-    report("C: notification shortfall_assigned, sms_mock",
-           len(funder_notif) >= 1 and funder_notif[0].get("delivered_via") == "sms_mock",
-           f"funder_notif={funder_notif}")
-    funder_pu = per_user_for(body, m1["id"])
-    report("C: per_user[funder].shortfall_owed == shortfall",
-           abs(funder_pu.get("shortfall_owed", 0) - shortfall) < 0.02,
-           f"shortfall_owed={funder_pu.get('shortfall_owed')} expected {shortfall}")
-    expected_outstanding = round(funder_total + funder_pu.get("shortfall_owed", 0) - funder_already, 2)
-    report("C: per_user[funder].outstanding == total + shortfall_owed - contributed",
-           abs(funder_pu["outstanding"] - expected_outstanding) < 0.02,
-           f"outstanding={funder_pu['outstanding']} expected={expected_outstanding}")
-    return body, m1, lead, m2, gid, shortfall
+    if expect_status is not None:
+        ok = r.status_code == expect_status
+        _record(name or f"{method} {path} → {expect_status}", ok,
+                f"got {r.status_code} body={r.text[:200]}")
+    return r
 
 
-def scenario_D(group_after_C, m1, lead, m2, gid, shortfall):
-    print("\n=== D: After C, funder /contribute (no amount) → settles ===")
-    sc, body = contribute(gid, m1["id"])
-    print(f"  HTTP {sc}")
-    if sc != 200:
-        report("D: contribute returns 200", False, str(body))
+def admin_login() -> str:
+    r = http("POST", "/admin/auth/login",
+             json_body={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+             expect_status=200, name="admin/auth/login super_admin")
+    if r is None or r.status_code != 200:
+        print("FATAL: admin login failed"); sys.exit(2)
+    return r.json()["token"]
+
+
+def auth_headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def register(name: str) -> str:
+    r = requests.post(f"{API}/auth/register", json={"name": name}, timeout=15)
+    r.raise_for_status()
+    return r.json()["id"]
+
+
+def send_otp(user_id: str, phone: str):
+    r = requests.post(f"{API}/auth/send-otp", json={"user_id": user_id, "phone": phone}, timeout=15)
+    r.raise_for_status()
+
+
+def verify_otp(user_id: str, phone: str, code: str = "123456") -> requests.Response:
+    return requests.post(f"{API}/auth/verify-otp",
+                         json={"user_id": user_id, "phone": phone, "code": code}, timeout=15)
+
+
+# ============ Scenario A ============
+def scenario_A():
+    print("\n=== Scenario A: persistent user collapse ===")
+    placeholder_a = register("Foo")
+    send_otp(placeholder_a, PHONE_A)
+    r1 = verify_otp(placeholder_a, PHONE_A)
+    expect("A: first verify-otp 200", r1.status_code == 200, f"{r1.status_code} {r1.text[:200]}")
+    if r1.status_code != 200:
+        return None, None
+    A1 = r1.json()["id"]
+    expect("A: first verify-otp returns own placeholder id (no prior collapse)", A1 == placeholder_a,
+           f"A1={A1} placeholder={placeholder_a}")
+
+    gbody = {
+        "lead_id": A1,
+        "title": "Pizza Night",
+        "total_amount": 30.0,
+        "split_mode": "fast",
+        "tax": 0.0, "tip": 0.0,
+        "items": [{"name": "Pizza", "price": 30.0, "quantity": 1}],
+    }
+    rg = requests.post(f"{API}/groups", json=gbody, timeout=15)
+    expect("A: create group as A1", rg.status_code == 200, f"{rg.status_code} {rg.text[:200]}")
+    if rg.status_code != 200:
+        return A1, None
+    G1 = rg.json()["id"]
+
+    placeholder_b = register("Bar")
+    expect("A: placeholder_b distinct from A1", placeholder_b != A1)
+    send_otp(placeholder_b, PHONE_A)
+    r2 = verify_otp(placeholder_b, PHONE_A)
+    expect("A: 2nd verify-otp 200 (collapse)", r2.status_code == 200, f"{r2.status_code} {r2.text[:200]}")
+    if r2.status_code == 200:
+        body = r2.json()
+        expect("A: collapsed user_id == A1", body["id"] == A1, f"got {body['id']}")
+        expect("A: name refreshed to 'Bar'", body.get("name") == "Bar", f"name={body.get('name')}")
+
+    r3 = requests.get(f"{API}/users/{placeholder_b}", timeout=15)
+    expect("A: placeholder_b deleted (GET → 404)", r3.status_code == 404, f"{r3.status_code}")
+
+    r4 = requests.get(f"{API}/users/{A1}/groups", timeout=15)
+    has = r4.status_code == 200 and any(g["id"] == G1 for g in r4.json())
+    expect("A: A1/groups still includes original group", has, f"{r4.status_code} {r4.text[:200]}")
+
+    r5 = requests.get(f"{API}/users/{A1}", timeout=15)
+    expect("A: GET /users/A1 name == Bar",
+           r5.status_code == 200 and r5.json().get("name") == "Bar",
+           f"{r5.status_code} {r5.text[:120]}")
+    return A1, G1
+
+
+# ============ Scenario B ============
+def scenario_B(token, A1, G1):
+    print("\n=== Scenario B: admin list + detail ===")
+    digits = PHONE_A.lstrip("+")[1:]  # drop leading 1
+    r = http("GET", "/admin/users", params={"q": digits},
+             headers=auth_headers(token), expect_status=200, name="B: admin/users search by phone")
+    if r is None or r.status_code != 200:
         return
-    print("  " + summarize_group(body))
-    report("D: status='paid'", body.get("status") == "paid", f"got {body.get('status')}")
-    report("D: derived_status='settled'", body.get("derived_status") == "settled",
-           f"got {body.get('derived_status')}")
-    report("D: total_contributed >= total_amount",
-           body["funding"]["total_contributed"] + 0.01 >= body["total_amount"],
-           f"contributed={body['funding']['total_contributed']} total={body['total_amount']}")
-    funder_pu = per_user_for(body, m1["id"])
-    report("D: per_user[funder].outstanding == 0", funder_pu["outstanding"] <= 0.01,
-           f"outstanding={funder_pu['outstanding']}")
+    items = r.json().get("items", [])
+    a_row = next((u for u in items if u["id"] == A1), None)
+    expect("B: search results contain A1", a_row is not None,
+           f"items={[u['id'] for u in items][:5]} total={r.json().get('total')}")
+    if a_row:
+        expect("B: A1 groups_led >= 1", a_row.get("groups_led", 0) >= 1, f"groups_led={a_row.get('groups_led')}")
+
+    r2 = http("GET", f"/admin/users/{A1}", headers=auth_headers(token),
+              expect_status=200, name="B: admin/users/{A1}")
+    if r2 and r2.status_code == 200:
+        led = r2.json().get("led_groups", [])
+        expect("B: led_groups includes G1", any(g["id"] == G1 for g in led),
+               f"led_ids={[g['id'] for g in led]}")
 
 
-def scenario_E():
-    print("\n=== E: shortfall_mode='split_equal' ===")
-    lead, m1, m2, gid = fresh_trio_with_shortfall("E")
-    sc, before = get(f"/groups/{gid}")
-    shortfall = before["funding"]["remaining_to_collect"]
-    sc, body = post(f"/groups/{gid}/pay", {
-        "user_id": lead["id"], "shortfall_mode": "split_equal",
-    })
-    print(f"  HTTP {sc}")
-    if sc != 200:
-        report("E: pay returns 200", False, str(body))
+# ============ Scenario C ============
+def scenario_C(token, A1):
+    print("\n=== Scenario C: block A1 then verify enforcement ===")
+    r = http("POST", f"/admin/users/{A1}/block",
+             json_body={"is_blocked": True, "reason": "test"},
+             headers=auth_headers(token), expect_status=200, name="C: block A1")
+    if r and r.status_code == 200:
+        expect("C: response is_blocked=true", r.json().get("is_blocked") is True)
+        expect("C: response blocked_reason='test'", r.json().get("blocked_reason") == "test")
+
+    r2 = http("GET", f"/admin/users/{A1}", headers=auth_headers(token),
+              expect_status=200, name="C: GET admin user shows blocked")
+    if r2 and r2.status_code == 200:
+        b = r2.json()
+        expect("C: detail blocked=true", b.get("is_blocked") is True)
+        expect("C: detail reason='test'", b.get("blocked_reason") == "test")
+
+    pid = register("Baz")
+    send_otp(pid, PHONE_A)
+    r3 = verify_otp(pid, PHONE_A)
+    try:
+        body3 = r3.json().get("detail", "")
+    except Exception:
+        body3 = r3.text
+    expect("C: blocked user verify-otp → 403", r3.status_code == 403, f"{r3.status_code} {r3.text[:200]}")
+    expect("C: response message contains 'blocked'", "block" in str(body3).lower(), f"detail={body3}")
+
+    rg = requests.post(f"{API}/groups", json={
+        "lead_id": A1, "title": "Should Fail", "total_amount": 10.0,
+        "split_mode": "fast", "items": [{"name": "X", "price": 10.0, "quantity": 1}],
+    }, timeout=15)
+    expect("C: create group as blocked A1 → 403", rg.status_code == 403, f"{rg.status_code} {rg.text[:200]}")
+
+    cid = register("Cara")
+    send_otp(cid, PHONE_C)
+    rc = verify_otp(cid, PHONE_C)
+    if rc.status_code != 200:
+        expect("C: setup user C verified", False, rc.text[:200])
+        return None
+    Cuid = rc.json()["id"]
+    rgc = requests.post(f"{API}/groups", json={
+        "lead_id": Cuid, "title": "Cara's Bill", "total_amount": 20.0,
+        "split_mode": "fast", "items": [{"name": "Soup", "price": 20.0, "quantity": 1}],
+    }, timeout=15)
+    expect("C: setup create C's group", rgc.status_code == 200, f"{rgc.status_code} {rgc.text[:200]}")
+    if rgc.status_code != 200:
+        return Cuid
+    Cgid = rgc.json()["id"]
+
+    rj = requests.post(f"{API}/groups/{Cgid}/join", json={"user_id": A1}, timeout=15)
+    expect("C: join with blocked A1 → 403", rj.status_code == 403, f"{rj.status_code} {rj.text[:200]}")
+
+    rcontr = requests.post(f"{API}/groups/{Cgid}/contribute", json={"user_id": A1}, timeout=15)
+    expect("C: contribute with blocked A1 → 403", rcontr.status_code == 403, f"{rcontr.status_code} {rcontr.text[:200]}")
+    return Cuid
+
+
+# ============ Scenario D ============
+def scenario_D(token, A1):
+    print("\n=== Scenario D: unblock restores access ===")
+    r = http("POST", f"/admin/users/{A1}/block",
+             json_body={"is_blocked": False},
+             headers=auth_headers(token), expect_status=200, name="D: unblock A1")
+    if r and r.status_code == 200:
+        expect("D: response is_blocked=false", r.json().get("is_blocked") is False)
+
+    pid = register("BarAgain")
+    send_otp(pid, PHONE_A)
+    r2 = verify_otp(pid, PHONE_A)
+    expect("D: verify-otp after unblock → 200", r2.status_code == 200, f"{r2.status_code} {r2.text[:200]}")
+    if r2.status_code == 200:
+        expect("D: collapse still maps to A1", r2.json()["id"] == A1, f"got {r2.json()['id']}")
+        expect("D: A1 verified=true", r2.json().get("verified") is True)
+
+    rg = requests.post(f"{API}/groups", json={
+        "lead_id": A1, "title": "Post-Unblock Bill", "total_amount": 12.0,
+        "split_mode": "fast", "items": [{"name": "Cake", "price": 12.0, "quantity": 1}],
+    }, timeout=15)
+    expect("D: create group after unblock → 200", rg.status_code == 200, f"{rg.status_code} {rg.text[:200]}")
+
+
+# ============ Scenario E ============
+def scenario_E(token, A1, G1, Cuid):
+    print("\n=== Scenario E: group block ===")
+    if not G1:
+        expect("E: G1 exists", False, "skipped"); return
+    r = http("POST", f"/admin/groups/{G1}/block",
+             json_body={"is_blocked": True, "reason": "dispute"},
+             headers=auth_headers(token), expect_status=200, name="E: block group G1")
+    if r and r.status_code == 200:
+        expect("E: group is_blocked=true", r.json().get("is_blocked") is True)
+        expect("E: group blocked_reason='dispute'", r.json().get("blocked_reason") == "dispute")
+
+    if Cuid:
+        rj = requests.post(f"{API}/groups/{G1}/join", json={"user_id": Cuid}, timeout=15)
+        expect("E: join blocked group → 403", rj.status_code == 403, f"{rj.status_code} {rj.text[:200]}")
+
+    rco = requests.post(f"{API}/groups/{G1}/contribute", json={"user_id": A1}, timeout=15)
+    expect("E: contribute on blocked group → 403", rco.status_code == 403, f"{rco.status_code} {rco.text[:200]}")
+
+    rp = requests.post(f"{API}/groups/{G1}/pay", json={"user_id": A1}, timeout=15)
+    expect("E: pay blocked group → 403", rp.status_code == 403, f"{rp.status_code} {rp.text[:200]}")
+
+    ru = http("POST", f"/admin/groups/{G1}/block",
+              json_body={"is_blocked": False},
+              headers=auth_headers(token), expect_status=200, name="E: unblock group G1")
+    if ru and ru.status_code == 200:
+        expect("E: group is_blocked=false", ru.json().get("is_blocked") is False)
+
+    if Cuid:
+        rj2 = requests.post(f"{API}/groups/{G1}/join", json={"user_id": Cuid}, timeout=15)
+        expect("E: join after unblock not 403", rj2.status_code != 403, f"{rj2.status_code} {rj2.text[:200]}")
+
+    rco2 = requests.post(f"{API}/groups/{G1}/contribute", json={"user_id": A1}, timeout=15)
+    expect("E: contribute after unblock not 403", rco2.status_code != 403, f"{rco2.status_code} {rco2.text[:200]}")
+
+
+# ============ Scenario F ============
+def scenario_F(super_token, A1):
+    print("\n=== Scenario F: admin auth + RBAC ===")
+    r = requests.get(f"{API}/admin/users", timeout=15)
+    expect("F: GET /admin/users without Bearer → 401", r.status_code == 401, f"{r.status_code} {r.text[:200]}")
+
+    support_email = f"support+{RUN_TAG}@example.com"
+    rc = http("POST", "/admin/admins",
+              json_body={"email": support_email, "password": "Support123!", "name": "Support User", "role": "support"},
+              headers=auth_headers(super_token), expect_status=200, name="F: create support admin")
+    if rc is None or rc.status_code != 200:
+        return None
+
+    rl = http("POST", "/admin/auth/login",
+              json_body={"email": support_email, "password": "Support123!"},
+              expect_status=200, name="F: login as support")
+    if rl is None or rl.status_code != 200:
+        return None
+    sup_token = rl.json()["token"]
+
+    rb = http("POST", f"/admin/users/{A1}/block",
+              json_body={"is_blocked": True, "reason": "rbac test"},
+              headers=auth_headers(sup_token), name="F: block as support")
+    expect("F: support block_user is 403", rb is not None and rb.status_code == 403,
+           f"{rb.status_code if rb is not None else 'no resp'} {rb.text[:200] if rb is not None else ''}")
+    if rb is not None and rb.status_code == 403:
+        try:
+            detail = rb.json().get("detail", "")
+        except Exception:
+            detail = rb.text
+        expect("F: support 403 mentions roles", "role" in detail.lower(), f"detail={detail}")
+    return sup_token
+
+
+# ============ Scenario G ============
+def scenario_G(token, A1, G1):
+    print("\n=== Scenario G: audit log ===")
+    r = http("GET", "/admin/audit-log", params={"limit": 100},
+             headers=auth_headers(token), expect_status=200, name="G: GET audit-log")
+    if r is None or r.status_code != 200:
         return
-    print("  " + summarize_group(body))
-    report("E: status stays 'open'", body.get("status") == "open", f"got {body.get('status')}")
-    report("E: derived_status='contributing'",
-           body.get("derived_status") == "contributing", f"got {body.get('derived_status')}")
-    obs = body.get("shortfall_obligations") or []
-    non_lead_ids = {m1["id"], m2["id"]}
-    ob_users = {o["user_id"] for o in obs}
-    sum_amounts = round(sum(o["amount"] for o in obs), 2)
-    report("E: one obligation per non-lead member", ob_users == non_lead_ids,
-           f"ob_users={ob_users} expected={non_lead_ids}")
-    report("E: sum of obligations == shortfall", abs(sum_amounts - shortfall) < 0.05,
-           f"sum={sum_amounts} expected {shortfall}")
-    notif = body.get("notifications") or []
-    assigned_notifs = [n for n in notif if n.get("kind") == "shortfall_assigned"]
-    assigned_users = {n["user_id"] for n in assigned_notifs}
-    report("E: notifications shortfall_assigned for each non-lead",
-           assigned_users == non_lead_ids, f"assigned_users={assigned_users}")
-    m1_split = next((o["amount"] for o in obs if o["user_id"] == m1["id"]), 0)
-    m1_pu = per_user_for(body, m1["id"])
-    report("E: m1.outstanding == split share (already contributed share)",
-           abs(m1_pu["outstanding"] - m1_split) < 0.05,
-           f"m1 outstanding={m1_pu['outstanding']} split={m1_split}")
-    m2_split = next((o["amount"] for o in obs if o["user_id"] == m2["id"]), 0)
-    m2_pu = per_user_for(body, m2["id"])
-    expected_m2 = round(m2_pu["total"] + m2_split, 2)
-    report("E: m2.outstanding == share + split",
-           abs(m2_pu["outstanding"] - expected_m2) < 0.05,
-           f"m2 outstanding={m2_pu['outstanding']} expected={expected_m2}")
+    items = r.json().get("items", [])
+    actions = [i["action"] for i in items]
+    print(f"   audit actions sample: {actions[:15]}")
+
+    block_user = next((i for i in items if i["action"] == "admin.block_user" and i.get("target_id") == A1), None)
+    unblock_user = next((i for i in items if i["action"] == "admin.unblock_user" and i.get("target_id") == A1), None)
+    block_group = next((i for i in items if i["action"] == "admin.block_group" and i.get("target_id") == G1), None)
+    unblock_group = next((i for i in items if i["action"] == "admin.unblock_group" and i.get("target_id") == G1), None)
+
+    expect("G: admin.block_user entry for A1", block_user is not None)
+    if block_user:
+        expect("G: block_user destructive=true", block_user.get("destructive") is True)
+        expect("G: block_user target_type=user", block_user.get("target_type") == "user")
+    expect("G: admin.unblock_user entry for A1", unblock_user is not None)
+    if unblock_user:
+        expect("G: unblock_user destructive=true", unblock_user.get("destructive") is True)
+    expect("G: admin.block_group entry for G1", block_group is not None)
+    if block_group:
+        expect("G: block_group destructive=true", block_group.get("destructive") is True)
+        expect("G: block_group target_type=group", block_group.get("target_type") == "group")
+    expect("G: admin.unblock_group entry for G1", unblock_group is not None)
+    if unblock_group:
+        expect("G: unblock_group destructive=true", unblock_group.get("destructive") is True)
 
 
-def scenario_F():
-    print("\n=== F: items lock after settle ===")
-    lead = register_and_verify("Lead F", "+12025550110")
-    m1 = register_and_verify("Sage F", "+12025550111")
-    items = [{"name": "Brunch", "price": 20.0, "quantity": 2}]
-    group = make_itemized_group(lead, [m1], items, title="Test F")
-    gid = group["id"]
-    iid = group["items"][0]["id"]
-    assign(gid, lead["id"], iid, 1)
-    assign(gid, m1["id"], iid, 1)
-    contribute(gid, lead["id"])
-    contribute(gid, m1["id"])
-    sc, after = get(f"/groups/{gid}")
-    if after.get("status") != "paid":
-        sc2, after = post(f"/groups/{gid}/pay", {"user_id": lead["id"]})
-        print(f"  fallback /pay -> {sc2}")
-    print(f"  status before append = {after.get('status')}, derived={after.get('derived_status')}")
-    sc, body = post(f"/groups/{gid}/items/append",
-                    {"user_id": lead["id"], "items": [{"name": "Coffee", "price": 5.0, "quantity": 1}]})
-    print(f"  append HTTP {sc} body={body}")
-    msg = (body.get("detail") if isinstance(body, dict) else "") or ""
-    report("F: append returns 400 when status='paid'", sc == 400, f"sc={sc} body={body}")
-    report("F: error mentions settled bill",
-           "settled" in msg.lower() or "added" in msg.lower(), f"msg={msg}")
+# ============ Scenario H ============
+def scenario_H(token, A1, G1):
+    print("\n=== Scenario H: search & filters ===")
+    http("POST", f"/admin/users/{A1}/block",
+         json_body={"is_blocked": True, "reason": "filter test"},
+         headers=auth_headers(token), expect_status=200, name="H: re-block A1 for filter")
+    r1 = http("GET", "/admin/users", params={"blocked": "true"},
+              headers=auth_headers(token), expect_status=200, name="H: list blocked=true")
+    if r1 and r1.status_code == 200:
+        items = r1.json().get("items", [])
+        all_blocked = all(u.get("is_blocked") is True for u in items)
+        expect("H: blocked=true returns only blocked users", all_blocked,
+               f"items={[u['id'] + ':' + str(u.get('is_blocked')) for u in items[:5]]}")
+        expect("H: A1 included in blocked filter", any(u["id"] == A1 for u in items))
+    http("POST", f"/admin/users/{A1}/block",
+         json_body={"is_blocked": False},
+         headers=auth_headers(token), expect_status=200, name="H: unblock A1 after filter")
 
+    r2 = http("GET", "/admin/users", params={"verified": "true", "limit": 50},
+              headers=auth_headers(token), expect_status=200, name="H: list verified=true")
+    if r2 and r2.status_code == 200:
+        items = r2.json().get("items", [])
+        all_v = all(u.get("verified") is True for u in items)
+        expect("H: verified=true returns only verified", all_v,
+               f"sample={[u.get('verified') for u in items[:5]]}")
 
-def scenario_G():
-    print("\n=== G: unclaimed→shortfall, lead /pay loan ===")
-    lead = register_and_verify("Lead G", "+12025550120")
-    m1 = register_and_verify("Quinn G", "+12025550121")
-    items = [
-        {"name": "Steak", "price": 25.0, "quantity": 1},
-        {"name": "Wine", "price": 25.0, "quantity": 1},
-    ]
-    group = make_itemized_group(lead, [m1], items, title="Test G", total_amount=50.0)
-    gid = group["id"]
-    iid_steak = group["items"][0]["id"]
-    g_after = assign(gid, lead["id"], iid_steak, 1)
-    lead_pu = per_user_for(g_after, lead["id"])
-    print(f"  lead share={lead_pu['total']}, unclaimed={len(g_after.get('unclaimed') or [])}")
-    sc, _ = contribute(gid, lead["id"])
-    if sc != 200:
-        report("G: lead contribute share", False, f"sc={sc}")
-        return
-    sc, body = post(f"/groups/{gid}/pay", {
-        "user_id": lead["id"], "shortfall_mode": "lead", "is_loan": True,
-    })
-    print(f"  pay HTTP {sc}")
-    if sc != 200:
-        report("G: pay 200 with unclaimed items", False, str(body))
-        return
-    print("  " + summarize_group(body))
-    report("G: pay returns 200 (unclaimed handled as shortfall)", True, "")
-    report("G: status='paid'", body.get("status") == "paid", f"got {body.get('status')}")
+    r3 = http("GET", "/admin/groups", params={"status": "open", "limit": 50},
+              headers=auth_headers(token), expect_status=200, name="H: list groups status=open")
+    if r3 and r3.status_code == 200:
+        items = r3.json().get("items", [])
+        all_open = all(g.get("status") == "open" for g in items)
+        expect("H: status=open returns only open groups", all_open,
+               f"sample={[g.get('status') for g in items[:5]]}")
 
-
-def scenario_H():
-    print("\n=== H: 4-state machine sanity ===")
-
-    # H1
-    lead = register_and_verify("Lead H1", "+12025550130")
-    m1 = register_and_verify("Drew H1", "+12025550131")
-    items = [{"name": "Soup", "price": 10.0, "quantity": 2}]
-    g = make_itemized_group(lead, [m1], items, title="H1", total_amount=20.0)
-    sc, g = get(f"/groups/{g['id']}")
-    print(f"  H1 status={g.get('status')} derived={g.get('derived_status')}")
-    report("H1: fresh open group derived='contributing'",
-           g.get("derived_status") == "contributing", f"derived={g.get('derived_status')}")
-
-    # H2
-    iid = g["items"][0]["id"]
-    assign(g["id"], lead["id"], iid, 1)
-    assign(g["id"], m1["id"], iid, 1)
-    contribute(g["id"], lead["id"])
-    sc, g2 = contribute(g["id"], m1["id"])
-    print(f"  H2 status={g2.get('status')} derived={g2.get('derived_status')}")
-    derived_h2 = g2.get("derived_status")
-    report("H2: after all contribute, derived in {contributed, settled} (NOT 'repaying')",
-           derived_h2 in ("contributed", "settled"),
-           f"derived={derived_h2} status={g2.get('status')}")
-
-    # H3: same as H2 effectively if auto-finalized; just verify settled state
-    print(f"  H3 status={g2.get('status')} derived={g2.get('derived_status')}")
-    report("H3: group-funded path → derived='settled'",
-           g2.get("derived_status") == "settled",
-           f"derived={g2.get('derived_status')} status={g2.get('status')}")
-
-    # H4: lead /pay with shortfall_mode='lead' is_loan=true → 'repaying'
-    lead4, m4a, m4b, gid4 = fresh_trio_with_shortfall("H4")
-    sc, g4 = post(f"/groups/{gid4}/pay", {
-        "user_id": lead4["id"], "shortfall_mode": "lead", "is_loan": True,
-    })
-    print(f"  H4 pay HTTP {sc}, derived={g4.get('derived_status') if isinstance(g4, dict) else g4}")
-    report("H4: lead loan path → derived='repaying'",
-           isinstance(g4, dict) and g4.get("derived_status") == "repaying",
-           f"derived={g4.get('derived_status') if isinstance(g4, dict) else g4}")
+    r4 = http("GET", "/admin/users", params={"skip": 0, "limit": 2},
+              headers=auth_headers(token), expect_status=200, name="H: pagination users limit=2")
+    if r4 and r4.status_code == 200:
+        items = r4.json().get("items", [])
+        expect("H: at most 2 items returned", len(items) <= 2, f"got {len(items)}")
 
 
 def main():
-    try:
-        scenario_A()
-        scenario_B()
-        result_C = scenario_C()
-        if result_C:
-            scenario_D(*result_C)
-        scenario_E()
-        scenario_F()
-        scenario_G()
-        scenario_H()
-    except TestError as e:
-        print(f"FATAL TEST SETUP ERROR: {e}")
-        import traceback; traceback.print_exc()
-    finally:
-        print("\n\n=== SUMMARY ===")
-        passed = sum(1 for r in RESULTS if r["ok"])
-        failed = sum(1 for r in RESULTS if not r["ok"])
-        for r in RESULTS:
-            print(f"  [{'PASS' if r['ok'] else 'FAIL'}] {r['name']}")
-            if not r["ok"] and r["details"]:
-                for line in r["details"].splitlines():
-                    print(f"            {line}")
-        print(f"\nTotal: {passed} passed, {failed} failed, {len(RESULTS)} total")
-        sys.exit(0 if failed == 0 else 1)
+    token = admin_login()
+    A1, G1 = scenario_A()
+    if not A1:
+        print("\nFATAL: scenario A failed; aborting")
+        sys.exit(2)
+    scenario_B(token, A1, G1)
+    Cuid = scenario_C(token, A1)
+    scenario_D(token, A1)
+    scenario_E(token, A1, G1, Cuid)
+    scenario_F(token, A1)
+    scenario_G(token, A1, G1)
+    scenario_H(token, A1, G1)
+
+    print("\n========== SUMMARY ==========")
+    print(f"PASS: {len(PASS)}")
+    print(f"FAIL: {len(FAIL)}")
+    if FAIL:
+        print("\nFailing assertions:")
+        for f in FAIL:
+            print(" -", f)
+        sys.exit(1)
+    print("All Phase B assertions passed.")
+    sys.exit(0)
 
 
 if __name__ == "__main__":

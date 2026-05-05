@@ -221,6 +221,82 @@ backend:
           agent: "main"
           comment: "OpenAI call confirmed in prior session; EMERGENT_LLM_KEY configured."
 
+  - task: "Phase B — Persistent users (collapse on phone) + Admin Users/Groups + Block/Unblock"
+    implemented: true
+    working: true
+    file: "backend/server.py, backend/admin_users_groups.py, backend/admin_routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            PHASE B implementation (NEW — needs backend test):
+
+            (1) Persistent user identity by phone in POST /api/auth/verify-otp:
+                When a user calls /auth/register (creates a placeholder user with no phone),
+                then /auth/send-otp + /auth/verify-otp with a phone, the backend now checks
+                if a verified user already exists with that phone (id != placeholder).
+                If yes: it returns the EXISTING user's id (so all their groups are visible),
+                refreshes the existing user's name if the placeholder had a different name,
+                and DELETES the placeholder. If the existing user is_blocked=True, returns 403
+                "This account has been blocked. Please contact support." and removes the
+                placeholder. If no existing match, the placeholder gets verified=true and is
+                returned as before.
+
+            (2) Block enforcement in user-app endpoints (server.py):
+                - /groups (create): 403 if lead user is_blocked.
+                - /groups/{id}/join: 403 if user is_blocked OR group is_blocked.
+                - /groups/{id}/contribute: 403 if user is_blocked OR group is_blocked.
+                - /groups/{id}/pay: 403 if lead is_blocked OR group is_blocked.
+
+            (3) NEW admin endpoints in /api/admin (admin_users_groups.py):
+                - GET  /admin/users           list+search by name/phone, filter verified/blocked,
+                                              returns {items[{...,groups_led,groups_joined,total_billed_as_lead}], total}
+                - GET  /admin/users/{id}      detail with led_groups + joined_groups arrays
+                - POST /admin/users/{id}/block   body {is_blocked, reason} — requires
+                                              role super_admin or manager; emits
+                                              admin.block_user / admin.unblock_user audit log
+                - GET  /admin/groups          list+search by title/code, filter status/blocked/lead_id
+                - GET  /admin/groups/{id}     full detail (members enriched with name/phone/blocked,
+                                              items, assignments, contributions, repayments)
+                - POST /admin/groups/{id}/block  body {is_blocked, reason} — same RBAC + audit
+
+            TEST SCOPE:
+              A) Persistent user collapse: register with name="Foo", send/verify OTP with
+                 phone X → returns user A. Register a NEW placeholder with name="Bar",
+                 send/verify OTP with SAME phone X → returns user A (same id), and the
+                 placeholder is removed. Confirm /api/users/A/groups still shows past groups.
+
+              B) Blocked user cannot login: admin POST /admin/users/A/block {is_blocked:true};
+                 a fresh /auth/register + /auth/verify-otp with phone X → 403 with
+                 "blocked" message.
+
+              C) Blocked user cannot create / join / contribute / pay (run while blocked):
+                 - POST /groups (lead_id=A) → 403
+                 - POST /groups/{g}/join (user_id=A) → 403
+                 - POST /groups/{g}/contribute → 403
+                 - POST /groups/{g}/pay (if A is lead) → 403
+
+              D) Unblock restores access: admin POST /admin/users/A/block {is_blocked:false}
+                 → A can now login + create + join + pay.
+
+              E) Group block: admin POST /admin/groups/{g}/block {is_blocked:true} →
+                 /groups/{g}/join, /contribute, /pay all return 403. Unblock restores.
+
+              F) Admin endpoints auth: all /admin/users and /admin/groups require Bearer
+                 token; without it → 401. Block endpoint without manager/super_admin role
+                 → 403. (Use seeded super_admin from /app/memory/test_credentials.md.)
+
+              G) Audit log entries: after block actions, GET /admin/audit-log shows
+                 admin.block_user / admin.block_group / admin.unblock_user / admin.unblock_group
+                 with destructive=true and proper target_id/payload.
+
+              H) Search & filter sanity: GET /admin/users?q=<phone substring>&blocked=true
+                 returns just the blocked users matching; GET /admin/groups?status=open
+                 returns only open groups; pagination skip/limit works.
+
 frontend:
   - task: "Items screen — '+' button opens add-item form"
     implemented: true
@@ -291,7 +367,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Shortfall settlement endpoint — POST /api/groups/{id}/pay with shortfall_settlement options"
+    - "Phase B — Persistent users (collapse on phone) + Admin Users/Groups + Block/Unblock"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -379,3 +455,44 @@ agent_communication:
         (shortfall settlement + 4-state machine) behave as designed. The only deviation is
         D-derived='settled' expectation, which is a spec interpretation rather than a backend
         bug (loan semantics correctly preserve beneficiary debt). Marking both tasks as working.
+    - agent: "testing"
+      message: |
+        Phase B (Persistent users + Admin Users/Groups + Block/Unblock) verified
+        end-to-end via /app/backend_test.py against the live preview backend.
+        71/71 assertions PASS. No 500s.
+
+        Coverage by scenario:
+        A) Persistent user collapse: register("Foo")+verify(+15552239001) → A1;
+           create fast-split group G1 ($30 Pizza); register("Bar")+verify(same phone)
+           returns id==A1, name refreshed to "Bar", placeholder_b GET → 404,
+           A1/groups still includes G1. ✅
+        B) Admin login (super_admin), GET /admin/users?q=<phone digits> finds A1
+           with groups_led=1; GET /admin/users/{A1} returns led_groups including G1. ✅
+        C) Block A1 → 200 with is_blocked=true & reason='test'; verify-otp(same
+           phone, new placeholder) returns 403 "This account has been blocked.
+           Please contact support."; POST /groups (lead=A1) → 403; POST
+           /groups/{C}/join (user=A1) → 403; POST /groups/{C}/contribute
+           (user=A1) → 403. ✅
+        D) Unblock A1 → 200 is_blocked=false; verify-otp collapses to A1 with
+           verified=true (no 403); create group as A1 → 200. ✅
+        E) Block group G1 → 200; /join (user=Cara) → 403; /contribute (user=A1)
+           → 403; /pay (user=A1) → 403. Unblock → join + contribute no longer 403. ✅
+        F) RBAC: GET /admin/users without Bearer → 401 "Admin auth required";
+           super_admin creates a "support" admin; support login → 200; support
+           POSTs /admin/users/{A1}/block → 403 "Requires one of roles:
+           manager,super_admin". ✅
+        G) Audit log shows admin.block_user, admin.unblock_user, admin.block_group,
+           admin.unblock_group entries with destructive=true and matching target_ids
+           (target_type=user/group). ✅
+        H) Filters: blocked=true returns only blocked users (and includes A1 when
+           re-blocked); verified=true returns only verified; groups status=open
+           returns only open; pagination skip=0&limit=2 returns ≤2 items. ✅
+
+        Backend log notes (informational only, not blockers):
+          - passlib bcrypt version warning ("module 'bcrypt' has no attribute
+            '__about__'") — cosmetic; password verification works correctly.
+          - jwt.InsecureKeyLengthWarning: HMAC key is 31 bytes (recommended ≥32).
+            Cosmetic for the dev-secret default; consider lengthening JWT_SECRET
+            in production .env.
+
+        Marking the Phase B task as working. No further backend action required.

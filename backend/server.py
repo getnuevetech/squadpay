@@ -212,6 +212,10 @@ async def verify_otp(body: VerifyOtpIn):
         {"phone": body.phone, "verified": True, "id": {"$ne": body.user_id}}, {"_id": 0}
     )
     if existing:
+        if existing.get("is_blocked"):
+            # Drop placeholder so we don't leak orphan rows
+            await db.users.delete_one({"id": body.user_id})
+            raise HTTPException(403, "This account has been blocked. Please contact support.")
         # If client supplied a different name, refresh the existing user's name.
         try:
             placeholder = await db.users.find_one({"id": body.user_id}, {"_id": 0})
@@ -420,6 +424,8 @@ async def create_group(body: CreateGroupIn):
     user = await db.users.find_one({"id": body.lead_id}, {"_id": 0})
     if not user:
         raise HTTPException(404, "Lead user not found")
+    if user.get("is_blocked"):
+        raise HTTPException(403, "Your account has been blocked. Please contact support.")
     gid = new_id("g_")
     code = new_short_code(8)
     items = []
@@ -467,9 +473,13 @@ async def join_group(group_id: str, body: JoinGroupIn):
     group = await db.groups.find_one({"id": group_id}, {"_id": 0})
     if not group:
         raise HTTPException(404, "Group not found")
+    if group.get("is_blocked"):
+        raise HTTPException(403, "This group has been blocked by an administrator.")
     user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
     if not user:
         raise HTTPException(404, "User not found")
+    if user.get("is_blocked"):
+        raise HTTPException(403, "Your account has been blocked. Please contact support.")
     members = group.get("members", [])
     if not any(m["user_id"] == body.user_id for m in members):
         members.append({"user_id": body.user_id, "role": "member", "joined_at": now_iso()})
@@ -677,9 +687,13 @@ async def contribute(group_id: str, body: ContributeIn):
         raise HTTPException(404, "Group not found")
     if group.get("status") != "open":
         raise HTTPException(400, "Bill already paid; use repay instead")
+    if group.get("is_blocked"):
+        raise HTTPException(403, "This group has been blocked by an administrator.")
     user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
     if not user:
         raise HTTPException(404, "User not found")
+    if user.get("is_blocked"):
+        raise HTTPException(403, "Your account has been blocked. Please contact support.")
     if not user.get("verified"):
         raise HTTPException(403, "Phone verification required before contributing")
     if not any(m["user_id"] == body.user_id for m in group.get("members", [])):
@@ -731,9 +745,13 @@ async def pay_group(group_id: str, body: PayIn):
         raise HTTPException(403, "Only lead can pay the merchant")
     if group.get("status") != "open":
         raise HTTPException(400, "Bill already paid")
+    if group.get("is_blocked"):
+        raise HTTPException(403, "This group has been blocked by an administrator.")
     user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
     if not user or not user.get("verified"):
         raise HTTPException(403, "Lead must verify phone before paying")
+    if user.get("is_blocked"):
+        raise HTTPException(403, "Your account has been blocked. Please contact support.")
 
     enriched = await _recompute_group(group)
     lead_per = next((p for p in enriched["per_user"] if p["user_id"] == body.user_id), None)

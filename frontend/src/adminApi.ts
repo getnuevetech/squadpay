@@ -113,4 +113,86 @@ export const adminApi = {
     request<AdminProfile>('/admins', { method: 'POST', body: JSON.stringify(body) }),
   toggleAdmin: (id: string, is_active: boolean) =>
     request<AdminProfile>(`/admins/${id}/active`, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
+
+  // ---- Phase B: Users ----
+  listUsers: (params?: { q?: string; verified?: boolean; blocked?: boolean; limit?: number; skip?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.q) q.set('q', params.q);
+    if (params?.verified !== undefined) q.set('verified', String(params.verified));
+    if (params?.blocked !== undefined) q.set('blocked', String(params.blocked));
+    if (params?.limit) q.set('limit', String(params.limit));
+    if (params?.skip) q.set('skip', String(params.skip));
+    const qs = q.toString();
+    return request<{ items: AdminUserRow[]; total: number; skip: number; limit: number }>(`/users${qs ? `?${qs}` : ''}`);
+  },
+  getUser: (id: string) => request<AdminUserDetail>(`/users/${id}`),
+  blockUser: (id: string, is_blocked: boolean, reason?: string) =>
+    request<AdminUserRow>(`/users/${id}/block`, { method: 'POST', body: JSON.stringify({ is_blocked, reason }) }),
+
+  // ---- Phase B: Groups ----
+  listGroups: (params?: { q?: string; status?: string; blocked?: boolean; lead_id?: string; limit?: number; skip?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.q) q.set('q', params.q);
+    if (params?.status) q.set('status', params.status);
+    if (params?.blocked !== undefined) q.set('blocked', String(params.blocked));
+    if (params?.lead_id) q.set('lead_id', params.lead_id);
+    if (params?.limit) q.set('limit', String(params.limit));
+    if (params?.skip) q.set('skip', String(params.skip));
+    const qs = q.toString();
+    return request<{ items: AdminGroupRow[]; total: number; skip: number; limit: number }>(`/groups${qs ? `?${qs}` : ''}`);
+  },
+  getGroup: (id: string) => request<AdminGroupDetail>(`/groups/${id}`),
+  blockGroup: (id: string, is_blocked: boolean, reason?: string) =>
+    request<AdminGroupRow>(`/groups/${id}/block`, { method: 'POST', body: JSON.stringify({ is_blocked, reason }) }),
+};
+
+// ---- Phase B types ----
+export type AdminUserRow = {
+  id: string;
+  name: string;
+  phone: string | null;
+  verified: boolean;
+  is_blocked: boolean;
+  blocked_reason?: string | null;
+  blocked_at?: string | null;
+  created_at: string;
+  groups_led: number;
+  groups_joined: number;
+  total_billed_as_lead: number;
+};
+
+export type AdminUserDetail = AdminUserRow & {
+  led_groups: AdminGroupRow[];
+  joined_groups: AdminGroupRow[];
+};
+
+export type AdminGroupRow = {
+  id: string;
+  code: string;
+  title: string;
+  lead_id: string;
+  lead_name?: string | null;
+  lead_phone?: string | null;
+  status: string;
+  is_blocked: boolean;
+  blocked_reason?: string | null;
+  blocked_at?: string | null;
+  total_amount: number;
+  tax: number;
+  tip: number;
+  members_count: number;
+  items_count: number;
+  contributions_total: number;
+  created_at: string;
+};
+
+export type AdminGroupDetail = AdminGroupRow & {
+  items: { id: string; name: string; price: number; quantity: number }[];
+  assignments: { id?: string; user_id: string; item_id: string; quantity: number }[];
+  members: { user_id: string; role: string; joined_at: string; name?: string; phone?: string | null; verified: boolean; is_blocked: boolean }[];
+  contributions: { id: string; user_id: string; amount: number; at: string }[];
+  repayments: { user_id: string; amount: number; at: string }[];
+  split_mode?: string;
+  funding_mode?: string | null;
+  lead_paid_at?: string | null;
 };

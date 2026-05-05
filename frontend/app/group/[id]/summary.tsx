@@ -104,6 +104,22 @@ export default function SummaryScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />}
         contentContainerStyle={{ padding: SPACING.md, paddingBottom: 140 }}
       >
+        {/* Mock-SMS / in-app notification for this user */}
+        {(() => {
+          const myNotifs = (group.notifications || []).filter((n) => n.user_id === userId).slice(-3);
+          if (myNotifs.length === 0) return null;
+          return (
+            <View style={styles.notifCard} testID="summary-notif-card">
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                <AlertCircle size={16} color={COLORS.primary} />
+                <Text style={styles.notifHeader}>📩 Notification (mock SMS)</Text>
+              </View>
+              {myNotifs.map((n) => (
+                <Text key={n.id} style={styles.notifText}>• {n.message}</Text>
+              ))}
+            </View>
+          );
+        })()}
         {/* Your share card */}
         <View style={styles.yourCard} testID="summary-your-card">
           <Text style={styles.yourLabel}>Your share</Text>
@@ -200,14 +216,18 @@ export default function SummaryScreen() {
             const isLeadRow = m.user_id === group.lead_id;
 
             let status: { icon: any; text: string; color: string };
+            const obligationOwed = per?.shortfall_owed || 0;
             if (isLeadRow) {
               if (group.status === 'open') {
-                status = { icon: <Clock size={12} color={COLORS.subtext} />, text: 'Will cover any shortfall', color: COLORS.subtext };
+                status = { icon: <Clock size={12} color={COLORS.subtext} />, text: 'Shortfall to be decided', color: COLORS.subtext };
               } else if (group.lead_shortfall && group.lead_shortfall > 0.01) {
                 status = { icon: <CheckCircle2 size={12} color={COLORS.primary} />, text: `Covered $${group.lead_shortfall.toFixed(2)} shortfall`, color: COLORS.primary };
               } else {
                 status = { icon: <CheckCircle2 size={12} color={COLORS.success} />, text: 'Paid merchant', color: COLORS.success };
               }
+            } else if (obligationOwed > 0.01 && outstanding > 0.01) {
+              // Member has been assigned a shortfall obligation
+              status = { icon: <AlertCircle size={12} color={COLORS.warning} />, text: `Shortfall +$${obligationOwed.toFixed(2)} due`, color: COLORS.warning };
             } else if (outstanding <= 0.01 && (contributed > 0 || repaid > 0 || group.status === 'closed')) {
               status = { icon: <CheckCircle2 size={12} color={COLORS.success} />, text: contributed >= share - 0.01 ? 'Contributed' : 'Settled', color: COLORS.success };
             } else if (group.status === 'open') {
@@ -240,7 +260,7 @@ export default function SummaryScreen() {
           <View style={styles.warnCard}>
             <Receipt size={18} color={COLORS.warning} />
             <Text style={styles.warnText}>
-              {group.unclaimed.length} item{group.unclaimed.length === 1 ? '' : 's'} still unclaimed — go back and claim them.
+              {group.unclaimed.length} item{group.unclaimed.length === 1 ? '' : 's'} unclaimed — these will count as a shortfall when you settle the bill.
             </Text>
           </View>
         )}
@@ -306,7 +326,6 @@ export default function SummaryScreen() {
             }
             testID="summary-pay-btn"
             onPress={handleLeadPay}
-            disabled={!group.fully_claimed && group.split_mode !== 'fast'}
           />
         )}
         {isLead && group.status !== 'open' && (
@@ -444,6 +463,16 @@ const styles = StyleSheet.create({
     marginTop: SPACING.md,
   },
   warnText: { color: '#92400E', fontSize: FONT.sizes.sm, flex: 1 },
+  notifCard: {
+    backgroundColor: COLORS.primaryLight,
+    padding: SPACING.md,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+    marginBottom: SPACING.md,
+  },
+  notifHeader: { color: COLORS.primary, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.bold },
+  notifText: { color: COLORS.text, fontSize: FONT.sizes.sm, lineHeight: 20, marginTop: 2 },
   infoCard: {
     flexDirection: 'row',
     alignItems: 'center',

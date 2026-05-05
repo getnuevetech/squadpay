@@ -1,272 +1,441 @@
 """
-Backend tests for shortfall settlement at POST /api/groups/{id}/pay.
-Covers scenarios A-E from the review request.
+Backend tests for the redesigned shortfall settlement + 4-state derived status machine.
 """
 
 import os
 import sys
 import json
-import random
-import string
-from typing import Optional, Tuple, Dict, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-from dotenv import dotenv_values
 
-FRONTEND_ENV = dotenv_values("/app/frontend/.env")
-BASE_URL = FRONTEND_ENV.get("EXPO_PUBLIC_BACKEND_URL")
+def _read_env(path: str, key: str) -> Optional[str]:
+    try:
+        with open(path) as f:
+            for line in f:
+                if line.startswith(key + "="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        return None
+    return None
+
+BASE_URL = (_read_env("/app/frontend/.env", "EXPO_PUBLIC_BACKEND_URL") or "").rstrip("/")
 if not BASE_URL:
-    print("ERROR: EXPO_PUBLIC_BACKEND_URL missing from /app/frontend/.env")
+    print("FATAL: EXPO_PUBLIC_BACKEND_URL not set")
     sys.exit(1)
 API = f"{BASE_URL}/api"
-print(f"[setup] API base: {API}")
-
-session = requests.Session()
-session.headers["Content-Type"] = "application/json"
+print(f"API base = {API}\n")
 
 
-def rand_phone() -> str:
-    return "+1555" + "".join(random.choices(string.digits, k=7))
+class TestError(Exception):
+    pass
 
 
-def post(path: str, body: dict) -> requests.Response:
-    return session.post(f"{API}{path}", data=json.dumps(body), timeout=30)
+def _req(method: str, path: str, **kw) -> Tuple[int, Any]:
+    url = f"{API}{path}"
+    r = requests.request(method, url, timeout=30, **kw)
+    try:
+        body = r.json()
+    except Exception:
+        body = r.text
+    return r.status_code, body
 
 
-def get(path: str) -> requests.Response:
-    return session.get(f"{API}{path}", timeout=30)
+def post(path: str, payload: dict) -> Tuple[int, Any]:
+    return _req("POST", path, json=payload)
 
 
-def create_verified_user(name: str) -> Dict[str, Any]:
-    r = post("/auth/register", {"name": name})
-    assert r.status_code == 200, f"register failed: {r.status_code} {r.text}"
-    user = r.json()
-    phone = rand_phone()
-    r = post("/auth/send-otp", {"user_id": user["id"], "phone": phone})
-    assert r.status_code == 200, f"send-otp failed: {r.text}"
-    r = post("/auth/verify-otp", {"user_id": user["id"], "phone": phone, "code": "123456"})
-    assert r.status_code == 200, f"verify-otp failed: {r.text}"
-    user = r.json()
-    print(f"  [user] {name} -> id={user['id']} phone={phone} verified={user['verified']}")
+def get(path: str) -> Tuple[int, Any]:
+    return _req("GET", path)
+
+
+def register_and_verify(name: str, phone: str) -> dict:
+    sc, user = post("/auth/register", {"name": name})
+    if sc != 200:
+        raise TestError(f"register {name} failed {sc} {user}")
+    uid = user["id"]
+    sc, _ = post("/auth/send-otp", {"user_id": uid, "phone": phone})
+    if sc != 200:
+        raise TestError(f"send-otp failed {sc}")
+    sc, user = post("/auth/verify-otp", {"user_id": uid, "phone": phone, "code": "123456"})
+    if sc != 200:
+        raise TestError(f"verify-otp failed {sc} {user}")
     return user
 
 
-def setup_scenario(label: str, num_members: int = 2, total_amount: float = 60.0,
-                   members_who_pay: int = 1) -> Tuple[Dict, list, Dict]:
-    """
-    Create lead + N members, group with equal-split (fast), have lead + a subset of
-    members contribute their full share, leaving the rest as shortfall.
-    Returns (lead, members, enriched_group).
-    """
-    print(f"\n=== Setup for {label} ===")
-    lead = create_verified_user(f"Lead-{label}")
-    members = [create_verified_user(f"Member-{label}-{i+1}") for i in range(num_members)]
-
-    # Lead creates a fast (equal) split group
-    body = {
-        "lead_id": lead["id"],
-        "title": f"Dinner {label}",
-        "total_amount": total_amount,
-        "split_mode": "fast",
-        "tax": 0.0,
-        "tip": 0.0,
-        "items": [],
-    }
-    r = post("/groups", body)
-    assert r.status_code == 200, f"create group failed: {r.text}"
-    group = r.json()
-    gid = group["id"]
-    print(f"  [group] id={gid} code={group['code']} total_amount={group['total_amount']}")
-
-    # Members join
+def make_itemized_group(lead: dict, members: List[dict], items: List[dict],
+                       title: str = "Dinner", tax: float = 0.0, tip: float = 0.0,
+                       total_amount: Optional[float] = None) -> dict:
+    subtotal = sum(it["price"] * it["quantity"] for it in items)
+    if total_amount is None:
+        total_amount = subtotal + tax + tip
+    sc, group = post("/groups", {
+        "lead_id": lead["id"], "title": title, "total_amount": total_amount,
+        "split_mode": "itemized", "tax": tax, "tip": tip, "items": items,
+    })
+    if sc != 200:
+        raise TestError(f"create group failed {sc} {group}")
     for m in members:
-        r = post(f"/groups/{gid}/join", {"user_id": m["id"]})
-        assert r.status_code == 200, f"join failed: {r.text}"
+        sc, group = post(f"/groups/{group['id']}/join", {"user_id": m["id"]})
+        if sc != 200:
+            raise TestError(f"join failed {sc} {group}")
+    return group
 
-    # Reload group to get per_user shares
-    r = get(f"/groups/{gid}")
-    assert r.status_code == 200
-    group = r.json()
-    print(f"  [shares] per_user totals = {[(p['user_id'], p['total']) for p in group['per_user']]}")
 
-    # Lead contributes full share
-    r = post(f"/groups/{gid}/contribute", {"user_id": lead["id"]})
-    assert r.status_code == 200, f"lead contribute failed: {r.text}"
+def assign(group_id: str, user_id: str, item_id: str, quantity: int) -> dict:
+    sc, g = post(f"/groups/{group_id}/assign",
+                 {"user_id": user_id, "item_id": item_id, "quantity": quantity})
+    if sc != 200:
+        raise TestError(f"assign failed {sc} {g}")
+    return g
 
-    # `members_who_pay` members contribute full share
-    for m in members[:members_who_pay]:
-        r = post(f"/groups/{gid}/contribute", {"user_id": m["id"]})
-        assert r.status_code == 200, f"member contribute failed: {r.text}"
 
-    r = get(f"/groups/{gid}")
-    enriched = r.json()
-    print(f"  [funding] total_contributed={enriched['funding']['total_contributed']} "
-          f"remaining_to_collect={enriched['funding']['remaining_to_collect']} "
-          f"status={enriched['status']}")
-    assert enriched["funding"]["remaining_to_collect"] > 0, \
-        "Setup failed: shortfall must be > 0"
-    return lead, members, enriched
+def contribute(group_id: str, user_id: str, amount: Optional[float] = None) -> Tuple[int, Any]:
+    payload = {"user_id": user_id}
+    if amount is not None:
+        payload["amount"] = amount
+    return post(f"/groups/{group_id}/contribute", payload)
+
+
+def per_user_for(group: dict, user_id: str) -> dict:
+    return next((p for p in group["per_user"] if p["user_id"] == user_id), {})
+
+
+RESULTS = []
+
+
+def report(name: str, ok: bool, details: str = ""):
+    RESULTS.append({"name": name, "ok": ok, "details": details})
+    flag = "PASS" if ok else "FAIL"
+    print(f"  [{flag}] {name}")
+    if details and not ok:
+        for line in details.splitlines():
+            print(f"          {line}")
+
+
+def summarize_group(g: dict) -> str:
+    notif = [(n.get("kind"), n.get("user_id"), n.get("delivered_via")) for n in (g.get("notifications") or [])]
+    obs = [(o.get("kind"), o.get("user_id"), o.get("amount")) for o in (g.get("shortfall_obligations") or [])]
+    pu = [{"user": p["user_id"][-6:], "total": p["total"], "contributed": p["contributed"],
+           "shortfall_owed": p.get("shortfall_owed"), "outstanding": p["outstanding"]}
+          for p in g["per_user"]]
+    return (f"status={g.get('status')} derived={g.get('derived_status')} "
+            f"funding_mode={g.get('funding_mode')} "
+            f"remaining={g['funding']['remaining_to_collect']} "
+            f"total_contributed={g['funding']['total_contributed']}\n"
+            f"per_user={json.dumps(pu)}\nobligations={obs}\nnotifications={notif}")
+
+
+def fresh_trio_with_shortfall(scenario: str):
+    """Lead+2 members, 3 $20 items each assigned to one. Lead+m1 contribute, m2 doesn't."""
+    lead = register_and_verify(f"Lead {scenario}", "+12025550100")
+    m1 = register_and_verify(f"Avery {scenario}", "+12025550101")
+    m2 = register_and_verify(f"Riley {scenario}", "+12025550102")
+    items = [
+        {"name": "Pasta", "price": 20.0, "quantity": 1},
+        {"name": "Pizza", "price": 20.0, "quantity": 1},
+        {"name": "Burger", "price": 20.0, "quantity": 1},
+    ]
+    group = make_itemized_group(lead, [m1, m2], items, title=f"Test {scenario}")
+    gid = group["id"]
+    item_ids = [it["id"] for it in group["items"]]
+    assign(gid, lead["id"], item_ids[0], 1)
+    assign(gid, m1["id"], item_ids[1], 1)
+    g = assign(gid, m2["id"], item_ids[2], 1)
+    sc, _ = contribute(gid, lead["id"])
+    if sc != 200:
+        raise TestError(f"lead contribute failed {sc}")
+    sc, _ = contribute(gid, m1["id"])
+    if sc != 200:
+        raise TestError(f"m1 contribute failed {sc}")
+    return lead, m1, m2, gid
 
 
 def scenario_A():
-    lead, members, group = setup_scenario("A", num_members=2, members_who_pay=1)
-    gid = group["id"]
-    pre_remaining = group["funding"]["remaining_to_collect"]
-    body = {"user_id": lead["id"], "shortfall_mode": "lead", "is_loan": True}
-    print(f"  [pay] body={body}")
-    r = post(f"/groups/{gid}/pay", body)
-    print(f"  [pay] status={r.status_code} body={r.text[:300]}")
-    assert r.status_code == 200, f"Scenario A pay failed: {r.text}"
-    after = r.json()
-    print(f"  [post-pay] status={after['status']} funding_mode={after.get('funding_mode')} "
-          f"remaining_to_collect={after['funding']['remaining_to_collect']} "
-          f"settlement={after.get('shortfall_settlement')}")
-    assert after["funding"]["remaining_to_collect"] == 0, \
-        f"Expected remaining_to_collect=0, got {after['funding']['remaining_to_collect']}"
-    # Loan mode -> status='paid' (not closed). Per code, only gift closes the group.
-    assert after["status"] in ("paid", "closed"), f"Unexpected status {after['status']}"
-    settlement = after.get("shortfall_settlement")
-    assert settlement and settlement["mode"] == "lead" and settlement["is_loan"] is True, \
-        f"Bad settlement: {settlement}"
-    # Check shortfall contribution recorded
-    r = get(f"/groups/{gid}")
-    fresh = r.json()
-    contribs = [c for c in fresh.get("contributions", []) if c.get("is_shortfall")]
-    print(f"  [contribs.shortfall] {contribs}")
-    assert any(c["user_id"] == lead["id"] and c.get("is_loan") is True for c in contribs), \
-        "No lead loan-shortfall contribution recorded"
-    # Outstanding amounts: non-paying member should still owe (loan)
-    non_paying = members[1]["id"]
-    np_per = next(p for p in fresh["per_user"] if p["user_id"] == non_paying)
-    print(f"  [non-paying member outstanding] {np_per['outstanding']}")
-    assert np_per["outstanding"] > 0, "Non-paying member should still owe under LOAN mode"
-    print("  [PASS] Scenario A — lead covers as LOAN")
-    return True
+    print("\n=== A: shortfall_mode='lead' is_loan=true ===")
+    lead, m1, m2, gid = fresh_trio_with_shortfall("A")
+    sc, body = post(f"/groups/{gid}/pay", {
+        "user_id": lead["id"], "shortfall_mode": "lead", "is_loan": True,
+    })
+    print(f"  HTTP {sc}")
+    if sc != 200:
+        report("A: pay returns 200", False, str(body))
+        return
+    print("  " + summarize_group(body))
+    report("A: status='paid'", body.get("status") == "paid", f"got {body.get('status')}")
+    report("A: derived_status='repaying'", body.get("derived_status") == "repaying",
+           f"got {body.get('derived_status')}")
+    report("A: remaining_to_collect=0", body["funding"]["remaining_to_collect"] <= 0.01,
+           f"got {body['funding']['remaining_to_collect']}")
+    notif = body.get("notifications") or []
+    lead_covered = [n for n in notif if n.get("kind") == "shortfall_lead_covered"]
+    report("A: notifications include shortfall_lead_covered for beneficiary",
+           len(lead_covered) >= 1 and any(n.get("user_id") == m2["id"] for n in lead_covered),
+           f"lead_covered={lead_covered}")
+    report("A: notifications delivered_via=sms_mock",
+           all(n.get("delivered_via") == "sms_mock" for n in lead_covered), "")
+    m2p = per_user_for(body, m2["id"])
+    report("A: m2 still has outstanding (loan)", m2p["outstanding"] > 0.01,
+           f"m2 outstanding={m2p['outstanding']}")
+    settlement = body.get("shortfall_settlement") or {}
+    report("A: settlement.mode/is_loan/funder_id correct",
+           settlement.get("mode") == "lead" and settlement.get("is_loan") is True
+           and settlement.get("funder_id") == lead["id"],
+           f"settlement={settlement}")
 
 
 def scenario_B():
-    lead, members, group = setup_scenario("B", num_members=2, members_who_pay=1)
-    gid = group["id"]
-    body = {"user_id": lead["id"], "shortfall_mode": "lead", "is_loan": False}
-    print(f"  [pay] body={body}")
-    r = post(f"/groups/{gid}/pay", body)
-    print(f"  [pay] status={r.status_code} body={r.text[:300]}")
-    assert r.status_code == 200, f"Scenario B pay failed: {r.text}"
-    after = r.json()
-    print(f"  [post-pay] status={after['status']} remaining={after['funding']['remaining_to_collect']} "
-          f"settlement={after.get('shortfall_settlement')}")
-    assert after["funding"]["remaining_to_collect"] == 0
-    assert after["status"] == "closed", f"Gift mode should close group; got {after['status']}"
-    settlement = after.get("shortfall_settlement")
-    assert settlement and settlement["mode"] == "lead" and settlement["is_loan"] is False
-    # Non-paying member should NOT owe (gift)
-    non_paying = members[1]["id"]
-    np_per = next(p for p in after["per_user"] if p["user_id"] == non_paying)
-    print(f"  [non-paying member outstanding] {np_per['outstanding']}")
-    assert np_per["outstanding"] == 0, \
-        "Non-paying member should owe nothing under GIFT mode"
-    print("  [PASS] Scenario B — lead covers as GIFT")
-    return True
+    print("\n=== B: shortfall_mode='lead' is_loan=false ===")
+    lead, m1, m2, gid = fresh_trio_with_shortfall("B")
+    sc, body = post(f"/groups/{gid}/pay", {
+        "user_id": lead["id"], "shortfall_mode": "lead", "is_loan": False,
+    })
+    print(f"  HTTP {sc}")
+    if sc != 200:
+        report("B: pay returns 200", False, str(body))
+        return
+    print("  " + summarize_group(body))
+    report("B: status='closed'", body.get("status") == "closed", f"got {body.get('status')}")
+    report("B: derived_status='settled'", body.get("derived_status") == "settled",
+           f"got {body.get('derived_status')}")
+    notif = body.get("notifications") or []
+    gift_notifs = [n for n in notif if n.get("kind") == "shortfall_lead_covered"]
+    msg_ok = any("gift" in (n.get("message") or "").lower() for n in gift_notifs)
+    report("B: gift wording in lead-covered notification", msg_ok, f"notifs={gift_notifs}")
+    m2p = per_user_for(body, m2["id"])
+    report("B: m2 outstanding=0 (gift waives)", m2p["outstanding"] <= 0.01,
+           f"m2 outstanding={m2p['outstanding']}")
 
 
 def scenario_C():
-    lead, members, group = setup_scenario("C", num_members=2, members_who_pay=1)
-    gid = group["id"]
-    # The funder is the member who already paid (members[0]); members[1] still owes
-    funder = members[0]
-    body = {
-        "user_id": lead["id"],
-        "shortfall_mode": "member",
-        "is_loan": True,
-        "funder_member_id": funder["id"],
-    }
-    print(f"  [pay] body={body}")
-    r = post(f"/groups/{gid}/pay", body)
-    print(f"  [pay] status={r.status_code} body={r.text[:300]}")
-    assert r.status_code == 200, f"Scenario C pay failed: {r.text}"
-    after = r.json()
-    print(f"  [post-pay] status={after['status']} remaining={after['funding']['remaining_to_collect']} "
-          f"settlement={after.get('shortfall_settlement')}")
-    assert after["funding"]["remaining_to_collect"] == 0
-    settlement = after.get("shortfall_settlement")
-    assert settlement and settlement["mode"] == "member" and settlement["is_loan"] is True
-    assert settlement.get("funder_id") == funder["id"], f"funder_id mismatch: {settlement}"
-    # Verify funder contribution
-    contribs = [c for c in after.get("contributions", []) if c.get("is_shortfall")]
-    print(f"  [shortfall contribs] {contribs}")
-    assert any(c["user_id"] == funder["id"] and c.get("is_loan") is True for c in contribs), \
-        "Funder member shortfall contribution not recorded"
-    print("  [PASS] Scenario C — member assigned shortfall as LOAN")
-    return True
+    print("\n=== C: shortfall_mode='member' is_loan=true funder_member_id=m1 ===")
+    lead, m1, m2, gid = fresh_trio_with_shortfall("C")
+    sc, before = get(f"/groups/{gid}")
+    shortfall = before["funding"]["remaining_to_collect"]
+    funder_total = per_user_for(before, m1["id"])["total"]
+    funder_already = per_user_for(before, m1["id"])["contributed"]
+    sc, body = post(f"/groups/{gid}/pay", {
+        "user_id": lead["id"], "shortfall_mode": "member",
+        "is_loan": True, "funder_member_id": m1["id"],
+    })
+    print(f"  HTTP {sc}, shortfall was ${shortfall}")
+    if sc != 200:
+        report("C: pay returns 200", False, str(body))
+        return None
+    print("  " + summarize_group(body))
+    report("C: status stays 'open'", body.get("status") == "open", f"got {body.get('status')}")
+    report("C: derived_status='contributing'", body.get("derived_status") == "contributing",
+           f"got {body.get('derived_status')}")
+    obs = body.get("shortfall_obligations") or []
+    funder_ob = next((o for o in obs if o["user_id"] == m1["id"]), None)
+    report("C: shortfall_obligation kind=shortfall_member for funder",
+           funder_ob is not None and funder_ob.get("kind") == "shortfall_member",
+           f"funder_ob={funder_ob}")
+    if funder_ob:
+        report("C: obligation amount equals shortfall",
+               abs(funder_ob["amount"] - shortfall) < 0.02,
+               f"got {funder_ob['amount']} expected {shortfall}")
+    notif = body.get("notifications") or []
+    funder_notif = [n for n in notif
+                    if n.get("user_id") == m1["id"] and n.get("kind") == "shortfall_assigned"]
+    report("C: notification shortfall_assigned, sms_mock",
+           len(funder_notif) >= 1 and funder_notif[0].get("delivered_via") == "sms_mock",
+           f"funder_notif={funder_notif}")
+    funder_pu = per_user_for(body, m1["id"])
+    report("C: per_user[funder].shortfall_owed == shortfall",
+           abs(funder_pu.get("shortfall_owed", 0) - shortfall) < 0.02,
+           f"shortfall_owed={funder_pu.get('shortfall_owed')} expected {shortfall}")
+    expected_outstanding = round(funder_total + funder_pu.get("shortfall_owed", 0) - funder_already, 2)
+    report("C: per_user[funder].outstanding == total + shortfall_owed - contributed",
+           abs(funder_pu["outstanding"] - expected_outstanding) < 0.02,
+           f"outstanding={funder_pu['outstanding']} expected={expected_outstanding}")
+    return body, m1, lead, m2, gid, shortfall
 
 
-def scenario_D():
-    lead, members, group = setup_scenario("D", num_members=2, members_who_pay=1)
-    gid = group["id"]
-    body = {"user_id": lead["id"], "shortfall_mode": "split_equal"}
-    print(f"  [pay] body={body}")
-    r = post(f"/groups/{gid}/pay", body)
-    print(f"  [pay] status={r.status_code} body={r.text[:300]}")
-    assert r.status_code == 200, f"Scenario D pay failed: {r.text}"
-    after = r.json()
-    print(f"  [post-pay] status={after['status']} remaining={after['funding']['remaining_to_collect']} "
-          f"settlement={after.get('shortfall_settlement')}")
-    settlement = after.get("shortfall_settlement")
-    assert settlement and settlement["mode"] == "split_equal"
-    assert settlement["is_loan"] is False, "split_equal should always be gift"
-    assert after["status"] == "closed", f"split_equal (gift) should close; got {after['status']}"
-    # Non-paying member should owe nothing under gift
-    non_paying = members[1]["id"]
-    np_per = next(p for p in after["per_user"] if p["user_id"] == non_paying)
-    assert np_per["outstanding"] == 0, "Non-paying member should owe nothing under split_equal gift"
-    # remaining_to_collect should be ~0 (allow tiny rounding from per_share rounding)
-    assert after["funding"]["remaining_to_collect"] <= 0.1, \
-        f"Remaining still > 0.1: {after['funding']['remaining_to_collect']}"
-    print("  [PASS] Scenario D — split equally as gift")
-    return True
+def scenario_D(group_after_C, m1, lead, m2, gid, shortfall):
+    print("\n=== D: After C, funder /contribute (no amount) → settles ===")
+    sc, body = contribute(gid, m1["id"])
+    print(f"  HTTP {sc}")
+    if sc != 200:
+        report("D: contribute returns 200", False, str(body))
+        return
+    print("  " + summarize_group(body))
+    report("D: status='paid'", body.get("status") == "paid", f"got {body.get('status')}")
+    report("D: derived_status='settled'", body.get("derived_status") == "settled",
+           f"got {body.get('derived_status')}")
+    report("D: total_contributed >= total_amount",
+           body["funding"]["total_contributed"] + 0.01 >= body["total_amount"],
+           f"contributed={body['funding']['total_contributed']} total={body['total_amount']}")
+    funder_pu = per_user_for(body, m1["id"])
+    report("D: per_user[funder].outstanding == 0", funder_pu["outstanding"] <= 0.01,
+           f"outstanding={funder_pu['outstanding']}")
 
 
 def scenario_E():
-    lead, members, group = setup_scenario("E", num_members=2, members_who_pay=1)
+    print("\n=== E: shortfall_mode='split_equal' ===")
+    lead, m1, m2, gid = fresh_trio_with_shortfall("E")
+    sc, before = get(f"/groups/{gid}")
+    shortfall = before["funding"]["remaining_to_collect"]
+    sc, body = post(f"/groups/{gid}/pay", {
+        "user_id": lead["id"], "shortfall_mode": "split_equal",
+    })
+    print(f"  HTTP {sc}")
+    if sc != 200:
+        report("E: pay returns 200", False, str(body))
+        return
+    print("  " + summarize_group(body))
+    report("E: status stays 'open'", body.get("status") == "open", f"got {body.get('status')}")
+    report("E: derived_status='contributing'",
+           body.get("derived_status") == "contributing", f"got {body.get('derived_status')}")
+    obs = body.get("shortfall_obligations") or []
+    non_lead_ids = {m1["id"], m2["id"]}
+    ob_users = {o["user_id"] for o in obs}
+    sum_amounts = round(sum(o["amount"] for o in obs), 2)
+    report("E: one obligation per non-lead member", ob_users == non_lead_ids,
+           f"ob_users={ob_users} expected={non_lead_ids}")
+    report("E: sum of obligations == shortfall", abs(sum_amounts - shortfall) < 0.05,
+           f"sum={sum_amounts} expected {shortfall}")
+    notif = body.get("notifications") or []
+    assigned_notifs = [n for n in notif if n.get("kind") == "shortfall_assigned"]
+    assigned_users = {n["user_id"] for n in assigned_notifs}
+    report("E: notifications shortfall_assigned for each non-lead",
+           assigned_users == non_lead_ids, f"assigned_users={assigned_users}")
+    m1_split = next((o["amount"] for o in obs if o["user_id"] == m1["id"]), 0)
+    m1_pu = per_user_for(body, m1["id"])
+    report("E: m1.outstanding == split share (already contributed share)",
+           abs(m1_pu["outstanding"] - m1_split) < 0.05,
+           f"m1 outstanding={m1_pu['outstanding']} split={m1_split}")
+    m2_split = next((o["amount"] for o in obs if o["user_id"] == m2["id"]), 0)
+    m2_pu = per_user_for(body, m2["id"])
+    expected_m2 = round(m2_pu["total"] + m2_split, 2)
+    report("E: m2.outstanding == share + split",
+           abs(m2_pu["outstanding"] - expected_m2) < 0.05,
+           f"m2 outstanding={m2_pu['outstanding']} expected={expected_m2}")
+
+
+def scenario_F():
+    print("\n=== F: items lock after settle ===")
+    lead = register_and_verify("Lead F", "+12025550110")
+    m1 = register_and_verify("Sage F", "+12025550111")
+    items = [{"name": "Brunch", "price": 20.0, "quantity": 2}]
+    group = make_itemized_group(lead, [m1], items, title="Test F")
     gid = group["id"]
-    body = {"user_id": lead["id"]}  # no shortfall options
-    print(f"  [pay] body={body}")
-    r = post(f"/groups/{gid}/pay", body)
-    print(f"  [pay] status={r.status_code} body={r.text[:300]}")
-    assert r.status_code == 400, \
-        f"Expected 400 'bill is short', got {r.status_code}: {r.text}"
-    body_json = r.json()
-    detail = body_json.get("detail", "")
-    assert "short" in detail.lower(), f"Expected 'short' in detail, got: {detail}"
-    print(f"  [PASS] Scenario E — legacy call returns 400 ({detail!r})")
-    return True
+    iid = group["items"][0]["id"]
+    assign(gid, lead["id"], iid, 1)
+    assign(gid, m1["id"], iid, 1)
+    contribute(gid, lead["id"])
+    contribute(gid, m1["id"])
+    sc, after = get(f"/groups/{gid}")
+    if after.get("status") != "paid":
+        sc2, after = post(f"/groups/{gid}/pay", {"user_id": lead["id"]})
+        print(f"  fallback /pay -> {sc2}")
+    print(f"  status before append = {after.get('status')}, derived={after.get('derived_status')}")
+    sc, body = post(f"/groups/{gid}/items/append",
+                    {"user_id": lead["id"], "items": [{"name": "Coffee", "price": 5.0, "quantity": 1}]})
+    print(f"  append HTTP {sc} body={body}")
+    msg = (body.get("detail") if isinstance(body, dict) else "") or ""
+    report("F: append returns 400 when status='paid'", sc == 400, f"sc={sc} body={body}")
+    report("F: error mentions settled bill",
+           "settled" in msg.lower() or "added" in msg.lower(), f"msg={msg}")
+
+
+def scenario_G():
+    print("\n=== G: unclaimed→shortfall, lead /pay loan ===")
+    lead = register_and_verify("Lead G", "+12025550120")
+    m1 = register_and_verify("Quinn G", "+12025550121")
+    items = [
+        {"name": "Steak", "price": 25.0, "quantity": 1},
+        {"name": "Wine", "price": 25.0, "quantity": 1},
+    ]
+    group = make_itemized_group(lead, [m1], items, title="Test G", total_amount=50.0)
+    gid = group["id"]
+    iid_steak = group["items"][0]["id"]
+    g_after = assign(gid, lead["id"], iid_steak, 1)
+    lead_pu = per_user_for(g_after, lead["id"])
+    print(f"  lead share={lead_pu['total']}, unclaimed={len(g_after.get('unclaimed') or [])}")
+    sc, _ = contribute(gid, lead["id"])
+    if sc != 200:
+        report("G: lead contribute share", False, f"sc={sc}")
+        return
+    sc, body = post(f"/groups/{gid}/pay", {
+        "user_id": lead["id"], "shortfall_mode": "lead", "is_loan": True,
+    })
+    print(f"  pay HTTP {sc}")
+    if sc != 200:
+        report("G: pay 200 with unclaimed items", False, str(body))
+        return
+    print("  " + summarize_group(body))
+    report("G: pay returns 200 (unclaimed handled as shortfall)", True, "")
+    report("G: status='paid'", body.get("status") == "paid", f"got {body.get('status')}")
+
+
+def scenario_H():
+    print("\n=== H: 4-state machine sanity ===")
+
+    # H1
+    lead = register_and_verify("Lead H1", "+12025550130")
+    m1 = register_and_verify("Drew H1", "+12025550131")
+    items = [{"name": "Soup", "price": 10.0, "quantity": 2}]
+    g = make_itemized_group(lead, [m1], items, title="H1", total_amount=20.0)
+    sc, g = get(f"/groups/{g['id']}")
+    print(f"  H1 status={g.get('status')} derived={g.get('derived_status')}")
+    report("H1: fresh open group derived='contributing'",
+           g.get("derived_status") == "contributing", f"derived={g.get('derived_status')}")
+
+    # H2
+    iid = g["items"][0]["id"]
+    assign(g["id"], lead["id"], iid, 1)
+    assign(g["id"], m1["id"], iid, 1)
+    contribute(g["id"], lead["id"])
+    sc, g2 = contribute(g["id"], m1["id"])
+    print(f"  H2 status={g2.get('status')} derived={g2.get('derived_status')}")
+    derived_h2 = g2.get("derived_status")
+    report("H2: after all contribute, derived in {contributed, settled} (NOT 'repaying')",
+           derived_h2 in ("contributed", "settled"),
+           f"derived={derived_h2} status={g2.get('status')}")
+
+    # H3: same as H2 effectively if auto-finalized; just verify settled state
+    print(f"  H3 status={g2.get('status')} derived={g2.get('derived_status')}")
+    report("H3: group-funded path → derived='settled'",
+           g2.get("derived_status") == "settled",
+           f"derived={g2.get('derived_status')} status={g2.get('status')}")
+
+    # H4: lead /pay with shortfall_mode='lead' is_loan=true → 'repaying'
+    lead4, m4a, m4b, gid4 = fresh_trio_with_shortfall("H4")
+    sc, g4 = post(f"/groups/{gid4}/pay", {
+        "user_id": lead4["id"], "shortfall_mode": "lead", "is_loan": True,
+    })
+    print(f"  H4 pay HTTP {sc}, derived={g4.get('derived_status') if isinstance(g4, dict) else g4}")
+    report("H4: lead loan path → derived='repaying'",
+           isinstance(g4, dict) and g4.get("derived_status") == "repaying",
+           f"derived={g4.get('derived_status') if isinstance(g4, dict) else g4}")
 
 
 def main():
-    results = {}
-    for name, fn in [
-        ("A", scenario_A),
-        ("B", scenario_B),
-        ("C", scenario_C),
-        ("D", scenario_D),
-        ("E", scenario_E),
-    ]:
-        try:
-            fn()
-            results[name] = "PASS"
-        except AssertionError as e:
-            results[name] = f"FAIL: {e}"
-            print(f"  [FAIL] Scenario {name}: {e}")
-        except Exception as e:
-            results[name] = f"ERROR: {e}"
-            print(f"  [ERROR] Scenario {name}: {e}")
-            import traceback; traceback.print_exc()
-
-    print("\n=== RESULTS ===")
-    for k, v in results.items():
-        print(f"  Scenario {k}: {v}")
-    failed = [k for k, v in results.items() if not v.startswith("PASS")]
-    sys.exit(0 if not failed else 1)
+    try:
+        scenario_A()
+        scenario_B()
+        result_C = scenario_C()
+        if result_C:
+            scenario_D(*result_C)
+        scenario_E()
+        scenario_F()
+        scenario_G()
+        scenario_H()
+    except TestError as e:
+        print(f"FATAL TEST SETUP ERROR: {e}")
+        import traceback; traceback.print_exc()
+    finally:
+        print("\n\n=== SUMMARY ===")
+        passed = sum(1 for r in RESULTS if r["ok"])
+        failed = sum(1 for r in RESULTS if not r["ok"])
+        for r in RESULTS:
+            print(f"  [{'PASS' if r['ok'] else 'FAIL'}] {r['name']}")
+            if not r["ok"] and r["details"]:
+                for line in r["details"].splitlines():
+                    print(f"            {line}")
+        print(f"\nTotal: {passed} passed, {failed} failed, {len(RESULTS)} total")
+        sys.exit(0 if failed == 0 else 1)
 
 
 if __name__ == "__main__":

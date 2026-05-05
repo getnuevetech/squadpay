@@ -285,18 +285,30 @@ async def _recompute_group(group: dict) -> dict:
     settlement = group.get("shortfall_settlement") or {}
     gift_active = bool(settlement) and not settlement.get("is_loan", True)
     beneficiaries = set(settlement.get("beneficiaries") or [])
+
+    # Shortfall obligations: extra amounts a user owes BEFORE the merchant is paid.
+    # Created when lead picks 'member' or 'split_equal' settlement.
+    obligations = group.get("shortfall_obligations", []) or []
+    obligation_by_user: Dict[str, float] = {}
+    for o in obligations:
+        obligation_by_user[o["user_id"]] = obligation_by_user.get(o["user_id"], 0.0) + float(o.get("amount", 0))
+
     for p in per_user:
         uid = p["user_id"]
         p["contributed"] = round(contrib_by_user.get(uid, 0.0), 2)
         p["repaid"] = round(repaid_by_user.get(uid, 0.0), 2)
+        p["shortfall_owed"] = round(obligation_by_user.get(uid, 0.0), 2)
         if uid == lead_id:
             # Lead's own share is implicitly covered when they pay the bill (or when fully group-funded).
-            p["outstanding"] = 0.0
+            # Lead can still owe a shortfall obligation (rare, only if assigned to themselves).
+            p["outstanding"] = round(max(0.0, p["shortfall_owed"] - p["repaid"]), 2)
         elif gift_active and uid in beneficiaries:
             # Shortfall covered as a gift — beneficiary owes nothing.
             p["outstanding"] = 0.0
         else:
-            p["outstanding"] = round(max(0.0, p["total"] - p["contributed"] - p["repaid"]), 2)
+            # Total amount this user is on the hook for = their normal share + any shortfall obligation
+            total_owed = p["total"] + p["shortfall_owed"]
+            p["outstanding"] = round(max(0.0, total_owed - p["contributed"] - p["repaid"]), 2)
 
     total_contributed = round(sum(contrib_by_user.values()), 2)
     total_repaid = round(sum(repaid_by_user.values()), 2)
@@ -310,6 +322,19 @@ async def _recompute_group(group: dict) -> dict:
     if virtual_card:
         virtual_card = {**virtual_card, "balance": total_contributed}
 
+    # Derived 4-state machine: contributing | contributed | repaying | settled
+    raw_status = group.get("status", "open")
+    has_outstanding = any(p["outstanding"] > 0.01 for p in per_user)
+    if raw_status == "open":
+        if total_contributed + 0.01 >= total_amount and not has_outstanding:
+            derived_status = "contributed"
+        else:
+            derived_status = "contributing"
+    elif raw_status == "paid":
+        derived_status = "settled" if not has_outstanding else "repaying"
+    else:  # closed
+        derived_status = "settled"
+
     return {
         **group,
         "virtual_card": virtual_card,
@@ -318,6 +343,7 @@ async def _recompute_group(group: dict) -> dict:
         "per_user": per_user,
         "unclaimed": unclaimed_items,
         "fully_claimed": fully_claimed,
+        "derived_status": derived_status,
         "funding": {
             "total_contributed": total_contributed,
             "total_repaid": total_repaid,
@@ -435,8 +461,8 @@ async def append_items(group_id: str, body: AppendItemsIn):
         raise HTTPException(404, "Group not found")
     if group["lead_id"] != body.user_id:
         raise HTTPException(403, "Only lead can add items")
-    if group.get("status") == "closed":
-        raise HTTPException(400, "Group is closed")
+    if group.get("status") != "open":
+        raise HTTPException(400, "Bill is settled — items can no longer be added.")
     new_items = [
         {"id": new_id("it_"), "name": it.name, "price": it.price, "quantity": it.quantity}
         for it in body.items
@@ -557,12 +583,13 @@ async def contribute(group_id: str, body: ContributeIn):
     if not any(m["user_id"] == body.user_id for m in group.get("members", [])):
         raise HTTPException(403, "Not a member of this group")
 
-    # Default: contribute the user's full share if amount not provided
+    # Default: contribute the user's full share + any shortfall obligation if amount not provided
     enriched = await _recompute_group(group)
     per = next((p for p in enriched["per_user"] if p["user_id"] == body.user_id), None)
     share = per["total"] if per else 0.0
     already = per["contributed"] if per else 0.0
-    remaining_share = max(0.0, share - already)
+    shortfall_owed = per.get("shortfall_owed", 0.0) if per else 0.0
+    remaining_share = max(0.0, share + shortfall_owed - already)
     amount = float(body.amount) if body.amount is not None else remaining_share
     if amount <= 0:
         raise HTTPException(400, "Nothing left to contribute")
@@ -615,11 +642,14 @@ async def pay_group(group_id: str, body: PayIn):
         )
 
     contributions = list(group.get("contributions", []))
+    obligations = list(group.get("shortfall_obligations", []) or [])
+    notifications = list(group.get("notifications", []) or [])
     total_contributed = sum(float(c["amount"]) for c in contributions)
     total = float(group.get("total_amount") or 0.0)
     shortfall = round(max(0.0, total - total_contributed), 2)
 
     settlement: Optional[dict] = None
+    awaiting_obligations = False
     if shortfall > 0.01:
         mode = body.shortfall_mode
         if not mode:
@@ -636,6 +666,7 @@ async def pay_group(group_id: str, body: PayIn):
         ]
 
         if mode == "lead":
+            # Lead fronts the cash → wallet immediately funded → merchant paid now.
             funder_id = group["lead_id"]
             contributions.append({
                 "id": new_id("c_"),
@@ -646,38 +677,77 @@ async def pay_group(group_id: str, body: PayIn):
                 "covers": beneficiaries,
                 "at": now_iso(),
             })
+            # Notify each beneficiary of the lead's coverage
+            for bid in beneficiaries:
+                msg = (
+                    f"Lead covered ${shortfall:.2f} shortfall on your behalf — please repay."
+                    if is_loan
+                    else f"Lead covered the ${shortfall:.2f} shortfall as a gift — no repayment needed."
+                )
+                notifications.append({
+                    "id": new_id("n_"),
+                    "user_id": bid,
+                    "kind": "shortfall_lead_covered",
+                    "amount": shortfall,
+                    "message": msg,
+                    "at": now_iso(),
+                    "delivered_via": "sms_mock",
+                })
         elif mode == "member":
+            # Assign shortfall as an OBLIGATION on the chosen member. Don't pay merchant yet.
             if not body.funder_member_id:
                 raise HTTPException(400, "funder_member_id required for member mode")
             funder_id = body.funder_member_id
             if not any(m["user_id"] == funder_id for m in group.get("members", [])):
                 raise HTTPException(400, "Funder is not a member")
-            contributions.append({
-                "id": new_id("c_"),
+            obligations.append({
+                "id": new_id("o_"),
                 "user_id": funder_id,
                 "amount": shortfall,
-                "is_shortfall": True,
-                "is_loan": is_loan,
+                "kind": "shortfall_member",
                 "covers": [b for b in beneficiaries if b != funder_id],
                 "at": now_iso(),
             })
+            notifications.append({
+                "id": new_id("n_"),
+                "user_id": funder_id,
+                "kind": "shortfall_assigned",
+                "amount": shortfall,
+                "message": f"You've been asked to cover a ${shortfall:.2f} shortfall on the bill.",
+                "at": now_iso(),
+                "delivered_via": "sms_mock",
+            })
+            awaiting_obligations = True
         elif mode == "split_equal":
-            # split shortfall across existing contributors
-            existing_contributors = list({c["user_id"] for c in group.get("contributions", [])})
-            if not existing_contributors:
-                raise HTTPException(400, "No contributors to split shortfall across")
-            per_share = round(shortfall / len(existing_contributors), 2)
-            for uid in existing_contributors:
-                contributions.append({
-                    "id": new_id("c_"),
+            # Distribute obligations equally across non-lead members. Don't pay merchant yet.
+            split_targets = [m["user_id"] for m in group.get("members", []) if m["user_id"] != group["lead_id"]]
+            if not split_targets:
+                raise HTTPException(400, "No members to split shortfall across")
+            per_share = round(shortfall / len(split_targets), 2)
+            # Adjust last share for rounding
+            assigned = 0.0
+            for idx, uid in enumerate(split_targets):
+                amt = per_share if idx < len(split_targets) - 1 else round(shortfall - assigned, 2)
+                assigned += amt
+                obligations.append({
+                    "id": new_id("o_"),
                     "user_id": uid,
-                    "amount": per_share,
-                    "is_shortfall": True,
-                    "is_loan": False,  # split-equal is always treated as gift in MVP
+                    "amount": amt,
+                    "kind": "shortfall_split",
                     "covers": beneficiaries,
                     "at": now_iso(),
                 })
-            is_loan = False  # enforce
+                notifications.append({
+                    "id": new_id("n_"),
+                    "user_id": uid,
+                    "kind": "shortfall_assigned",
+                    "amount": amt,
+                    "message": f"Bill is short — your share of the shortfall is ${amt:.2f}.",
+                    "at": now_iso(),
+                    "delivered_via": "sms_mock",
+                })
+            is_loan = True  # split obligations are always paid back (not a gift)
+            awaiting_obligations = True
         else:
             raise HTTPException(400, "Invalid shortfall_mode")
 
@@ -690,6 +760,17 @@ async def pay_group(group_id: str, body: PayIn):
         }
         if mode in ("lead", "member"):
             settlement["funder_id"] = funder_id
+
+    # If shortfall mode is member/split_equal: merchant payment is deferred.
+    # We persist the obligations + notifications and keep status='open' (awaiting shortfall payments).
+    if awaiting_obligations:
+        update_doc = {
+            "shortfall_obligations": obligations,
+            "notifications": notifications,
+            "shortfall_settlement": settlement,
+        }
+        await db.groups.update_one({"id": group_id}, {"$set": update_doc})
+        return await _load_group_enriched(group_id)
 
     others_contributed = any(c["user_id"] != group["lead_id"] for c in group.get("contributions", []))
     if shortfall <= 0.01:
@@ -705,13 +786,15 @@ async def pay_group(group_id: str, body: PayIn):
         "lead_paid_at": now_iso(),
         "lead_shortfall": shortfall,
         "contributions": contributions,
+        "shortfall_obligations": obligations,
+        "notifications": notifications,
     }
     if settlement:
         update_doc["shortfall_settlement"] = settlement
 
     await db.groups.update_one({"id": group_id}, {"$set": update_doc})
 
-    # If gift mode, group is fully settled — close it immediately.
+    # If gift mode (lead absorbed shortfall as gift), group is fully settled.
     if settlement and not settlement["is_loan"]:
         await db.groups.update_one({"id": group_id}, {"$set": {"status": "closed"}})
 

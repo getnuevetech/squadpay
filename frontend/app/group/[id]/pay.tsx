@@ -152,7 +152,7 @@ export default function PayScreen() {
         const opts: any = {};
         if ((group.funding?.remaining_to_collect || 0) > 0.01) {
           opts.shortfall_mode = shortfallMode;
-          opts.is_loan = shortfallMode === 'split_equal' ? false : isLoan;
+          opts.is_loan = shortfallMode === 'split_equal' ? true : isLoan;
           if (shortfallMode === 'member') {
             if (!funderMemberId) {
               Alert.alert('Pick a member', 'Choose who will cover the shortfall.');
@@ -163,6 +163,16 @@ export default function PayScreen() {
           }
         }
         await api.payGroup(group.id, userId, opts);
+        // For member / split_equal: merchant pay is DEFERRED — return to summary with a toast
+        if (shortfallMode !== 'lead' && (group.funding?.remaining_to_collect || 0) > 0.01) {
+          const verb = shortfallMode === 'member' ? 'sent to the member' : 'split among members';
+          Alert.alert(
+            'Shortfall assigned',
+            `Shortfall request ${verb}. They've been notified to pay before the bill can be settled.`,
+          );
+          router.replace(`/group/${group.id}`);
+          return;
+        }
       } else if (kind === 'contribute') {
         await api.contribute(group.id, userId, amount, notifyOnSettled);
       } else {
@@ -396,7 +406,7 @@ export default function PayScreen() {
                 </View>
               )}
 
-              {shortfallMode !== 'split_equal' && (
+              {shortfallMode === 'lead' && (
                 <View style={styles.loanGiftRow}>
                   <Text style={styles.fieldLabel}>Treat this as</Text>
                   <View style={{ flexDirection: 'row', gap: 8 }}>
@@ -426,9 +436,15 @@ export default function PayScreen() {
                 </View>
               )}
 
+              {shortfallMode === 'member' && (
+                <Text style={styles.splitNote}>
+                  💡 The selected member will get an SMS and see the shortfall as an additional bill to pay before the merchant is settled.
+                </Text>
+              )}
+
               {shortfallMode === 'split_equal' && (
                 <Text style={styles.splitNote}>
-                  💡 Split-equal is always a gift — non-contributors won't owe anything.
+                  💡 The shortfall will be split equally across all non-lead members. Each gets an SMS and sees their share as an additional bill.
                 </Text>
               )}
             </View>

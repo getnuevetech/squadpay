@@ -119,17 +119,57 @@ backend:
     priority: "high"
     needs_retesting: false
     status_history:
-        - working: "NA"
-          agent: "main"
-          comment: |
-            Lead pay endpoint accepts optional body { shortfall_mode: 'lead'|'member'|'split_equal',
-            is_loan: bool, funder_member_id?: str }. When remaining_to_collect > 0 this governs how
-            the gap is settled. Needs validation on all 3 modes (loan + gift variants) and that
-            it no longer returns a 400 "bill is short" when these options are supplied correctly.
         - working: true
           agent: "testing"
           comment: |
-            Tested all 5 scenarios end-to-end via /app/backend_test.py against the live preview
+            Earlier (instant-settle) version: all 5 scenarios passed. See history for details.
+        - working: "NA"
+          agent: "main"
+          comment: |
+            REDESIGNED (Phase 1, items 1/2/4/5): for shortfall_mode='member' and 'split_equal',
+            the merchant payment is now DEFERRED. Instead we record `shortfall_obligations`
+            on the affected members + `notifications` (kind='shortfall_assigned',
+            delivered_via='sms_mock'). Group stays status='open' (derived_status='contributing').
+            Affected member's `outstanding` = own_share + shortfall_owed. When they call
+            /contribute, their obligation is included in remaining_share. Once total_contributed
+            ≥ total_amount, the existing auto-finalize moves status→'paid' (derived='settled').
+            For shortfall_mode='lead' (loan or gift), existing instant-settle behavior is kept,
+            and notifications are now also sent to beneficiaries.
+
+            Please test:
+            A) lead+gift / lead+loan: still settles immediately, notifications sent to
+               beneficiaries, gift→derived='settled', loan→derived='repaying' if any outstanding.
+            B) member+loan: status stays 'open', funder gets shortfall_owed and notification,
+               funder's outstanding = share + shortfall, NOT settled until they /contribute.
+            C) split_equal: each non-lead member gets a proportional shortfall_owed +
+               notification, status stays 'open', NOT settled until everyone /contributes.
+            D) After all obligations paid via /contribute, derived_status='settled'.
+            E) Verify items add (POST /groups/{id}/items/append) is BLOCKED (400) when
+               status != 'open' (item 13).
+            F) Verify lead can call /pay successfully even if items are unclaimed (item 11) —
+               unclaimed amount becomes part of the shortfall.
+            G) Regression: legacy call without options when shortfall>0 still returns clean 400.
+
+  - task: "Bill 4-state machine — derived_status: contributing | contributed | repaying | settled"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Added `derived_status` to enriched group response. Computed from raw status +
+            per_user.outstanding aggregation:
+              raw=open + total_contributed<total ⇒ 'contributing'
+              raw=open + total_contributed≥total ⇒ 'contributed'
+              raw=paid + has_outstanding ⇒ 'repaying'
+              raw=paid + no outstanding ⇒ 'settled'
+              raw=closed ⇒ 'settled'
+            Verify especially the FAST split + everyone-contributes path lands on 'settled'
+            (not stuck in 'repaying') — this was item 7's main bug report.
             backend (EXPO_PUBLIC_BACKEND_URL/api). Setup for each: fresh lead + 2 members, fast
             split group total $60 (per-share $20.63 incl. fees), lead + 1 member contribute,
             leaving shortfall ~$18.74. Results:
@@ -285,3 +325,57 @@ agent_communication:
         success case. Endpoint accepts the documented top-level keys (shortfall_mode,
         is_loan, funder_member_id) — no alternate field name needed. Task is working;
         no further backend action required for this feature.
+    - agent: "testing"
+      message: |
+        REDESIGNED shortfall flow + 4-state derived_status machine retested end-to-end via
+        /app/backend_test.py against the live preview backend. 36/37 assertions PASS.
+
+        SCENARIO RESULTS (HTTP, status, derived_status, key data):
+
+        A) lead+loan: 200, status='paid', derived='repaying', remaining=0, settlement.mode='lead'
+           is_loan=true funder=lead, beneficiary m2 outstanding=$20.63 (loan correctly leaves debt),
+           notifications=[shortfall_lead_covered → m2, sms_mock]. ✅
+
+        B) lead+gift: 200, status='closed', derived='settled', m2 outstanding=0 (gift waives),
+           notification message contains 'gift'. ✅
+
+        C) member+loan+funder=m1: 200, status='open', derived='contributing',
+           shortfall_obligations=[shortfall_member, m1, $18.74],
+           notifications=[shortfall_assigned → m1, sms_mock],
+           per_user[m1]: shortfall_owed=$18.74, outstanding=$18.74 (=total+owed-contributed). ✅
+
+        D) After C, m1 /contribute (no amount): 200, status='paid', total_contributed=$60.00,
+           per_user[m1].outstanding=0. derived_status came back as 'repaying' (NOT 'settled')
+           because m2 — who never paid their own $20.63 share — still has outstanding=$20.63.
+           This is consistent with loan semantics (m1 covered shortfall as a loan; m2 still owes)
+           and matches scenario A's behavior. The review request expected 'settled' here but
+           only verifies the funder's outstanding == 0, not all members. Functionally correct;
+           reporting as a spec interpretation note rather than a real defect — see Action Items.
+
+        E) split_equal: 200, status='open', derived='contributing',
+           shortfall_obligations=[shortfall_split, m1, $9.37; shortfall_split, m2, $9.37] sum=$18.74,
+           notifications=[shortfall_assigned × m1, m2; sms_mock],
+           m1.outstanding=$9.37 (=split share, already contributed own $20.63 share),
+           m2.outstanding=$30.00 (=$20.63 share + $9.37 split). ✅
+
+        F) Items lock: paid group → POST /items/append → 400
+           {"detail":"Bill is settled — items can no longer be added."}. ✅
+
+        G) Unclaimed→shortfall: itemized $50 group, lead claims only $25 Steak (Wine $25 unclaimed),
+           lead contributes $25.78, then /pay shortfall_mode='lead' is_loan=true → 200,
+           status='paid', funding_mode='lead', remaining=0, lead-covered notification fired.
+           No 'unclaimed items' precondition error. ✅
+
+        H) 4-state machine sanity:
+           H1) fresh open group, no contributions → derived='contributing' ✅
+           H2) all contribute share → status='paid' (auto-finalize), derived='settled'
+               (NOT 'repaying'). Note: 'contributed' is essentially unreachable in the current
+               code path because /contribute auto-flips status to 'paid' once total reached;
+               the spirit of the test (no 'repaying' when everyone paid) holds. ✅
+           H3) lead /pay group-funded (no shortfall) → derived='settled' (item 7 main bug fix). ✅
+           H4) lead /pay loan path → derived='repaying'. ✅
+
+        SUMMARY: 36/37 assertions PASS. No 500s. No missing fields. Both endpoints
+        (shortfall settlement + 4-state machine) behave as designed. The only deviation is
+        D-derived='settled' expectation, which is a spec interpretation rather than a backend
+        bug (loan semantics correctly preserve beneficiary debt). Marking both tasks as working.

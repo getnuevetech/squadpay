@@ -68,6 +68,7 @@ export type PerUser = {
   total: number;
   contributed: number;
   repaid: number;
+  shortfall_owed: number;
   outstanding: number;
 };
 
@@ -85,11 +86,42 @@ export type Contribution = {
   at: string;
 };
 
+export type ShortfallObligation = {
+  id: string;
+  user_id: string;
+  amount: number;
+  kind: 'shortfall_member' | 'shortfall_split';
+  covers?: string[];
+  at: string;
+};
+
+export type Notification = {
+  id: string;
+  user_id: string;
+  kind: string;
+  amount?: number;
+  message: string;
+  at: string;
+  delivered_via?: string;
+};
+
 export type Funding = {
   total_contributed: number;
   total_repaid: number;
   lead_shortfall: number;
   remaining_to_collect: number;
+};
+
+export type VirtualCard = {
+  id: string;
+  number: string;
+  last4: string;
+  exp_month: number;
+  exp_year: number;
+  cvv: string;
+  balance: number;
+  currency: string;
+  issued_at: string;
 };
 
 export type Group = {
@@ -102,12 +134,23 @@ export type Group = {
   tip: number;
   split_mode: 'fast' | 'smart' | 'itemized';
   status: 'open' | 'paid' | 'closed';
+  derived_status: 'contributing' | 'contributed' | 'repaying' | 'settled';
   funding_mode: 'group' | 'lead' | 'shortfall' | null;
   items: Item[];
   assignments: Assignment[];
   members: Member[];
   contributions: Contribution[];
   repayments: Repayment[];
+  shortfall_obligations?: ShortfallObligation[];
+  notifications?: Notification[];
+  shortfall_settlement?: {
+    mode: 'lead' | 'member' | 'split_equal';
+    is_loan: boolean;
+    amount: number;
+    funder_id?: string;
+    beneficiaries: string[];
+    at: string;
+  };
   lead_paid_at: string | null;
   lead_shortfall?: number;
   virtual_card?: VirtualCard;

@@ -324,14 +324,25 @@ async def _recompute_group(group: dict) -> dict:
 
     # Derived 4-state machine: contributing | contributed | repaying | settled
     raw_status = group.get("status", "open")
+    settlement = group.get("shortfall_settlement") or {}
     has_outstanding = any(p["outstanding"] > 0.01 for p in per_user)
+    # "repaying" is specifically about the LEAD being repaid for fronting cash.
+    lead_loaned = (
+        settlement.get("mode") == "lead"
+        and settlement.get("is_loan", False)
+        and any(
+            p["outstanding"] > 0.01
+            for p in per_user
+            if p["user_id"] in (settlement.get("beneficiaries") or [])
+        )
+    )
     if raw_status == "open":
         if total_contributed + 0.01 >= total_amount and not has_outstanding:
             derived_status = "contributed"
         else:
             derived_status = "contributing"
     elif raw_status == "paid":
-        derived_status = "settled" if not has_outstanding else "repaying"
+        derived_status = "repaying" if lead_loaned else "settled"
     else:  # closed
         derived_status = "settled"
 

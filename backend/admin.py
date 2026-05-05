@@ -198,6 +198,7 @@ AUDIT_ACTIONS_DESTRUCTIVE = {
     "admin.update_provider_secret",
     "admin.create_admin",
     "admin.delete_admin",
+    "admin.update_referral_settings",
 }
 
 

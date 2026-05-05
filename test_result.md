@@ -614,6 +614,107 @@ frontend:
             Subtotal renders '$28.50' (read-only) and Total at the bottom is '$33.50'.
             The previous 'phantom amount' bug (manual subtotal not tied to any item) is gone.
 
+  - task: "Phase D — Integrations (Stripe/Twilio/Reminders config + encrypted secrets + reminder loop + Twilio OTP fallback)"
+    implemented: true
+    working: true
+    file: "backend/server.py, backend/integrations.py, backend/admin_integrations.py, backend/admin_routes.py, backend/admin.py, backend/reminders.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Phase D (Integrations: Stripe + Twilio + Reminders) verified end-to-end via
+            /app/backend_test.py against the live preview backend. 60/60 assertions PASS.
+            No 5xx errors.
+
+            Coverage by scenario (all PASS):
+              A) Auth & shape — GET /admin/integrations without Bearer → 401 "Admin auth
+                 required"; super_admin → 200 with stripe+twilio+reminders subobjects; no
+                 plaintext field names (secret_key/auth_token/webhook_secret) present,
+                 only *_masked + *_set variants. ✅
+              B) Stripe save — super_admin POST with enabled=true, mode=test, pk='pk_test_PHASEDX',
+                 sk='sk_test_PHDsecret9999', whsec='whsec_PHDhook12345' → 200. GET shows
+                 publishable_key='pk_test_PHASEDX', secret_key_set=true,
+                 secret_key_masked ends with '9999' and starts with '*',
+                 webhook_secret_set=true, webhook_secret_masked ends with '2345'.
+                 Re-save omitting secret_key preserved existing (still ends with '9999',
+                 still set). Support admin POST → 403. ✅
+              C) Twilio save — super_admin POST with account_sid='AC_PHDsidXXX',
+                 auth_token='tokPHDXXX', from_number='+15555550001', enabled=false → 200.
+                 GET shows account_sid_set=true, account_sid_masked ends with 'dXXX',
+                 from_number='+15555550001'. Manager admin POST → 403 with detail
+                 mentioning "super_admin" ("Requires one of roles: super_admin"). ✅
+              D) Twilio test SMS (disabled) — super_admin POST /twilio/test
+                 {to_number:'+15551234567'} → 200, sent_real=false, info="Twilio disabled —
+                 logged to console" (contains 'twilio disabled'). Support admin → 403. ✅
+              E) Reminders save + sanitization — super_admin POST with schedule_hours
+                 [24,72,168] → 200, schedule stored as [24,72,168]. Sanitization POST with
+                 [0,-5,24,24,2000,72] → 200, schedule stored as [24,72,2000] (zeros/negs
+                 dropped, dedup, sorted). Support admin POST → 403. ✅
+              F) Reminders run-now — super_admin POST → 200 with
+                 {enabled:true, scanned:N, sent_real:N, logged:N, skipped:N, schedule_hours:[...]}.
+                 All 5 expected keys present. No 5xx. ✅
+              G) Idempotency — run-now called twice consecutively: scanned equal across
+                 calls; second call's skipped >= first call's (logged+sent_real), i.e.
+                 already-dispatched reminders dedup'd via db.reminders on
+                 (group_id, user_id, offset_hour). ✅
+              H) OTP with Twilio disabled — registered fresh user, POST /auth/send-otp
+                 {user_id, phone:'+155588870..'} → 200 with mocked=true and twilio_info
+                 containing 'Twilio disabled'. POST /auth/verify-otp with code '123456'
+                 → 200 (mock OTP still works regardless of Twilio state). ✅
+              I) Encryption sanity — GET /admin/integrations raw response contains zero
+                 occurrences of "secret_key":, "auth_token":, "webhook_secret": field
+                 names, and none of the forbidden value prefixes 'sk_test_PHDsecret' /
+                 'gAAAA' (Fernet token prefix). Only masked variants are projected. ✅
+              J) Audit destructive flags — GET /admin/audit-log?limit=50 confirmed the
+                 following actions present with destructive=true: admin.update_stripe_settings,
+                 admin.update_twilio_settings, admin.test_twilio,
+                 admin.update_reminder_settings, admin.run_reminders_now. All 5 destructive
+                 assertions pass. (admin.AUDIT_ACTIONS_DESTRUCTIVE in /app/backend/admin.py
+                 lines 208–213 correctly include all five.) ✅
+              K) Cleanup — super_admin POST stripe {enabled:false,mode:'test'}, twilio
+                 {enabled:false}, reminders {enabled:false,schedule_hours:[24,72,168],
+                 max_reminders_per_user:3,send_via_sms:true} — all 200. ✅
+
+            Backend log notes (informational, not blockers):
+              - passlib bcrypt cosmetic warning (no functional impact).
+              - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes, ≥32 recommended).
+              - [twilio-mock] console log observed during test_twilio call (expected:
+                Twilio disabled, so SMS logged instead of POST'd).
+              - [reminders] background loop started at server startup (interval=900s).
+
+            Test suite saved at /app/backend_test.py (uses ts-based names + fresh phones +
+            fresh support/manager admin emails each run). Marking Phase D as working — no
+            further backend action required for this feature.
+        - working: "NA"
+          agent: "main"
+          comment: |
+            PHASE D — needs backend test.
+
+            New modules:
+              - integrations.py: Fernet-based at-rest encryption (key derived from JWT_SECRET via SHA-256),
+                encrypt_secret/decrypt_secret/mask_secret, get_integrations_doc with safe defaults,
+                project_integrations_for_admin (masked view, never plaintext),
+                send_sms_via_twilio (httpx POST to Twilio REST API when enabled+configured; else logs to console).
+              - admin_integrations.py: 6 admin endpoints.
+              - reminders.py: run_reminder_pass + start_reminder_loop (asyncio task every 15 min from startup).
+
+            Server changes:
+              - /api/auth/send-otp now also calls send_sms_via_twilio (real SMS if Twilio enabled, else mock log).
+                Mock OTP code 123456 always works regardless.
+              - startup: starts reminder background loop.
+
+            Admin endpoints (Bearer required):
+              - GET  /api/admin/integrations         → masked view of stripe + twilio + reminders.
+              - POST /api/admin/integrations/stripe  super_admin only; audit destructive=true.
+                                                      Empty secret_key/webhook_secret keeps existing.
+              - POST /api/admin/integrations/twilio  super_admin only; audit destructive=true.
+              - POST /api/admin/integrations/twilio/test super_admin/manager; audit destructive=true.
+              - POST /api/admin/integrations/reminders super_admin/manager; schedule_hours sanitized
+                                                       (positive, dedup, sorted, capped @10).
+              - POST /api/admin/integrations/reminders/run-now super_admin/manager; runs pass with force=True.
 metadata:
   created_by: "main_agent"
   version: "1.1"
@@ -832,3 +933,57 @@ agent_communication:
 
         Test suite saved at /app/backend_test.py and is idempotent (uses ts-based
         names + fresh phones each run).
+
+    - agent: "testing"
+      message: |
+        Phase D (Integrations: Stripe + Twilio + Reminders) verified end-to-end
+        via /app/backend_test.py against the live preview backend. 60/60
+        assertions PASS. No 5xx errors.
+
+        All 11 review scenarios (A–K) PASSED:
+          A) Auth+shape — no-bearer=401; super_admin=200; stripe/twilio/reminders
+             subobjects present; no plaintext field names (secret_key/auth_token/
+             webhook_secret) in the masked projection. ✅
+          B) Stripe save — 200; publishable_key='pk_test_PHASEDX';
+             secret_key_set=true, masked ends with '9999' and contains '*';
+             webhook_secret_set=true, masked ends with '2345'. Re-save with
+             secret_key omitted preserves existing (still ends '9999').
+             Support admin POST → 403. ✅
+          C) Twilio save — 200; account_sid_set=true, masked ends with 'dXXX';
+             from_number='+15555550001'. Manager admin POST → 403 with detail
+             "Requires one of roles: super_admin". ✅
+          D) Twilio test SMS (disabled) — super_admin POST /twilio/test → 200,
+             sent_real=false, info="Twilio disabled — logged to console".
+             Support admin → 403. ✅
+          E) Reminders save+sanitization — [24,72,168] round-trips;
+             [0,-5,24,24,2000,72] sanitized to [24,72,2000] (positives, dedup,
+             sorted, cap @10). Support admin POST → 403. ✅
+          F) Reminders run-now — 200 with
+             {enabled:true, scanned, sent_real, logged, skipped, schedule_hours}.
+             No 5xx. ✅
+          G) Idempotency — second run-now: scanned==first's; skipped >=
+             first's (logged+sent_real) (db.reminders dedup on
+             (group_id,user_id,offset_hour) prevents duplicate dispatch). ✅
+          H) OTP send-flow with Twilio disabled — POST /auth/send-otp returns
+             mocked=true, twilio_info contains "Twilio disabled"; mock OTP
+             '123456' verify-otp still succeeds. ✅
+          I) Encryption sanity — GET /admin/integrations raw response has ZERO
+             occurrences of "secret_key":/"auth_token":/"webhook_secret": field
+             names; no 'sk_test_PHDsecret' or 'gAAAA' (Fernet token prefix)
+             substrings leaked. Only masked variants projected. ✅
+          J) Audit destructive flags — admin.update_stripe_settings,
+             admin.update_twilio_settings, admin.test_twilio,
+             admin.update_reminder_settings, admin.run_reminders_now all
+             present with destructive=true.
+             admin.AUDIT_ACTIONS_DESTRUCTIVE (backend/admin.py lines 208–213)
+             correctly includes all five. ✅
+          K) Cleanup — stripe/twilio/reminders all disabled, all 200. ✅
+
+        Backend log notes (informational, not blockers):
+          - passlib bcrypt cosmetic warning (no functional impact).
+          - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes, ≥32 recommended).
+          - [twilio-mock] console logs observed during test_twilio and send-otp
+            (expected: Twilio disabled, so SMS logged instead of POST'd).
+          - [reminders] background loop started at server startup (interval=900s).
+
+        Marking Phase D task as working. No further backend action required.

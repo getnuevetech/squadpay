@@ -402,13 +402,29 @@ async def send_otp(body: SendOtpIn):
     user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
     if not user:
         raise HTTPException(404, "User not found")
-    # Mock OTP: always 123456, but store attempt
+    # Mock OTP code is always 123456 (so testing/CI continues to work).
+    # If Twilio is enabled & configured, also send a real SMS notification with the code.
+    code = "123456"
     await db.otp_codes.update_one(
         {"user_id": body.user_id},
-        {"$set": {"phone": body.phone, "code": "123456", "created_at": now_iso()}},
+        {"$set": {"phone": body.phone, "code": code, "created_at": now_iso()}},
         upsert=True,
     )
-    return {"ok": True, "message": "OTP sent (mock). Use 123456", "mocked": True}
+    sent_real = False
+    info = "Twilio disabled — mock OTP"
+    try:
+        from integrations import send_sms_via_twilio
+        sent_real, info = await send_sms_via_twilio(
+            db, body.phone, f"Your GroupPay verification code is {code}. Valid for 5 minutes."
+        )
+    except Exception as e:
+        logger.warning(f"[send-otp] twilio attempt failed: {e}")
+    return {
+        "ok": True,
+        "message": f"OTP sent. Use {code}" if not sent_real else "OTP SMS sent",
+        "mocked": not sent_real,
+        "twilio_info": info,
+    }
 
 
 @api_router.post("/auth/verify-otp", response_model=UserOut)
@@ -1453,6 +1469,12 @@ async def _seed_admins():
         await _activate_pending_credits()
     except Exception as e:
         print("[startup] activate credits failed:", e)
+    # Phase D: start reminder background loop
+    try:
+        from reminders import start_reminder_loop
+        start_reminder_loop(db, interval_seconds=900)
+    except Exception as e:
+        print("[startup] reminder loop failed:", e)
 
 
 @app.on_event("shutdown")

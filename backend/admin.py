@@ -205,6 +205,11 @@ AUDIT_ACTIONS_DESTRUCTIVE = {
     "admin.clear_group_discount",
     "admin.set_lead_discount",
     "admin.clear_lead_discount",
+    "admin.update_stripe_settings",
+    "admin.update_twilio_settings",
+    "admin.update_reminder_settings",
+    "admin.run_reminders_now",
+    "admin.test_twilio",
 }
 
 

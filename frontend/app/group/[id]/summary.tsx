@@ -11,12 +11,13 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Receipt, CheckCircle2, Clock, LayoutDashboard, Wallet, AlertCircle, Plus } from 'lucide-react-native';
+import { Receipt, CheckCircle2, Clock, LayoutDashboard, Wallet, AlertCircle, Plus, Pencil } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 import { StatusBadge } from '../../../src/StatusBadge';
+import { EditMetaModal } from '../../../src/EditMetaModal';
 
 export default function SummaryScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -24,6 +25,7 @@ export default function SummaryScreen() {
   const [group, setGroup] = useState<Group | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [editTaxTipVisible, setEditTaxTipVisible] = useState(false);
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -180,6 +182,21 @@ export default function SummaryScreen() {
             </View>
           )}
         </View>
+
+        {/* Lead-only quick edit row for tax/tip */}
+        {isLead && group.status === 'open' && (
+          <TouchableOpacity
+            testID="summary-edit-tax-tip"
+            style={styles.editTaxTipBtn}
+            onPress={() => setEditTaxTipVisible(true)}
+            activeOpacity={0.7}
+          >
+            <Pencil size={14} color={COLORS.primary} />
+            <Text style={styles.editTaxTipText}>
+              Edit tax (${(group.tax || 0).toFixed(2)}) & tip (${(group.tip || 0).toFixed(2)})
+            </Text>
+          </TouchableOpacity>
+        )}
 
         {/* Funding progress card */}
         <View style={styles.progressCard} testID="summary-funding-card">
@@ -399,6 +416,17 @@ export default function SummaryScreen() {
           <Button title="All settled" onPress={() => router.replace('/')} variant="secondary" testID="summary-settled-btn" />
         )}
       </View>
+
+      {userId && (
+        <EditMetaModal
+          visible={editTaxTipVisible}
+          onClose={() => setEditTaxTipVisible(false)}
+          onSaved={(g) => setGroup(g)}
+          group={group}
+          userId={userId}
+          field="tax_tip"
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -449,6 +477,21 @@ const styles = StyleSheet.create({
     borderRadius: RADIUS.pill,
   },
   pillText: { fontSize: FONT.sizes.xs, fontWeight: FONT.weights.semibold },
+  editTaxTipBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.md,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.primaryLight,
+    backgroundColor: COLORS.primaryLight,
+    marginBottom: SPACING.md,
+    alignSelf: 'flex-start',
+  },
+  editTaxTipText: { color: COLORS.primary, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold },
   progressBar: {
     height: 8,
     backgroundColor: COLORS.border,

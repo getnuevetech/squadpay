@@ -14,12 +14,13 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import QRCode from 'react-native-qrcode-svg';
 import * as Clipboard from 'expo-clipboard';
-import { CheckCircle2, Copy, Share2, UserCircle2, Crown, ArrowRight, Users, CreditCard } from 'lucide-react-native';
+import { CheckCircle2, Copy, Share2, UserCircle2, Crown, ArrowRight, Users, CreditCard, Pencil } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { api, BACKEND_URL, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 import { StatusBadge } from '../../../src/StatusBadge';
+import { EditMetaModal } from '../../../src/EditMetaModal';
 
 export default function GroupLobbyScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -27,6 +28,7 @@ export default function GroupLobbyScreen() {
   const [group, setGroup] = useState<Group | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [editTitleVisible, setEditTitleVisible] = useState(false);
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -95,7 +97,18 @@ export default function GroupLobbyScreen() {
       >
         <View style={styles.headerCard}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
-            <Text style={styles.title} testID="lobby-title">{group.title}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+              <Text style={styles.title} testID="lobby-title">{group.title}</Text>
+              {userId === group.lead_id && group.derived_status === 'contributing' && (
+                <TouchableOpacity
+                  testID="lobby-edit-title"
+                  onPress={() => setEditTitleVisible(true)}
+                  hitSlop={10}
+                >
+                  <Pencil size={16} color="rgba(255,255,255,0.7)" />
+                </TouchableOpacity>
+              )}
+            </View>
             <StatusBadge status={group.derived_status} testID="lobby-status-badge" />
           </View>
           <Text style={styles.total}>${group.total.toFixed(2)}</Text>
@@ -205,6 +218,16 @@ export default function GroupLobbyScreen() {
           />
         )}
       </View>
+      {userId && (
+        <EditMetaModal
+          visible={editTitleVisible}
+          onClose={() => setEditTitleVisible(false)}
+          onSaved={(g) => setGroup(g)}
+          group={group}
+          userId={userId}
+          field="title"
+        />
+      )}
     </SafeAreaView>
   );
 }

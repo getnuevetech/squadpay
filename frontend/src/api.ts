@@ -220,6 +220,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ user_id, items }),
     }),
+  updateGroupMeta: (
+    id: string,
+    user_id: string,
+    payload: { title?: string; tax?: number; tip?: number },
+  ) =>
+    request<Group>(`/groups/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ user_id, ...payload }),
+    }),
   deleteItem: (id: string, item_id: string, user_id: string) =>
     request<Group>(`/groups/${id}/items/${item_id}?user_id=${encodeURIComponent(user_id)}`, {
       method: 'DELETE',

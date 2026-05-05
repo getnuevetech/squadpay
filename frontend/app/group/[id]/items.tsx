@@ -231,7 +231,21 @@ export default function ItemsScreen() {
           {isLead && group.status !== 'closed' && (
             <TouchableOpacity
               testID="items-header-add-btn"
-              onPress={() => setShowAddForm(true)}
+              onPress={() => {
+                const hasContribs = (group.contributions || []).length > 0;
+                if (hasContribs) {
+                  Alert.alert(
+                    'Heads up',
+                    'Items you add now CANNOT be deleted because contributions have already started. Continue?',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Continue', onPress: () => setShowAddForm(true) },
+                    ],
+                  );
+                } else {
+                  setShowAddForm(true);
+                }
+              }}
               activeOpacity={0.85}
               style={styles.headerPlusBtn}
             >

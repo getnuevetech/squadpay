@@ -114,6 +114,14 @@ class PayIn(BaseModel):
     funder_member_id: Optional[str] = None  # required when shortfall_mode == 'member'
 
 
+class UpdateGroupMetaIn(BaseModel):
+    user_id: str  # must be the lead
+    title: Optional[str] = None
+    tax: Optional[float] = None
+    tip: Optional[float] = None
+
+
+
 class RepayIn(BaseModel):
     user_id: str
     amount: float
@@ -442,6 +450,64 @@ async def join_group(group_id: str, body: JoinGroupIn):
         members.append({"user_id": body.user_id, "role": "member", "joined_at": now_iso()})
         await db.groups.update_one({"id": group_id}, {"$set": {"members": members}})
     return await _load_group_enriched(group_id)
+
+
+
+@api_router.patch("/groups/{group_id}")
+async def update_group_meta(group_id: str, body: UpdateGroupMetaIn):
+    """Lead-only: update bill title, tax, or tip after creation.
+
+    Title can be edited until all contributions are complete (derived_status='contributed' or beyond).
+    Tax/tip can only be edited while status='open' (no merchant payment yet).
+    """
+    group = await db.groups.find_one({"id": group_id}, {"_id": 0})
+    if not group:
+        raise HTTPException(404, "Group not found")
+    if group["lead_id"] != body.user_id:
+        raise HTTPException(403, "Only the lead can edit the bill")
+
+    update_fields: dict = {}
+    enriched_now = await _recompute_group(group)
+    derived = enriched_now["derived_status"]
+
+    if body.title is not None:
+        # Allow title edit until all contributions complete
+        if derived in ("contributed", "repaying", "settled") or group.get("status") != "open":
+            raise HTTPException(400, "Title is locked once all contributions are complete.")
+        title = body.title.strip()
+        if not title:
+            raise HTTPException(400, "Title cannot be empty")
+        update_fields["title"] = title
+
+    if body.tax is not None or body.tip is not None:
+        # Tax/tip editable only while status='open'
+        if group.get("status") != "open":
+            raise HTTPException(400, "Tax/tip can no longer be edited — bill has been settled.")
+        new_tax = float(body.tax) if body.tax is not None else float(group.get("tax", 0))
+        new_tip = float(body.tip) if body.tip is not None else float(group.get("tip", 0))
+        if new_tax < 0 or new_tip < 0:
+            raise HTTPException(400, "Tax/tip must be non-negative")
+        update_fields["tax"] = new_tax
+        update_fields["tip"] = new_tip
+
+        # Recompute total_amount = subtotal (sum items) + new tax + tip
+        subtotal = sum(it["price"] * it.get("quantity", 1) for it in group.get("items", []))
+        if subtotal <= 0 and group.get("split_mode") == "fast":
+            # fast split with no items: keep original total_amount but adjust by delta
+            old_tax = float(group.get("tax", 0))
+            old_tip = float(group.get("tip", 0))
+            current_total = float(group.get("total_amount", 0))
+            new_total = current_total - old_tax - old_tip + new_tax + new_tip
+            update_fields["total_amount"] = round(max(0.0, new_total), 2)
+        else:
+            update_fields["total_amount"] = round(subtotal + new_tax + new_tip, 2)
+
+    if not update_fields:
+        return await _load_group_enriched(group_id)
+
+    await db.groups.update_one({"id": group_id}, {"$set": update_fields})
+    return await _load_group_enriched(group_id)
+
 
 
 @api_router.put("/groups/{group_id}/items")

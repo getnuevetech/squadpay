@@ -60,6 +60,8 @@ class IssuingSettingsIn(BaseModel):
     reveal_ttl_seconds: Optional[int] = None
     webhook_secret: Optional[str] = None  # Phase F2.1 — Stripe Issuing webhook signing
     require_lead_kyc: Optional[bool] = None  # Phase G3 — per-lead cardholder mode
+    apple_pay_enrolled: Optional[bool] = None  # Phase G4 — push-provisioning gating
+    google_pay_enrolled: Optional[bool] = None  # Phase G4 — push-provisioning gating
 
 
 class FeatureTogglesIn(BaseModel):

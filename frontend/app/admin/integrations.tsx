@@ -63,6 +63,9 @@ export default function AdminIntegrations() {
   const [issWebhookSecret, setIssWebhookSecret] = useState('');
   // Phase G3 — per-lead cardholder mode
   const [issRequireLeadKyc, setIssRequireLeadKyc] = useState(false);
+  // Phase G4 — push provisioning enrollment toggles
+  const [issAppleEnrolled, setIssAppleEnrolled] = useState(false);
+  const [issGoogleEnrolled, setIssGoogleEnrolled] = useState(false);
 
   // Feature toggles
   const [featCredits, setFeatCredits] = useState(true);
@@ -105,6 +108,8 @@ export default function AdminIntegrations() {
         setIssRevealTtl(String((iss as any).reveal_ttl_seconds || 60));
         setIssWebhookSecret(((iss as any).webhook_secret_masked) || '');
         setIssRequireLeadKyc(!!(iss as any).require_lead_kyc);
+        setIssAppleEnrolled(!!(iss as any).apple_pay_enrolled);
+        setIssGoogleEnrolled(!!(iss as any).google_pay_enrolled);
       } catch {}
       try {
         const f = await adminApi.getFeatures();
@@ -243,6 +248,8 @@ export default function AdminIntegrations() {
         reveal_ttl_seconds: parseInt(issRevealTtl, 10) || 60,
         webhook_secret: issWebhookSecret.startsWith('whsec_') ? issWebhookSecret : undefined,
         require_lead_kyc: issRequireLeadKyc,
+        apple_pay_enrolled: issAppleEnrolled,
+        google_pay_enrolled: issGoogleEnrolled,
       });
       await load();
       Alert.alert('Saved', `Issuing ${issEnabled ? 'enabled' : 'disabled'} · disable mode: ${issDisableMode}`);
@@ -402,6 +409,45 @@ export default function AdminIntegrations() {
             trackColor={{ false: COLORS.disabledBg, true: '#0EA5E9' }}
             thumbColor="#fff"
             testID="admin-issuing-kyc-toggle"
+          />
+        </View>
+
+        {/* Phase G4 — Push provisioning enrollment toggles */}
+        <View style={styles.divider} />
+        <View style={styles.toggleRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.label}>Apple Pay In-App Provisioning enrolled</Text>
+            <Text style={styles.helper}>
+              Enable only after Apple's PNO (Payment Network Operator) onboarding is approved.
+              When ON — leads see the "Add to Apple Wallet" button on the card screen and the
+              backend forwards SDK requests to Stripe. When OFF — the endpoint returns 409 with
+              a clear "not enrolled" message.
+            </Text>
+          </View>
+          <Switch
+            value={issAppleEnrolled}
+            onValueChange={setIssAppleEnrolled}
+            trackColor={{ false: COLORS.disabledBg, true: '#000' }}
+            thumbColor="#fff"
+            testID="admin-issuing-apple-toggle"
+          />
+        </View>
+        <View style={styles.toggleRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.label}>Google Pay PSP enrolled</Text>
+            <Text style={styles.helper}>
+              Enable only after Google Pay PSP (Payment Service Provider) onboarding is approved.
+              When ON — leads see the "Add to Google Pay" button on Android and the backend
+              forwards SDK requests to Stripe. When OFF — the endpoint returns 409 with a clear
+              "not enrolled" message.
+            </Text>
+          </View>
+          <Switch
+            value={issGoogleEnrolled}
+            onValueChange={setIssGoogleEnrolled}
+            trackColor={{ false: COLORS.disabledBg, true: '#4285F4' }}
+            thumbColor="#fff"
+            testID="admin-issuing-google-toggle"
           />
         </View>
 

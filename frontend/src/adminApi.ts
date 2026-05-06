@@ -191,8 +191,8 @@ export const adminApi = {
 
   // ---- Phase F1: Issuing ----
   getIssuingSettings: () =>
-    request<{ enabled: boolean; cardholder_id: string | null; cardholder_name: string; card_disable_mode: 'auto' | 'manual'; require_otp_for_card_reveal?: boolean; reveal_ttl_seconds?: number; require_lead_kyc?: boolean; updated_at?: string }>(`/integrations/issuing`),
-  setIssuingSettings: (body: { enabled?: boolean; cardholder_name?: string; card_disable_mode?: 'auto' | 'manual'; require_otp_for_card_reveal?: boolean; reveal_ttl_seconds?: number; require_lead_kyc?: boolean; webhook_secret?: string }) =>
+    request<{ enabled: boolean; cardholder_id: string | null; cardholder_name: string; card_disable_mode: 'auto' | 'manual'; require_otp_for_card_reveal?: boolean; reveal_ttl_seconds?: number; require_lead_kyc?: boolean; apple_pay_enrolled?: boolean; google_pay_enrolled?: boolean; updated_at?: string }>(`/integrations/issuing`),
+  setIssuingSettings: (body: { enabled?: boolean; cardholder_name?: string; card_disable_mode?: 'auto' | 'manual'; require_otp_for_card_reveal?: boolean; reveal_ttl_seconds?: number; require_lead_kyc?: boolean; apple_pay_enrolled?: boolean; google_pay_enrolled?: boolean; webhook_secret?: string }) =>
     request<any>(`/integrations/issuing`, { method: 'POST', body: JSON.stringify(body) }),
   disableGroupCard: (groupId: string) =>
     request<{ ok: boolean; virtual_card: any }>(`/groups/${groupId}/disable-card`, { method: 'POST' }),

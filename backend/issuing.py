@@ -56,6 +56,9 @@ async def get_issuing_settings(db) -> Dict[str, Any]:
     issuing.setdefault("reveal_ttl_seconds", 60)
     # Phase G3 — per-lead cardholder mode
     issuing.setdefault("require_lead_kyc", False)
+    # Phase G4 — push provisioning enrollment flags (drop-in)
+    issuing.setdefault("apple_pay_enrolled", False)
+    issuing.setdefault("google_pay_enrolled", False)
     return issuing
 
 

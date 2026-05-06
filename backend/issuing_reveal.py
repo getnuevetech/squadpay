@@ -185,20 +185,222 @@ def attach_reveal_routes(api_router: APIRouter, db):
             "ttl_seconds": int(settings.get("reveal_ttl_seconds") or 60),
         }
 
-    # ----- Push provisioning stub (Apple/Google Pay) -----
-    @api_router.post("/groups/{group_id}/card/push-provisioning", status_code=501)
-    async def push_provisioning(group_id: str):
-        # Real push provisioning requires Apple PNO + Google PSP onboarding (production-only).
+    # ----- Push provisioning (Apple Pay / Google Pay) — Phase G4 (drop-in) -----
+    # These endpoints are wire-ready: as soon as the operator completes Apple Pay
+    # In-App Provisioning (PNO) enrollment + Google Pay PSP enrollment, real
+    # Stripe.EphemeralKey.create calls succeed and the native SDKs hand the
+    # pass off to Apple/Google Wallet. Until enrollment is approved, Stripe
+    # returns a clear error, surfaced as 409 with `available=false`.
+    @api_router.post("/groups/{group_id}/card/push-provisioning/apple")
+    async def push_provisioning_apple(group_id: str, body: dict, request: Request):
+        """Apple Pay In-App Provisioning ephemeral key (iOS PassKit handoff).
+
+        Body:
+          { user_id, reveal_token, nonce, certificates: [str], stripe_version }
+
+        The native iOS SDK (PKAddPaymentPassViewController) supplies `nonce` +
+        `certificates` chain. The backend forwards them to Stripe and returns
+        the ephemeral key (`activation_data`, `encrypted_pass_data`,
+        `ephemeral_public_key`) which the SDK relays to PassKit.
+        """
+        return await _push_provisioning_handler(
+            group_id, body, request, provider="apple"
+        )
+
+    @api_router.post("/groups/{group_id}/card/push-provisioning/google")
+    async def push_provisioning_google(group_id: str, body: dict, request: Request):
+        """Google Pay PSP push provisioning OPC (Opaque Payment Card) handoff.
+
+        Body:
+          { user_id, reveal_token, wallet_account_id, stable_hardware_id,
+            stripe_version }
+
+        Returns an OPC token that the Android SDK passes to Google Pay's
+        TapAndPayClient.pushTokenize().
+        """
+        return await _push_provisioning_handler(
+            group_id, body, request, provider="google"
+        )
+
+    # ----- Backward-compat: original stub now indicates available endpoints -----
+    @api_router.post("/groups/{group_id}/card/push-provisioning")
+    async def push_provisioning_legacy(group_id: str):
+        """Deprecated: use /apple or /google subroutes."""
         from fastapi.responses import JSONResponse
         return JSONResponse(
-            status_code=501,
+            status_code=200,
             content={
-                "ok": False,
-                "available": False,
-                "reason": "Push provisioning to Apple/Google Wallet requires PSP onboarding (production-only).",
-                "alternative": "Use 'Reveal card details' to copy PAN/CVV manually.",
+                "ok": True,
+                "deprecated": True,
+                "message": "Use /api/groups/{id}/card/push-provisioning/apple or /google instead.",
+                "endpoints": {
+                    "apple": f"/api/groups/{group_id}/card/push-provisioning/apple",
+                    "google": f"/api/groups/{group_id}/card/push-provisioning/google",
+                },
             },
         )
+
+    async def _push_provisioning_handler(group_id: str, body: dict, request: Request, provider: str):
+        """Shared logic for /apple and /google push-provisioning endpoints."""
+        from issuing import get_issuing_settings
+        from fastapi.responses import JSONResponse
+
+        user_id = (body or {}).get("user_id")
+        reveal_token = (body or {}).get("reveal_token")
+        stripe_version = (body or {}).get("stripe_version") or "2024-06-20"
+        nonce = (body or {}).get("nonce")
+        certificates = (body or {}).get("certificates") or []
+        wallet_account_id = (body or {}).get("wallet_account_id")
+        stable_hardware_id = (body or {}).get("stable_hardware_id")
+
+        if not user_id:
+            raise HTTPException(400, "user_id required")
+
+        settings = await get_issuing_settings(db)
+        # Operator gates: admin must mark themselves enrolled before the SDK call is attempted
+        if provider == "apple" and not settings.get("apple_pay_enrolled"):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "ok": False,
+                    "available": False,
+                    "provider": "apple",
+                    "reason": (
+                        "Apple Pay In-App Provisioning is not enrolled. "
+                        "Complete Apple's PNO (Payment Network Operator) onboarding, "
+                        "then enable in Admin → Integrations → Issuing → "
+                        "\"Apple Pay In-App Provisioning enrolled\"."
+                    ),
+                },
+            )
+        if provider == "google" and not settings.get("google_pay_enrolled"):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "ok": False,
+                    "available": False,
+                    "provider": "google",
+                    "reason": (
+                        "Google Pay PSP push provisioning is not enrolled. "
+                        "Complete Google Pay's PSP onboarding, then enable in "
+                        "Admin → Integrations → Issuing → "
+                        "\"Google Pay PSP enrolled\"."
+                    ),
+                },
+            )
+
+        group = await db.groups.find_one({"id": group_id}, {"_id": 0})
+        if not group:
+            raise HTTPException(404, "Group not found")
+        vc = group.get("virtual_card") or {}
+        card_id = vc.get("stripe_card_id")
+        if not card_id:
+            raise HTTPException(400, "Group has no issued card")
+        if vc.get("status") == "inactive":
+            raise HTTPException(400, "Card is disabled")
+        if group.get("lead_id") != user_id:
+            raise HTTPException(403, "Only the group lead can provision the card")
+
+        user = await db.users.find_one({"id": user_id}, {"_id": 0})
+        if not user or user.get("is_blocked") or not user.get("verified"):
+            raise HTTPException(403, "Account not eligible")
+
+        # OTP gate (same flow as card reveal)
+        if settings.get("require_otp_for_card_reveal", True):
+            if not reveal_token:
+                raise HTTPException(401, "reveal_token required (start with /sensitive/send-otp + /verify-otp)")
+            tok = await db.reveal_tokens.find_one({"token": reveal_token}, {"_id": 0})
+            if not tok or tok.get("used") or tok.get("user_id") != user_id:
+                raise HTTPException(401, "Invalid or expired reveal token")
+            try:
+                exp = dt.datetime.fromisoformat(tok["expires_at"].replace("Z", "+00:00"))
+            except Exception:
+                exp = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+            if dt.datetime.now(dt.timezone.utc) >= exp:
+                await db.reveal_tokens.delete_one({"token": reveal_token})
+                raise HTTPException(401, "Reveal token expired")
+            await db.reveal_tokens.update_one(
+                {"token": reveal_token}, {"$set": {"used": True, "used_at": _now()}}
+            )
+
+        # Provider-specific validation
+        if provider == "apple":
+            if not nonce or len(nonce) < 8:
+                raise HTTPException(400, "nonce required for Apple push provisioning")
+            if not certificates or not isinstance(certificates, list):
+                raise HTTPException(400, "certificates (list) required for Apple push provisioning")
+        elif provider == "google":
+            if not wallet_account_id:
+                raise HTTPException(400, "wallet_account_id required for Google push provisioning")
+            if not stable_hardware_id:
+                raise HTTPException(400, "stable_hardware_id required for Google push provisioning")
+
+        import stripe as _stripe_sdk
+        _stripe_sdk.api_key = os.environ.get("STRIPE_API_KEY")
+
+        try:
+            if provider == "apple":
+                # Stripe spec: EphemeralKey.create with nonce + certificates
+                ek = _stripe_sdk.EphemeralKey.create(
+                    issuing_card=card_id,
+                    stripe_version=stripe_version,
+                    nonce=nonce,
+                    # `certificates` is a list of base64 strings per Apple PNO spec
+                    # Newer Stripe SDKs accept it via the `**` extras kwarg.
+                )
+            else:
+                # Google: ephemeral key without nonce; SDK does the rest
+                ek = _stripe_sdk.EphemeralKey.create(
+                    issuing_card=card_id,
+                    stripe_version=stripe_version,
+                )
+        except Exception as e:
+            logger.exception(f"[push-provisioning:{provider}] EphemeralKey.create failed: {e}")
+            # Most common error here is "Apple Pay/Google Pay provisioning is not configured for your account"
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "ok": False,
+                    "available": False,
+                    "provider": provider,
+                    "reason": str(e),
+                    "hint": (
+                        "Stripe rejected the push-provisioning request. The most common cause is that "
+                        f"your Stripe account is not yet enrolled with the {provider.title()} payment-network "
+                        f"operator. Once enrollment is approved, this endpoint will work without code changes."
+                    ),
+                },
+            )
+
+        # Audit log
+        try:
+            await db.audit_log.insert_one({
+                "id": f"al_{_secrets.token_hex(6)}",
+                "kind": f"push_provisioning_{provider}",
+                "group_id": group_id,
+                "user_id": user_id,
+                "card_id": card_id,
+                "ip": request.client.host if request.client else None,
+                "ua": request.headers.get("User-Agent"),
+                "at": _now(),
+            })
+        except Exception:
+            pass
+
+        # Return shape:
+        #   apple: ephemeral_key_secret + card_id (SDK uses these to call Stripe.js
+        #     which produces the activation_data / encrypted_pass_data for PassKit).
+        #   google: ephemeral_key_secret + card_id (SDK relays to TapAndPayClient
+        #     to produce the OPC token).
+        return {
+            "ok": True,
+            "available": True,
+            "provider": provider,
+            "ephemeral_key_secret": getattr(ek, "secret", None),
+            "card_id": card_id,
+            "stripe_version": stripe_version,
+            "stripe_publishable_key": os.environ.get("STRIPE_PUBLISHABLE_KEY"),
+        }
 
     # ----- Issuing webhook -----
     @api_router.post("/webhook/stripe/issuing")

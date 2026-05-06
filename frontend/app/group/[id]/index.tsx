@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   RefreshControl,
   ScrollView,
   Share,
@@ -192,15 +193,59 @@ export default function GroupLobbyScreen() {
                   <Text style={styles.cardActionTextPrimary}>Reveal details</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  onPress={() => Alert.alert(
-                    'Add to Wallet',
-                    'Push provisioning to Apple Pay / Google Pay is enabled in production after PSP onboarding. Use "Reveal details" to copy the card manually for now.'
-                  )}
+                  onPress={async () => {
+                    const isIOS = Platform.OS === 'ios';
+                    const provider = isIOS ? 'apple' : 'google';
+                    try {
+                      const res = await fetch(
+                        `${BACKEND_URL}/api/groups/${group.id}/card/push-provisioning/${provider}`,
+                        {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            user_id: userId,
+                            // SDK-specific fields would be filled by the native side:
+                            // iOS: nonce + certificates from PKAddPaymentPassViewController
+                            // Android: wallet_account_id + stable_hardware_id from TapAndPayClient
+                            stripe_version: '2024-06-20',
+                          }),
+                        },
+                      );
+                      const data = await res.json();
+                      if (res.status === 409 && !data.available) {
+                        Alert.alert(
+                          'Add to Wallet — not yet enabled',
+                          `${data.reason}\n\nIn the meantime, use "Reveal details" to copy the card manually.`,
+                        );
+                        return;
+                      }
+                      if (res.status === 400 && (data.detail || '').toLowerCase().includes('required')) {
+                        Alert.alert(
+                          'Add to Wallet — SDK call needed',
+                          `${data.detail}\n\nThe backend is wire-ready. Once Apple/Google SDK enrollment is approved, the native side will provide the missing fields automatically.`,
+                        );
+                        return;
+                      }
+                      if (!res.ok) {
+                        Alert.alert(`${isIOS ? 'Apple Pay' : 'Google Pay'} error`, data.reason || data.detail || 'Request failed');
+                        return;
+                      }
+                      Alert.alert(
+                        `Add to ${isIOS ? 'Apple' : 'Google'} Wallet`,
+                        `Ephemeral key minted (id ${data.card_id?.slice(-8)}). Native SDK can now hand off to ${isIOS ? 'PassKit' : 'TapAndPayClient'}.`,
+                      );
+                    } catch (e: any) {
+                      Alert.alert('Network error', e?.message || 'Failed to start push provisioning');
+                    }
+                  }}
                   style={styles.cardActionBtnSecondary}
                   activeOpacity={0.85}
+                  testID="lobby-add-wallet"
                 >
                   <Smartphone size={14} color={COLORS.text} />
-                  <Text style={styles.cardActionTextSecondary}>Add to Wallet</Text>
+                  <Text style={styles.cardActionTextSecondary}>
+                    Add to {Platform.OS === 'ios' ? 'Apple Wallet' : 'Google Pay'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             )}

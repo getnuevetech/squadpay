@@ -42,6 +42,8 @@ async def get_issuing_settings(db) -> Dict[str, Any]:
       "cardholder_id": str | None,
       "cardholder_name": "KWIKPAY",
       "card_disable_mode": "auto" | "manual",
+      "require_otp_for_card_reveal": bool,
+      "reveal_ttl_seconds": int,
     }
     """
     rec = await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0}) or {}
@@ -50,6 +52,8 @@ async def get_issuing_settings(db) -> Dict[str, Any]:
     issuing.setdefault("cardholder_id", None)
     issuing.setdefault("cardholder_name", DEFAULT_BUSINESS_NAME)
     issuing.setdefault("card_disable_mode", "auto")  # auto | manual
+    issuing.setdefault("require_otp_for_card_reveal", True)
+    issuing.setdefault("reveal_ttl_seconds", 60)
     return issuing
 
 

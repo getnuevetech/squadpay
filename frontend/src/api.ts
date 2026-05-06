@@ -305,6 +305,23 @@ export const api = {
     request<{ session_id: string; status: string; payment_status: string; amount_total: number | null; currency: string | null; applied: boolean; group_id: string }>(
       `/contribute/status/${encodeURIComponent(sessionId)}`,
     ),
+
+  // ---- Phase F2: Card reveal ----
+  sendSensitiveOtp: (user_id: string) =>
+    request<{ ok: boolean; mocked: boolean; message: string }>(`/auth/sensitive/send-otp`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id }),
+    }),
+  verifySensitiveOtp: (user_id: string, code: string, purpose: string = 'card_reveal') =>
+    request<{ reveal_token: string; expires_in: number }>(`/auth/sensitive/verify-otp`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id, code, purpose }),
+    }),
+  getCardEphemeralKey: (groupId: string, body: { user_id: string; reveal_token: string; nonce: string; stripe_version: string }) =>
+    request<{ ephemeral_key_secret: string; card_id: string; nonce: string; stripe_publishable_key: string; ttl_seconds: number }>(
+      `/groups/${groupId}/card/ephemeral-key`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
   repay: (id: string, user_id: string, amount: number) =>
     request<Group>(`/groups/${id}/repay`, {
       method: 'POST',

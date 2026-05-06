@@ -43,6 +43,8 @@ class IssuingSettingsIn(BaseModel):
     enabled: Optional[bool] = None
     cardholder_name: Optional[str] = None
     card_disable_mode: Optional[Literal["auto", "manual"]] = None
+    require_otp_for_card_reveal: Optional[bool] = None
+    reveal_ttl_seconds: Optional[int] = None
 
 
 class TestSmsIn(BaseModel):

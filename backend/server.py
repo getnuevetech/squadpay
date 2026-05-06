@@ -1644,6 +1644,13 @@ try:
 except Exception as _e:
     print("[startup] payment routes attach failed:", _e)
 
+# Phase F2: Stripe Issuing PAN/CVV reveal + spend webhook
+try:
+    from issuing_reveal import attach_reveal_routes  # noqa: E402
+    attach_reveal_routes(api_router, db)
+except Exception as _e:
+    print("[startup] reveal routes attach failed:", _e)
+
 app.include_router(api_router)
 
 app.add_middleware(

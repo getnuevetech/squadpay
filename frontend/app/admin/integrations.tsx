@@ -40,11 +40,13 @@ export default function AdminIntegrations() {
   const [rmSms, setRmSms] = useState(true);
   const [runResult, setRunResult] = useState<string | null>(null);
 
-  // Issuing form (Phase F1)
+  // Issuing form (Phase F1+F2)
   const [issEnabled, setIssEnabled] = useState(true);
   const [issName, setIssName] = useState('KWIKPAY');
   const [issDisableMode, setIssDisableMode] = useState<'auto' | 'manual'>('auto');
   const [issCardholderId, setIssCardholderId] = useState<string | null>(null);
+  const [issRequireOtp, setIssRequireOtp] = useState(true);
+  const [issRevealTtl, setIssRevealTtl] = useState('60');
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -71,6 +73,8 @@ export default function AdminIntegrations() {
         setIssName(iss.cardholder_name || 'KWIKPAY');
         setIssDisableMode(iss.card_disable_mode || 'auto');
         setIssCardholderId(iss.cardholder_id || null);
+        setIssRequireOtp((iss as any).require_otp_for_card_reveal !== false);
+        setIssRevealTtl(String((iss as any).reveal_ttl_seconds || 60));
       } catch {}
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Failed to load');
@@ -153,6 +157,8 @@ export default function AdminIntegrations() {
         enabled: issEnabled,
         cardholder_name: issName.trim() || 'KWIKPAY',
         card_disable_mode: issDisableMode,
+        require_otp_for_card_reveal: issRequireOtp,
+        reveal_ttl_seconds: parseInt(issRevealTtl, 10) || 60,
       });
       await load();
       Alert.alert('Saved', `Issuing ${issEnabled ? 'enabled' : 'disabled'} · disable mode: ${issDisableMode}`);
@@ -240,6 +246,25 @@ export default function AdminIntegrations() {
             <Text style={[styles.toggleText, issDisableMode === 'manual' && { color: '#fff' }]}>Manual · admin disables only</Text>
           </TouchableOpacity>
         </View>
+
+        <View style={styles.toggleRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.label}>Require OTP before card reveal</Text>
+            <Text style={styles.helper}>Lead must enter a 6-digit SMS code before PAN/CVV is shown.</Text>
+          </View>
+          <Switch value={issRequireOtp} onValueChange={setIssRequireOtp} trackColor={{ false: COLORS.disabledBg, true: '#0EA5E9' }} thumbColor="#fff" testID="admin-issuing-otp-toggle" />
+        </View>
+
+        <Text style={styles.label}>Auto-hide PAN after (seconds)</Text>
+        <TextInput
+          style={styles.input}
+          value={issRevealTtl}
+          onChangeText={(t) => setIssRevealTtl(t.replace(/[^0-9]/g, '').slice(0, 4))}
+          keyboardType="number-pad"
+          placeholder="60"
+          placeholderTextColor={COLORS.disabledText}
+          testID="admin-issuing-ttl"
+        />
 
         {issCardholderId ? (
           <Text style={styles.metaSmall}>Cardholder: {issCardholderId}</Text>

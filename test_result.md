@@ -1047,6 +1047,116 @@ frontend:
             fresh phones each run). All Phase F1 acceptance criteria from review request
             PASS. No backend action required.
 
+  - task: "Phase F2 — Stripe Issuing PAN/CVV reveal (OTP-gated) + spend webhook + admin issuing settings"
+    implemented: true
+    working: false
+    file: "backend/issuing_reveal.py, backend/issuing.py, backend/admin_integrations.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: false
+          agent: "testing"
+          comment: |
+            Phase F2 backend verified end-to-end via /app/backend_test_f2.py against the
+            live preview backend (https://joint-pay-1.preview.emergentagent.com/api).
+            47/49 assertions PASS. ONE real bug in push-provisioning route (E.1/E.2).
+
+            ✅ ALL OTP / REVEAL / WEBHOOK / SETTINGS PATHS PASS (45/45):
+
+            A) Sensitive OTP send + verify
+              A.1 missing user → 404 ✅
+              A.2 unverified user → 403 ✅
+              A.3 verified lead → 200 with {ok:true, mocked:true, message:'Reveal code sent. Use 123456'} ✅
+              A.4–A.5 body shape ✅
+              A.6 wrong code → 400 ('Invalid code') ✅
+              A.7 correct code → 200 with reveal_token + expires_in=300 ✅
+              A.8 reveal_token is a long opaque string ✅
+              A.9 expires_in == 300 ✅
+              A.10 second verify with same code → 400 (single-use enforced) ✅
+
+            C) /groups/{id}/card/ephemeral-key — every auth-chain branch verified:
+              C.1 unknown group_id → 404 'Group not found' ✅
+              C.2 group has no virtual_card → 400 'Group has no issued card' ✅
+              C.3 non-lead user_id → 403 'Only the group lead can reveal card details' ✅
+              C.4 invalid reveal_token → 401 'Invalid or expired reveal token' ✅
+              C.5 nonce too short → 400 ✅
+              C.6 stripe_version missing → 400 ✅
+              C.7 valid auth + fake nonce → 502 (auth layer passed, Stripe rejects fake nonce
+                  with 'No such ephemeralkeynonce') ✅
+              C.8 reuse of burned reveal_token → 401 (single-use enforced) ✅
+              C.9 toggle require_otp_for_card_reveal=false via admin → ephemeral-key with
+                  irrelevant token + valid user/version + fake nonce → 502 (auth layer passed
+                  WITHOUT a valid reveal_token, confirming the toggle works end-to-end) ✅
+              C.10–C.12 admin disable-card → status=inactive → ephemeral-key returns
+                       400 'Card is disabled' ✅
+
+            D) /webhook/stripe/issuing — auth + transaction events:
+              D.1 fresh card auto-issued for webhook test ✅
+              D.2 issuing_authorization.created → 200 {ok:true, type:'issuing_authorization.created'} ✅
+              D.3 reply shape ok=true, type matches ✅
+              D.4 spent unchanged after authorization (auth ≠ settled) ✅
+              D.5 issuing_transaction.created (-$2 / -200 cents) → 200 ✅
+              D.6 group.virtual_card.transactions[] now has 1 row with merchant info ✅
+              D.7 spent bumped by 2.00 ✅
+              D.8 auto-disable triggered (card_disable_mode='auto', spent 2.0 ≥ cap 1.0)
+                  — virtual_card.status becomes 'inactive' on the next /groups/{id} GET ✅
+              D.9 webhook with unknown card_id → 200 (silent no-op, no crash) ✅
+              Logs to db.issuing_events confirmed (insertion happens regardless of card
+              match for authorization events).
+
+            F) Admin issuing settings round-trip + new F2 fields:
+              F.1 GET /admin/integrations/issuing 200 ✅
+              F.2 require_otp_for_card_reveal default True ✅
+              F.3 reveal_ttl_seconds default 60 ✅
+              F.4 POST {require_otp:false, ttl:90} 200 ✅
+              F.5–F.6 round-trip persisted ✅
+              F.7–F.8 reset to defaults ✅
+
+            G) Phase F1 regression (still passes):
+              G.1 contribute Path B (no credits) → 200 with checkout.stripe.com URL ✅
+              G.2 session_id starts cs_test_ ✅
+              G.3 GET /contribute/status 200 (unpaid) ✅
+              G.4 status=open + payment_status=unpaid + applied=false ✅
+              G.5 Path A (credits ≥ share) → credit_only=true ✅
+
+            Setup confirmed end-to-end:
+              - Granted credits → 3 credit-only contributions → group fully funded → real
+                Stripe Issuing card auto-issued under cardholder
+                ich_1TTtU7Juc7vKWKrLBERS0kCC. Latest issued card:
+                ic_1TTupKJuc7vKWKrLZToGFP9Q (Visa, last4 0088), and a second card for the
+                webhook test: ic_1TTupRJuc7vKWKrLTIs487oT.
+
+            ❌ FAILING (2) — same root cause:
+              E.1 POST /groups/{id}/card/push-provisioning expected status=501.
+                  Actual status=200 with body=[{"ok":false,"available":false,"reason":"...",
+                  "alternative":"..."},501] — i.e. a JSON ARRAY containing the dict and the
+                  number 501.
+              E.2 Body shape check fails because the response is a list, not a dict.
+
+            ROOT CAUSE: /app/backend/issuing_reveal.py lines 188–196:
+                @api_router.post("/groups/{group_id}/card/push-provisioning")
+                async def push_provisioning(group_id: str):
+                    return {
+                        "ok": False, "available": False,
+                        "reason": "...",
+                        "alternative": "...",
+                    }, 501
+              FastAPI does NOT interpret `(dict, status_code)` tuples like Flask does.
+              It serializes the tuple as a JSON array and returns HTTP 200. To return a
+              real 501 with a JSON body, use either:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(status_code=501, content={...})
+              OR set the status code on the route decorator:
+                @api_router.post("/groups/{group_id}/card/push-provisioning",
+                                 status_code=501)
+                async def push_provisioning(group_id: str):
+                    return {...}  # plain dict, no tuple
+
+            All other Phase F2 features behave per spec. Marking task working=false ONLY
+            because the push-provisioning route returns the wrong HTTP status; the rest
+            of the surface area is solid. Quick fix expected.
+
 metadata:
   created_by: "main_agent"
   version: "1.1"
@@ -1054,12 +1164,88 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus: []
+  current_focus:
+    - "Phase F2 — Stripe Issuing PAN/CVV reveal (OTP-gated) + spend webhook + admin issuing settings"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
+    - agent: "main"
+      message: |
+        PHASE F2 IMPLEMENTED — please test backend only. Phase F1 must remain working.
+
+        New endpoints:
+        1) POST /api/auth/sensitive/send-otp { user_id }
+           - Verified user only. Returns { ok, mocked, message }. Mock OTP="123456".
+        2) POST /api/auth/sensitive/verify-otp { user_id, code, purpose? }
+           - Wrong code → 400. Correct → { reveal_token, expires_in } (single-use, 5-min).
+        3) POST /api/groups/{group_id}/card/ephemeral-key { user_id, reveal_token, nonce, stripe_version }
+           - Auth chain: group exists + has card + status≠inactive + body.user_id == lead_id +
+             user verified + (if require_otp_for_card_reveal) reveal_token valid + token burned.
+           - With FAKE nonce, expect 502 from Stripe (auth layer passed). With non-lead user → 403.
+             Without burning OTP → 401. Toggle off OTP requirement via admin → no token needed.
+        4) POST /api/webhook/stripe/issuing — accepts JSON {type, data.object}; for
+             type="issuing_transaction.created", appends to group.virtual_card.transactions and
+             bumps spent; if disable_mode=auto and spent>=cap → card auto-disabled.
+        5) POST /api/groups/{group_id}/card/push-provisioning — returns 501 (stub).
+        6) GET/POST /api/admin/integrations/issuing — new fields require_otp_for_card_reveal (bool,
+             default true), reveal_ttl_seconds (int, default 60). Round-trip persists.
+
+        Phase F1 regression: /api/groups/{id}/contribute (Path A+B), /contribute/status,
+        /api/admin/groups/{id}/disable-card, GET/POST /api/admin/integrations/issuing.
+
+        Stripe test key already configured (sk_test_…). Pub key STRIPE_PUBLISHABLE_KEY too.
+        Cardholder ich_1TTtU7Juc7vKWKrLBERS0kCC active.
+
+        Frontend (React Native) is OUT OF SCOPE for this run.
+
+    - agent: "testing"
+      message: |
+        Phase F2 backend verification complete — 47/49 PASS via /app/backend_test_f2.py.
+
+        ✅ FULLY VERIFIED (45/45 functional + 2/2 regression):
+          A) Sensitive OTP send/verify — single-use, 5-min token, mock 123456, all error
+             branches correct (404 missing, 403 unverified, 400 wrong code, 400 reuse).
+          C) Ephemeral-key auth chain — every rejection path verified (404 unknown group,
+             400 no card, 400 inactive card, 403 non-lead, 401 invalid/burned token,
+             400 short nonce, 400 missing stripe_version). Happy auth + fake nonce returns
+             502 (Stripe rejects fake nonce — confirms auth layer passed). OTP toggle off
+             also confirmed (admin set require_otp_for_card_reveal=false → call without
+             reveal_token reaches Stripe, gets 502 fake-nonce → restored to true).
+          D) Issuing webhook — both event types work; transaction.created updates
+             virtual_card.transactions[] and bumps spent; auto-disable triggers when
+             spent ≥ spend_cap with card_disable_mode=auto. Authorization-only does NOT
+             mutate spent. Unknown card_id → silent 200.
+          F) Admin issuing settings — defaults require_otp_for_card_reveal=true,
+             reveal_ttl_seconds=60; round-trip with {false, 90} persists; reset works.
+          G) Phase F1 regression — contribute Path A (credit_only=true), Path B
+             (cs_test_ Stripe URL), /contribute/status, /admin/groups/{id}/disable-card,
+             /admin/integrations/issuing all still pass.
+
+        Real Stripe integration confirmed via backend logs:
+          - Cards issued under cardholder ich_1TTtU7Juc7vKWKrLBERS0kCC.
+          - issuing.Card.create + Card.modify status=inactive + checkout.Session.create +
+            checkout.Session.retrieve + EphemeralKey.create all called against the live
+            sk_test_ Stripe API.
+
+        ❌ ONE BUG — push-provisioning route returns wrong HTTP status:
+          POST /api/groups/{id}/card/push-provisioning returns HTTP 200 with body
+            [{"ok":false,"available":false,"reason":"...","alternative":"..."}, 501]
+          Expected HTTP 501 with the dict alone. Root cause:
+          /app/backend/issuing_reveal.py lines 188–196 returns `(dict, 501)` — a Python
+          tuple. FastAPI does NOT interpret tuple-returns the way Flask does; it
+          serializes the tuple as a 2-element JSON array and keeps HTTP 200. Fix:
+              from fastapi.responses import JSONResponse
+              return JSONResponse(status_code=501, content={...})
+          OR use @api_router.post(..., status_code=501) and return the plain dict.
+
+        ACTION ITEMS FOR MAIN AGENT:
+          1. Fix push-provisioning to return HTTP 501 (use JSONResponse or status_code=501
+             on the decorator). 1-line change.
+          2. Once fixed, re-test with /app/backend_test_f2.py — only E.1/E.2 will need to
+             flip to PASS; everything else is solid. After that, summarise & finalize F2.
+
     - agent: "testing"
       message: |
         Phase F1 FRONTEND verification — partial UI walkthrough completed within budget.

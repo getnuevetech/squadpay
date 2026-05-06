@@ -14,13 +14,14 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import QRCode from 'react-native-qrcode-svg';
 import * as Clipboard from 'expo-clipboard';
-import { CheckCircle2, Copy, Share2, UserCircle2, Crown, ArrowRight, Users, CreditCard, Pencil } from 'lucide-react-native';
+import { CheckCircle2, Copy, Share2, UserCircle2, Crown, ArrowRight, Users, CreditCard, Pencil, Eye, Receipt, Smartphone } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { api, BACKEND_URL, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 import { StatusBadge } from '../../../src/StatusBadge';
 import { EditMetaModal } from '../../../src/EditMetaModal';
+import { RevealCardModal } from '../../../src/RevealCardModal';
 
 export default function GroupLobbyScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -29,6 +30,7 @@ export default function GroupLobbyScreen() {
   const [userId, setUserId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [editTitleVisible, setEditTitleVisible] = useState(false);
+  const [revealOpen, setRevealOpen] = useState(false);
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -176,9 +178,62 @@ export default function GroupLobbyScreen() {
             <Text style={styles.cardHint}>
               {group.virtual_card.status === 'inactive'
                 ? 'Card disabled. Transactions visible in admin history.'
-                : 'Real Stripe-issued virtual card · PAN/CVV reveal coming soon (Phase F2).'}
+                : 'Real Stripe-issued virtual card · use "Reveal" to view PAN/CVV.'}
             </Text>
+            {group.virtual_card.status === 'active' && (
+              <View style={styles.cardActions}>
+                <TouchableOpacity
+                  onPress={() => setRevealOpen(true)}
+                  style={styles.cardActionBtnPrimary}
+                  activeOpacity={0.85}
+                  testID="lobby-reveal-card"
+                >
+                  <Eye size={14} color="#fff" />
+                  <Text style={styles.cardActionTextPrimary}>Reveal details</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => Alert.alert(
+                    'Add to Wallet',
+                    'Push provisioning to Apple Pay / Google Pay is enabled in production after PSP onboarding. Use "Reveal details" to copy the card manually for now.'
+                  )}
+                  style={styles.cardActionBtnSecondary}
+                  activeOpacity={0.85}
+                >
+                  <Smartphone size={14} color={COLORS.text} />
+                  <Text style={styles.cardActionTextSecondary}>Add to Wallet</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            {/* Spend feed */}
+            {Array.isArray((group.virtual_card as any).transactions) && (group.virtual_card as any).transactions.length > 0 && (
+              <View style={styles.txnList}>
+                <Text style={styles.txnHeader}>
+                  <Receipt size={12} color={COLORS.subtext} /> Recent spend
+                </Text>
+                {(group.virtual_card as any).transactions.slice().reverse().slice(0, 5).map((t: any, idx: number) => (
+                  <View key={t.id || idx} style={styles.txnRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.txnMerchant} numberOfLines={1}>{t.merchant_name || 'Merchant'}</Text>
+                      <Text style={styles.txnMeta}>{t.merchant_category || ''} · {new Date(t.created_at).toLocaleDateString()}</Text>
+                    </View>
+                    <Text style={[styles.txnAmount, t.type === 'refund' && { color: COLORS.success }]}>
+                      {t.type === 'refund' ? '+' : '-'}${(t.amount || 0).toFixed(2)}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
           </View>
+        )}
+        {isLead && group.virtual_card && group.virtual_card.stripe_card_id && userId && (
+          <RevealCardModal
+            visible={revealOpen}
+            onClose={() => setRevealOpen(false)}
+            groupId={group.id}
+            userId={userId}
+            cardLast4={group.virtual_card.last4}
+            cardNickname={group.virtual_card.nickname}
+          />
         )}
 
         <View style={styles.membersCard}>
@@ -341,6 +396,27 @@ const styles = StyleSheet.create({
   },
   cardValue: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: FONT.sizes.sm },
   cardHint: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 8, lineHeight: 16 },
+  cardActions: { flexDirection: 'row', gap: 8, marginTop: 12 },
+  cardActionBtnPrimary: {
+    flex: 1, backgroundColor: COLORS.primary, borderRadius: 10, paddingVertical: 10,
+    alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 6,
+  },
+  cardActionTextPrimary: { color: '#fff', fontSize: FONT.sizes.sm, fontWeight: FONT.weights.bold },
+  cardActionBtnSecondary: {
+    flex: 1, backgroundColor: COLORS.bg, borderRadius: 10, paddingVertical: 10,
+    alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 6,
+    borderWidth: 1, borderColor: COLORS.border,
+  },
+  cardActionTextSecondary: { color: COLORS.text, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold },
+  txnList: { marginTop: 14, gap: 8 },
+  txnHeader: { fontSize: FONT.sizes.xs, color: COLORS.subtext, fontWeight: FONT.weights.semibold, textTransform: 'uppercase' as any, letterSpacing: 0.5 },
+  txnRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 8, borderTopWidth: 1, borderTopColor: COLORS.border,
+  },
+  txnMerchant: { fontSize: FONT.sizes.sm, color: COLORS.text, fontWeight: FONT.weights.semibold },
+  txnMeta: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
+  txnAmount: { fontSize: FONT.sizes.sm, color: COLORS.text, fontWeight: FONT.weights.bold, fontVariant: ['tabular-nums'] as any },
   membersCard: {
     backgroundColor: COLORS.surface,
     borderRadius: RADIUS.lg,

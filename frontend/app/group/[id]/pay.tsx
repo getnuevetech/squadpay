@@ -12,14 +12,56 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Check, CreditCard, Lock, Smartphone, Wallet, ShieldCheck } from 'lucide-react-native';
+import { Check, CreditCard, Lock, Smartphone, Wallet, ShieldCheck, Sparkles, Receipt } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { api, Group } from '../../../src/api';
 import { refreshUser, saveUser } from '../../../src/session';
-import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
+import { COLORS, FONT, RADIUS, SHADOW, SPACING } from '../../../src/theme';
+import { toast } from '../../../src/components/Toast';
 
 type Kind = 'lead' | 'repay' | 'contribute';
 type VerifyStep = 'idle' | 'phone' | 'otp';
+
+// Phase H4 — single line of the breakdown card.
+// `tone` controls color: default/success(green)/warning(amber)/primary(indigo).
+function BreakRow({
+  label,
+  value,
+  hint,
+  tone,
+}: {
+  label: string;
+  value: number;
+  hint?: string;
+  tone?: 'success' | 'warning' | 'primary';
+}) {
+  const isNeg = value < 0;
+  const valueColor =
+    tone === 'success' ? COLORS.success :
+    tone === 'warning' ? COLORS.warning :
+    tone === 'primary' ? COLORS.primary :
+    COLORS.text;
+  const sign = isNeg ? '−' : '';
+  const abs = Math.abs(value).toFixed(2);
+  return (
+    <View style={breakRowStyles.row}>
+      <View style={{ flex: 1 }}>
+        <Text style={breakRowStyles.label}>{label}</Text>
+        {hint ? <Text style={breakRowStyles.hint}>{hint}</Text> : null}
+      </View>
+      <Text style={[breakRowStyles.value, { color: valueColor }]}>
+        {sign}${abs}
+      </Text>
+    </View>
+  );
+}
+
+const breakRowStyles = StyleSheet.create({
+  row: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: SPACING.sm, paddingVertical: 6 },
+  label: { fontSize: FONT.sizes.sm, color: COLORS.text, fontWeight: FONT.weights.medium },
+  hint: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
+  value: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, fontVariant: ['tabular-nums'] as any },
+});
 
 export default function PayScreen() {
   const { id, kind, session_id: sessionIdFromUrl, contrib_session_id: contribSessionId, stripe_cancel } = useLocalSearchParams<{
@@ -46,6 +88,9 @@ export default function PayScreen() {
   // Receipt-update opt-in (contribute flow only)
   const [notifyOnSettled, setNotifyOnSettled] = useState(true);
 
+  // Phase H4 — wallet credits balance for breakdown preview
+  const [creditBalance, setCreditBalance] = useState(0);
+
   // Shortfall settlement (lead pay flow only)
   const [shortfallMode, setShortfallMode] = useState<'lead' | 'member' | 'split_equal'>('lead');
   const [isLoan, setIsLoan] = useState<boolean>(true);
@@ -66,6 +111,13 @@ export default function PayScreen() {
         setGroup(g);
       } catch (e: any) {
         Alert.alert('Error', e.message);
+      }
+      // Best-effort: fetch wallet credits to preview in breakdown
+      try {
+        const c = await api.getUserCredits(u.id);
+        setCreditBalance(c.balance || 0);
+      } catch (_e) {
+        // non-fatal — credits feature may be off
       }
     })();
   }, [id, router]);
@@ -388,10 +440,7 @@ export default function PayScreen() {
         // For member / split_equal: merchant pay is DEFERRED — return to summary with a toast
         if (shortfallMode !== 'lead' && (group.funding?.remaining_to_collect || 0) > 0.01) {
           const verb = shortfallMode === 'member' ? 'sent to the member' : 'split among members';
-          Alert.alert(
-            'Shortfall assigned',
-            `Shortfall request ${verb}. They've been notified to pay before the bill can be settled.`,
-          );
+          toast.success(`Shortfall ${verb}`);
           router.replace(`/group/${group.id}`);
           return;
         }
@@ -480,23 +529,96 @@ export default function PayScreen() {
           </Text>
           {summary ? <Text style={styles.summary}>{summary}</Text> : null}
 
-          <View style={styles.card}>
-            <View style={styles.row}>
+          {/* Wallet credits pill (only when user has balance and credits feature is on) */}
+          {creditBalance > 0.01 && (kind === 'contribute' || kind === 'repay') ? (
+            <View style={styles.creditPill} testID="pay-credit-pill">
+              <Sparkles size={13} color={COLORS.primary} />
+              <Text style={styles.creditPillText}>
+                ${creditBalance.toFixed(2)} wallet credit available — auto-applied at checkout
+              </Text>
+            </View>
+          ) : null}
+
+          {/* Breakdown card — shows the math behind the amount */}
+          <View style={[styles.breakdownCard, SHADOW.sm]} testID="pay-breakdown">
+            <View style={styles.breakdownHeader}>
               <View style={styles.icon}>{actorIcon}</View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.rowTitle}>{actorTitle}</Text>
                 {actorSub ? <Text style={styles.rowSub}>{actorSub}</Text> : null}
               </View>
             </View>
+
             <View style={styles.divider} />
-            <View style={styles.row}>
-              <View style={[styles.icon, { backgroundColor: COLORS.disabledBg }]}>
-                <Lock color={COLORS.subtext} size={18} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.rowTitle}>Secure</Text>
-                <Text style={styles.rowSub}>Encrypted • reversible</Text>
-              </View>
+
+            {kind === 'contribute' && myPer ? (
+              <>
+                <BreakRow label="Your share of food" value={myPer.food} />
+                {(myPer.tax_tip || 0) > 0.001 && (
+                  <BreakRow label="Tax & tip share" value={myPer.tax_tip} />
+                )}
+                {(myPer.platform_fee || 0) > 0.001 && (
+                  <BreakRow label="Service fee" value={myPer.platform_fee} hint="Helps us keep KWIKPAY running" />
+                )}
+                {(myPer.shortfall_owed || 0) > 0.001 && (
+                  <BreakRow label="Shortfall obligation" value={myPer.shortfall_owed} tone="warning" />
+                )}
+                {(myPer.contributed || 0) > 0.001 && (
+                  <BreakRow label="Already contributed" value={-myPer.contributed} tone="success" />
+                )}
+                {creditBalance > 0.01 && (
+                  <BreakRow
+                    label="Wallet credits (max applied)"
+                    value={-Math.min(creditBalance, amount)}
+                    tone="primary"
+                    hint="We'll apply automatically at checkout"
+                  />
+                )}
+                <View style={styles.divider} />
+                <View style={styles.totalRow}>
+                  <Text style={styles.totalLabel}>You'll pay now</Text>
+                  <Text style={styles.totalValue}>
+                    ${Math.max(0, amount - Math.min(creditBalance, amount)).toFixed(2)}
+                  </Text>
+                </View>
+              </>
+            ) : kind === 'repay' && myPer ? (
+              <>
+                <BreakRow label="Owed to lead" value={myPer.outstanding} />
+                {creditBalance > 0.01 && (
+                  <BreakRow
+                    label="Wallet credits"
+                    value={-Math.min(creditBalance, amount)}
+                    tone="primary"
+                  />
+                )}
+                <View style={styles.divider} />
+                <View style={styles.totalRow}>
+                  <Text style={styles.totalLabel}>Total</Text>
+                  <Text style={styles.totalValue}>
+                    ${Math.max(0, amount - Math.min(creditBalance, amount)).toFixed(2)}
+                  </Text>
+                </View>
+              </>
+            ) : kind === 'lead' ? (
+              <>
+                <BreakRow label="Bill total" value={group.total} />
+                <BreakRow
+                  label="Group already covered"
+                  value={-(group.funding?.total_contributed || 0)}
+                  tone="success"
+                />
+                <View style={styles.divider} />
+                <View style={styles.totalRow}>
+                  <Text style={styles.totalLabel}>You'll pay merchant</Text>
+                  <Text style={styles.totalValue}>${amount.toFixed(2)}</Text>
+                </View>
+              </>
+            ) : null}
+
+            <View style={styles.secureBadge}>
+              <Lock size={12} color={COLORS.success} />
+              <Text style={styles.secureBadgeText}>Encrypted · reversible</Text>
             </View>
           </View>
 
@@ -826,6 +948,76 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
   },
+  // Phase H4 — breakdown card
+  creditPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    marginTop: SPACING.sm,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: COLORS.primaryLight,
+    borderRadius: RADIUS.pill,
+    borderWidth: 1,
+    borderColor: COLORS.primarySoft,
+  },
+  creditPillText: {
+    color: COLORS.primary,
+    fontSize: FONT.sizes.xs,
+    fontWeight: FONT.weights.bold,
+    letterSpacing: 0.2,
+  },
+  breakdownCard: {
+    marginTop: SPACING.lg,
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.lg,
+    padding: SPACING.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 4,
+  },
+  breakdownHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+    paddingVertical: SPACING.xs,
+  },
+  totalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 4,
+  },
+  totalLabel: {
+    fontSize: FONT.sizes.md,
+    fontWeight: FONT.weights.bold,
+    color: COLORS.text,
+  },
+  totalValue: {
+    fontSize: FONT.sizes.xl,
+    fontWeight: FONT.weights.heavy,
+    color: COLORS.text,
+    fontVariant: ['tabular-nums'] as any,
+    letterSpacing: -0.3,
+  },
+  secureBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 4,
+    marginTop: SPACING.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    backgroundColor: COLORS.successLight,
+    borderRadius: RADIUS.pill,
+  },
+  secureBadgeText: {
+    color: COLORS.success,
+    fontSize: 11,
+    fontWeight: FONT.weights.bold,
+    letterSpacing: 0.3,
+  },
   row: { flexDirection: 'row', alignItems: 'center', gap: SPACING.md, paddingVertical: SPACING.sm },
   icon: {
     width: 40,
@@ -1055,6 +1247,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
+    ...SHADOW.lg,
   },
   stripeBanner: {
     padding: SPACING.sm,

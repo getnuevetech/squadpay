@@ -218,6 +218,10 @@ export const api = {
       body: JSON.stringify({ user_id, phone, code, confirm_existing }),
     }),
   getUser: (user_id: string) => request<User>(`/users/${user_id}`),
+  getUserCredits: (user_id: string) =>
+    request<{ user_id: string; balance: number; items: Array<{ id: string; amount: number; consumed_amount: number; remaining: number; kind: string; status: string; note: string | null; created_at: string; last_consumed_at: string | null }>; lead_auto_discount: any }>(
+      `/users/${user_id}/credits`,
+    ),
   getUserGroups: (user_id: string) =>
     request<
       {

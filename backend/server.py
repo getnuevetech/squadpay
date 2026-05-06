@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, Request
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -325,6 +325,7 @@ class ContributeIn(BaseModel):
     amount: Optional[float] = None  # If None, contributes user's full share
     notify_on_settled: bool = False
     notify_on_settled: Optional[bool] = False
+    origin_url: Optional[str] = None  # Required when cash payment is needed (Phase F1 — Stripe Checkout)
 
 
 class AppendItemsIn(BaseModel):
@@ -342,19 +343,14 @@ TRANSACTION_FEE_RATE = 0.03  # 3% per-member surcharge
 PLATFORM_FEE = 0.03  # 3 cents flat per member
 
 
-def gen_virtual_card() -> dict:
-    digits = "".join(secrets.choice(string.digits) for _ in range(16))
-    return {
-        "id": new_id("vc_"),
-        "number": digits,
-        "last4": digits[-4:],
-        "exp_month": 12,
-        "exp_year": 2028,
-        "cvv": "".join(secrets.choice(string.digits) for _ in range(3)),
-        "balance": 0.0,
-        "currency": "USD",
-        "issued_at": now_iso(),
-    }
+def gen_virtual_card() -> Optional[dict]:
+    """DEPRECATED: Mock virtual card generator removed in Phase F1.
+
+    Real virtual cards are now issued via Stripe Issuing when a group is fully funded.
+    See /app/backend/issuing.py :: issue_group_card(). This stub returns None so
+    nothing is mocked at group-creation time.
+    """
+    return None
 
 
 class ScanReceiptIn(BaseModel):
@@ -710,7 +706,7 @@ async def create_group(body: CreateGroupIn):
         "split_mode": body.split_mode,
         "status": "open",  # open | paid | closed
         "funding_mode": None,  # group | lead | shortfall
-        "virtual_card": gen_virtual_card(),
+        "virtual_card": None,  # Phase F1: Real Stripe Issuing card is created on full funding
         "items": items,
         "assignments": [],
         "members": [{"user_id": body.lead_id, "role": "lead", "joined_at": now_iso()}],
@@ -949,8 +945,16 @@ async def assign_item(group_id: str, body: AssignIn):
 
 
 @api_router.post("/groups/{group_id}/contribute")
-async def contribute(group_id: str, body: ContributeIn):
-    """Member (or lead) pays their share upfront into the group wallet, before merchant payment."""
+async def contribute(group_id: str, body: ContributeIn, request: Request):
+    """Member (or lead) pays their share into the group wallet via real Stripe Checkout (Phase F1).
+
+    Flow:
+      1. Server computes amount + applies user credits virtually (planned).
+      2. If credits fully cover the amount → record contribution immediately, no Stripe.
+      3. Else → create a Stripe Checkout Session for the cash portion, return checkout URL.
+         The contribution is finalized when Stripe webhook confirms `payment_status=paid`
+         (also handled by the GET /contribute/status/{session_id} polling endpoint as a safety net).
+    """
     group = await db.groups.find_one({"id": group_id}, {"_id": 0})
     if not group:
         raise HTTPException(404, "Group not found")
@@ -979,36 +983,223 @@ async def contribute(group_id: str, body: ContributeIn):
     if amount <= 0:
         raise HTTPException(400, "Nothing left to contribute")
 
-    contributions = group.get("contributions", [])
-    contrib_id = new_id("c_")
-    # Phase C2: auto-apply user's active credits (FIFO) up to `amount`.
-    credit_applied, _events = await _consume_user_credits(
-        body.user_id, float(amount), group_id, contrib_id
-    )
-    cash_paid = round(float(amount) - float(credit_applied), 2)
-    contributions.append({
-        "id": contrib_id,
-        "user_id": body.user_id,
-        "amount": round(amount, 2),
-        "cash_paid": cash_paid,
-        "credit_applied": round(float(credit_applied), 2),
-        "notify_on_settled": bool(body.notify_on_settled),
-        "at": now_iso(),
-    })
-    update_doc: Dict[str, Any] = {"contributions": contributions}
+    # ---- Estimate available credits (preview only — actual consumption happens
+    # at finalize time so abandoned checkouts don't lock the user's credits).
+    available_credits = 0.0
+    rows = await db.credits.find({"user_id": body.user_id, "status": "active"}, {"_id": 0}).to_list(length=None)
+    for r in rows:
+        avail = round(float(r.get("amount") or 0) - float(r.get("consumed_amount") or 0), 2)
+        if avail > 0:
+            available_credits += avail
+    available_credits = round(available_credits, 2)
+    credit_planned = round(min(available_credits, amount), 2)
+    cash_owed = round(max(0.0, amount - credit_planned), 2)
 
-    # Auto-finalize if total contributions cover the full bill
-    total_contributed = sum(c["amount"] for c in contributions)
-    if total_contributed + 0.01 >= group.get("total_amount", 0):
-        update_doc.update({
-            "status": "paid",
-            "funding_mode": "group",
-            "lead_paid_at": now_iso(),
-            "lead_shortfall": 0.0,
+    # ---- Path A: Credits fully cover → record contribution immediately, no Stripe.
+    if cash_owed <= 0.01:
+        contributions = list(group.get("contributions", []))
+        contrib_id = new_id("c_")
+        credit_applied, _events = await _consume_user_credits(body.user_id, amount, group_id, contrib_id)
+        cash_paid = round(float(amount) - float(credit_applied), 2)
+        contributions.append({
+            "id": contrib_id,
+            "user_id": body.user_id,
+            "amount": round(amount, 2),
+            "cash_paid": cash_paid,
+            "credit_applied": round(float(credit_applied), 2),
+            "notify_on_settled": bool(body.notify_on_settled),
+            "via": "credit_only",
+            "at": now_iso(),
         })
+        update_doc: Dict[str, Any] = {"contributions": contributions}
+        total_contributed = sum(c["amount"] for c in contributions)
+        if total_contributed + 0.01 >= group.get("total_amount", 0):
+            update_doc.update({
+                "status": "paid",
+                "funding_mode": "group",
+                "lead_paid_at": now_iso(),
+                "lead_shortfall": 0.0,
+            })
+        await db.groups.update_one({"id": group_id}, {"$set": update_doc})
+        # Auto-issue Stripe Issuing card if fully funded.
+        if update_doc.get("status") == "paid":
+            try:
+                refreshed = await db.groups.find_one({"id": group_id}, {"_id": 0})
+                from issuing import issue_group_card
+                await issue_group_card(db, refreshed)
+            except Exception as e:
+                logger.warning(f"[contribute] auto-issue card failed for {group_id}: {e}")
+        result = await _load_group_enriched(group_id)
+        return {"checkout_required": False, "credit_only": True, "amount": round(amount, 2),
+                "credit_applied": round(float(credit_applied), 2), "group": result}
 
-    await db.groups.update_one({"id": group_id}, {"$set": update_doc})
-    return await _load_group_enriched(group_id)
+    # ---- Path B: Cash needed → create Stripe Checkout Session for `cash_owed`.
+    origin = (body.origin_url or "").rstrip("/") if hasattr(body, "origin_url") else ""
+    if not origin or not origin.startswith("http"):
+        raise HTTPException(400, "origin_url (http(s)://...) is required when cash payment is needed")
+
+    import stripe as _stripe_sdk
+    _stripe_sdk.api_key = os.environ.get("STRIPE_API_KEY")
+
+    success_url = f"{origin}/group/{group_id}/pay?contrib_session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin}/group/{group_id}/pay?stripe_cancel=1"
+
+    try:
+        session = _stripe_sdk.checkout.Session.create(
+            mode="payment",
+            payment_method_types=["card"],
+            line_items=[{
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {"name": f"KWIKPAY contribution — {group.get('title') or 'Group Bill'}"},
+                    "unit_amount": int(round(cash_owed * 100)),
+                },
+                "quantity": 1,
+            }],
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata={
+                "group_id": group_id,
+                "user_id": body.user_id,
+                "kind": "group_member_contribute",
+                "requested_amount": str(round(amount, 2)),
+                "credit_planned": str(credit_planned),
+                "cash_owed": str(cash_owed),
+                "notify_on_settled": "1" if body.notify_on_settled else "0",
+            },
+        )
+    except Exception as e:
+        logger.exception(f"[stripe] member contribute checkout failed: {e}")
+        raise HTTPException(502, f"Stripe error: {e}")
+
+    tx = {
+        "id": f"px_{session.id[:14]}",
+        "session_id": session.id,
+        "group_id": group_id,
+        "user_id": body.user_id,
+        "amount": cash_owed,
+        "currency": "usd",
+        "status": "initiated",
+        "payment_status": "pending",
+        "metadata": {
+            "kind": "group_member_contribute",
+            "requested_amount": round(amount, 2),
+            "credit_planned": credit_planned,
+            "cash_owed": cash_owed,
+            "notify_on_settled": bool(body.notify_on_settled),
+        },
+        "applied": False,
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    await db.payment_transactions.insert_one(tx.copy())
+    return {
+        "checkout_required": True,
+        "url": session.url,
+        "session_id": session.id,
+        "amount": round(amount, 2),
+        "cash_owed": cash_owed,
+        "credit_planned": credit_planned,
+    }
+
+
+@api_router.get("/contribute/status/{session_id}")
+async def get_contribute_status(session_id: str):
+    """Poll/finalize a member-contribution Stripe Checkout session.
+
+    On `payment_status=paid` we (idempotently):
+      1. Consume the user's credits (up to credit_planned).
+      2. Insert the contribution record into the group.
+      3. If group fully funded -> mark paid + auto-issue Stripe Issuing Card.
+    """
+    tx = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+    if not tx:
+        raise HTTPException(404, "Contribution session not found")
+    if (tx.get("metadata") or {}).get("kind") != "group_member_contribute":
+        raise HTTPException(400, "Not a member contribution session")
+    if tx.get("applied"):
+        return {
+            "session_id": session_id,
+            "status": tx.get("status"),
+            "payment_status": tx.get("payment_status"),
+            "amount_total": int(round(float(tx.get("amount") or 0) * 100)),
+            "currency": tx.get("currency"),
+            "applied": True,
+            "group_id": tx.get("group_id"),
+        }
+
+    import stripe as _stripe_sdk
+    _stripe_sdk.api_key = os.environ.get("STRIPE_API_KEY")
+    try:
+        s = _stripe_sdk.checkout.Session.retrieve(session_id)
+    except Exception as e:
+        logger.exception(f"[stripe] contribute.status retrieve failed: {e}")
+        raise HTTPException(502, f"Stripe error: {e}")
+
+    payment_status = getattr(s, "payment_status", None)
+    sess_status = getattr(s, "status", None)
+    update: dict = {"status": sess_status, "payment_status": payment_status, "updated_at": now_iso()}
+
+    if payment_status == "paid" and not tx.get("applied"):
+        meta = tx.get("metadata") or {}
+        group_id = tx["group_id"]
+        user_id = tx["user_id"]
+        cash_owed = float(meta.get("cash_owed") or tx.get("amount") or 0)
+        credit_planned = float(meta.get("credit_planned") or 0)
+        requested_amount = float(meta.get("requested_amount") or (cash_owed + credit_planned))
+
+        group = await db.groups.find_one({"id": group_id}, {"_id": 0})
+        if group and group.get("status") == "open":
+            contributions = list(group.get("contributions") or [])
+            contrib_id = new_id("c_")
+            credit_consumed, _events = await _consume_user_credits(
+                user_id, credit_planned, group_id, contrib_id
+            ) if credit_planned > 0 else (0.0, [])
+            actual_amount = round(cash_owed + float(credit_consumed), 2)
+            contributions.append({
+                "id": contrib_id,
+                "user_id": user_id,
+                "amount": actual_amount,
+                "cash_paid": round(cash_owed, 2),
+                "credit_applied": round(float(credit_consumed), 2),
+                "notify_on_settled": bool(meta.get("notify_on_settled")),
+                "via": "stripe",
+                "stripe_session_id": session_id,
+                "at": now_iso(),
+            })
+            update_doc: Dict[str, Any] = {"contributions": contributions}
+            total_contributed = sum(c["amount"] for c in contributions)
+            if total_contributed + 0.01 >= float(group.get("total_amount") or 0):
+                update_doc.update({
+                    "status": "paid",
+                    "funding_mode": "group",
+                    "lead_paid_at": now_iso(),
+                    "lead_shortfall": 0.0,
+                })
+            await db.groups.update_one({"id": group_id}, {"$set": update_doc})
+
+            # Auto-issue Stripe Issuing card if fully funded
+            if update_doc.get("status") == "paid":
+                try:
+                    refreshed = await db.groups.find_one({"id": group_id}, {"_id": 0})
+                    from issuing import issue_group_card
+                    await issue_group_card(db, refreshed)
+                except Exception as e:
+                    logger.warning(f"[contribute.status] auto-issue card failed for {group_id}: {e}")
+
+        update["applied"] = True
+
+    await db.payment_transactions.update_one({"session_id": session_id}, {"$set": update})
+    return {
+        "session_id": session_id,
+        "status": sess_status,
+        "payment_status": payment_status,
+        "amount_total": getattr(s, "amount_total", None),
+        "currency": getattr(s, "currency", None),
+        "applied": bool(update.get("applied") or tx.get("applied")),
+        "group_id": tx.get("group_id"),
+    }
+
 
 
 @api_router.post("/groups/{group_id}/pay")

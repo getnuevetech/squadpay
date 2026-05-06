@@ -39,6 +39,12 @@ class ReminderSettingsIn(BaseModel):
     send_via_sms: bool = True
 
 
+class IssuingSettingsIn(BaseModel):
+    enabled: Optional[bool] = None
+    cardholder_name: Optional[str] = None
+    card_disable_mode: Optional[Literal["auto", "manual"]] = None
+
+
 class TestSmsIn(BaseModel):
     to_number: str
     body: Optional[str] = None
@@ -209,3 +215,59 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
             request=request,
         )
         return result
+
+    # ===== ISSUING (Phase F1) =====
+    @router.get("/integrations/issuing")
+    async def get_issuing(admin=Depends(attach_admin)):
+        from issuing import get_issuing_settings
+        return await get_issuing_settings(db)
+
+    @router.post("/integrations/issuing")
+    async def set_issuing(
+        body: IssuingSettingsIn,
+        request: Request,
+        admin=Depends(attach_admin),
+        _check=Depends(require_role("super_admin")),
+    ):
+        from issuing import set_issuing_settings
+        patch = {k: v for k, v in body.dict().items() if v is not None}
+        new = await set_issuing_settings(db, patch)
+        await write_audit(
+            db,
+            admin_id=admin["id"],
+            admin_email=admin["email"],
+            action="admin.update_issuing_settings",
+            target_type="settings",
+            target_id="integrations.issuing",
+            payload=patch,
+            request=request,
+        )
+        return new
+
+    @router.post("/groups/{group_id}/disable-card")
+    async def admin_disable_group_card(
+        group_id: str,
+        request: Request,
+        admin=Depends(attach_admin),
+        _check=Depends(require_role("super_admin", "manager")),
+    ):
+        from issuing import disable_group_card
+        try:
+            vc = await disable_group_card(
+                db, group_id,
+                by=admin.get("email") or admin.get("id") or "admin",
+                reason="manual admin disable",
+            )
+        except RuntimeError as e:
+            raise HTTPException(400, str(e))
+        await write_audit(
+            db,
+            admin_id=admin["id"],
+            admin_email=admin["email"],
+            action="admin.disable_virtual_card",
+            target_type="group",
+            target_id=group_id,
+            payload={"stripe_card_id": vc.get("stripe_card_id"), "last4": vc.get("last4")},
+            request=request,
+        )
+        return {"ok": True, "virtual_card": vc}

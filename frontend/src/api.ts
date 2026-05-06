@@ -292,11 +292,19 @@ export const api = {
     user_id: string,
     amount?: number,
     notify_on_settled?: boolean,
+    origin_url?: string,
   ) =>
-    request<Group>(`/groups/${id}/contribute`, {
+    request<
+      | { checkout_required: false; credit_only: true; amount: number; credit_applied: number; group: Group }
+      | { checkout_required: true; url: string; session_id: string; amount: number; cash_owed: number; credit_planned: number }
+    >(`/groups/${id}/contribute`, {
       method: 'POST',
-      body: JSON.stringify({ user_id, amount, notify_on_settled }),
+      body: JSON.stringify({ user_id, amount, notify_on_settled, origin_url }),
     }),
+  getContributeStatus: (sessionId: string) =>
+    request<{ session_id: string; status: string; payment_status: string; amount_total: number | null; currency: string | null; applied: boolean; group_id: string }>(
+      `/contribute/status/${encodeURIComponent(sessionId)}`,
+    ),
   repay: (id: string, user_id: string, amount: number) =>
     request<Group>(`/groups/${id}/repay`, {
       method: 'POST',

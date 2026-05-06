@@ -22,10 +22,11 @@ type Kind = 'lead' | 'repay' | 'contribute';
 type VerifyStep = 'idle' | 'phone' | 'otp';
 
 export default function PayScreen() {
-  const { id, kind, session_id: sessionIdFromUrl, stripe_cancel } = useLocalSearchParams<{
+  const { id, kind, session_id: sessionIdFromUrl, contrib_session_id: contribSessionId, stripe_cancel } = useLocalSearchParams<{
     id: string;
     kind?: Kind;
     session_id?: string;
+    contrib_session_id?: string;
     stripe_cancel?: string;
   }>();
   const router = useRouter();
@@ -106,6 +107,42 @@ export default function PayScreen() {
     poll();
     return () => { cancelled = true; };
   }, [sessionIdFromUrl, id, router]);
+
+  // Phase F1: handle return from Stripe Checkout for member contribution
+  useEffect(() => {
+    if (!contribSessionId || !id) return;
+    let cancelled = false;
+    let attempts = 0;
+    const maxAttempts = 8;
+    const poll = async () => {
+      try {
+        const r = await api.getContributeStatus(contribSessionId);
+        if (cancelled) return;
+        if (r.payment_status === 'paid' || r.applied) {
+          setStripeBanner('✅ Contribution confirmed via Stripe.');
+          try { setGroup(await api.getGroup(id)); } catch {}
+          setTimeout(() => router.replace(`/group/${id}/success?amount=${((r.amount_total||0)/100).toFixed(2)}&kind=contribute&via=stripe`), 1200);
+          return;
+        }
+        if (r.status === 'expired') {
+          setStripeBanner('⚠️ Stripe session expired. Please try again.');
+          return;
+        }
+        attempts += 1;
+        if (attempts < maxAttempts) {
+          setStripeBanner(`Confirming contribution… (${attempts}/${maxAttempts})`);
+          setTimeout(poll, 2000);
+        } else {
+          setStripeBanner('Status check timed out — refresh if your contribution is not reflected.');
+        }
+      } catch (e: any) {
+        if (!cancelled) setStripeBanner(`Status error: ${e?.message || 'unknown'}`);
+      }
+    };
+    setStripeBanner('Confirming contribution with Stripe…');
+    poll();
+    return () => { cancelled = true; };
+  }, [contribSessionId, id, router]);
 
   // Phase E: cancel banner
   useEffect(() => {
@@ -260,7 +297,31 @@ export default function PayScreen() {
           return;
         }
       } else if (kind === 'contribute') {
-        await api.contribute(group.id, userId, amount, notifyOnSettled);
+        // Phase F1: contribute via Stripe Checkout (real card) — credits applied automatically.
+        const origin =
+          Platform.OS === 'web' && typeof window !== 'undefined'
+            ? window.location.origin
+            : (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/api$/, '');
+        const r: any = await api.contribute(group.id, userId, amount, notifyOnSettled, origin);
+        if (r.checkout_required === false) {
+          // Fully covered by credits — no Stripe needed
+          router.replace(
+            `/group/${group.id}/success?amount=${amount.toFixed(2)}&kind=contribute&via=credit`,
+          );
+          return;
+        }
+        // checkout_required: open Stripe Checkout URL
+        if (Platform.OS === 'web' && typeof window !== 'undefined') {
+          window.location.href = r.url;
+        } else {
+          try {
+            const WebBrowser = require('expo-web-browser');
+            await WebBrowser.openBrowserAsync(r.url);
+          } catch {
+            Alert.alert('Open in browser', r.url);
+          }
+        }
+        return;
       } else {
         await api.repay(group.id, userId, amount);
       }

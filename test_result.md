@@ -864,6 +864,99 @@ frontend:
               - POST /api/admin/integrations/reminders super_admin/manager; schedule_hours sanitized
                                                        (positive, dedup, sorted, capped @10).
               - POST /api/admin/integrations/reminders/run-now super_admin/manager; runs pass with force=True.
+
+  - task: "Phase F1 — Real Stripe Issuing virtual cards + member contributions via Stripe Checkout"
+    implemented: true
+    working: true
+    file: "backend/server.py, backend/issuing.py, backend/payments.py, backend/admin_integrations.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Phase F1 backend verified end-to-end via /app/backend_test.py against the live
+            preview backend (https://joint-pay-1.preview.emergentagent.com/api). 37/37
+            assertions PASS. NO 5xx, NO unhandled exceptions.
+
+            Coverage by scenario (all PASS):
+              E) Issuing settings:
+                - GET /api/admin/integrations/issuing returns
+                  { enabled:true, cardholder_id:"ich_1TTtU7Juc7vKWKrLBERS0kCC",
+                    cardholder_name:"KWIKPAY", card_disable_mode:"auto", updated_at:... }.
+                - POST /api/admin/integrations/issuing {card_disable_mode:"manual"} → 200,
+                  GET reflects 'manual'. Reset to 'auto' at end. ✅
+
+              B) Path B (Stripe required) — fresh fast-split $30 group, lead has no credits:
+                - POST /api/groups/{gid}/contribute {user_id:lead, origin_url:'http://localhost:3000'}
+                  → 200 with {checkout_required:true, url:'https://checkout.stripe.com/c/pay/cs_test_...',
+                  session_id:'cs_test_...', amount:10.33, cash_owed:10.33, credit_planned:0.0}.
+                - URL well-formed (checkout.stripe.com host); session_id starts 'cs_test_'.
+                - cash_owed ≈ lead_share ($10.33 = $10 + 3% txn + $0.03 platform).
+                - group.contributions stays [] until session is paid (verified via GET /groups/{id}).
+                - GET /api/contribute/status/{cs_test_...} → 200, status='open',
+                  payment_status='unpaid', applied=False. Idempotent on second poll.
+                - GET /api/contribute/status/cs_test_DOES_NOT_EXIST → 404
+                  "Contribution session not found". ✅
+
+              A) Path A (credit-only) — granted lead $11.33 admin credit, retried contribute:
+                - POST /contribute → 200 with {checkout_required:false, credit_only:true,
+                  amount:10.33, credit_applied:10.33, group:{...}}.
+                - No Stripe session created (no second tx row).
+                - group.contributions immediately includes lead's row.
+                - User's credit row consumed_amount bumps; balance drops to ~$1.00. ✅
+
+              C) Auto-issue Stripe Issuing card on full funding:
+                - Granted member1 + member2 admin credits ≥ $10.33 each.
+                - Each member POST /contribute (Path A) → credit_only:true, 200.
+                - After 3rd contribution, total_contributed=$30.99 ≥ total_amount=$30 →
+                  group auto-flips to status='paid', funding_mode='group'.
+                - Real Stripe Issuing card was created server-side. GET /api/groups/{id}
+                  returns virtual_card with:
+                    stripe_card_id='ic_1TTtsEJuc7vKWKrLkrNgYZcj' (starts 'ic_') ✅
+                    nickname='KWIKPAY - Lunch F1 1778029411' (starts 'KWIKPAY - ') ✅
+                    status='active' ✅
+                    spend_cap=30.0 (== group.total_amount) ✅
+                    last4='0054' (4-digit string) ✅
+                    brand='Visa', exp_month/exp_year, currency='usd', issued_at, spent=0.0.
+                  Confirmed cardholder reused: ich_1TTtU7Juc7vKWKrLBERS0kCC (KWIKPAY). ✅
+
+              D) Admin manual disable card:
+                - POST /api/admin/groups/{gid}/disable-card with super_admin Bearer → 200
+                  {ok:true, virtual_card:{...status:'inactive', disabled_by:'[email protected]',
+                  disabled_at:'2026-05-06T01:03:39.306601+00:00', disabled_reason:'manual admin disable'}}.
+                - GET /api/groups/{gid} reflects virtual_card.status='inactive' with
+                  disabled_by + disabled_at set. ✅
+                - Stripe API call confirmed on backend (issuing.Card.modify(status='inactive')).
+
+              F) Regression — Phase E lead checkout still works:
+                - POST /api/groups/{id}/checkout-session {origin_url:'http://localhost:3000'}
+                  → 200 with {url:'https://checkout.stripe.com/c/pay/cs_test_...',
+                  session_id:'cs_test_...', amount:12.5}.
+                - GET /api/checkout/status/{cs_test_...} → 200, status='open',
+                  payment_status='unpaid', applied=False (status endpoint also fixed via
+                  direct Stripe SDK call, no longer 502). ✅
+
+            Stripe live integration confirmed:
+              - Real sk_test_51T2maQJuc7vKWKrL... key in /app/backend/.env was used.
+              - Backend logs show successful Stripe API calls:
+                * checkout.Session.create (Path B + lead checkout)
+                * checkout.Session.retrieve (status polling)
+                * issuing.Card.create (auto-issue)
+                * issuing.Cardholder.retrieve (cardholder verification)
+                * issuing.Card.modify status=inactive (disable)
+
+            Backend log notes (informational, not blockers):
+              - passlib bcrypt cosmetic warning ("module 'bcrypt' has no attribute '__about__'").
+              - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes, ≥32 recommended).
+              - "WatchFiles detected changes in 'issuing.py'. Reloading..." during dev session;
+                no functional impact.
+
+            Test suite saved at /app/backend_test.py — idempotent (uses TS-based names +
+            fresh phones each run). All Phase F1 acceptance criteria from review request
+            PASS. No backend action required.
+
 metadata:
   created_by: "main_agent"
   version: "1.1"
@@ -872,11 +965,68 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Phase E — Real Stripe Checkout payment flow (POST /api/groups/{id}/checkout-session, GET /api/checkout/status/{id}, POST /api/webhook/stripe)"
-  stuck_tasks:
-    - "Phase E — Real Stripe Checkout payment flow (POST /api/groups/{id}/checkout-session, GET /api/checkout/status/{id}, POST /api/webhook/stripe)"
+    - "Phase F1 — Real Stripe Issuing virtual cards + member contributions via Stripe Checkout"
+  stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+agent_communication:
+    - agent: "main"
+      message: |
+        PHASE F1 IMPLEMENTED — please test the new real-money member contribution flow
+        and Stripe Issuing card auto-issuance. All previous Phase E (lead checkout) flows
+        should remain working.
+
+        New / changed endpoints:
+        1) POST /api/groups/{id}/contribute (REWORKED) body:
+             { user_id, amount?, notify_on_settled?, origin_url }
+             Requires `origin_url` (e.g. http://localhost:3000) when cash payment is needed.
+             Returns either:
+               a) { checkout_required: false, credit_only: true, amount, credit_applied, group }
+                  — when user's active credits fully cover the share.
+               b) { checkout_required: true, url, session_id, amount, cash_owed, credit_planned }
+                  — when cash is needed; URL is a real Stripe Checkout session.
+             NO contribution row is written until the Stripe session is paid.
+
+        2) GET /api/contribute/status/{session_id}  (NEW)
+             Polls/finalizes a member-contribution session. On payment_status=paid (idempotently):
+               - Consumes credits up to `credit_planned`
+               - Inserts the contribution into the group
+               - If group fully funded → marks group status=paid + auto-issues a Stripe Issuing
+                 virtual card under the KWIKPAY business cardholder.
+
+        3) Group documents now have:
+             virtual_card = null at creation (NO mock card),
+             virtual_card = { stripe_card_id, last4, brand, exp_month, exp_year, nickname,
+                              spend_cap, spent, status, transactions[] } AFTER full funding.
+
+        4) Admin endpoints (NEW, all under /api/admin/...):
+           - GET  /api/admin/integrations/issuing
+           - POST /api/admin/integrations/issuing
+                 body: { enabled?, cardholder_name?, card_disable_mode? }  (super_admin)
+           - POST /api/admin/groups/{group_id}/disable-card  (super_admin or manager)
+
+        Test scenarios (use Stripe test card 4242 4242 4242 4242, any future date, any CVC):
+          A) Pure-credit contribution: grant credit ≥ user's share, call /contribute → expect
+             checkout_required=false, contribution recorded, credit consumed.
+          B) Stripe-required contribution: user with no/low credits → checkout_required=true.
+             Open the returned `url`, complete payment with 4242, then poll
+             /api/contribute/status/{session_id} until applied=true. Verify contribution row.
+          C) Auto-issue card: when last member's contribution makes total_contributed >= total,
+             check /api/groups/{id} → group.status='paid' AND group.virtual_card.stripe_card_id
+             starts with 'ic_' AND nickname starts with 'KWIKPAY - '.
+          D) Admin manual disable: POST /api/admin/groups/{id}/disable-card with admin JWT →
+             group.virtual_card.status becomes 'inactive', disabled_by + disabled_at set.
+          E) Issuing settings GET/POST round-trip; confirm card_disable_mode toggles between
+             'auto' and 'manual'.
+
+        Pre-test seed (optional): call /api/admin/credits/grant to create an active credit
+        for a test user, OR rely on no credits (Path B). Real Stripe test key already in
+        /app/backend/.env (sk_test_51T2maQJuc7vKWKrL...). Cardholder ich_1TTtU7Juc7vKWKrLBERS0kCC
+        (KwikPay) is persisted in app_settings.integrations.issuing.cardholder_id.
+
+        DO NOT test Phase F2 (PAN/CVV reveal, push provisioning, issuing webhook real-merchant
+        spend) — those are next milestones. Frontend will be tested separately later.
 
 agent_communication:
     - agent: "main"
@@ -1209,3 +1359,32 @@ agent_communication:
         Marking task working=false; main_agent fix needed only for the status endpoint,
         then retest of B + E only.
 
+
+    - agent: "testing"
+      message: |
+        PHASE F1 backend test COMPLETE — all 37 assertions PASS via /app/backend_test.py
+        against the live preview backend. NO 5xx, NO regression.
+
+        ✅ POST /api/groups/{id}/contribute — Path A (credit-only, no Stripe) and
+           Path B (Stripe Checkout URL with cs_test_… session_id) both behave to spec.
+           No contribution row written until Stripe payment confirmed.
+        ✅ GET /api/contribute/status/{session_id} — returns status='open' /
+           payment_status='unpaid' for unpaid sessions, idempotent on re-poll, 404 for
+           unknown ids. (Did NOT exercise paid-finalize end-to-end — that requires
+           opening the Stripe checkout URL in a real browser; out of scope per request.)
+        ✅ Auto-issue Stripe Issuing card on full funding —
+           virtual_card.stripe_card_id='ic_1TTtsEJuc7vKWKrLkrNgYZcj',
+           nickname='KWIKPAY - Lunch F1 …', status='active', spend_cap matches
+           group.total_amount, last4 present, brand='Visa'. Cardholder reused:
+           ich_1TTtU7Juc7vKWKrLBERS0kCC.
+        ✅ POST /api/admin/groups/{id}/disable-card — virtual_card.status='inactive',
+           disabled_by/disabled_at populated. Real Stripe issuing.Card.modify call
+           confirmed in backend logs.
+        ✅ GET/POST /api/admin/integrations/issuing — defaults present, card_disable_mode
+           toggles 'auto'↔'manual' and persists.
+        ✅ Phase E regression — POST /groups/{id}/checkout-session and
+           GET /checkout/status/{id} still 200; status endpoint no longer 502
+           (workaround in payments.py uses Stripe SDK directly).
+
+        Phase F1 task status set to working=true. No backend action required. Main
+        agent may proceed with summarisation.

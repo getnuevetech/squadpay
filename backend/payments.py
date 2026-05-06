@@ -185,32 +185,43 @@ def attach_payment_routes(api_router: APIRouter, db):
         except Exception as e:
             logger.exception(f"[stripe-webhook] failed: {e}")
             raise HTTPException(400, f"Webhook error: {e}")
-        # Best-effort sync: if a checkout session became paid, ensure group is marked paid.
+        # Best-effort sync: if a checkout session became paid, ensure group/contrib state.
         try:
             tx = await db.payment_transactions.find_one(
                 {"session_id": evt.session_id}, {"_id": 0}
             )
-            if tx and evt.payment_status == "paid" and not tx.get("applied"):
-                group = await db.groups.find_one({"id": tx["group_id"]}, {"_id": 0})
-                if group and group.get("status") == "open":
-                    await db.groups.update_one(
-                        {"id": tx["group_id"]},
-                        {"$set": {
-                            "status": "paid",
-                            "lead_paid_at": _now(),
-                            "funding_mode": group.get("funding_mode") or "lead",
-                            "stripe_session_id": evt.session_id,
-                        }},
+            if not tx:
+                return {"ok": True, "ignored": "no-tx"}
+            kind = (tx.get("metadata") or {}).get("kind") or "group_lead_pay"
+
+            if evt.payment_status == "paid" and not tx.get("applied"):
+                if kind == "group_lead_pay":
+                    # Lead pays merchant directly via Stripe -> mark group paid
+                    group = await db.groups.find_one({"id": tx["group_id"]}, {"_id": 0})
+                    if group and group.get("status") == "open":
+                        await db.groups.update_one(
+                            {"id": tx["group_id"]},
+                            {"$set": {
+                                "status": "paid",
+                                "lead_paid_at": _now(),
+                                "funding_mode": group.get("funding_mode") or "lead",
+                                "stripe_session_id": evt.session_id,
+                            }},
+                        )
+                    await db.payment_transactions.update_one(
+                        {"session_id": evt.session_id},
+                        {"$set": {"status": "complete", "payment_status": "paid",
+                                  "applied": True, "updated_at": _now()}},
                     )
-                await db.payment_transactions.update_one(
-                    {"session_id": evt.session_id},
-                    {"$set": {
-                        "status": "complete",
-                        "payment_status": "paid",
-                        "applied": True,
-                        "updated_at": _now(),
-                    }},
-                )
+                elif kind == "group_member_contribute":
+                    # Finalize member contribution + auto-issue card if fully funded
+                    # (Same logic as GET /contribute/status; webhook is idempotent backup.)
+                    import requests as _req
+                    try:
+                        host = str(request.base_url).rstrip("/")
+                        _req.get(f"{host}/api/contribute/status/{evt.session_id}", timeout=10)
+                    except Exception as e2:
+                        logger.warning(f"[stripe-webhook] member finalize self-call failed: {e2}")
         except Exception as e:
             logger.warning(f"[stripe-webhook] post-process failed: {e}")
         return {

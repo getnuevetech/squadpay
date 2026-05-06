@@ -139,24 +139,31 @@ export default function GroupLobbyScreen() {
           </View>
         </View>
 
-        {/* Virtual card (lead-only) */}
-        {isLead && group.virtual_card && (
+        {/* Virtual card (lead-only) — Real Stripe Issuing card (Phase F1) */}
+        {isLead && group.virtual_card && group.virtual_card.stripe_card_id && (
           <View style={styles.cardWrap} testID="lobby-virtual-card">
-            <Text style={styles.cardLabel}>Virtual card · {group.funding?.total_contributed >= group.total ? 'fully funded' : 'funding…'}</Text>
-            <View style={styles.cardFace}>
+            <Text style={styles.cardLabel}>
+              Virtual card · {group.virtual_card.status === 'inactive' ? 'disabled' :
+                (group.funding?.total_contributed >= group.total ? 'active' : 'funding…')}
+            </Text>
+            <View style={[styles.cardFace, group.virtual_card.status === 'inactive' && { opacity: 0.55 }]}>
               <View style={styles.cardChip} />
               <View style={styles.cardRow}>
                 <CreditCard size={20} color="rgba(255,255,255,0.9)" />
                 <View>
-                  <Text style={styles.cardBrand}>GroupPay</Text>
+                  <Text style={styles.cardBrand}>{group.virtual_card.nickname || 'KWIKPAY'}</Text>
                   <Text style={styles.cardGroupName} numberOfLines={1}>{group.title}</Text>
                 </View>
               </View>
               <Text style={styles.cardNumber}>•••• •••• •••• {group.virtual_card.last4}</Text>
               <View style={styles.cardFooter}>
                 <View>
-                  <Text style={styles.cardTinyLabel}>Balance</Text>
-                  <Text style={styles.cardValue}>${group.virtual_card.balance.toFixed(2)}</Text>
+                  <Text style={styles.cardTinyLabel}>Spent</Text>
+                  <Text style={styles.cardValue}>${(group.virtual_card.spent || 0).toFixed(2)}</Text>
+                </View>
+                <View>
+                  <Text style={styles.cardTinyLabel}>Cap</Text>
+                  <Text style={styles.cardValue}>${(group.virtual_card.spend_cap || 0).toFixed(2)}</Text>
                 </View>
                 <View>
                   <Text style={styles.cardTinyLabel}>Exp</Text>
@@ -164,14 +171,12 @@ export default function GroupLobbyScreen() {
                     {String(group.virtual_card.exp_month).padStart(2, '0')}/{String(group.virtual_card.exp_year).slice(-2)}
                   </Text>
                 </View>
-                <View>
-                  <Text style={styles.cardTinyLabel}>CVV</Text>
-                  <Text style={styles.cardValue}>{group.virtual_card.cvv}</Text>
-                </View>
               </View>
             </View>
             <Text style={styles.cardHint}>
-              Funded by group contributions. Use it to pay the merchant.
+              {group.virtual_card.status === 'inactive'
+                ? 'Card disabled. Transactions visible in admin history.'
+                : 'Real Stripe-issued virtual card · PAN/CVV reveal coming soon (Phase F2).'}
             </Text>
           </View>
         )}

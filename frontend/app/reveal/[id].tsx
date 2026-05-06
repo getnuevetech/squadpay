@@ -251,18 +251,48 @@ export default function RevealPage() {
           <View style={{ gap: 14 }}>
             <View style={styles.cardFace}>
               <Text style={styles.cardFaceLabel}>Card number</Text>
-              {/* @ts-ignore */}
-              <div ref={cardNumberRef} style={{ minHeight: 32 }} />
+              {/* @ts-ignore Stripe iframe container. Scale-to-fit is a failsafe in case Stripe's
+                   own internal styling ignores our fontSize. */}
+              <div
+                style={{
+                  width: '100%',
+                  height: 28,
+                  overflow: 'hidden',
+                }}
+              >
+                {/* @ts-ignore */}
+                <div
+                  ref={cardNumberRef}
+                  style={{
+                    transform: 'scale(0.6)',
+                    transformOrigin: 'left center',
+                    width: '167%',   // 100% / 0.6 so iframe gets full content width
+                    height: '100%',
+                  }}
+                />
+              </div>
               <View style={styles.cardFooter}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cardFaceLabel}>Expiry</Text>
                   {/* @ts-ignore */}
-                  <div ref={expiryRef} style={{ minHeight: 28 }} />
+                  <div style={{ width: '100%', height: 24, overflow: 'hidden' }}>
+                    {/* @ts-ignore */}
+                    <div
+                      ref={expiryRef}
+                      style={{ transform: 'scale(0.6)', transformOrigin: 'left center', width: '167%', height: '100%' }}
+                    />
+                  </div>
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cardFaceLabel}>CVC</Text>
                   {/* @ts-ignore */}
-                  <div ref={cvcRef} style={{ minHeight: 28 }} />
+                  <div style={{ width: '100%', height: 24, overflow: 'hidden' }}>
+                    {/* @ts-ignore */}
+                    <div
+                      ref={cvcRef}
+                      style={{ transform: 'scale(0.6)', transformOrigin: 'left center', width: '167%', height: '100%' }}
+                    />
+                  </div>
                 </View>
               </View>
             </View>

@@ -87,9 +87,15 @@ export default function RevealPage() {
     try {
       const v = await api.verifySensitiveOtp(userId, code, 'card_reveal');
       setPhase('fetching_key');
+      // Fetch the group first to get the real Stripe card_id (ic_xxx) — Stripe rejects 'placeholder'.
+      const g = await api.getGroup(groupId);
+      const cardId = (g as any)?.virtual_card?.stripe_card_id;
+      if (!cardId || !String(cardId).startsWith('ic_')) {
+        throw new Error('No active virtual card on this group');
+      }
       const loaded = await ensureStripeJsLoaded(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || '');
       if (!loaded?.stripe) throw new Error('Stripe.js failed to load');
-      const nonceRes = await loaded.stripe.createEphemeralKeyNonce({ issuingCard: 'placeholder' as any });
+      const nonceRes = await loaded.stripe.createEphemeralKeyNonce({ issuingCard: cardId });
       const nonce = (nonceRes as any).nonce || (nonceRes as any).id;
       if (!nonce) throw new Error('Could not generate Stripe nonce');
       const key = await api.getCardEphemeralKey(groupId, {

@@ -92,15 +92,18 @@ export const RevealCardModal: React.FC<Props> = ({ visible, onClose, groupId, us
     try {
       const v = await api.verifySensitiveOtp(userId, code, 'card_reveal');
       setPhase('fetching_key');
-      // Generate a nonce from Stripe.js — required for ephemeral key
+      // Fetch the group to grab the real Stripe Issuing card_id (ic_xxx)
+      const g = await api.getGroup(groupId);
+      const cardId = (g as any)?.virtual_card?.stripe_card_id;
+      if (!cardId || !String(cardId).startsWith('ic_')) {
+        throw new Error('No active virtual card on this group');
+      }
       const stripeJsLoaded = await ensureStripeJsLoaded(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || '');
       if (!stripeJsLoaded || !stripeJsLoaded.stripe) {
         throw new Error('Stripe.js failed to load (web only)');
       }
       const { stripe, version } = stripeJsLoaded;
-      // generate nonce — stripe.createEphemeralKeyNonce()
-      const nonceRes = await stripe.createEphemeralKeyNonce({ issuingCard: 'placeholder' as any });
-      // (the actual `issuingCard` value here is irrelevant for nonce generation)
+      const nonceRes = await stripe.createEphemeralKeyNonce({ issuingCard: cardId });
       const nonce = (nonceRes && (nonceRes as any).nonce) || (nonceRes as any).id || '';
       if (!nonce) throw new Error('Could not create Stripe nonce');
 
@@ -206,33 +209,37 @@ export const RevealCardModal: React.FC<Props> = ({ visible, onClose, groupId, us
           </Text>
 
           {Platform.OS !== 'web' ? (
-            <View style={styles.nativeNotice}>
-              <Smartphone size={20} color={COLORS.warning} />
-              <Text style={styles.nativeText}>
-                For your security, card details open in your phone's secure browser.
-                Tap below — you'll receive a 6-digit SMS code there.
-              </Text>
-              <TouchableOpacity
-                onPress={async () => {
-                  const base = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/api$/, '');
-                  const url = `${base}/reveal/${groupId}?uid=${encodeURIComponent(userId)}`;
-                  try {
-                    const Linking = require('react-native').Linking;
-                    await Linking.openURL(url);  // system browser, NOT in-app
-                  } catch {
-                    try {
-                      const WB = require('expo-web-browser');
-                      await WB.openBrowserAsync(url);
-                    } catch {}
-                  }
-                  onClose();
-                }}
-                style={styles.primaryBtn}
-                testID="reveal-open-web"
-              >
-                <Text style={styles.primaryBtnText}>Open secure browser</Text>
-              </TouchableOpacity>
-            </View>
+            // Native: embed the same /reveal/{id} web page in a WebView so everything
+            // happens INSIDE the app. Stripe iframes work fine in modern mobile WebViews.
+            (() => {
+              try {
+                const { WebView } = require('react-native-webview');
+                const base = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/api$/, '');
+                const url = `${base}/reveal/${groupId}?uid=${encodeURIComponent(userId)}`;
+                return (
+                  <View style={styles.webviewWrap}>
+                    <WebView
+                      source={{ uri: url }}
+                      originWhitelist={["*"]}
+                      javaScriptEnabled
+                      domStorageEnabled
+                      thirdPartyCookiesEnabled
+                      sharedCookiesEnabled
+                      mixedContentMode="always"
+                      allowsInlineMediaPlayback
+                      style={{ flex: 1, backgroundColor: COLORS.bg }}
+                      testID="reveal-webview"
+                    />
+                  </View>
+                );
+              } catch (e: any) {
+                return (
+                  <View style={styles.nativeNotice}>
+                    <Text style={styles.errorText}>WebView unavailable: {e?.message || 'unknown'}</Text>
+                  </View>
+                );
+              }
+            })()
           ) : phase === 'awaiting_otp' || phase === 'verifying_otp' || phase === 'fetching_key' ? (
             <View style={{ gap: 14 }}>
               {otpInfo ? <Text style={styles.helper}>{otpInfo}</Text> : null}
@@ -336,7 +343,7 @@ async function ensureStripeJsLoaded(pubKey: string): Promise<{ stripe: any; vers
 
 const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 16 },
-  sheet: { backgroundColor: COLORS.surface, borderRadius: 16, padding: 20, width: '100%', maxWidth: 420, gap: 8 },
+  sheet: { backgroundColor: COLORS.surface, borderRadius: 16, padding: 20, width: '100%', maxWidth: 460, gap: 8, ...(Platform.OS !== 'web' ? { height: '85%' as any, maxHeight: 720 } : {}) },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   title: { fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold, color: COLORS.text },
@@ -370,4 +377,13 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: COLORS.border,
   },
   nativeText: { fontSize: FONT.sizes.sm, color: COLORS.subtext, textAlign: 'center' },
+  webviewWrap: {
+    flex: 1,
+    minHeight: 480,
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: COLORS.bg,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
 });

@@ -1165,10 +1165,42 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Phase F2 — Stripe Issuing PAN/CVV reveal (OTP-gated) + spend webhook + admin issuing settings"
+    - "Phase F2.1 — Issuing webhook signature verification + Feature toggles + Admin webhook secret UI + Home redesign"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+agent_communication:
+    - agent: "main"
+      message: |
+        Phase F2.1 + UI cleanup implemented. Backend changes only need testing here.
+        Phase F2 (reveal flow) is already passing 49/49 — no regression expected.
+
+        New / changed BACKEND endpoints:
+        1) GET  /api/app-features                 (public, no auth) → {credits_enabled, invite_friends_enabled}
+        2) GET  /api/admin/features               (admin)           → adds updated_at/by
+        3) POST /api/admin/features               (super_admin)     body: {credits_enabled?, invite_friends_enabled?}
+        4) POST /api/admin/integrations/issuing   (super_admin)     now also accepts `webhook_secret`:
+             - Encrypted at rest using same Fernet key as Stripe/Twilio secrets.
+             - GET endpoint returns `webhook_secret_masked` (e.g. "whsec_…AB12") and never the raw blob.
+        5) POST /api/webhook/stripe/issuing       — Now verifies Stripe-Signature against the
+             admin-configured webhook_secret (or falls back to STRIPE_ISSUING_WEBHOOK_SECRET env
+             var). Without a configured secret it accepts unsigned events (dev only).
+
+        Test scenarios:
+        A) GET /api/app-features default → both true.
+        B) Admin POST /api/admin/features with credits_enabled=false → GET /api/app-features
+           reflects the change.
+        C) Admin POST /api/admin/integrations/issuing with webhook_secret="whsec_test123abc"
+           → DB persists `webhook_secret_enc` (encrypted blob) + `webhook_secret_masked`. GET
+           returns masked value, never raw enc blob.
+        D) POST /api/webhook/stripe/issuing with VALID Stripe-signed body using the configured
+           secret → 200. With WRONG signature → 400 "Webhook error: ...".
+        E) Issuing webhook unsigned (when no secret configured) — issuing_authorization.created
+           gets logged to db.issuing_events; issuing_transaction.created mutates group's
+           virtual_card.transactions[] and bumps spent.
+
+        DO NOT TEST FRONTEND.
 
 agent_communication:
     - agent: "main"
@@ -1707,3 +1739,112 @@ agent_communication:
 
         Phase F1 task status set to working=true. No backend action required. Main
         agent may proceed with summarisation.
+
+    - agent: "testing"
+      message: |
+        PHASE F2.1 + Feature Toggles backend test complete via /app/backend_test.py
+        (52 / 56 assertions PASS, 4 FAIL — all due to ONE root cause).
+
+        ✅ FULLY PASSING (52):
+          1) Feature toggles (15/15):
+             - GET /api/app-features (public, no auth) returns {credits_enabled,
+               invite_friends_enabled} — defaults true.
+             - GET /api/admin/features (admin) — returns updated_at/by + flags.
+             - GET /admin/features without bearer → 401.
+             - POST /admin/features {credits_enabled:false} → 200, GET admin + public
+               both reflect.
+             - POST {invite_friends_enabled:false} → 200, public reflects both=false.
+             - Reset to both=true at end ✅.
+          2) Issuing webhook_secret persistence (9/9):
+             - POST /admin/integrations/issuing {"webhook_secret":"whsec_test_phase_f21_…"}
+               → 200; response includes webhook_secret_masked="whsec_…XXXX" (last 4 visible)
+               and contains NO `webhook_secret_enc` and NO raw secret value.
+             - Re-GET reflects masked value persisted; still no enc blob in response.
+             - DB record `app_settings` (key=integrations) contains `issuing.webhook_secret_enc`
+               as a Fernet token (gAAAAA… prefix, NOT plaintext, ~120 chars).
+             - Decryption round-trip with admin.decrypt_secret recovers exact original
+               secret (proves backend Fernet key + encryption working correctly).
+          3) Webhook signature verification (4/5):
+             - No Stripe-Signature header → 400 "Webhook error: Unable to extract
+               timestamp and signatures from header".
+             - Wrong signature → 400 "No signatures found matching the expected signature".
+             - Correctly signed issuing_authorization.created event → 200, and a new
+               row IS inserted into db.issuing_events.
+          5) Phase F2 + F1 regression (16/16):
+             - /auth/sensitive/send-otp + /verify-otp: returns reveal_token (43-char), 200.
+             - /groups/{id}/card/ephemeral-key auth chain: with valid reveal_token,
+               nonce, and stripe_version, the request reaches Stripe and gets a 502
+               "No such ephemeralkeynonce" — this CONFIRMS the auth chain (group/card/lead/
+               token/version) all passed; Stripe just rejects the synthetic nonce. 200/502
+               accepted as success here.
+             - /admin/groups/{id}/disable-card → 200 with virtual_card.status='inactive'
+               (real Stripe issuing.Card.modify confirmed in logs).
+             - GET/POST /admin/integrations/issuing — old fields round-trip:
+               require_otp_for_card_reveal:false, reveal_ttl_seconds:120,
+               card_disable_mode:'manual' → GET reflects → reset to defaults.
+
+        ❌ FAILING (4) — ONE ROOT CAUSE in /app/backend/issuing_reveal.py:
+
+          The `stripe_issuing_webhook` handler can't extract data when a webhook_secret
+          is configured. With an admin-set secret, the handler calls
+            evt = stripe.Webhook.construct_event(body, sig, wh_secret)
+          which returns a Stripe `Event` object whose `data.object` is a `StripeObject`
+          (NOT a Python dict). The handler then uses isinstance-based guards everywhere:
+
+            "card_id": (data_obj.get("card", {}) or {}).get("id") if isinstance(data_obj, dict) else None,
+            "amount":  (data_obj.get("amount") if isinstance(data_obj, dict) else None),
+            ...
+            elif evt_type == "issuing_transaction.created":
+                card_id = (data_obj.get("card") if isinstance(data_obj, dict) else None)
+
+          With `stripe` SDK 15.1.0:
+              type(data_obj).__mro__ -> [Authorization, ListableAPIResource,
+                  UpdateableAPIResource, APIResource, StripeObject, Generic, object]
+              isinstance(data_obj, dict)  →  False
+          Therefore EVERY field becomes None.
+
+          OBSERVABLE EFFECTS in this run:
+            - 3c.issuing_events row inserted but card_id=None, amount=None, merchant=None,
+              approved=None, raw_id=None (verified by direct DB query — most recent doc
+              is all-None for every payload field).
+            - 4.issuing_transaction.created path: `card_id = None` so
+              db.groups.find_one({"virtual_card.stripe_card_id": None}) finds no group →
+              record_issuing_transaction is never called → no transactions[] row written,
+              spent stays 0, auto-disable never triggered. Card status remains "active"
+              even after a $3.00 capture against a $3.00 spend_cap.
+
+          Note: this bug is silent. The webhook still returns 200 (the handler swallows
+          the no-op gracefully). It will look fine in monitoring but settlement,
+          spend tracking, and `card_disable_mode='auto'` simply do not work in production
+          once the admin sets the webhook secret.
+
+          SUGGESTED FIX (1 small change in issuing_reveal.py):
+            Convert the StripeObject to a plain dict ONCE before extraction:
+                if not isinstance(evt, dict):
+                    evt = dict(evt) if hasattr(evt, "to_dict_recursive") else evt.to_dict_recursive() if hasattr(evt, "to_dict_recursive") else json.loads(json.dumps(evt, default=str))
+                # OR simply:
+                data_obj = evt["data"]["object"] if isinstance(evt, dict) else json.loads(json.dumps(evt.data.object, default=str))
+            Or, more cleanly, after construct_event:
+                payload_dict = json.loads(body.decode("utf-8"))   # original signed body
+                evt_type = payload_dict.get("type") or ""
+                data_obj = (payload_dict.get("data") or {}).get("object") or {}
+            Since signature verification has already passed, you can safely re-parse the
+            original body as a plain dict for downstream processing. This single change
+            makes both `issuing_authorization.created` and `issuing_transaction.created`
+            populate fields correctly.
+
+        ASSERTION COUNT: 52 PASS, 4 FAIL out of 56 (all 4 due to the one bug above).
+        NO 5xx stack traces in the run. Backend logs clean except the long-standing
+        passlib bcrypt cosmetic warning + jwt InsecureKeyLengthWarning (pre-existing).
+
+        ACTION ITEMS FOR MAIN AGENT:
+          1) Fix `/app/backend/issuing_reveal.py` `stripe_issuing_webhook` to parse the
+             Stripe-validated event into a plain dict before extracting fields (see
+             suggested fix). After signature verification passes, re-loading the request
+             body as JSON (since the body was already authenticated by HMAC) is the
+             simplest and most robust path.
+          2) Re-run /app/backend_test.py — only the 4 failing assertions in tests 3c.raw_id
+             + 4.transactions/spent/auto-disable need to flip to PASS; everything else
+             is solid (52/56 → expected 56/56).
+
+        Frontend not in scope — no UI action items.

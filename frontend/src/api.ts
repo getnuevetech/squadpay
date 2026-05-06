@@ -307,6 +307,12 @@ export const api = {
       `/contribute/status/${encodeURIComponent(sessionId)}`,
     ),
 
+  // ---- Feature toggles (public — admin-controlled on/off flags) ----
+  getAppFeatures: () =>
+    request<{ credits_enabled: boolean; invite_friends_enabled: boolean }>(
+      `/app-features`,
+    ),
+
   // ---- Phase F2: Card reveal ----
   sendSensitiveOtp: (user_id: string) =>
     request<{ ok: boolean; mocked: boolean; message: string }>(`/auth/sensitive/send-otp`, {

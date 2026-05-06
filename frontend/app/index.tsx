@@ -24,10 +24,16 @@ export default function HomeScreen() {
   const [groups, setGroups] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [features, setFeatures] = useState<{ credits_enabled: boolean; invite_friends_enabled: boolean }>({
+    credits_enabled: true,
+    invite_friends_enabled: true,
+  });
 
   const load = useCallback(async () => {
     const u = await refreshUser();
     setUser(u);
+    // Load feature toggles in parallel (non-blocking)
+    api.getAppFeatures().then(setFeatures).catch(() => {});
     if (u) {
       try {
         const gs = await api.getUserGroups(u.id);
@@ -138,7 +144,7 @@ export default function HomeScreen() {
             activeOpacity={0.9}
           >
             <View style={styles.actionIconWhite}>
-              <Plus color={COLORS.primary} size={22} />
+              <Plus color={COLORS.primary} size={24} />
             </View>
             <Text style={styles.actionPrimaryTitle}>Start a Bill</Text>
             <Text style={styles.actionPrimarySub}>Scan or enter total</Text>
@@ -151,47 +157,42 @@ export default function HomeScreen() {
             activeOpacity={0.9}
           >
             <View style={styles.actionIcon}>
-              <QrCode color={COLORS.primary} size={22} />
+              <QrCode color={COLORS.primary} size={24} />
             </View>
             <Text style={styles.actionTitle}>Join a Bill</Text>
             <Text style={styles.actionSub}>Enter code or link</Text>
           </TouchableOpacity>
         </View>
 
-        {/* C1: invite friends entry point */}
-        <View style={{ flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.lg }}>
-          <TouchableOpacity
-            testID="home-invite-btn"
-            style={[styles.inviteCard, { flex: 2 }]}
-            onPress={() => router.push('/invite')}
-            activeOpacity={0.85}
-          >
-            <View style={styles.inviteIcon}>
-              <Gift color={COLORS.primary} size={20} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inviteTitle}>Invite friends</Text>
-              <Text style={styles.inviteSub} numberOfLines={1}>
-                {user.referral_code ? `Code: ${user.referral_code}` : 'Share your code'}
-              </Text>
-            </View>
-            <ChevronRight color={COLORS.subtext} size={18} />
-          </TouchableOpacity>
-          <TouchableOpacity
-            testID="home-credits-btn"
-            style={[styles.inviteCard, { flex: 1, borderColor: COLORS.success }]}
-            onPress={() => router.push('/credits')}
-            activeOpacity={0.85}
-          >
-            <View style={[styles.inviteIcon, { backgroundColor: COLORS.successLight }]}>
-              <Wallet color={COLORS.success} size={18} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.inviteTitle, { color: COLORS.success }]}>Credits</Text>
-              <Text style={styles.inviteSub}>View wallet</Text>
-            </View>
-          </TouchableOpacity>
-        </View>
+        {/* Compact secondary row — feature-gated by admin */}
+        {(features.invite_friends_enabled || features.credits_enabled) ? (
+          <View style={styles.secondaryRow}>
+            {features.invite_friends_enabled ? (
+              <TouchableOpacity
+                testID="home-invite-btn"
+                style={styles.secondaryPill}
+                onPress={() => router.push('/invite')}
+                activeOpacity={0.7}
+              >
+                <Gift color={COLORS.subtext} size={14} />
+                <Text style={styles.secondaryPillText} numberOfLines={1}>
+                  Invite friends{user.referral_code ? ` · ${user.referral_code}` : ''}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+            {features.credits_enabled ? (
+              <TouchableOpacity
+                testID="home-credits-btn"
+                style={styles.secondaryPill}
+                onPress={() => router.push('/credits')}
+                activeOpacity={0.7}
+              >
+                <Wallet color={COLORS.subtext} size={14} />
+                <Text style={styles.secondaryPillText}>My credits</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        ) : null}
 
         <Text style={styles.sectionTitle}>Recent Activity</Text>
         {groups.length === 0 ? (
@@ -315,31 +316,55 @@ const styles = StyleSheet.create({
   actionCard: {
     flex: 1,
     borderRadius: RADIUS.lg,
-    padding: SPACING.md,
-    minHeight: 130,
+    padding: SPACING.lg,
+    minHeight: 150,
   },
-  actionPrimary: { backgroundColor: COLORS.primary },
+  actionPrimary: {
+    backgroundColor: COLORS.primary,
+    // Elevated so it reads as THE primary action — nothing else should overshadow it
+    shadowColor: COLORS.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+    elevation: 6,
+  },
   actionSecondary: {
     backgroundColor: COLORS.surface,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    borderWidth: 1.5,
+    borderColor: COLORS.primary,
   },
   actionIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
+    width: 48,
+    height: 48,
+    borderRadius: 12,
     backgroundColor: COLORS.primaryLight,
     alignItems: 'center',
     justifyContent: 'center',
   },
   actionIconWhite: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: '#fff',
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.2)',
     alignItems: 'center',
     justifyContent: 'center',
   },
+  // Compact secondary row for Invite + Credits (deliberately low-key)
+  secondaryRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: SPACING.sm,
+    marginTop: SPACING.md,
+    marginBottom: SPACING.lg,
+  },
+  secondaryPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingVertical: 6, paddingHorizontal: 10,
+    borderRadius: 999,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1, borderColor: COLORS.border,
+  },
+  secondaryPillText: { fontSize: FONT.sizes.xs, color: COLORS.subtext, fontWeight: FONT.weights.medium },
   actionPrimaryTitle: {
     marginTop: SPACING.md,
     color: '#fff',

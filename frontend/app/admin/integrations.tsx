@@ -47,6 +47,11 @@ export default function AdminIntegrations() {
   const [issCardholderId, setIssCardholderId] = useState<string | null>(null);
   const [issRequireOtp, setIssRequireOtp] = useState(true);
   const [issRevealTtl, setIssRevealTtl] = useState('60');
+  const [issWebhookSecret, setIssWebhookSecret] = useState('');
+
+  // Feature toggles
+  const [featCredits, setFeatCredits] = useState(true);
+  const [featInvite, setFeatInvite] = useState(true);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -75,6 +80,12 @@ export default function AdminIntegrations() {
         setIssCardholderId(iss.cardholder_id || null);
         setIssRequireOtp((iss as any).require_otp_for_card_reveal !== false);
         setIssRevealTtl(String((iss as any).reveal_ttl_seconds || 60));
+        setIssWebhookSecret(((iss as any).webhook_secret_masked) || '');
+      } catch {}
+      try {
+        const f = await adminApi.getFeatures();
+        setFeatCredits(f.credits_enabled !== false);
+        setFeatInvite(f.invite_friends_enabled !== false);
       } catch {}
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Failed to load');
@@ -159,9 +170,19 @@ export default function AdminIntegrations() {
         card_disable_mode: issDisableMode,
         require_otp_for_card_reveal: issRequireOtp,
         reveal_ttl_seconds: parseInt(issRevealTtl, 10) || 60,
+        webhook_secret: issWebhookSecret.startsWith('whsec_') ? issWebhookSecret : undefined,
       });
       await load();
       Alert.alert('Saved', `Issuing ${issEnabled ? 'enabled' : 'disabled'} · disable mode: ${issDisableMode}`);
+    } catch (e: any) { Alert.alert('Error', e?.message || 'Failed'); }
+    finally { setSaving(null); }
+  };
+
+  const saveFeatures = async () => {
+    setSaving('feat');
+    try {
+      await adminApi.setFeatures({ credits_enabled: featCredits, invite_friends_enabled: featInvite });
+      Alert.alert('Saved', `Features updated · Credits: ${featCredits ? 'on' : 'off'} · Invite: ${featInvite ? 'on' : 'off'}`);
     } catch (e: any) { Alert.alert('Error', e?.message || 'Failed'); }
     finally { setSaving(null); }
   };
@@ -266,6 +287,22 @@ export default function AdminIntegrations() {
           testID="admin-issuing-ttl"
         />
 
+        <Text style={styles.label}>Issuing webhook signing secret</Text>
+        <TextInput
+          style={styles.input}
+          value={issWebhookSecret}
+          onChangeText={setIssWebhookSecret}
+          placeholder="whsec_…  (paste from Stripe Dashboard → Webhooks)"
+          placeholderTextColor={COLORS.disabledText}
+          autoCapitalize="none"
+          testID="admin-issuing-webhook-secret"
+        />
+        <Text style={styles.helper}>
+          Webhook URL to register in Stripe Dashboard → Developers → Webhooks → Add endpoint:
+          {`\n${typeof window !== 'undefined' ? (window as any).location?.origin : ''}/api/webhook/stripe/issuing`}
+          {`\n\nEvents to subscribe: issuing_authorization.created, issuing_transaction.created`}
+        </Text>
+
         {issCardholderId ? (
           <Text style={styles.metaSmall}>Cardholder: {issCardholderId}</Text>
         ) : (
@@ -276,6 +313,37 @@ export default function AdminIntegrations() {
 
         <TouchableOpacity onPress={saveIssuing} disabled={saving === 'iss'} style={[styles.saveBtn, { backgroundColor: '#0EA5E9', opacity: saving === 'iss' ? 0.6 : 1 }]} activeOpacity={0.85} testID="admin-issuing-save">
           <Save size={14} color="#fff" /><Text style={styles.saveBtnText}>{saving === 'iss' ? 'Saving…' : 'Save Issuing settings'}</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* App-wide Feature Toggles */}
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <View style={styles.cardIcon}><MessageSquare size={18} color="#10B981" /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.cardTitle}>App Features</Text>
+            <Text style={styles.cardSub}>Enable / disable user-facing features. Disabled features are hidden in the user app.</Text>
+          </View>
+        </View>
+
+        <View style={styles.toggleRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.label}>Credits / Wallet</Text>
+            <Text style={styles.helper}>Show credits balance pill, /credits page, and auto-apply credits during contributions.</Text>
+          </View>
+          <Switch value={featCredits} onValueChange={setFeatCredits} trackColor={{ false: COLORS.disabledBg, true: '#10B981' }} thumbColor="#fff" testID="admin-feat-credits" />
+        </View>
+
+        <View style={styles.toggleRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.label}>Invite friends</Text>
+            <Text style={styles.helper}>Show "Invite friends" entry on home + the /invite share page.</Text>
+          </View>
+          <Switch value={featInvite} onValueChange={setFeatInvite} trackColor={{ false: COLORS.disabledBg, true: '#10B981' }} thumbColor="#fff" testID="admin-feat-invite" />
+        </View>
+
+        <TouchableOpacity onPress={saveFeatures} disabled={saving === 'feat'} style={[styles.saveBtn, { backgroundColor: '#10B981', opacity: saving === 'feat' ? 0.6 : 1 }]} activeOpacity={0.85} testID="admin-feat-save">
+          <Save size={14} color="#fff" /><Text style={styles.saveBtnText}>{saving === 'feat' ? 'Saving…' : 'Save feature toggles'}</Text>
         </TouchableOpacity>
       </View>
 

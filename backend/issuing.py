@@ -58,15 +58,35 @@ async def get_issuing_settings(db) -> Dict[str, Any]:
 
 
 async def set_issuing_settings(db, patch: Dict[str, Any]) -> Dict[str, Any]:
-    """Merge updates into app_settings.integrations.issuing."""
+    """Merge updates into app_settings.integrations.issuing.
+
+    Encrypts `webhook_secret` (Stripe Issuing webhook signing secret) at rest.
+    Returns the public-safe view (masked secret).
+    """
     cur = await get_issuing_settings(db)
-    new = {**cur, **{k: v for k, v in patch.items() if v is not None}, "updated_at": _now()}
+    incoming = {k: v for k, v in patch.items() if v is not None}
+    # Encrypt webhook_secret at rest
+    if "webhook_secret" in incoming:
+        plain = (incoming.pop("webhook_secret") or "").strip()
+        if plain:
+            try:
+                from admin import encrypt_secret  # type: ignore
+                incoming["webhook_secret_enc"] = encrypt_secret(plain)
+                incoming["webhook_secret_masked"] = (
+                    plain[:6] + "…" + plain[-4:] if len(plain) > 12 else "configured"
+                )
+            except Exception as e:
+                logger.warning(f"[issuing] encrypt webhook_secret failed: {e}")
+    new = {**cur, **incoming, "updated_at": _now()}
     await db.app_settings.update_one(
         {"key": SETTINGS_KEY},
         {"$set": {"issuing": new}},
         upsert=True,
     )
-    return new
+    # Public view: never return raw encrypted blob
+    public = dict(new)
+    public.pop("webhook_secret_enc", None)
+    return public
 
 
 async def get_or_create_business_cardholder(db) -> str:

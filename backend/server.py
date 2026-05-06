@@ -1708,6 +1708,16 @@ from admin_routes import build_admin_router  # noqa: E402
 
 api_router.include_router(build_admin_router(db))
 
+@api_router.get("/app-features")
+async def get_app_features():
+    """Public endpoint — feature flags for the user app (no auth). Admin-controlled."""
+    rec = await db.app_settings.find_one({"key": "features"}, {"_id": 0}) or {}
+    return {
+        "credits_enabled": rec.get("credits_enabled", True),
+        "invite_friends_enabled": rec.get("invite_friends_enabled", True),
+    }
+
+
 # Phase F1.1: Native bridge — Stripe redirects here from in-app browser, we JS-redirect to deep link
 from fastapi.responses import HTMLResponse
 

@@ -45,6 +45,12 @@ class IssuingSettingsIn(BaseModel):
     card_disable_mode: Optional[Literal["auto", "manual"]] = None
     require_otp_for_card_reveal: Optional[bool] = None
     reveal_ttl_seconds: Optional[int] = None
+    webhook_secret: Optional[str] = None  # Phase F2.1 — Stripe Issuing webhook signing
+
+
+class FeatureTogglesIn(BaseModel):
+    credits_enabled: Optional[bool] = None
+    invite_friends_enabled: Optional[bool] = None
 
 
 class TestSmsIn(BaseModel):
@@ -222,7 +228,10 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
     @router.get("/integrations/issuing")
     async def get_issuing(admin=Depends(attach_admin)):
         from issuing import get_issuing_settings
-        return await get_issuing_settings(db)
+        s = await get_issuing_settings(db)
+        # Never return the raw encrypted blob to the client
+        s.pop("webhook_secret_enc", None)
+        return s
 
     @router.post("/integrations/issuing")
     async def set_issuing(
@@ -273,3 +282,42 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
             request=request,
         )
         return {"ok": True, "virtual_card": vc}
+
+    # ===== FEATURE TOGGLES (app-wide on/off flags) =====
+    @router.get("/features")
+    async def admin_get_features(admin=Depends(attach_admin)):
+        rec = await db.app_settings.find_one({"key": "features"}, {"_id": 0}) or {}
+        return {
+            "credits_enabled": rec.get("credits_enabled", True),
+            "invite_friends_enabled": rec.get("invite_friends_enabled", True),
+            "updated_at": rec.get("updated_at"),
+            "updated_by": rec.get("updated_by"),
+        }
+
+    @router.post("/features")
+    async def admin_set_features(
+        body: FeatureTogglesIn,
+        request: Request,
+        admin=Depends(attach_admin),
+        _check=Depends(require_role("super_admin")),
+    ):
+        patch = {k: v for k, v in body.dict().items() if v is not None}
+        patch["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        patch["updated_by"] = admin.get("email")
+        await db.app_settings.update_one(
+            {"key": "features"},
+            {"$set": patch},
+            upsert=True,
+        )
+        await write_audit(
+            db,
+            admin_id=admin["id"],
+            admin_email=admin["email"],
+            action="admin.update_features",
+            target_type="settings",
+            target_id="features",
+            payload=patch,
+            request=request,
+        )
+        rec = await db.app_settings.find_one({"key": "features"}, {"_id": 0}) or {}
+        return rec

@@ -20,6 +20,7 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 REVEAL_TOKEN_TTL = 300  # 5 minutes
+SETTINGS_KEY = "integrations"
 
 
 def _now() -> str:
@@ -204,15 +205,32 @@ def attach_reveal_routes(api_router: APIRouter, db):
     async def stripe_issuing_webhook(request: Request):
         """Handle issuing_authorization.created and issuing_transaction.created.
 
-        On real settled spend (transaction): append to group.virtual_card.transactions[],
-        bump `spent`. If admin has card_disable_mode='auto' and `spent >= spend_cap`, auto-disable.
+        Signature: if app_settings.integrations.issuing.webhook_secret is configured (admin-set
+        via the dashboard, persisted ENCRYPTED), verifies the Stripe-Signature header. Otherwise
+        accepts the event unsigned (test/dev only).
         """
         body = await request.body()
         sig = request.headers.get("Stripe-Signature")
-        # Verify signature using the shared webhook secret (if configured); else parse JSON only.
         import stripe as _stripe_sdk, json as _json
         _stripe_sdk.api_key = os.environ.get("STRIPE_API_KEY")
-        wh_secret = os.environ.get("STRIPE_ISSUING_WEBHOOK_SECRET")
+
+        # Resolve webhook secret: prefer admin-set encrypted secret, fallback to env var
+        wh_secret = None
+        try:
+            from admin import decrypt_secret  # type: ignore
+            rec = await db.app_settings.find_one({"key": SETTINGS_KEY}, {"_id": 0}) or {}
+            iss = (rec.get("issuing") or {})
+            enc = iss.get("webhook_secret_enc")
+            if enc:
+                try:
+                    wh_secret = decrypt_secret(enc)
+                except Exception as e:
+                    logger.warning(f"[issuing-webhook] decrypt failed: {e}")
+        except Exception:
+            pass
+        if not wh_secret:
+            wh_secret = os.environ.get("STRIPE_ISSUING_WEBHOOK_SECRET")
+
         try:
             if wh_secret:
                 evt = _stripe_sdk.Webhook.construct_event(body, sig, wh_secret)

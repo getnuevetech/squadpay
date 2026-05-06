@@ -178,6 +178,12 @@ export const adminApi = {
   disableGroupCard: (groupId: string) =>
     request<{ ok: boolean; virtual_card: any }>(`/groups/${groupId}/disable-card`, { method: 'POST' }),
 
+  // ---- Feature toggles ----
+  getFeatures: () =>
+    request<{ credits_enabled: boolean; invite_friends_enabled: boolean; updated_at?: string; updated_by?: string }>(`/features`),
+  setFeatures: (body: { credits_enabled?: boolean; invite_friends_enabled?: boolean }) =>
+    request<any>(`/features`, { method: 'POST', body: JSON.stringify(body) }),
+
   // ---- Phase C1: Referrals ----
   getReferralSettings: () => request<ReferralSettings>('/referrals/settings'),
   setReferralSettings: (s: ReferralSettings) =>

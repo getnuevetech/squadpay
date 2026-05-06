@@ -26,6 +26,7 @@ def _now() -> str:
 
 class CreateCheckoutIn(BaseModel):
     origin_url: str  # frontend host (window.location.origin), used to build success/cancel URLs
+    app_return_url: Optional[str] = None  # native deep link (Phase F1.1)
 
 
 def attach_payment_routes(api_router: APIRouter, db):
@@ -57,8 +58,25 @@ def attach_payment_routes(api_router: APIRouter, db):
         if not origin.startswith("http"):
             raise HTTPException(400, "origin_url must include scheme (http(s)://...)")
 
-        success_url = f"{origin}/group/{group_id}/pay?session_id={{CHECKOUT_SESSION_ID}}"
-        cancel_url = f"{origin}/group/{group_id}/pay?stripe_cancel=1"
+        # Phase F1.1 native bridge support
+        app_return = (body.app_return_url or "").strip()
+        if app_return:
+            from urllib.parse import quote
+            success_url = (
+                f"{origin}/api/checkout/native-bridge"
+                f"?session_id={{CHECKOUT_SESSION_ID}}"
+                f"&dest={quote(app_return, safe='')}"
+                f"&kind=lead_pay"
+            )
+            cancel_url = (
+                f"{origin}/api/checkout/native-bridge"
+                f"?session_id={{CHECKOUT_SESSION_ID}}"
+                f"&dest={quote(app_return, safe='')}"
+                f"&kind=lead_pay&cancel=1"
+            )
+        else:
+            success_url = f"{origin}/group/{group_id}/pay?session_id={{CHECKOUT_SESSION_ID}}"
+            cancel_url = f"{origin}/group/{group_id}/pay?stripe_cancel=1"
 
         stripe_checkout = _stripe(http_request)
         try:

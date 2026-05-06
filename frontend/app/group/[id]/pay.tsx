@@ -160,13 +160,37 @@ export default function PayScreen() {
       const origin = Platform.OS === 'web' && typeof window !== 'undefined'
         ? window.location.origin
         : (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/api$/, '');
-      const r = await api.createCheckoutSession(id, origin);
+      let appReturnUrl: string | undefined;
+      if (Platform.OS !== 'web') {
+        try {
+          const Linking = require('expo-linking');
+          appReturnUrl = Linking.createURL(`/group/${id}/pay`);
+        } catch {}
+      }
+      const r = await api.createCheckoutSession(id, origin, appReturnUrl);
       if (Platform.OS === 'web' && typeof window !== 'undefined') {
         window.location.href = r.url;
       } else {
         try {
           const WebBrowser = require('expo-web-browser');
-          await WebBrowser.openBrowserAsync(r.url);
+          const result = await WebBrowser.openAuthSessionAsync(r.url, appReturnUrl || origin);
+          if (result?.type === 'success' && typeof result.url === 'string') {
+            try {
+              const Linking = require('expo-linking');
+              const parsed = Linking.parse(result.url);
+              const qp: any = parsed?.queryParams || {};
+              if (qp.stripe_cancel) {
+                setStripeBanner('Stripe payment was cancelled.');
+              } else if (qp.session_id) {
+                router.replace(`/group/${id}/pay?kind=lead&session_id=${encodeURIComponent(qp.session_id)}`);
+              }
+            } catch {
+              try { setGroup(await api.getGroup(id)); } catch {}
+            }
+          } else if (result?.type === 'cancel' || result?.type === 'dismiss') {
+            setStripeBanner('Stripe payment was cancelled or dismissed.');
+            try { setGroup(await api.getGroup(id)); } catch {}
+          }
         } catch {
           Alert.alert('Open in browser', r.url);
         }
@@ -298,11 +322,19 @@ export default function PayScreen() {
         }
       } else if (kind === 'contribute') {
         // Phase F1: contribute via Stripe Checkout (real card) — credits applied automatically.
+        // Phase F1.1: native uses deep-link bridge so the in-app browser auto-closes after payment.
         const origin =
           Platform.OS === 'web' && typeof window !== 'undefined'
             ? window.location.origin
             : (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/api$/, '');
-        const r: any = await api.contribute(group.id, userId, amount, notifyOnSettled, origin);
+        let appReturnUrl: string | undefined;
+        if (Platform.OS !== 'web') {
+          try {
+            const Linking = require('expo-linking');
+            appReturnUrl = Linking.createURL(`/group/${group.id}/pay`);
+          } catch {}
+        }
+        const r: any = await api.contribute(group.id, userId, amount, notifyOnSettled, origin, appReturnUrl);
         if (r.checkout_required === false) {
           // Fully covered by credits — no Stripe needed
           router.replace(
@@ -316,7 +348,29 @@ export default function PayScreen() {
         } else {
           try {
             const WebBrowser = require('expo-web-browser');
-            await WebBrowser.openBrowserAsync(r.url);
+            // Use auth-session so the in-app browser auto-closes when it sees our deep link.
+            const result = await WebBrowser.openAuthSessionAsync(r.url, appReturnUrl || origin);
+            if (result?.type === 'success' && typeof result.url === 'string') {
+              // Parse contrib_session_id (or stripe_cancel) from the redirected URL and forward
+              try {
+                const Linking = require('expo-linking');
+                const parsed = Linking.parse(result.url);
+                const qp: any = parsed?.queryParams || {};
+                if (qp.stripe_cancel) {
+                  setStripeBanner('Stripe payment was cancelled.');
+                } else if (qp.contrib_session_id) {
+                  // Update the URL on this screen so the existing polling effect picks it up.
+                  router.replace(`/group/${group.id}/pay?kind=contribute&contrib_session_id=${encodeURIComponent(qp.contrib_session_id)}`);
+                }
+              } catch (parseErr) {
+                // Fallback: refresh group, the webhook will finalize.
+                try { setGroup(await api.getGroup(group.id)); } catch {}
+              }
+            } else if (result?.type === 'cancel' || result?.type === 'dismiss') {
+              setStripeBanner('Stripe payment was cancelled or dismissed.');
+              // Best-effort refresh in case payment actually completed via webhook.
+              try { setGroup(await api.getGroup(group.id)); } catch {}
+            }
           } catch {
             Alert.alert('Open in browser', r.url);
           }

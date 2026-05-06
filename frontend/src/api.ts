@@ -293,13 +293,14 @@ export const api = {
     amount?: number,
     notify_on_settled?: boolean,
     origin_url?: string,
+    app_return_url?: string,
   ) =>
     request<
       | { checkout_required: false; credit_only: true; amount: number; credit_applied: number; group: Group }
       | { checkout_required: true; url: string; session_id: string; amount: number; cash_owed: number; credit_planned: number }
     >(`/groups/${id}/contribute`, {
       method: 'POST',
-      body: JSON.stringify({ user_id, amount, notify_on_settled, origin_url }),
+      body: JSON.stringify({ user_id, amount, notify_on_settled, origin_url, app_return_url }),
     }),
   getContributeStatus: (sessionId: string) =>
     request<{ session_id: string; status: string; payment_status: string; amount_total: number | null; currency: string | null; applied: boolean; group_id: string }>(
@@ -329,10 +330,10 @@ export const api = {
     }),
 
   // Phase E: Stripe Checkout
-  createCheckoutSession: (groupId: string, originUrl: string) =>
+  createCheckoutSession: (groupId: string, originUrl: string, appReturnUrl?: string) =>
     request<{ url: string; session_id: string; amount: number }>(
       `/groups/${groupId}/checkout-session`,
-      { method: 'POST', body: JSON.stringify({ origin_url: originUrl }) },
+      { method: 'POST', body: JSON.stringify({ origin_url: originUrl, app_return_url: appReturnUrl }) },
     ),
   getCheckoutStatus: (sessionId: string) =>
     request<{ session_id: string; status: string; payment_status: string; amount_total: number; currency: string; applied: boolean; group_id: string }>(

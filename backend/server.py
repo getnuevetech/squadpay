@@ -326,6 +326,7 @@ class ContributeIn(BaseModel):
     notify_on_settled: bool = False
     notify_on_settled: Optional[bool] = False
     origin_url: Optional[str] = None  # Required when cash payment is needed (Phase F1 — Stripe Checkout)
+    app_return_url: Optional[str] = None  # Native deep-link (e.g. exp://...) to bridge back to the app after Stripe
 
 
 class AppendItemsIn(BaseModel):
@@ -1041,8 +1042,29 @@ async def contribute(group_id: str, body: ContributeIn, request: Request):
     import stripe as _stripe_sdk
     _stripe_sdk.api_key = os.environ.get("STRIPE_API_KEY")
 
-    success_url = f"{origin}/group/{group_id}/pay?contrib_session_id={{CHECKOUT_SESSION_ID}}"
-    cancel_url = f"{origin}/group/{group_id}/pay?stripe_cancel=1"
+    # Phase F1.1 — Native bridge: when the client passes `app_return_url` (a deep link
+    # like exp://...), Stripe redirects to a backend bridge page that JS-redirects to
+    # the deep link, popping the user back into the native app. WebBrowser.openAuthSessionAsync
+    # auto-closes the in-app browser when it sees the deep link.
+    app_return = (body.app_return_url or "").strip() if hasattr(body, "app_return_url") else ""
+    if app_return:
+        from urllib.parse import quote
+        bridge_base = origin  # frontend origin is web; bridge served by web preview at /api
+        success_url = (
+            f"{bridge_base}/api/checkout/native-bridge"
+            f"?session_id={{CHECKOUT_SESSION_ID}}"
+            f"&dest={quote(app_return, safe='')}"
+            f"&kind=contribute"
+        )
+        cancel_url = (
+            f"{bridge_base}/api/checkout/native-bridge"
+            f"?session_id={{CHECKOUT_SESSION_ID}}"
+            f"&dest={quote(app_return, safe='')}"
+            f"&kind=contribute&cancel=1"
+        )
+    else:
+        success_url = f"{origin}/group/{group_id}/pay?contrib_session_id={{CHECKOUT_SESSION_ID}}"
+        cancel_url = f"{origin}/group/{group_id}/pay?stripe_cancel=1"
 
     try:
         session = _stripe_sdk.checkout.Session.create(
@@ -1637,7 +1659,69 @@ from admin_routes import build_admin_router  # noqa: E402
 
 api_router.include_router(build_admin_router(db))
 
-# Phase E: Stripe Checkout payment routes (attach before app.include_router)
+# Phase F1.1: Native bridge — Stripe redirects here from in-app browser, we JS-redirect to deep link
+from fastapi.responses import HTMLResponse
+
+
+@api_router.get("/checkout/native-bridge", response_class=HTMLResponse)
+async def native_bridge(session_id: str = "", dest: str = "", kind: str = "contribute", cancel: str = ""):
+    """Stripe Checkout redirects here from the in-app browser; we JS-redirect to the
+    Expo/native deep link so iOS/Android pops back into the app and the WebBrowser
+    auth-session resolves with the URL.
+
+    Query params:
+      session_id   — Stripe Checkout session id (cs_test_…)
+      dest         — URL-encoded native deep link (exp://…/--/group/{id}/pay or kwikpay://…)
+      kind         — "contribute" | "lead_pay"  (drives the param name)
+      cancel       — "1" if Stripe sent us here on cancel
+    """
+    from urllib.parse import urlparse, urlencode, parse_qsl
+    if not dest:
+        return HTMLResponse("Missing dest", status_code=400)
+    try:
+        parsed = urlparse(dest)
+        existing = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    except Exception:
+        existing = {}
+    if cancel == "1":
+        existing["stripe_cancel"] = "1"
+    elif kind == "contribute":
+        existing["contrib_session_id"] = session_id
+    else:
+        existing["session_id"] = session_id
+    new_query = urlencode(existing)
+    target = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    if parsed.path.endswith("/--"):
+        target = f"{parsed.scheme}://{parsed.netloc}/--{parsed.path[3:]}"  # safety
+    if not parsed.path:
+        target = f"{parsed.scheme}://{parsed.netloc}"
+    final = f"{parsed.scheme}://{parsed.netloc}{parsed.path}{('?' + new_query) if new_query else ''}"
+    if parsed.fragment:
+        final += f"#{parsed.fragment}"
+    safe_final = final.replace('"', "%22")
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset=\"utf-8\"><title>Returning to KWIKPAY…</title>
+<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
+<style>
+  body{{font-family:-apple-system,system-ui,sans-serif;background:#0F172A;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;padding:20px}}
+  .box{{max-width:380px}} .spin{{width:42px;height:42px;border:4px solid rgba(255,255,255,0.15);border-top-color:#4F46E5;border-radius:50%;animation:s 0.9s linear infinite;margin:0 auto 18px}}
+  @keyframes s{{to{{transform:rotate(360deg)}}}}
+  a{{color:#A5B4FC}}
+</style></head><body><div class=\"box\">
+  <div class=\"spin\"></div>
+  <h2>{'Cancelled' if cancel == '1' else 'Payment confirmed'}</h2>
+  <p>Returning you to the KWIKPAY app…</p>
+  <p style=\"font-size:13px;color:#94A3B8\">If nothing happens, <a href=\"{safe_final}\">tap here</a>.</p>
+</div>
+<script>
+  (function(){{
+    var url={safe_final!r};
+    setTimeout(function(){{ window.location.replace(url); }}, 100);
+    // Some in-app browsers block JS redirect to deep links — also try meta-refresh & link click
+    setTimeout(function(){{ try{{ window.location.href = url; }}catch(e){{}} }}, 600);
+  }})();
+</script></body></html>"""
+    return HTMLResponse(html)
 try:
     from payments import attach_payment_routes  # noqa: E402
     attach_payment_routes(api_router, db)

@@ -144,7 +144,7 @@ export default function HomeScreen() {
             activeOpacity={0.9}
           >
             <View style={styles.actionIconWhite}>
-              <Plus color={COLORS.primary} size={24} />
+              <Plus color="#FFFFFF" size={26} strokeWidth={2.6} />
             </View>
             <Text style={styles.actionPrimaryTitle}>Start a Bill</Text>
             <Text style={styles.actionPrimarySub}>Scan or enter total</Text>
@@ -163,36 +163,6 @@ export default function HomeScreen() {
             <Text style={styles.actionSub}>Enter code or link</Text>
           </TouchableOpacity>
         </View>
-
-        {/* Compact secondary row — feature-gated by admin */}
-        {(features.invite_friends_enabled || features.credits_enabled) ? (
-          <View style={styles.secondaryRow}>
-            {features.invite_friends_enabled ? (
-              <TouchableOpacity
-                testID="home-invite-btn"
-                style={styles.secondaryPill}
-                onPress={() => router.push('/invite')}
-                activeOpacity={0.7}
-              >
-                <Gift color={COLORS.subtext} size={14} />
-                <Text style={styles.secondaryPillText} numberOfLines={1}>
-                  Invite friends{user.referral_code ? ` · ${user.referral_code}` : ''}
-                </Text>
-              </TouchableOpacity>
-            ) : null}
-            {features.credits_enabled ? (
-              <TouchableOpacity
-                testID="home-credits-btn"
-                style={styles.secondaryPill}
-                onPress={() => router.push('/credits')}
-                activeOpacity={0.7}
-              >
-                <Wallet color={COLORS.subtext} size={14} />
-                <Text style={styles.secondaryPillText}>My credits</Text>
-              </TouchableOpacity>
-            ) : null}
-          </View>
-        ) : null}
 
         <Text style={styles.sectionTitle}>Recent Activity</Text>
         {groups.length === 0 ? (
@@ -228,6 +198,34 @@ export default function HomeScreen() {
             )}
           />
         )}
+
+        {/* Secondary actions — Referrals + My Credits, low-key text-only buttons */}
+        {(features.invite_friends_enabled || features.credits_enabled) ? (
+          <View style={styles.secondaryRow}>
+            {features.invite_friends_enabled ? (
+              <TouchableOpacity
+                testID="home-invite-btn"
+                style={styles.textBtn}
+                onPress={() => router.push('/invite')}
+                activeOpacity={0.7}
+              >
+                <Gift color={COLORS.primary} size={16} />
+                <Text style={styles.textBtnLabel}>Referrals</Text>
+              </TouchableOpacity>
+            ) : null}
+            {features.credits_enabled ? (
+              <TouchableOpacity
+                testID="home-credits-btn"
+                style={styles.textBtn}
+                onPress={() => router.push('/credits')}
+                activeOpacity={0.7}
+              >
+                <Wallet color={COLORS.primary} size={16} />
+                <Text style={styles.textBtnLabel}>My Credits</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        ) : null}
       </ScrollView>
     </SafeAreaView>
   );
@@ -349,14 +347,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  // Compact secondary row for Invite + Credits (deliberately low-key)
+  // Compact secondary row for Referrals + Credits — text-only buttons in primary color
   secondaryRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: SPACING.sm,
-    marginTop: SPACING.md,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: SPACING.xl,
+    marginTop: SPACING.xl,
     marginBottom: SPACING.lg,
+    paddingVertical: SPACING.md,
   },
+  textBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  textBtnLabel: {
+    fontSize: FONT.sizes.md,
+    color: COLORS.primary,
+    fontWeight: FONT.weights.semibold,
+  },
+  // Legacy (kept in case referenced elsewhere)
   secondaryPill: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     paddingVertical: 6, paddingHorizontal: 10,

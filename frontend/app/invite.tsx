@@ -81,9 +81,24 @@ export default function InviteScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView contentContainerStyle={{ padding: SPACING.md, paddingBottom: SPACING.xxl }}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} activeOpacity={0.7} testID="invite-back">
+        <TouchableOpacity
+          onPress={() => {
+            try {
+              if ((router as any).canGoBack && (router as any).canGoBack()) {
+                router.back();
+              } else {
+                router.replace('/');
+              }
+            } catch {
+              router.replace('/');
+            }
+          }}
+          style={styles.backBtn}
+          activeOpacity={0.7}
+          testID="invite-back"
+        >
           <ArrowLeft size={18} color={COLORS.text} />
-          <Text style={styles.backText}>Back</Text>
+          <Text style={styles.backText}>Home</Text>
         </TouchableOpacity>
 
         <View style={styles.heroCard} testID="invite-hero">

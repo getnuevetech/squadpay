@@ -54,6 +54,8 @@ async def get_issuing_settings(db) -> Dict[str, Any]:
     issuing.setdefault("card_disable_mode", "auto")  # auto | manual
     issuing.setdefault("require_otp_for_card_reveal", True)
     issuing.setdefault("reveal_ttl_seconds", 60)
+    # Phase G3 — per-lead cardholder mode
+    issuing.setdefault("require_lead_kyc", False)
     return issuing
 
 
@@ -137,7 +139,26 @@ async def issue_group_card(db, group: Dict[str, Any]) -> Dict[str, Any]:
     if not settings.get("enabled", True):
         raise RuntimeError("Stripe Issuing is disabled in admin settings.")
 
-    cardholder_id = await get_or_create_business_cardholder(db)
+    # Phase G3 — per-lead cardholder mode
+    if settings.get("require_lead_kyc"):
+        lead_id = group.get("lead_id")
+        if not lead_id:
+            raise RuntimeError("Group has no lead — cannot resolve lead cardholder.")
+        lead = await db.users.find_one({"id": lead_id}, {"_id": 0})
+        if not lead:
+            raise RuntimeError(f"Lead {lead_id} not found.")
+        from lead_kyc import get_or_create_lead_cardholder
+        ch = await get_or_create_lead_cardholder(db, lead)
+        if ch.get("status") != "active":
+            raise RuntimeError(
+                f"Lead's Stripe Issuing cardholder is not yet verified "
+                f"(status={ch.get('status')}, reason={ch.get('disabled_reason')}). "
+                f"Lead must complete KYC before a card can be issued."
+            )
+        cardholder_id = ch["cardholder_id"]
+    else:
+        cardholder_id = await get_or_create_business_cardholder(db)
+
     stripe = _stripe_client()
     business_name = settings.get("cardholder_name") or DEFAULT_BUSINESS_NAME
     nickname = f"{business_name} - {(group.get('title') or 'Group Bill')[:40]}"

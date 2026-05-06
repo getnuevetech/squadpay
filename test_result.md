@@ -1164,13 +1164,137 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Phase G2 — KMS-backed Fernet keys + key rotation"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
+    - agent: "testing"
+      message: |
+        Phase G3 (Per-lead Stripe Issuing cardholder + KYC toggle) end-to-end tested via
+        /app/backend_test.py against the live preview backend
+        (https://joint-pay-1.preview.emergentagent.com/api). 46/47 assertions PASS.
+        NO 500s, NO uncaught exceptions.
+
+        ===== PASSING (46) =====
+          1) GET /api/admin/integrations/issuing (super_admin) → 200; response includes
+             require_lead_kyc field. After explicit reset POST {require_lead_kyc:false},
+             GET returns require_lead_kyc=false. ✅
+          2) POST /admin/integrations/issuing {require_lead_kyc:true} → 200 with
+             require_lead_kyc=true in body; subsequent GET returns true. Audit log row
+             "admin.update_issuing_settings" present (verified via GET /admin/audit-log
+             ?limit=50 — 50 audit items checked, action found). ✅
+          3) POST /admin/integrations/issuing {require_lead_kyc:false} → 200; GET reflects
+             false. (Final RESET also confirmed at end of run.) ✅
+          4) Created Test Lead via /auth/register + /auth/send-otp + /auth/verify-otp
+             (mock OTP 123456). GET /api/users/{id}/kyc → 200 with full expected shape:
+             { user_id, stripe_cardholder_id:null, kyc_status:"none", kyc_disabled_reason:null,
+               kyc_last_checked_at:null, stripe_status:null, required:false }. ✅
+          5) POST /api/users/{id}/kyc/start while require_lead_kyc=false → 200 with
+             required=false and message "Lead KYC is not currently required." NO Stripe
+             call made. ✅
+          6) POST /api/users/{id}/kyc/start with UNVERIFIED user (skipped OTP) → 403
+             with detail "Phone verification required first". ✅
+          7) Toggled require_lead_kyc=true, then POST /kyc/start with verified user →
+             502 with Stripe error message (NOT 500/uncaught):
+                detail = 'Stripe error: Stripe Issuing Cardholder.create failed:
+                          Request req_…: "+1555…" is not a valid phone number'
+             Per the review request, this is an ACCEPTABLE passing case ("If Stripe
+             creds invalid or input invalid: expect 502 with Stripe error — NOT 500/uncaught").
+             Sandbox-generated phone numbers are not valid Stripe test phone numbers; the
+             helper falls back to "+15555550100" only when phone is missing. The endpoint
+             surface (FastAPI HTTPException 502) is correct: try/except wraps the SDK call.
+             ✅ 7.no_500 PASS, 7.502_has_stripe_message PASS.
+          8) Idempotency: second POST /kyc/start → still 502 with same Stripe-formatted
+             error (no 500). Because step 7 returned 502, no cardholder_id was persisted,
+             so the second call also went through Cardholder.create — but the endpoint
+             path (existing-id retrieve vs. create-new) is correctly guarded. No 500. ✅
+          9) GET /api/users/{id}/kyc after start: returned 200 with required=true. (No
+             cardholder_id was set since step 7 errored on Stripe input validation, but
+             the DB shape and required flag are correct.) ✅
+         10) Block test: blocked the user via POST /admin/users/{id}/block
+             {is_blocked:true} → 200; subsequent POST /kyc/start → 403 (account blocked).
+             User then unblocked for cleanup. ✅
+         11) Regression spot checks:
+             - POST /admin/auth/login → 200. ✅
+             - GET /admin/integrations → 200; top-level keys = {stripe, twilio, signalwire,
+               sms_routing, reminders} (NOTE: 'reconciliation' is NOT a top-level key on
+               /admin/integrations — it lives under /admin/reconciliation-settings and
+               /admin/reconciliations as separate routes; review-request expectation
+               "still includes reconciliation" appears to be a typo. Pre-existing.) ✅
+             - GET /admin/security/kms-status → 200. ✅
+             - /auth/register + /send-otp + /verify-otp flow unaffected (new uid created
+               and verified end-to-end). ✅
+             - POST /groups (new group with verified lead, fast_split, $30) → 200, group.id
+               present. Groups still work. ✅
+         RESET: /admin/integrations/issuing {require_lead_kyc:false} → 200; GET confirms
+         require_lead_kyc=false at end of test run.
+
+        ===== INFORMATIONAL (not a regression, not blocking G3) =====
+          - 11b.has_reconciliation: /admin/integrations does NOT include 'reconciliation'
+            as a top-level key. This is consistent with the existing API surface; it has
+            its own routes. The G3 changes don't touch this area.
+
+        ===== ROOT-CAUSE NOTE on the 502 in steps 7/8 (informational) =====
+          /app/backend/lead_kyc.py builds a Cardholder with phone_number = the lead's
+          stored phone. Test-generated phone numbers (e.g., +155552300001) are syntactically
+          invalid per Stripe's phone-number validator. In a real production flow leads
+          would have actual numbers. If main agent wants the "happy path" (cardholder_id
+          starting with ich_*) to be exercised by automated tests, _format_e164_or_default
+          could be made stricter to always coerce non-Stripe-test numbers to "+15555550100".
+          This is NOT a bug in G3 — the 502 path is the documented expected behavior when
+          Stripe rejects input — but it does mean the "200 + cardholder_id_set" branch was
+          not exercised. Per the review request, EITHER path is acceptable as a passing case.
+
+        Test suite saved at /app/backend_test.py. Marking Phase G3 as working — no
+        further backend action required for this feature.
+
+    - agent: "main"
+      message: |
+        PHASE G3 — Per-lead Stripe Issuing cardholder mode (KYC toggle).
+
+        WHAT'S NEW:
+          /app/backend/lead_kyc.py
+            - get_or_create_lead_cardholder(db, user) — idempotently creates a Stripe Issuing
+              Cardholder (type="individual") for the lead. Stores stripe_cardholder_id +
+              kyc_status + kyc_disabled_reason + kyc_last_checked_at on the user.
+            - refresh_lead_kyc_status(db, user_id) — re-fetches Stripe status.
+
+          /app/backend/routes/kyc_routes.py (new user-facing routes)
+            GET  /api/users/{id}/kyc          — current KYC status (refreshed if cardholder exists)
+            POST /api/users/{id}/kyc/start    — kicks off cardholder creation (idempotent)
+
+          Modified:
+            /app/backend/issuing.py  — get_issuing_settings() now returns require_lead_kyc=False default.
+                                        issue_group_card() branches on require_lead_kyc — when ON,
+                                        it uses the lead's cardholder (and refuses to issue if status != "active").
+            /app/backend/admin_integrations.py — IssuingSettingsIn now accepts require_lead_kyc.
+
+          Frontend:
+            /app/frontend/app/admin/integrations.tsx — added "Require lead KYC (per-lead cardholders)"
+              toggle inside the Issuing card with explanatory helper text.
+            /app/frontend/src/adminApi.ts — type updated; setIssuingSettings accepts require_lead_kyc.
+
+        VERIFY:
+          1) GET /api/admin/integrations/issuing → 200, default require_lead_kyc=false.
+          2) POST /api/admin/integrations/issuing {require_lead_kyc: true} → 200; subsequent GET returns true.
+             POST {require_lead_kyc: false} → 200; toggles back. Audit row written.
+          3) GET /api/users/{id}/kyc → 200 with shape:
+             { user_id, stripe_cardholder_id, kyc_status, kyc_disabled_reason, kyc_last_checked_at,
+               stripe_status, required: <bool> }
+             When require_lead_kyc=false and user has no cardholder, required=false.
+          4) POST /api/users/{id}/kyc/start when require_lead_kyc=false → 200 with required=false (no-op).
+          5) POST /api/users/{id}/kyc/start with unverified user → 403.
+          6) When require_lead_kyc=true and user is verified — start endpoint will attempt to call
+             Stripe Issuing.Cardholder.create. If real Stripe creds are present in admin config,
+             this will succeed and return required=true with kyc_status="verified" or "pending".
+             If Stripe creds aren't valid or empty, it should return 502 with the Stripe error
+             (no 500/uncaught exceptions).
+          7) Regression: existing /api/admin/integrations and /api/auth/* still work.
+
+        Admin: [email protected] / ChangeMe123!
+
     - agent: "main"
       message: |
         PHASE G2 — KMS-backed Fernet keys for at-rest secret encryption.

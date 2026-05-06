@@ -49,6 +49,7 @@ from routes.groups_routes import attach_groups_routes
 from routes.contribute_routes import attach_contribute_routes
 from routes.pay_routes import attach_pay_routes
 from routes.misc_routes import attach_referrals_credits_routes, attach_misc_routes
+from routes.kyc_routes import attach_kyc_routes
 
 attach_auth_routes(api_router, db)
 attach_groups_routes(api_router, db)
@@ -56,6 +57,7 @@ attach_contribute_routes(api_router, db)
 attach_pay_routes(api_router, db)
 attach_referrals_credits_routes(api_router, db)
 attach_misc_routes(api_router, db)
+attach_kyc_routes(api_router, db)
 
 
 # ---------- Admin dashboard ----------

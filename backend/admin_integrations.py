@@ -59,6 +59,7 @@ class IssuingSettingsIn(BaseModel):
     require_otp_for_card_reveal: Optional[bool] = None
     reveal_ttl_seconds: Optional[int] = None
     webhook_secret: Optional[str] = None  # Phase F2.1 — Stripe Issuing webhook signing
+    require_lead_kyc: Optional[bool] = None  # Phase G3 — per-lead cardholder mode
 
 
 class FeatureTogglesIn(BaseModel):

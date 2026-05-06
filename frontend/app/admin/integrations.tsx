@@ -61,6 +61,8 @@ export default function AdminIntegrations() {
   const [issRequireOtp, setIssRequireOtp] = useState(true);
   const [issRevealTtl, setIssRevealTtl] = useState('60');
   const [issWebhookSecret, setIssWebhookSecret] = useState('');
+  // Phase G3 — per-lead cardholder mode
+  const [issRequireLeadKyc, setIssRequireLeadKyc] = useState(false);
 
   // Feature toggles
   const [featCredits, setFeatCredits] = useState(true);
@@ -102,6 +104,7 @@ export default function AdminIntegrations() {
         setIssRequireOtp((iss as any).require_otp_for_card_reveal !== false);
         setIssRevealTtl(String((iss as any).reveal_ttl_seconds || 60));
         setIssWebhookSecret(((iss as any).webhook_secret_masked) || '');
+        setIssRequireLeadKyc(!!(iss as any).require_lead_kyc);
       } catch {}
       try {
         const f = await adminApi.getFeatures();
@@ -239,6 +242,7 @@ export default function AdminIntegrations() {
         require_otp_for_card_reveal: issRequireOtp,
         reveal_ttl_seconds: parseInt(issRevealTtl, 10) || 60,
         webhook_secret: issWebhookSecret.startsWith('whsec_') ? issWebhookSecret : undefined,
+        require_lead_kyc: issRequireLeadKyc,
       });
       await load();
       Alert.alert('Saved', `Issuing ${issEnabled ? 'enabled' : 'disabled'} · disable mode: ${issDisableMode}`);
@@ -378,6 +382,28 @@ export default function AdminIntegrations() {
             No active cardholder linked. Create one in Stripe Dashboard → Issuing → Cardholders.
           </Text>
         )}
+
+        {/* Phase G3 — per-lead cardholder mode (KYC) */}
+        <View style={styles.divider} />
+        <View style={styles.toggleRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.label}>Require lead KYC (per-lead cardholders)</Text>
+            <Text style={styles.helper}>
+              When OFF — all groups share the single business cardholder above.{`\n`}
+              When ON — each group's lead gets their own Stripe Issuing cardholder, keyed to
+              the lead's verified phone + name. In Test Mode, individual cardholders go straight
+              to status="active". In Live Mode, Stripe will require KYC docs (integrate Stripe
+              Identity separately) before a card can be issued for that lead.
+            </Text>
+          </View>
+          <Switch
+            value={issRequireLeadKyc}
+            onValueChange={setIssRequireLeadKyc}
+            trackColor={{ false: COLORS.disabledBg, true: '#0EA5E9' }}
+            thumbColor="#fff"
+            testID="admin-issuing-kyc-toggle"
+          />
+        </View>
 
         <TouchableOpacity onPress={saveIssuing} disabled={saving === 'iss'} style={[styles.saveBtn, { backgroundColor: '#0EA5E9', opacity: saving === 'iss' ? 0.6 : 1 }]} activeOpacity={0.85} testID="admin-issuing-save">
           <Save size={14} color="#fff" /><Text style={styles.saveBtnText}>{saving === 'iss' ? 'Saving…' : 'Save Issuing settings'}</Text>

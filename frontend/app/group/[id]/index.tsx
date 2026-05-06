@@ -19,10 +19,13 @@ import { CheckCircle2, Copy, Share2, UserCircle2, Crown, ArrowRight, Users, Cred
 import { Button } from '../../../src/Button';
 import { api, BACKEND_URL, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
-import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
+import { COLORS, FONT, RADIUS, SPACING, SHADOW } from '../../../src/theme';
 import { StatusBadge } from '../../../src/StatusBadge';
 import { EditMetaModal } from '../../../src/EditMetaModal';
 import { RevealCardModal } from '../../../src/RevealCardModal';
+import { toast } from '../../../src/components/Toast';
+import { Skeleton, SkeletonGroupRow } from '../../../src/components/Skeleton';
+import { PressableScale } from '../../../src/components/PressableScale';
 
 export default function GroupLobbyScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -62,8 +65,28 @@ export default function GroupLobbyScreen() {
 
   if (!group || !userId) {
     return (
-      <SafeAreaView style={styles.center}>
-        <ActivityIndicator color={COLORS.primary} />
+      <SafeAreaView edges={['bottom']} style={{ flex: 1, backgroundColor: COLORS.bg }}>
+        <ScrollView contentContainerStyle={{ padding: SPACING.md, paddingBottom: 120 }} testID="lobby-loading">
+          {/* Header skeleton */}
+          <View style={{ marginBottom: SPACING.md, padding: SPACING.lg, borderRadius: RADIUS.xl, backgroundColor: COLORS.slate900 }}>
+            <Skeleton width={140} height={16} style={{ backgroundColor: 'rgba(255,255,255,0.18)' }} />
+            <View style={{ height: 14 }} />
+            <Skeleton width={180} height={42} style={{ backgroundColor: 'rgba(255,255,255,0.22)' }} />
+            <View style={{ height: 8 }} />
+            <Skeleton width={90} height={12} style={{ backgroundColor: 'rgba(255,255,255,0.15)' }} />
+          </View>
+          {/* QR skeleton */}
+          <View style={[styles.qrCard, SHADOW.sm]}>
+            <Skeleton width={80} height={10} />
+            <View style={{ height: SPACING.md }} />
+            <Skeleton width={200} height={200} radius={RADIUS.md} />
+            <View style={{ height: SPACING.md }} />
+            <Skeleton width={120} height={18} />
+          </View>
+          {/* Members skeleton */}
+          <SkeletonGroupRow testID="lobby-skel-row" />
+          <SkeletonGroupRow />
+        </ScrollView>
       </SafeAreaView>
     );
   }

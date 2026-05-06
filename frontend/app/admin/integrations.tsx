@@ -159,8 +159,6 @@ export default function AdminIntegrations() {
     } catch (e: any) { Alert.alert('Error', e?.message || 'Failed'); }
     finally { setSaving(null); }
   };
-    finally { setSaving(null); }
-  };
 
   if (busy || !view) return <View style={styles.center}><ActivityIndicator color={COLORS.primary} /></View>;
 

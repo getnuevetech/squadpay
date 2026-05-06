@@ -78,6 +78,17 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let body: any = null;
   try { body = text ? JSON.parse(text) : null; } catch { body = text; }
   if (!res.ok) {
+    // Auto-handle expired/missing admin token: clear session + redirect to login.
+    if (res.status === 401) {
+      try { await clearSession(); } catch {}
+      try {
+        // Best-effort web-only redirect; native redirects via the layout's auth check.
+        if (typeof window !== 'undefined' && (window as any).location) {
+          const onLogin = (window as any).location.pathname?.startsWith('/admin/login');
+          if (!onLogin) (window as any).location.replace('/admin/login');
+        }
+      } catch {}
+    }
     const msg = (body && (body.detail?.[0]?.msg || body.detail || body.message)) || `HTTP ${res.status}`;
     throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
   }

@@ -205,6 +205,23 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
             sw["space_url"] = cleaned or None
         if body.from_number is not None:
             sw["from_number"] = body.from_number.strip() or None
+        # Phase H5 — UX guard: if everything required is present (project, token,
+        # space, from_number) and the admin tried to save with `enabled=false`
+        # WHILE leaving creds untouched, that's a strong sign they actually meant
+        # "yes, enable". Auto-flip to True so the test/SMS endpoints don't fail
+        # with the misleading "SignalWire not enabled". They can still explicitly
+        # disable by toggling AND saving a sentinel — done via a separate disable
+        # call from the admin UI or by editing the DB.
+        if (
+            sw.get("project_id_enc")
+            and sw.get("api_token_enc")
+            and sw.get("space_url")
+            and sw.get("from_number")
+            and not sw.get("enabled")
+            and not body.project_id  # keys didn't change → admin probably forgot the toggle
+            and not body.api_token
+        ):
+            sw["enabled"] = True
         sw["updated_at"] = _now()
         sw["updated_by"] = admin["email"]
         await db.app_settings.update_one(
@@ -240,7 +257,16 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
         msg = body.body or f"KWIKPAY SignalWire test SMS at {_now()}"
         from sms_providers import _send_via_signalwire
         rec = await get_integrations_doc(db)
-        sent_real, info = await _send_via_signalwire(rec, body.to_number, msg)
+        # Phase H5 — Test SMS UX: if the admin explicitly clicks "Test", we want
+        # to try the call even when the integration is currently disabled. Force
+        # `enabled=True` on a copy of the record purely for this attempt — DB stays
+        # untouched. This way the admin sees the *real* network result (e.g. invalid
+        # token, 401 Unauthorized) instead of the misleading "not enabled".
+        rec_for_test = dict(rec)
+        sw_copy = dict(rec.get("signalwire") or {})
+        sw_copy["enabled"] = True
+        rec_for_test["signalwire"] = sw_copy
+        sent_real, info = await _send_via_signalwire(rec_for_test, body.to_number, msg)
         await write_audit(
             db,
             admin_id=admin["id"],

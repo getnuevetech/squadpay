@@ -144,10 +144,10 @@ export default function RevealPage() {
         const styles = {
           base: {
             fontFamily: 'system-ui, -apple-system, sans-serif',
-            fontSize: '18px',
+            fontSize: '15px',
             fontWeight: '600',
             color: '#FFFFFF',
-            letterSpacing: '1.2px',
+            letterSpacing: '0.5px',
           },
         };
         const numEl = elements.create('issuingCardNumberDisplay', {
@@ -310,7 +310,7 @@ const styles = StyleSheet.create({
   metaSmall: { fontSize: FONT.sizes.xs, color: COLORS.subtext },
   loadingBlock: { alignItems: 'center', gap: 10, paddingVertical: 18 },
   cardFace: {
-    backgroundColor: '#0F172A', borderRadius: 14, padding: 16, gap: 14,
+    backgroundColor: '#0F172A', borderRadius: 14, paddingVertical: 16, paddingHorizontal: 12, gap: 14,
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)',
   },
   cardFaceLabel: { color: 'rgba(255,255,255,0.6)', fontSize: 10, marginBottom: 4, letterSpacing: 1.2, textTransform: 'uppercase' as any },

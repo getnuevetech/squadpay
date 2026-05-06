@@ -32,6 +32,19 @@ class TwilioSettingsIn(BaseModel):
     from_number: Optional[str] = None
 
 
+class SignalWireSettingsIn(BaseModel):
+    enabled: bool
+    project_id: Optional[str] = None
+    api_token: Optional[str] = None
+    space_url: Optional[str] = None
+    from_number: Optional[str] = None
+
+
+class SmsRoutingIn(BaseModel):
+    primary: Literal["twilio", "signalwire"] = "twilio"
+    fallback: Optional[Literal["twilio", "signalwire"]] = None
+
+
 class ReminderSettingsIn(BaseModel):
     enabled: bool
     schedule_hours: List[int] = Field(default_factory=lambda: [24, 72, 168])
@@ -63,7 +76,8 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
     @router.get("/integrations")
     async def get_integrations(admin=Depends(attach_admin)):
         rec = await get_integrations_doc(db)
-        return project_integrations_for_admin(rec)
+        from sms_providers import project_sms_for_admin
+        return {**project_integrations_for_admin(rec), **project_sms_for_admin(rec)}
 
     # ===== STRIPE =====
     @router.post("/integrations/stripe")
@@ -167,6 +181,105 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
             request=request,
         )
         return {"sent_real": sent_real, "info": info}
+
+    # ===== SIGNALWIRE (Phase F2.2) =====
+    @router.post("/integrations/signalwire")
+    async def set_signalwire(
+        body: SignalWireSettingsIn,
+        request: Request,
+        admin=Depends(attach_admin),
+        _check=Depends(require_role("super_admin")),
+    ):
+        rec = await get_integrations_doc(db)
+        sw = dict(rec.get("signalwire") or {})
+        sw["enabled"] = bool(body.enabled)
+        if body.project_id:
+            sw["project_id_enc"] = encrypt_secret(body.project_id.strip())
+        if body.api_token:
+            sw["api_token_enc"] = encrypt_secret(body.api_token.strip())
+        if body.space_url is not None:
+            cleaned = (body.space_url or "").strip().replace("https://", "").replace("http://", "").rstrip("/")
+            sw["space_url"] = cleaned or None
+        if body.from_number is not None:
+            sw["from_number"] = body.from_number.strip() or None
+        sw["updated_at"] = _now()
+        sw["updated_by"] = admin["email"]
+        await db.app_settings.update_one(
+            {"key": "integrations"}, {"$set": {"signalwire": sw}}, upsert=True
+        )
+        await write_audit(
+            db,
+            admin_id=admin["id"],
+            admin_email=admin["email"],
+            action="admin.update_signalwire_settings",
+            target_type="settings",
+            target_id="integrations.signalwire",
+            payload={
+                "enabled": sw["enabled"],
+                "space_url": sw.get("space_url"),
+                "from_number": sw.get("from_number"),
+                "project_changed": bool(body.project_id),
+                "token_changed": bool(body.api_token),
+            },
+            request=request,
+        )
+        rec = await get_integrations_doc(db)
+        from sms_providers import project_sms_for_admin
+        return {**project_integrations_for_admin(rec), **project_sms_for_admin(rec)}
+
+    @router.post("/integrations/signalwire/test")
+    async def test_signalwire(
+        body: TestSmsIn,
+        request: Request,
+        admin=Depends(attach_admin),
+        _check=Depends(require_role("super_admin", "manager")),
+    ):
+        msg = body.body or f"KWIKPAY SignalWire test SMS at {_now()}"
+        from sms_providers import _send_via_signalwire
+        rec = await get_integrations_doc(db)
+        sent_real, info = await _send_via_signalwire(rec, body.to_number, msg)
+        await write_audit(
+            db,
+            admin_id=admin["id"],
+            admin_email=admin["email"],
+            action="admin.test_signalwire",
+            target_type="settings",
+            target_id="integrations.signalwire",
+            payload={"to": body.to_number, "sent_real": sent_real, "info": info},
+            request=request,
+        )
+        return {"sent_real": sent_real, "info": info}
+
+    # ===== SMS ROUTING (primary / fallback) =====
+    @router.post("/integrations/sms-routing")
+    async def set_sms_routing(
+        body: SmsRoutingIn,
+        request: Request,
+        admin=Depends(attach_admin),
+        _check=Depends(require_role("super_admin")),
+    ):
+        rec = await get_integrations_doc(db)
+        routing = dict(rec.get("sms_routing") or {})
+        routing["primary"] = body.primary
+        routing["fallback"] = body.fallback if body.fallback != body.primary else None
+        routing["updated_at"] = _now()
+        routing["updated_by"] = admin["email"]
+        await db.app_settings.update_one(
+            {"key": "integrations"}, {"$set": {"sms_routing": routing}}, upsert=True
+        )
+        await write_audit(
+            db,
+            admin_id=admin["id"],
+            admin_email=admin["email"],
+            action="admin.update_sms_routing",
+            target_type="settings",
+            target_id="integrations.sms_routing",
+            payload=routing,
+            request=request,
+        )
+        rec = await get_integrations_doc(db)
+        from sms_providers import project_sms_for_admin
+        return {**project_integrations_for_admin(rec), **project_sms_for_admin(rec)}
 
     # ===== REMINDERS =====
     @router.post("/integrations/reminders")

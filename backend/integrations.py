@@ -149,38 +149,20 @@ def project_integrations_for_admin(rec: dict) -> dict:
 # ---------- Twilio sender ----------
 
 async def send_sms_via_twilio(db, to_number: str, body: str) -> Tuple[bool, str]:
-    """If twilio enabled in db, send a real SMS. Otherwise log to console.
+    """LEGACY ENTRY-POINT — delegates to the new multi-provider sender (Phase F2.2).
 
-    Returns (sent_real, info_message). Used by OTP send-flow and reminders.
+    All callers (OTP send, sensitive OTP, reminders, admin test SMS) now route through
+    the abstracted `sms_providers.send_sms` which handles primary + automatic fallback
+    across Twilio and SignalWire. Result info is collapsed back to (sent_real, info)
+    for backwards compatibility.
     """
-    rec = await get_integrations_doc(db)
-    t = rec.get("twilio") or {}
-    if not t.get("enabled"):
-        logger.info(f"[twilio-mock] -> {to_number}: {body}")
-        return False, "Twilio disabled — logged to console"
-    sid = decrypt_secret(t.get("account_sid_enc"))
-    token = decrypt_secret(t.get("auth_token_enc"))
-    from_num = t.get("from_number")
-    if not (sid and token and from_num):
-        logger.warning("[twilio] enabled but credentials incomplete — falling back to console")
-        logger.info(f"[twilio-mock] -> {to_number}: {body}")
-        return False, "Twilio credentials incomplete"
     try:
-        # Use Twilio's REST API directly (no SDK dependency).
-        import httpx
-        url = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                url,
-                data={"To": to_number, "From": from_num, "Body": body},
-                auth=(sid, token),
-            )
-        if resp.status_code in (200, 201):
-            data = resp.json()
-            return True, f"Sent (sid={data.get('sid')})"
-        else:
-            logger.error(f"[twilio] {resp.status_code} {resp.text}")
-            return False, f"Twilio error {resp.status_code}: {resp.text[:200]}"
+        from sms_providers import send_sms as _multi_send
     except Exception as e:
-        logger.exception(f"[twilio] send failed: {e}")
-        return False, f"Twilio exception: {e}"
+        logger.warning(f"[sms] multi-provider import failed, falling back to console: {e}")
+        logger.info(f"[sms-mock] -> {to_number}: {body}")
+        return False, "multi-provider unavailable"
+    sent, info, provider = await _multi_send(db, to_number, body)
+    if sent:
+        return True, f"Sent via {provider} ({info})"
+    return False, info or "send failed"

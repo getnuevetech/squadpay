@@ -176,6 +176,14 @@ export const adminApi = {
   getIntegrations: () => request<IntegrationsView>('/integrations'),
   setStripe: (s: StripeIn) => request<IntegrationsView>('/integrations/stripe', { method: 'POST', body: JSON.stringify(s) }),
   setTwilio: (s: TwilioIn) => request<IntegrationsView>('/integrations/twilio', { method: 'POST', body: JSON.stringify(s) }),
+
+  // ---- Phase F2.2: SignalWire (Twilio alternative) ----
+  setSignalWire: (s: SignalWireIn) =>
+    request<IntegrationsView>('/integrations/signalwire', { method: 'POST', body: JSON.stringify(s) }),
+  testSignalWire: (to_number: string, body?: string) =>
+    request<{ sent_real: boolean; info: string }>(`/integrations/signalwire/test`, { method: 'POST', body: JSON.stringify({ to_number, body }) }),
+  setSmsRouting: (r: { primary: 'twilio' | 'signalwire'; fallback?: 'twilio' | 'signalwire' | null }) =>
+    request<IntegrationsView>('/integrations/sms-routing', { method: 'POST', body: JSON.stringify(r) }),
   testTwilio: (to_number: string, body?: string) =>
     request<{ sent_real: boolean; info: string }>(`/integrations/twilio/test`, { method: 'POST', body: JSON.stringify({ to_number, body }) }),
   setReminders: (r: RemindersIn) => request<IntegrationsView>('/integrations/reminders', { method: 'POST', body: JSON.stringify(r) }),
@@ -378,6 +386,23 @@ export type IntegrationsView = {
     updated_at?: string | null;
     updated_by?: string | null;
   };
+  signalwire?: {
+    enabled: boolean;
+    project_id_masked: string;
+    project_id_set: boolean;
+    api_token_set: boolean;
+    api_token_masked: string;
+    space_url: string;
+    from_number: string;
+    updated_at?: string | null;
+    updated_by?: string | null;
+  };
+  sms_routing?: {
+    primary: 'twilio' | 'signalwire';
+    fallback: 'twilio' | 'signalwire' | null;
+    updated_at?: string | null;
+    updated_by?: string | null;
+  };
 };
 
 export type StripeIn = {
@@ -392,6 +417,14 @@ export type TwilioIn = {
   enabled: boolean;
   account_sid?: string;
   auth_token?: string;
+  from_number?: string;
+};
+
+export type SignalWireIn = {
+  enabled: boolean;
+  project_id?: string;
+  api_token?: string;
+  space_url?: string;
   from_number?: string;
 };
 

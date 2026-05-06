@@ -620,15 +620,33 @@ async def _recompute_group(group: dict) -> dict:
             if p["user_id"] in (settlement.get("beneficiaries") or [])
         )
     )
+    # Phase F1 status semantics (user-facing):
+    #   bill_created — Lead just created the bill, no contributions yet
+    #   contributing  — At least one member has contributed, more remaining
+    #   contributed   — All contributions complete, bill matches; awaiting card swipe
+    #   bill_settled  — Virtual card has been charged by merchant (transaction recorded)
+    #   settled_with_debt — Bill covered but loan/shortfall outstanding
+    vc = group.get("virtual_card") or {}
+    card_spent = float(vc.get("spent") or 0.0)
+    card_status = vc.get("status")
+    # A card is considered "swiped" when the merchant has actually charged it.
+    card_swiped = card_spent > 0.005 or (card_status == "inactive" and bool(vc.get("transactions")))
+
     if raw_status == "open":
-        if total_contributed + 0.01 >= total_amount and not has_outstanding:
+        if not group.get("contributions"):
+            derived_status = "bill_created"
+        elif total_contributed + 0.01 >= total_amount and not has_outstanding:
             derived_status = "contributed"
         else:
             derived_status = "contributing"
     elif raw_status == "paid":
-        derived_status = "repaying" if lead_loaned else "settled"
+        if card_swiped:
+            derived_status = "settled_with_debt" if (lead_loaned or has_outstanding) else "bill_settled"
+        else:
+            # All contributions complete but merchant hasn't charged the card yet
+            derived_status = "settled_with_debt" if (lead_loaned or has_outstanding) else "contributed"
     else:  # closed
-        derived_status = "settled"
+        derived_status = "bill_settled"
 
     return {
         **group,
@@ -833,14 +851,23 @@ async def update_items(group_id: str, body: UpdateItemsIn):
 
 @api_router.post("/groups/{group_id}/items/append")
 async def append_items(group_id: str, body: AppendItemsIn):
-    """Lead-only: add new items to an existing group, preserving existing items + assignments."""
+    """Lead-only: add new items to an existing group, preserving existing items + assignments.
+
+    Phase F1 status semantics: Lead can add items until the **virtual card has been charged**
+    by a merchant (= group has reached 'bill_settled' / 'settled_with_debt' / 'closed').
+    This means even after all members have contributed, the lead may still add items right up
+    until the actual merchant settlement.
+    """
     group = await db.groups.find_one({"id": group_id}, {"_id": 0})
     if not group:
         raise HTTPException(404, "Group not found")
     if group["lead_id"] != body.user_id:
         raise HTTPException(403, "Only lead can add items")
-    if group.get("status") != "open":
-        raise HTTPException(400, "Bill is settled — items can no longer be added.")
+    raw_status = group.get("status") or "open"
+    vc = group.get("virtual_card") or {}
+    card_charged = float(vc.get("spent") or 0) > 0.005 or vc.get("status") == "inactive"
+    if raw_status == "closed" or card_charged:
+        raise HTTPException(400, "Virtual card has been charged — items can no longer be added.")
     new_items = [
         {"id": new_id("it_"), "name": it.name, "price": it.price, "quantity": it.quantity}
         for it in body.items
@@ -849,10 +876,32 @@ async def append_items(group_id: str, body: AppendItemsIn):
     # Bump total_amount to include the new items' subtotal so funding logic stays accurate
     extra = sum(it["price"] * it["quantity"] for it in new_items)
     new_total = round(float(group.get("total_amount") or 0) + extra, 2)
-    update_doc = {"items": items, "total_amount": new_total}
-    # If group was already 'paid' (group-funded) but new items push it back into shortfall,
-    # let the lead know via the funding recompute. We don't auto-revert status.
+    update_doc: dict = {"items": items, "total_amount": new_total}
+    # If group was previously 'paid' (all members contributed) but new items push the bill
+    # higher, bump it back to 'open' so members can top-up and the spend cap is recomputed
+    # next time the card is rotated/issued.
+    if raw_status == "paid":
+        update_doc["status"] = "open"
+        update_doc["funding_mode"] = group.get("funding_mode") or "group"
     await db.groups.update_one({"id": group_id}, {"$set": update_doc})
+    # If a card already exists with a now-stale spend cap, increase the cap to match the new total
+    if vc.get("stripe_card_id") and vc.get("status") == "active":
+        try:
+            new_cap_cents = int(round(new_total * 100))
+            import stripe as _stripe_sdk
+            _stripe_sdk.api_key = os.environ.get("STRIPE_API_KEY")
+            _stripe_sdk.issuing.Card.modify(
+                vc["stripe_card_id"],
+                spending_controls={
+                    "spending_limits": [{"amount": max(new_cap_cents, 100), "interval": "all_time"}],
+                },
+            )
+            await db.groups.update_one(
+                {"id": group_id},
+                {"$set": {"virtual_card.spend_cap": round(new_total, 2)}},
+            )
+        except Exception as e:
+            logger.warning(f"[items-append] update card spend cap failed: {e}")
     return await _load_group_enriched(group_id)
 
 

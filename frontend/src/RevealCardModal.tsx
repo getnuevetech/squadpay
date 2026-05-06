@@ -209,22 +209,28 @@ export const RevealCardModal: React.FC<Props> = ({ visible, onClose, groupId, us
             <View style={styles.nativeNotice}>
               <Smartphone size={20} color={COLORS.warning} />
               <Text style={styles.nativeText}>
-                For your security, card details can only be shown in a web browser.
-                Tap "Open on web" to reveal in a secure browser tab.
+                For your security, card details open in your phone's secure browser.
+                Tap below — you'll receive a 6-digit SMS code there.
               </Text>
               <TouchableOpacity
-                onPress={() => {
+                onPress={async () => {
+                  const base = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/api$/, '');
+                  const url = `${base}/reveal/${groupId}?uid=${encodeURIComponent(userId)}`;
                   try {
-                    const WB = require('expo-web-browser');
-                    const url = `${process.env.EXPO_PUBLIC_BACKEND_URL?.replace(/\/api$/, '')}/group/${groupId}?reveal=1`;
-                    WB.openBrowserAsync(url);
-                  } catch {}
+                    const Linking = require('react-native').Linking;
+                    await Linking.openURL(url);  // system browser, NOT in-app
+                  } catch {
+                    try {
+                      const WB = require('expo-web-browser');
+                      await WB.openBrowserAsync(url);
+                    } catch {}
+                  }
                   onClose();
                 }}
                 style={styles.primaryBtn}
                 testID="reveal-open-web"
               >
-                <Text style={styles.primaryBtnText}>Open on web</Text>
+                <Text style={styles.primaryBtnText}>Open secure browser</Text>
               </TouchableOpacity>
             </View>
           ) : phase === 'awaiting_otp' || phase === 'verifying_otp' || phase === 'fetching_key' ? (

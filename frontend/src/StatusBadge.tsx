@@ -2,11 +2,23 @@ import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { COLORS, FONT, RADIUS } from './theme';
 
-export type DerivedStatus = 'contributing' | 'contributed' | 'repaying' | 'settled';
+export type DerivedStatus =
+  | 'bill_created'
+  | 'contributing'
+  | 'contributed'
+  | 'bill_settled'
+  | 'settled_with_debt'
+  // legacy values (older docs/tests may still emit these)
+  | 'repaying'
+  | 'settled';
 
 const STATUS_META: Record<DerivedStatus, { label: string; bg: string; fg: string }> = {
+  bill_created: { label: 'Bill Created', bg: COLORS.primaryLight, fg: COLORS.primary },
   contributing: { label: 'Contributing', bg: COLORS.warningLight, fg: COLORS.warning },
-  contributed: { label: 'Contributed', bg: COLORS.primaryLight, fg: COLORS.primary },
+  contributed: { label: 'Contributed', bg: '#DBEAFE', fg: '#1D4ED8' },
+  bill_settled: { label: 'Bill Settled', bg: COLORS.successLight, fg: COLORS.success },
+  settled_with_debt: { label: 'Settled · Debt', bg: '#FEF3C7', fg: '#92400E' },
+  // legacy mappings for back-compat
   repaying: { label: 'Repaying', bg: '#FEF3C7', fg: '#92400E' },
   settled: { label: 'Settled', bg: COLORS.successLight, fg: COLORS.success },
 };

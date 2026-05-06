@@ -84,6 +84,23 @@ DEFAULT_INTEGRATIONS = {
         "updated_at": None,
         "updated_by": None,
     },
+    # Phase F2.2 — SignalWire (Twilio-compatible secondary provider)
+    "signalwire": {
+        "enabled": False,
+        "project_id_enc": None,
+        "api_token_enc": None,
+        "space_url": None,         # e.g. "your-space.signalwire.com"
+        "from_number": None,       # e.g. "+15551234567"
+        "updated_at": None,
+        "updated_by": None,
+    },
+    # Phase F2.2 — SMS routing (primary + optional fallback)
+    "sms_routing": {
+        "primary": "twilio",       # twilio | signalwire
+        "fallback": None,          # twilio | signalwire | null
+        "updated_at": None,
+        "updated_by": None,
+    },
 }
 
 

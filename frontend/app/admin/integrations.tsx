@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { View, Text, ScrollView, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Switch } from 'react-native';
-import { CreditCard, MessageSquare, Bell, Save, Send, Play, CheckCircle2, XCircle, AlertCircle } from 'lucide-react-native';
+import { CreditCard, MessageSquare, Bell, Save, Send, Play, CheckCircle2, XCircle, AlertCircle, Radio } from 'lucide-react-native';
 import { adminApi, IntegrationsView } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
 
@@ -32,6 +32,19 @@ export default function AdminIntegrations() {
   const [twFrom, setTwFrom] = useState('');
   const [testTo, setTestTo] = useState('');
   const [testInfo, setTestInfo] = useState<string | null>(null);
+
+  // SignalWire form (Phase F2.2 — Twilio alternative)
+  const [swEnabled, setSwEnabled] = useState(false);
+  const [swProject, setSwProject] = useState('');
+  const [swToken, setSwToken] = useState('');
+  const [swSpace, setSwSpace] = useState('');
+  const [swFrom, setSwFrom] = useState('');
+  const [swTestTo, setSwTestTo] = useState('');
+  const [swTestInfo, setSwTestInfo] = useState<string | null>(null);
+
+  // SMS Routing (primary + fallback)
+  const [smsPrimary, setSmsPrimary] = useState<'twilio' | 'signalwire'>('twilio');
+  const [smsFallback, setSmsFallback] = useState<'twilio' | 'signalwire' | 'none'>('none');
 
   // Reminders form
   const [rmEnabled, setRmEnabled] = useState(false);
@@ -67,6 +80,14 @@ export default function AdminIntegrations() {
       setTwSid('');
       setTwTok('');
       setTwFrom(v.twilio.from_number || '');
+      // Phase F2.2: SignalWire + routing
+      setSwEnabled(!!v.signalwire?.enabled);
+      setSwProject('');
+      setSwToken('');
+      setSwSpace(v.signalwire?.space_url || '');
+      setSwFrom(v.signalwire?.from_number || '');
+      setSmsPrimary((v.sms_routing?.primary as any) || 'twilio');
+      setSmsFallback((v.sms_routing?.fallback as any) || 'none');
       setRmEnabled(v.reminders.enabled);
       setRmHours((v.reminders.schedule_hours || []).join(','));
       setRmMax(String(v.reminders.max_reminders_per_user || 3));
@@ -130,6 +151,53 @@ export default function AdminIntegrations() {
       const r = await adminApi.testTwilio(testTo);
       setTestInfo(r.sent_real ? `✓ Sent — ${r.info}` : `(mocked) ${r.info}`);
     } catch (e: any) { setTestInfo(`✗ ${e?.message || 'Failed'}`); }
+    finally { setSaving(null); }
+  };
+
+  // --- Phase F2.2: SignalWire ---
+  const saveSignalWire = async () => {
+    setSaving('sw');
+    try {
+      await adminApi.setSignalWire({
+        enabled: swEnabled,
+        project_id: swProject || undefined,
+        api_token: swToken || undefined,
+        space_url: swSpace || undefined,
+        from_number: swFrom || undefined,
+      });
+      await load();
+      Alert.alert('Saved', `SignalWire ${swEnabled ? 'enabled' : 'disabled'}`);
+    } catch (e: any) { Alert.alert('Error', e?.message || 'Failed'); }
+    finally { setSaving(null); }
+  };
+
+  const sendTestSw = async () => {
+    if (!swTestTo) { Alert.alert('Phone required', 'Enter a destination phone number to send the test SMS.'); return; }
+    setSaving('sw-test');
+    try {
+      const r = await adminApi.testSignalWire(swTestTo);
+      setSwTestInfo(r.sent_real ? `✓ Sent — ${r.info}` : `✗ ${r.info}`);
+    } catch (e: any) { setSwTestInfo(`✗ ${e?.message || 'Failed'}`); }
+    finally { setSaving(null); }
+  };
+
+  const saveSmsRouting = async () => {
+    if (smsFallback !== 'none' && smsFallback === smsPrimary) {
+      Alert.alert('Invalid routing', 'Fallback must be different from primary.');
+      return;
+    }
+    setSaving('routing');
+    try {
+      await adminApi.setSmsRouting({
+        primary: smsPrimary,
+        fallback: smsFallback === 'none' ? null : smsFallback,
+      });
+      await load();
+      Alert.alert(
+        'Saved',
+        `Primary: ${smsPrimary}${smsFallback === 'none' ? '' : ` · Fallback: ${smsFallback}`}`,
+      );
+    } catch (e: any) { Alert.alert('Error', e?.message || 'Failed'); }
     finally { setSaving(null); }
   };
 
@@ -394,6 +462,102 @@ export default function AdminIntegrations() {
           </View>
         ) : null}
         {view.twilio.updated_at ? <Text style={styles.metaSmall}>Last updated {new Date(view.twilio.updated_at).toLocaleString()} by {view.twilio.updated_by}</Text> : null}
+      </View>
+
+      {/* SignalWire — Phase F2.2 (Twilio alternative) */}
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <View style={styles.cardIcon}><Radio size={18} color="#044CCC" /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.cardTitle}>SignalWire (SMS / OTP)</Text>
+            <Text style={styles.cardSub}>Twilio-compatible SMS provider. Use as a primary or as a fallback for high availability.</Text>
+          </View>
+          <View style={{ flexDirection: 'row', gap: 6 }}>
+            <StatusPill ok={!!view.signalwire?.enabled} label={view.signalwire?.enabled ? 'Enabled' : 'Disabled'} />
+            <StatusPill ok={!!view.signalwire?.project_id_set} label={view.signalwire?.project_id_set ? 'Configured' : 'Not configured'} />
+          </View>
+        </View>
+
+        <View style={styles.toggleRow}>
+          <Text style={styles.label}>Enable SignalWire</Text>
+          <Switch value={swEnabled} onValueChange={setSwEnabled} trackColor={{ false: COLORS.disabledBg, true: '#044CCC' }} thumbColor="#fff" testID="admin-sw-enable" />
+        </View>
+
+        <Text style={styles.label}>Project ID {view.signalwire?.project_id_set ? <Text style={styles.maskedHint}>(saved: {view.signalwire?.project_id_masked} — leave blank to keep)</Text> : null}</Text>
+        <TextInput style={styles.input} value={swProject} onChangeText={setSwProject} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" placeholderTextColor={COLORS.disabledText} autoCapitalize="none" testID="admin-sw-project" />
+
+        <Text style={styles.label}>API Token {view.signalwire?.api_token_set ? <Text style={styles.maskedHint}>(saved: {view.signalwire?.api_token_masked} — leave blank to keep)</Text> : null}</Text>
+        <TextInput style={styles.input} value={swToken} onChangeText={setSwToken} placeholder="PT…" placeholderTextColor={COLORS.disabledText} secureTextEntry autoCapitalize="none" testID="admin-sw-token" />
+
+        <Text style={styles.label}>Space URL</Text>
+        <TextInput style={styles.input} value={swSpace} onChangeText={setSwSpace} placeholder="your-space.signalwire.com" placeholderTextColor={COLORS.disabledText} autoCapitalize="none" testID="admin-sw-space" />
+        <Text style={styles.helper}>Just the host (no protocol). Example: <Text style={{ fontWeight: '700' }}>example.signalwire.com</Text></Text>
+
+        <Text style={styles.label}>From number (E.164)</Text>
+        <TextInput style={styles.input} value={swFrom} onChangeText={setSwFrom} placeholder="+15555550000" placeholderTextColor={COLORS.disabledText} testID="admin-sw-from" />
+
+        <View style={styles.btnRow}>
+          <TouchableOpacity onPress={saveSignalWire} disabled={saving === 'sw'} style={[styles.saveBtn, { flex: 2, backgroundColor: '#044CCC', opacity: saving === 'sw' ? 0.6 : 1 }]} activeOpacity={0.85} testID="admin-sw-save">
+            <Save size={14} color="#fff" /><Text style={styles.saveBtnText}>{saving === 'sw' ? 'Saving…' : 'Save SignalWire'}</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.divider} />
+        <Text style={styles.label}>Send test SMS via SignalWire</Text>
+        <View style={styles.formRow}>
+          <TextInput style={[styles.input, { flex: 1, marginTop: 0 }]} value={swTestTo} onChangeText={setSwTestTo} placeholder="+15551234567" placeholderTextColor={COLORS.disabledText} testID="admin-sw-test-to" />
+          <TouchableOpacity onPress={sendTestSw} disabled={saving === 'sw-test'} style={[styles.saveBtn, { backgroundColor: COLORS.primary, opacity: saving === 'sw-test' ? 0.6 : 1, paddingHorizontal: 18 }]} activeOpacity={0.85} testID="admin-sw-test-send">
+            <Send size={14} color="#fff" /><Text style={styles.saveBtnText}>{saving === 'sw-test' ? '…' : 'Send'}</Text>
+          </TouchableOpacity>
+        </View>
+        {swTestInfo ? (
+          <View style={[styles.infoBox, swTestInfo.startsWith('✓') ? { backgroundColor: COLORS.successLight } : { backgroundColor: COLORS.warningLight }]}>
+            <AlertCircle size={12} color={COLORS.text} />
+            <Text style={styles.infoText}>{swTestInfo}</Text>
+          </View>
+        ) : null}
+        {view.signalwire?.updated_at ? <Text style={styles.metaSmall}>Last updated {new Date(view.signalwire.updated_at).toLocaleString()} by {view.signalwire.updated_by}</Text> : null}
+      </View>
+
+      {/* SMS Routing — Phase F2.2 */}
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <View style={styles.cardIcon}><Radio size={18} color={COLORS.primary} /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.cardTitle}>SMS Routing</Text>
+            <Text style={styles.cardSub}>Choose the primary SMS provider and an optional fallback. If the primary fails, the fallback is auto-tried.</Text>
+          </View>
+          <StatusPill ok={true} label={`${(view.sms_routing?.primary || 'twilio').toUpperCase()}${view.sms_routing?.fallback ? ` → ${view.sms_routing.fallback.toUpperCase()}` : ''}`} />
+        </View>
+
+        <Text style={styles.label}>Primary provider</Text>
+        <View style={styles.formRow}>
+          <TouchableOpacity onPress={() => setSmsPrimary('twilio')} style={[styles.toggle, smsPrimary === 'twilio' && styles.toggleActive]} activeOpacity={0.85} testID="admin-routing-primary-twilio">
+            <Text style={[styles.toggleText, smsPrimary === 'twilio' && { color: '#fff' }]}>Twilio</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setSmsPrimary('signalwire')} style={[styles.toggle, smsPrimary === 'signalwire' && styles.toggleActive]} activeOpacity={0.85} testID="admin-routing-primary-sw">
+            <Text style={[styles.toggleText, smsPrimary === 'signalwire' && { color: '#fff' }]}>SignalWire</Text>
+          </TouchableOpacity>
+        </View>
+
+        <Text style={styles.label}>Fallback provider (optional)</Text>
+        <View style={styles.formRow}>
+          <TouchableOpacity onPress={() => setSmsFallback('none')} style={[styles.toggle, smsFallback === 'none' && styles.toggleActive]} activeOpacity={0.85} testID="admin-routing-fallback-none">
+            <Text style={[styles.toggleText, smsFallback === 'none' && { color: '#fff' }]}>None</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setSmsFallback('twilio')} disabled={smsPrimary === 'twilio'} style={[styles.toggle, smsFallback === 'twilio' && styles.toggleActive, smsPrimary === 'twilio' && { opacity: 0.4 }]} activeOpacity={0.85} testID="admin-routing-fallback-twilio">
+            <Text style={[styles.toggleText, smsFallback === 'twilio' && { color: '#fff' }]}>Twilio</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setSmsFallback('signalwire')} disabled={smsPrimary === 'signalwire'} style={[styles.toggle, smsFallback === 'signalwire' && styles.toggleActive, smsPrimary === 'signalwire' && { opacity: 0.4 }]} activeOpacity={0.85} testID="admin-routing-fallback-sw">
+            <Text style={[styles.toggleText, smsFallback === 'signalwire' && { color: '#fff' }]}>SignalWire</Text>
+          </TouchableOpacity>
+        </View>
+        <Text style={styles.helper}>Fallback must differ from primary. If a primary attempt fails (timeout / 4xx / 5xx), the fallback provider is automatically retried for the same message.</Text>
+
+        <TouchableOpacity onPress={saveSmsRouting} disabled={saving === 'routing'} style={[styles.saveBtn, { backgroundColor: COLORS.primary, opacity: saving === 'routing' ? 0.6 : 1 }]} activeOpacity={0.85} testID="admin-routing-save">
+          <Save size={14} color="#fff" /><Text style={styles.saveBtnText}>{saving === 'routing' ? 'Saving…' : 'Save SMS routing'}</Text>
+        </TouchableOpacity>
+        {view.sms_routing?.updated_at ? <Text style={styles.metaSmall}>Last updated {new Date(view.sms_routing.updated_at).toLocaleString()} by {view.sms_routing.updated_by}</Text> : null}
       </View>
 
       {/* Reminders */}

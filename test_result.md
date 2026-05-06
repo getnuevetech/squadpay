@@ -1164,12 +1164,55 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus: []
+  current_focus:
+    - "Phase F2.2 — SignalWire SMS provider + multi-provider failover"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
+    - agent: "main"
+      message: |
+        Phase F2.2 — SignalWire integration + SMS multi-provider failover.
+
+        WHAT'S NEW (backend, all under /api/admin):
+          - POST /integrations/signalwire   body: { enabled, project_id?, api_token?, space_url?, from_number? }
+              → updates db.app_settings.integrations.signalwire (project_id + api_token encrypted via Fernet,
+                space_url is normalized: protocol stripped, trailing slash removed).
+              → response includes both `signalwire` (masked view) AND `sms_routing` from project_sms_for_admin.
+          - POST /integrations/signalwire/test  body: { to_number, body? }
+              → calls `_send_via_signalwire(rec, to_number, msg)` directly; returns
+                { sent_real, info }. With no real creds saved this should return sent_real=false,
+                info should contain "incomplete" or "not enabled".
+          - POST /integrations/sms-routing  body: { primary: "twilio"|"signalwire", fallback: "twilio"|"signalwire"|null }
+              → persists routing; if fallback==primary, server forces fallback=null.
+          - GET  /integrations now returns combined object including `signalwire` and `sms_routing` keys
+            (defaults: enabled=false; primary="twilio"; fallback=null).
+
+        REFACTOR NOTES:
+          - integrations.py DEFAULT_INTEGRATIONS now seeds `signalwire` and `sms_routing` for forward-compat.
+          - sms_providers.py exports: send_sms(db, to, body) -> (sent_real, info, provider_used)
+            * Reads sms_routing.primary then fallback (if different).
+            * Logs each attempt to db.sms_log.
+            * Legacy send_sms_via_twilio() in integrations.py now delegates here.
+
+        KEY THINGS TO VERIFY (please):
+          1. GET /api/admin/integrations returns 200 with `signalwire` and `sms_routing` keys
+             on a fresh integrations doc (or after migration to add them).
+          2. POST /api/admin/integrations/signalwire saves enable/disable, masks project_id_masked
+             when set, persists space_url with no scheme/trailing slash.
+          3. POST /api/admin/integrations/sms-routing accepts {primary:"signalwire", fallback:"twilio"}
+             and {primary:"twilio", fallback:null}. If primary==fallback, server should null the fallback.
+          4. POST /api/admin/integrations/signalwire/test with no creds returns sent_real=false
+             and an explanatory `info` string (no exception).
+          5. Existing OTP flow (POST /api/auth/send-otp) still works through the new send_sms abstraction
+             — falls back to console-mock when neither provider is configured (no regression).
+          6. Audit log entries created for signalwire save, signalwire test, and sms-routing save
+             (kinds: admin.update_signalwire_settings, admin.test_signalwire, admin.update_sms_routing).
+
+        Admin: [email protected] / ChangeMe123!
+        Note: do not test real SignalWire delivery (no creds). Verify wiring + persistence + masking.
+
     - agent: "main"
       message: |
         Phase F2.1 + UI cleanup implemented. Backend changes only need testing here.
@@ -1899,3 +1942,92 @@ agent_communication:
         ACTION ITEMS FOR MAIN AGENT:
           1) F2.1 webhook handling is now fully working — please summarize/finalize.
           2) No further code changes required.
+
+
+  - task: "Phase F2.2 — SignalWire SMS provider integration + multi-provider failover"
+    implemented: true
+    working: true
+    file: "backend/sms_providers.py, backend/integrations.py, backend/admin_integrations.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Phase F2.2 verified end-to-end via /app/backend_test.py against the live
+            preview backend (https://joint-pay-1.preview.emergentagent.com/api).
+            47/47 assertions PASS. NO 5xx errors. NO schema mismatches.
+
+            Coverage by scenario (all PASS):
+              1) GET /api/admin/integrations (super_admin):
+                 - status==200; response includes both 'signalwire' and 'sms_routing'.
+                 - signalwire object has all 7 required fields: enabled,
+                   project_id_masked, project_id_set, api_token_set, api_token_masked,
+                   space_url, from_number (plus updated_at/updated_by).
+                 - sms_routing has primary + fallback. ✅
+
+              2) POST /api/admin/integrations/signalwire (super_admin):
+                 - Body {enabled:true, project_id:"PA-1234", api_token:"PT_secret_token_xyz",
+                   space_url:"https://example.signalwire.com/", from_number:"+15551234567"}
+                   → 200. signalwire.enabled=true, project_id_set=true, api_token_set=true.
+                 - project_id_masked = "***1234" (masked w/ stars + last 4 visible). ✅
+                 - space_url normalized to "example.signalwire.com" (NO scheme,
+                   NO trailing slash). ✅
+                 - from_number persists "+15551234567". ✅
+                 - Second update with only {enabled:false} → enabled flips False, but
+                   project_id_set stays true, api_token_set stays true, space_url
+                   unchanged → creds NOT wiped on toggle. ✅
+
+              3) POST /api/admin/integrations/sms-routing (super_admin):
+                 - {primary:"signalwire", fallback:"twilio"} → 200 with primary=signalwire,
+                   fallback=twilio. ✅
+                 - {primary:"twilio", fallback:null} → 200 with primary=twilio,
+                   fallback=None. ✅
+                 - {primary:"signalwire", fallback:"signalwire"} → 200 with
+                   primary=signalwire, fallback=null (server nulls fallback when equal
+                   to primary, as required). ✅
+
+              4) POST /api/admin/integrations/signalwire/test (after disabling SW):
+                 - Body {to_number:"+15551234567"} → 200, sent_real=false,
+                   info="SignalWire not enabled". NO 500. ✅
+
+              5) Audit log:
+                 - GET /api/admin/audit-log returns entries containing
+                   admin.update_signalwire_settings, admin.update_sms_routing,
+                   admin.test_signalwire after the above operations. ✅
+
+              6) Regression — OTP send flow + Twilio admin endpoint:
+                 - POST /api/auth/register → 200; POST /api/auth/send-otp with
+                   phone "+15555550100" → 200 mocked=true, twilio_info="signalwire=
+                   SignalWire not enabled" (multi-provider abstraction returned a
+                   clean message; legacy console-mock fall-through path works). ✅
+                 - POST /api/auth/verify-otp with code 123456 → 200. ✅
+                 - POST /api/admin/integrations/twilio {enabled:false,
+                   from_number:"+15555550001"} → 200 (no regression). ✅
+                 - GET /api/admin/integrations still returns twilio block. ✅
+
+              7) Role enforcement:
+                 - Created manager-role admin via /api/admin/admins; manager login OK.
+                 - manager POST /admin/integrations/signalwire → 403 "Requires one of
+                   roles: super_admin". ✅
+                 - manager POST /admin/integrations/sms-routing → 403 "Requires one of
+                   roles: super_admin". ✅
+                 - manager POST /admin/integrations/signalwire/test → 200 (allowed for
+                   super_admin OR manager — matches code intent). ✅
+
+            INFORMATIONAL (not blockers):
+              - admin.update_signalwire_settings, admin.update_sms_routing,
+                admin.test_signalwire are NOT in admin.AUDIT_ACTIONS_DESTRUCTIVE
+                (lines 188–213 of /app/backend/admin.py). They are written with
+                destructive=False. The review request did not mandate destructive=true
+                for these actions, so this is informational only — main agent may
+                choose to add them to the destructive set for parity with twilio
+                actions.
+              - passlib bcrypt cosmetic warning + JWT InsecureKeyLengthWarning in
+                backend logs (pre-existing, not related to F2.2).
+
+            Test suite saved at /app/backend_test.py (47/47 PASS, idempotent — uses
+            timestamp-based fresh phones + manager email each run).
+
+            Marking F2.2 as working — no backend code changes required.

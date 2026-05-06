@@ -46,6 +46,9 @@ export default function AdminIntegrations() {
   const [smsPrimary, setSmsPrimary] = useState<'twilio' | 'signalwire'>('twilio');
   const [smsFallback, setSmsFallback] = useState<'twilio' | 'signalwire' | 'none'>('none');
 
+  // Phase H6 — global SMS mode (mock | live)
+  const [smsMode, setSmsMode] = useState<'mock' | 'live'>('mock');
+
   // Reminders form
   const [rmEnabled, setRmEnabled] = useState(false);
   const [rmHours, setRmHours] = useState('24,72,168');
@@ -93,6 +96,7 @@ export default function AdminIntegrations() {
       setSwFrom(v.signalwire?.from_number || '');
       setSmsPrimary((v.sms_routing?.primary as any) || 'twilio');
       setSmsFallback((v.sms_routing?.fallback as any) || 'none');
+      setSmsMode((v.sms_routing?.mode as any) || 'mock');
       setRmEnabled(v.reminders.enabled);
       setRmHours((v.reminders.schedule_hours || []).join(','));
       setRmMax(String(v.reminders.max_reminders_per_user || 3));
@@ -205,6 +209,33 @@ export default function AdminIntegrations() {
         'Saved',
         `Primary: ${smsPrimary}${smsFallback === 'none' ? '' : ` · Fallback: ${smsFallback}`}`,
       );
+    } catch (e: any) { Alert.alert('Error', e?.message || 'Failed'); }
+    finally { setSaving(null); }
+  };
+
+  // Phase H6 — SMS Mode (mock | live)
+  const saveSmsMode = async (mode: 'mock' | 'live') => {
+    if (mode === smsMode) return;
+    if (mode === 'live') {
+      const proceed = await new Promise<boolean>((resolve) => {
+        Alert.alert(
+          'Switch to Live SMS?',
+          'All OTP and reminder SMS will be sent via the configured provider — real charges may apply. You can switch back to Mock anytime.',
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Go Live', style: 'destructive', onPress: () => resolve(true) },
+          ],
+          { cancelable: false },
+        );
+      });
+      if (!proceed) return;
+    }
+    setSaving('smsMode');
+    try {
+      const v = await adminApi.setSmsMode(mode);
+      setView(v);
+      setSmsMode(mode);
+      Alert.alert('SMS Mode', mode === 'live' ? '📡 Live SMS — provider active' : '🧪 Mock SMS — no real SMS will be sent');
     } catch (e: any) { Alert.alert('Error', e?.message || 'Failed'); }
     finally { setSaving(null); }
   };
@@ -487,6 +518,63 @@ export default function AdminIntegrations() {
         </TouchableOpacity>
       </View>
 
+      {/* SMS Mode — Phase H6: global mock/live toggle */}
+      <View style={[styles.card, { borderLeftWidth: 4, borderLeftColor: smsMode === 'live' ? '#10B981' : '#F59E0B' }]}>
+        <View style={styles.cardHeader}>
+          <View style={styles.cardIcon}><MessageSquare size={18} color={smsMode === 'live' ? '#10B981' : '#F59E0B'} /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.cardTitle}>SMS Mode</Text>
+            <Text style={styles.cardSub}>
+              Master switch for ALL outgoing SMS (auth OTP, sensitive OTP, reminders).
+              Switch to <Text style={{ fontWeight: '700' }}>Mock</Text> to skip real provider calls
+              while testing — users still receive the OTP code in the app response.
+            </Text>
+          </View>
+          <StatusPill ok={smsMode === 'live'} label={smsMode === 'live' ? 'LIVE' : 'MOCK'} />
+        </View>
+
+        <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+          <TouchableOpacity
+            onPress={() => saveSmsMode('mock')}
+            disabled={saving === 'smsMode'}
+            activeOpacity={0.85}
+            testID="admin-sms-mode-mock"
+            style={[
+              styles.modeBtn,
+              smsMode === 'mock' && { backgroundColor: '#F59E0B', borderColor: '#F59E0B' },
+              saving === 'smsMode' && { opacity: 0.6 },
+            ]}
+          >
+            <Text style={[styles.modeBtnText, smsMode === 'mock' && { color: '#fff' }]}>🧪 Mock SMS</Text>
+            <Text style={[styles.modeBtnSub, smsMode === 'mock' && { color: 'rgba(255,255,255,0.85)' }]}>
+              Use OTP 123456
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => saveSmsMode('live')}
+            disabled={saving === 'smsMode'}
+            activeOpacity={0.85}
+            testID="admin-sms-mode-live"
+            style={[
+              styles.modeBtn,
+              smsMode === 'live' && { backgroundColor: '#10B981', borderColor: '#10B981' },
+              saving === 'smsMode' && { opacity: 0.6 },
+            ]}
+          >
+            <Text style={[styles.modeBtnText, smsMode === 'live' && { color: '#fff' }]}>📡 Live SMS</Text>
+            <Text style={[styles.modeBtnSub, smsMode === 'live' && { color: 'rgba(255,255,255,0.85)' }]}>
+              Real provider
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {smsMode === 'live' && (
+          <Text style={[styles.helper, { marginTop: 8, color: '#10B981' }]}>
+            ⚠ Real SMS will be sent and billed via your configured provider. Test on a single number first.
+          </Text>
+        )}
+      </View>
+
       {/* Twilio */}
       <View style={styles.card}>
         <View style={styles.cardHeader}>
@@ -706,6 +794,21 @@ const styles = StyleSheet.create({
   divider: { height: 1, backgroundColor: COLORS.border, marginVertical: SPACING.md },
   saveBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, height: 42, borderRadius: RADIUS.md, marginTop: SPACING.sm, paddingHorizontal: SPACING.md },
   saveBtnText: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: FONT.sizes.sm },
+  // Phase H6 — SMS mode picker buttons
+  modeBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderRadius: RADIUS.md,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.bg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+  },
+  modeBtnText: { fontWeight: FONT.weights.bold, fontSize: FONT.sizes.md, color: COLORS.text },
+  modeBtnSub: { fontSize: 11, color: COLORS.subtext, fontWeight: FONT.weights.medium },
   btnRow: { flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.sm },
   metaSmall: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: SPACING.sm, fontStyle: 'italic' },
   infoBox: { flexDirection: 'row', alignItems: 'center', gap: 6, padding: SPACING.sm, marginTop: SPACING.sm, borderRadius: RADIUS.sm },

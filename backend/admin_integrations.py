@@ -45,6 +45,12 @@ class SmsRoutingIn(BaseModel):
     fallback: Optional[Literal["twilio", "signalwire"]] = None
 
 
+class SmsModeIn(BaseModel):
+    """Phase H6 — global SMS mode toggle. mock=skip provider entirely (use mock OTP),
+    live=route through configured Twilio/SignalWire."""
+    mode: Literal["mock", "live"]
+
+
 class ReminderSettingsIn(BaseModel):
     enabled: bool
     schedule_hours: List[int] = Field(default_factory=lambda: [24, 72, 168])
@@ -304,6 +310,44 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
             target_type="settings",
             target_id="integrations.sms_routing",
             payload=routing,
+            request=request,
+        )
+        rec = await get_integrations_doc(db)
+        from sms_providers import project_sms_for_admin
+        return {**project_integrations_for_admin(rec), **project_sms_for_admin(rec)}
+
+    # ===== SMS MODE (Phase H6 — global mock/live toggle) =====
+    @router.post("/integrations/sms-mode")
+    async def set_sms_mode(
+        body: SmsModeIn,
+        request: Request,
+        admin=Depends(attach_admin),
+        _check=Depends(require_role("super_admin")),
+    ):
+        """Toggle the global SMS kill-switch.
+
+        mock → all SMS sends (auth OTP, sensitive OTP, reminders) skip the
+               provider. The auth endpoint already returns the OTP code in the
+               response message so users can still log in.
+        live → SMS routes through Twilio/SignalWire as configured.
+
+        Switching is instant — no restart required."""
+        rec = await get_integrations_doc(db)
+        routing = dict(rec.get("sms_routing") or {})
+        routing["mode"] = body.mode
+        routing["updated_at"] = _now()
+        routing["updated_by"] = admin["email"]
+        await db.app_settings.update_one(
+            {"key": "integrations"}, {"$set": {"sms_routing": routing}}, upsert=True
+        )
+        await write_audit(
+            db,
+            admin_id=admin["id"],
+            admin_email=admin["email"],
+            action="admin.update_sms_mode",
+            target_type="settings",
+            target_id="integrations.sms_routing",
+            payload={"mode": body.mode},
             request=request,
         )
         rec = await get_integrations_doc(db)

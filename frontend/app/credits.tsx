@@ -165,13 +165,3 @@ const styles = StyleSheet.create({
   rowNote: { fontSize: FONT.sizes.xs, color: COLORS.text, marginTop: 4, fontStyle: 'italic' },
   metaSmall: { fontSize: 11, color: COLORS.subtext, marginTop: 2 },
 });
-t: { fontSize: FONT.sizes.sm, color: COLORS.subtext, fontWeight: FONT.weights.semibold, marginTop: 8 },
-  emptySub: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 4, textAlign: 'center' },
-  row: { flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.md, padding: SPACING.md, backgroundColor: COLORS.surface, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, marginBottom: 8 },
-  rowLeft: { width: 80, alignItems: 'flex-start' },
-  rowAmt: { fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold, color: COLORS.text },
-  rowKind: { fontSize: 10, color: COLORS.subtext, fontWeight: FONT.weights.semibold, textTransform: 'uppercase', marginTop: 2 },
-  rowStatus: { fontSize: 11, fontWeight: FONT.weights.bold, textTransform: 'uppercase' },
-  rowNote: { fontSize: FONT.sizes.xs, color: COLORS.text, marginTop: 4, fontStyle: 'italic' },
-  metaSmall: { fontSize: 11, color: COLORS.subtext, marginTop: 2 },
-});

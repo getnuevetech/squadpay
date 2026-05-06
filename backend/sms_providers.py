@@ -83,6 +83,7 @@ DEFAULT_SIGNALWIRE = {
 }
 
 DEFAULT_SMS_ROUTING = {
+    "mode": "mock",            # Phase H6 — "mock" | "live" — global SMS kill-switch
     "primary": "twilio",       # twilio | signalwire
     "fallback": None,          # twilio | signalwire | null
     "updated_at": None,
@@ -106,6 +107,7 @@ def project_sms_for_admin(rec: dict) -> dict:
             "updated_by": sw.get("updated_by"),
         },
         "sms_routing": {
+            "mode": (routing.get("mode") or "mock").lower(),
             "primary": routing.get("primary") or "twilio",
             "fallback": routing.get("fallback"),
             "updated_at": routing.get("updated_at"),
@@ -195,11 +197,37 @@ async def send_sms(db, to: str, body: str) -> Tuple[bool, str, Optional[str]]:
 
     Returns (sent_real, info_message, provider_used or None).
     Logs result to db.sms_log for audit.
+
+    Phase H6 — SMS Mode toggle:
+    `sms_routing.mode` in {"mock", "live"}. Default = "mock" for safety.
+      • mock → short-circuit, NEVER calls a real provider, returns (False, "mocked", "mock").
+              Console-logs the body so devs can read OTP codes locally.
+      • live → real provider attempts (primary, then fallback) as before.
+    The auth/send-otp endpoint already returns the OTP string in `message`
+    when sent_real=False, so end-users on a Mock-mode app see "Use 123456".
     """
     rec = await get_integrations_doc(db)
     routing = rec.get("sms_routing") or {}
+    mode = (routing.get("mode") or "mock").lower()
     primary = (routing.get("primary") or "twilio").lower()
     fallback = (routing.get("fallback") or "").lower() or None
+
+    # ─── Mock mode: short-circuit before any provider call ────────────────
+    if mode != "live":
+        logger.info(f"[sms-mock-mode] -> {to}: {body}")
+        try:
+            await db.sms_log.insert_one({
+                "to": to,
+                "body_preview": body[:80],
+                "sent_real": False,
+                "provider_used": "mock",
+                "mode": "mock",
+                "attempts": [],
+                "at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            })
+        except Exception:
+            pass
+        return False, "mocked (mode=mock — no real SMS sent)", "mock"
 
     attempts = []
     sent = False
@@ -220,7 +248,7 @@ async def send_sms(db, to: str, body: str) -> Tuple[bool, str, Optional[str]]:
             provider_used = prov
             break
 
-    # If neither configured/worked, log as mock
+    # If neither configured/worked, log as mock fallback
     if not sent and not attempts:
         logger.info(f"[sms-mock] -> {to}: {body}")
         info = "no provider configured — mocked to console"
@@ -232,6 +260,7 @@ async def send_sms(db, to: str, body: str) -> Tuple[bool, str, Optional[str]]:
             "body_preview": body[:80],
             "sent_real": sent,
             "provider_used": provider_used,
+            "mode": "live",
             "attempts": attempts,
             "at": dt.datetime.now(dt.timezone.utc).isoformat(),
         })

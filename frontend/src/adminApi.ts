@@ -184,6 +184,9 @@ export const adminApi = {
     request<{ sent_real: boolean; info: string }>(`/integrations/signalwire/test`, { method: 'POST', body: JSON.stringify({ to_number, body }) }),
   setSmsRouting: (r: { primary: 'twilio' | 'signalwire'; fallback?: 'twilio' | 'signalwire' | null }) =>
     request<IntegrationsView>('/integrations/sms-routing', { method: 'POST', body: JSON.stringify(r) }),
+  // Phase H6 — global mock/live toggle
+  setSmsMode: (mode: 'mock' | 'live') =>
+    request<IntegrationsView>('/integrations/sms-mode', { method: 'POST', body: JSON.stringify({ mode }) }),
   testTwilio: (to_number: string, body?: string) =>
     request<{ sent_real: boolean; info: string }>(`/integrations/twilio/test`, { method: 'POST', body: JSON.stringify({ to_number, body }) }),
   setReminders: (r: RemindersIn) => request<IntegrationsView>('/integrations/reminders', { method: 'POST', body: JSON.stringify(r) }),
@@ -436,6 +439,7 @@ export type IntegrationsView = {
     updated_by?: string | null;
   };
   sms_routing?: {
+    mode?: 'mock' | 'live';
     primary: 'twilio' | 'signalwire';
     fallback: 'twilio' | 'signalwire' | null;
     updated_at?: string | null;

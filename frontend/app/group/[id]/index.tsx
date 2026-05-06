@@ -15,7 +15,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import QRCode from 'react-native-qrcode-svg';
 import * as Clipboard from 'expo-clipboard';
-import { CheckCircle2, Copy, Share2, UserCircle2, Crown, ArrowRight, Users, CreditCard, Pencil, Eye, Receipt, Smartphone } from 'lucide-react-native';
+import { CheckCircle2, Copy, Share2, Crown, Users, CreditCard, Pencil, Eye, Receipt, Smartphone } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { api, BACKEND_URL, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
@@ -47,7 +47,7 @@ export default function GroupLobbyScreen() {
       const g = await api.getGroup(id);
       setGroup(g);
     } catch (e: any) {
-      Alert.alert('Error', e.message);
+      toast.error(e?.message || 'Could not load bill');
     }
   }, [id, router]);
 
@@ -96,7 +96,7 @@ export default function GroupLobbyScreen() {
 
   const copy = async () => {
     await Clipboard.setStringAsync(joinUrl);
-    Alert.alert('Copied', 'Link copied to clipboard');
+    toast.success('Link copied to clipboard');
   };
 
   const share = async () => {
@@ -121,7 +121,7 @@ export default function GroupLobbyScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />}
         contentContainerStyle={{ padding: SPACING.md, paddingBottom: 120 }}
       >
-        <View style={styles.headerCard}>
+        <View style={[styles.headerCard, SHADOW.md]}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
               <Text style={styles.title} testID="lobby-title">{group.title}</Text>
@@ -147,21 +147,21 @@ export default function GroupLobbyScreen() {
           </Text>
         </View>
 
-        <View style={styles.qrCard}>
+        <View style={[styles.qrCard, SHADOW.sm]}>
           <Text style={styles.qrLabel}>Scan to join</Text>
           <View style={styles.qrBox}>
             <QRCode value={joinUrl} size={200} backgroundColor="white" color={COLORS.text} />
           </View>
           <Text style={styles.codeText} testID="lobby-code">Code: {group.code}</Text>
           <View style={styles.shareRow}>
-            <TouchableOpacity testID="lobby-copy-btn" onPress={copy} style={styles.shareBtn}>
+            <PressableScale testID="lobby-copy-btn" onPress={copy} style={styles.shareBtn}>
               <Copy size={16} color={COLORS.primary} />
               <Text style={styles.shareBtnText}>Copy link</Text>
-            </TouchableOpacity>
-            <TouchableOpacity testID="lobby-share-btn" onPress={share} style={styles.shareBtn}>
+            </PressableScale>
+            <PressableScale testID="lobby-share-btn" onPress={share} style={styles.shareBtn}>
               <Share2 size={16} color={COLORS.primary} />
               <Text style={styles.shareBtnText}>Share</Text>
-            </TouchableOpacity>
+            </PressableScale>
           </View>
         </View>
 
@@ -172,7 +172,7 @@ export default function GroupLobbyScreen() {
               Virtual card · {group.virtual_card.status === 'inactive' ? 'disabled' :
                 (group.funding?.total_contributed >= group.total ? 'active' : 'funding…')}
             </Text>
-            <View style={[styles.cardFace, group.virtual_card.status === 'inactive' && { opacity: 0.55 }]}>
+            <View style={[styles.cardFace, SHADOW.lg, group.virtual_card.status === 'inactive' && { opacity: 0.55 }]}>
               <View style={styles.cardChip} />
               <View style={styles.cardRow}>
                 <CreditCard size={20} color="rgba(255,255,255,0.9)" />
@@ -304,7 +304,7 @@ export default function GroupLobbyScreen() {
           />
         )}
 
-        <View style={styles.membersCard}>
+        <View style={[styles.membersCard, SHADOW.sm]}>
           <View style={styles.membersHeader}>
             <Users size={18} color={COLORS.text} />
             <Text style={styles.membersTitle}>
@@ -334,7 +334,7 @@ export default function GroupLobbyScreen() {
         </View>
       </ScrollView>
 
-      <View style={styles.bottomBar}>
+      <View style={[styles.bottomBar, SHADOW.lg]}>
         {isLead ? (
           <Button
             title={group.split_mode === 'fast' ? 'Continue to Split' : 'Continue to Items'}
@@ -366,7 +366,7 @@ export default function GroupLobbyScreen() {
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.bg },
   headerCard: {
-    backgroundColor: COLORS.text,
+    backgroundColor: COLORS.slate900,
     borderRadius: RADIUS.xl,
     padding: SPACING.lg,
     marginBottom: SPACING.md,
@@ -374,9 +374,10 @@ const styles = StyleSheet.create({
   title: { color: '#fff', fontSize: FONT.sizes.lg, fontWeight: FONT.weights.semibold },
   total: { color: '#fff', fontSize: 48, fontWeight: FONT.weights.heavy, letterSpacing: -1, marginTop: 2 },
   modeLabel: {
-    color: '#9CA3AF',
+    color: COLORS.slate400,
     fontSize: FONT.sizes.sm,
     marginTop: 4,
+    fontWeight: FONT.weights.medium,
   },
   qrCard: {
     backgroundColor: COLORS.surface,

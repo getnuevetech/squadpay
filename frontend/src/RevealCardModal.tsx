@@ -355,7 +355,7 @@ async function ensureStripeJsLoaded(pubKey: string): Promise<{ stripe: any; vers
 
 const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 16 },
-  sheet: { backgroundColor: COLORS.surface, borderRadius: 16, padding: 20, width: '100%', maxWidth: 460, gap: 8, ...(Platform.OS !== 'web' ? { height: '85%' as any, maxHeight: 720 } : {}) },
+  sheet: { backgroundColor: COLORS.surface, borderRadius: 16, padding: 16, width: '100%', maxWidth: 480, gap: 8, ...(Platform.OS !== 'web' ? { height: '92%' as any, maxHeight: 900 } : {}) },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   title: { fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold, color: COLORS.text },

@@ -144,10 +144,10 @@ export default function RevealPage() {
         const styles = {
           base: {
             fontFamily: 'system-ui, -apple-system, sans-serif',
-            fontSize: '22px',
+            fontSize: '18px',
             fontWeight: '600',
             color: '#FFFFFF',
-            letterSpacing: '2px',
+            letterSpacing: '1.2px',
           },
         };
         const numEl = elements.create('issuingCardNumberDisplay', {
@@ -289,11 +289,11 @@ export default function RevealPage() {
 }
 
 const styles = StyleSheet.create({
-  scroll: { flexGrow: 1, backgroundColor: COLORS.bg, justifyContent: 'center', alignItems: 'center', padding: 20 },
-  sheet: { backgroundColor: COLORS.surface, borderRadius: 16, padding: 24, width: '100%', maxWidth: 460, gap: 14 },
+  scroll: { flexGrow: 1, backgroundColor: COLORS.bg, justifyContent: 'flex-start', alignItems: 'center', padding: 12 },
+  sheet: { backgroundColor: COLORS.surface, borderRadius: 16, padding: 16, width: '100%', maxWidth: 460, gap: 12, marginTop: 8 },
   header: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  title: { fontSize: FONT.sizes.xl, fontWeight: FONT.weights.bold, color: COLORS.text },
-  sub: { fontSize: FONT.sizes.sm, color: COLORS.subtext },
+  title: { fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold, color: COLORS.text },
+  sub: { fontSize: FONT.sizes.xs, color: COLORS.subtext },
   helper: { fontSize: FONT.sizes.sm, color: COLORS.subtext },
   label: { fontSize: FONT.sizes.sm, color: COLORS.text, fontWeight: FONT.weights.semibold },
   codeInput: {
@@ -310,11 +310,11 @@ const styles = StyleSheet.create({
   metaSmall: { fontSize: FONT.sizes.xs, color: COLORS.subtext },
   loadingBlock: { alignItems: 'center', gap: 10, paddingVertical: 18 },
   cardFace: {
-    backgroundColor: '#0F172A', borderRadius: 14, padding: 20, gap: 16,
+    backgroundColor: '#0F172A', borderRadius: 14, padding: 16, gap: 14,
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)',
   },
-  cardFaceLabel: { color: 'rgba(255,255,255,0.6)', fontSize: 11, marginBottom: 4, letterSpacing: 1.2, textTransform: 'uppercase' as any },
-  cardFooter: { flexDirection: 'row', gap: 16 },
+  cardFaceLabel: { color: 'rgba(255,255,255,0.6)', fontSize: 10, marginBottom: 4, letterSpacing: 1.2, textTransform: 'uppercase' as any },
+  cardFooter: { flexDirection: 'row', gap: 12 },
   timerRow: { flexDirection: 'row', alignItems: 'center', gap: 6, justifyContent: 'center' },
   timerText: { color: COLORS.warning, fontSize: 13, fontWeight: '600' as any },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20, backgroundColor: COLORS.bg },

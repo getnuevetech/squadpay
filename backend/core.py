@@ -420,6 +420,9 @@ class VerifyOtpIn(BaseModel):
     user_id: str
     phone: str
     code: str
+    # Phase H2: when an account with this phone already exists, the client must
+    # explicitly confirm before we merge the placeholder user into the existing one.
+    confirm_existing: Optional[bool] = False
 
 
 class ItemIn(BaseModel):

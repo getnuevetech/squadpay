@@ -203,10 +203,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ user_id, phone }),
     }),
-  verifyOtp: (user_id: string, phone: string, code: string) =>
+  // Phase H2 — pre-flight check used by the auth flow before verify-otp.
+  // Returns { exists: boolean, name?: string, blocked?: boolean }.
+  lookupPhone: (phone: string, exclude_user_id?: string) => {
+    const q = new URLSearchParams({ phone });
+    if (exclude_user_id) q.set('exclude_user_id', exclude_user_id);
+    return request<{ exists: boolean; name?: string; blocked?: boolean }>(
+      `/auth/lookup-phone?${q.toString()}`,
+    );
+  },
+  verifyOtp: (user_id: string, phone: string, code: string, confirm_existing: boolean = false) =>
     request<User>('/auth/verify-otp', {
       method: 'POST',
-      body: JSON.stringify({ user_id, phone, code }),
+      body: JSON.stringify({ user_id, phone, code, confirm_existing }),
     }),
   getUser: (user_id: string) => request<User>(`/users/${user_id}`),
   getUserGroups: (user_id: string) =>

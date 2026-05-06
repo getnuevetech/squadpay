@@ -120,11 +120,71 @@ export default function AuthScreen() {
     }
     setLoading(true);
     try {
-      const verified = await api.verifyOtp(userId, phone.trim(), otp);
-      await saveUser(verified);
-      router.replace('/');
+      // Phase H2 — pre-flight: detect "phone already registered to another account"
+      // BEFORE we hand over the OTP, so we can ask the user before merging.
+      let confirmExisting = false;
+      try {
+        const lookup = await api.lookupPhone(phone.trim(), userId);
+        if (lookup?.exists && !lookup.blocked && lookup.name) {
+          // Lookup already excludes the current placeholder, so any hit means
+          // a different verified account owns this phone.
+          const proceed = await new Promise<boolean>((resolve) => {
+            Alert.alert(
+              'Phone already registered',
+              `An account with this number is already registered as "${lookup.name}".\n\nDo you want to sign in to that account? Your current name "${name}" will be replaced with "${lookup.name}", and any group you started will stay yours under the registered name.`,
+              [
+                { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+                { text: `Use ${lookup.name}`, onPress: () => resolve(true) },
+              ],
+              { cancelable: false },
+            );
+          });
+          if (!proceed) {
+            setLoading(false);
+            return;
+          }
+          confirmExisting = true;
+        } else if (lookup?.blocked) {
+          Alert.alert('Account blocked', 'This phone number is associated with a blocked account. Please contact support.');
+          setLoading(false);
+          return;
+        }
+      } catch (e) {
+        // lookup is best-effort; if it fails we continue and rely on the
+        // server's 409 fallback.
+      }
+
+      try {
+        const verified = await api.verifyOtp(userId, phone.trim(), otp, confirmExisting);
+        await saveUser(verified);
+        router.replace('/');
+      } catch (e: any) {
+        // Server fallback: if lookup didn't run (e.g. offline) and the server
+        // returned 409 phone_already_registered, surface the same prompt here.
+        const msg = String(e?.message || '');
+        if (msg.includes('phone_already_registered') || msg.includes('already registered')) {
+          const proceed = await new Promise<boolean>((resolve) => {
+            Alert.alert(
+              'Phone already registered',
+              'An account with this number is already registered. Do you want to sign in to that account?',
+              [
+                { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+                { text: 'Use existing', onPress: () => resolve(true) },
+              ],
+              { cancelable: false },
+            );
+          });
+          if (proceed) {
+            const verified = await api.verifyOtp(userId, phone.trim(), otp, true);
+            await saveUser(verified);
+            router.replace('/');
+          }
+        } else {
+          throw e;
+        }
+      }
     } catch (e: any) {
-      Alert.alert('Invalid code', e.message);
+      Alert.alert('Invalid code', e.message || 'Verification failed');
     } finally {
       setLoading(false);
     }

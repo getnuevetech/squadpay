@@ -1,269 +1,290 @@
-"""Phase G5 — Admin Analytics dashboard backend tests."""
+"""
+Phase H2 — Phone-already-registered confirmation + safe placeholder merge.
+
+Tests the new POST /api/auth/verify-otp confirm_existing flow + GET /api/auth/lookup-phone.
+Uses the live preview backend (EXPO_PUBLIC_BACKEND_URL).
+"""
 import os
-import sys
 import time
-import uuid
-from datetime import date
-
+import random
+import json
+import sys
 import requests
+from pymongo import MongoClient
 
-BASE = os.environ.get("EXPO_PUBLIC_BACKEND_URL") or "https://joint-pay-1.preview.emergentagent.com"
-API = BASE.rstrip("/") + "/api"
-
-ADMIN_EMAIL = "[email protected]"
-ADMIN_PASSWORD = "ChangeMe123!"
+BASE = "https://joint-pay-1.preview.emergentagent.com/api"
+MONGO_URL = "mongodb://localhost:27017"
+DB_NAME = "test_database"
 
 PASS = 0
 FAIL = 0
-FAILS: list = []
+FAILS = []
 
 
-def check(cond: bool, label: str, detail: str = ""):
+def assert_eq(name, actual, expected):
+    global PASS, FAIL
+    if actual == expected:
+        PASS += 1
+        print(f"  ✅ {name}: {actual}")
+    else:
+        FAIL += 1
+        FAILS.append(f"{name}: expected {expected!r} got {actual!r}")
+        print(f"  ❌ {name}: expected {expected!r} got {actual!r}")
+
+
+def assert_true(name, cond, detail=""):
     global PASS, FAIL
     if cond:
         PASS += 1
-        print(f"  PASS  {label}")
+        print(f"  ✅ {name}{(' — ' + detail) if detail else ''}")
     else:
         FAIL += 1
-        FAILS.append(f"{label} :: {detail}")
-        print(f"  FAIL  {label}  -- {detail}")
+        FAILS.append(f"{name}: {detail}")
+        print(f"  ❌ {name}: {detail}")
 
 
-def login_super_admin() -> str:
-    r = requests.post(
-        f"{API}/admin/auth/login",
-        json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
-        timeout=20,
-    )
+def fresh_phone():
+    return f"+1555{random.randint(100000, 999999)}"
+
+
+def register(name, referral_code=None):
+    body = {"name": name}
+    if referral_code:
+        body["referral_code"] = referral_code
+    r = requests.post(f"{BASE}/auth/register", json=body, timeout=30)
     r.raise_for_status()
-    return r.json()["token"]
+    return r.json()
 
 
-def hdr(t: str) -> dict:
-    return {"Authorization": f"Bearer {t}"}
+def send_otp(user_id, phone):
+    r = requests.post(f"{BASE}/auth/send-otp", json={"user_id": user_id, "phone": phone}, timeout=30)
+    r.raise_for_status()
+    return r.json()
 
 
-def is_iso_date(s) -> bool:
-    if not isinstance(s, str):
-        return False
-    try:
-        date.fromisoformat(s)
-        return True
-    except Exception:
-        return False
-
-
-def section(title):
-    print(f"\n=== {title} ===")
-
-
-def test_default_range(token):
-    section("2) GET /api/admin/analytics (no range) -> default 30")
-    r = requests.get(f"{API}/admin/analytics", headers=hdr(token), timeout=30)
-    check(r.status_code == 200, "default range 200", f"status={r.status_code} body={r.text[:300]}")
-    if r.status_code == 200:
-        data = r.json()
-        check(data.get("range_days") == 30, "default range_days==30", f"got={data.get('range_days')}")
-        return data
-    return None
-
-
-def test_range(token, rng_param, expected_days):
-    section(f"GET /api/admin/analytics?range={rng_param} -> {expected_days} entries")
-    r = requests.get(f"{API}/admin/analytics", params={"range": rng_param}, headers=hdr(token), timeout=30)
-    check(r.status_code == 200, f"range={rng_param} 200", f"status={r.status_code} body={r.text[:300]}")
-    if r.status_code != 200:
-        return None
-    data = r.json()
-    check(data.get("range_days") == expected_days, f"range_days=={expected_days}", f"got={data.get('range_days')}")
-
-    arrays = ["signups_per_day", "groups_per_day", "gmv_per_day", "aov_per_day", "contributions_per_day"]
-    for k in arrays:
-        arr = data.get(k)
-        check(isinstance(arr, list), f"{k} is list", f"got={type(arr).__name__}")
-        if isinstance(arr, list):
-            check(len(arr) == expected_days, f"{k} has {expected_days} entries", f"got={len(arr)}")
-            if arr:
-                iso_ok = all(is_iso_date(x.get("date")) for x in arr)
-                check(iso_ok, f"{k} entries have ISO date strings", f"sample={arr[0]}")
-    return data
-
-
-def test_invalid_range(token):
-    section("5) GET /api/admin/analytics?range=invalid -> defaults to 30")
-    r = requests.get(f"{API}/admin/analytics", params={"range": "invalid"}, headers=hdr(token), timeout=30)
-    check(r.status_code == 200, "invalid range graceful 200", f"status={r.status_code} body={r.text[:300]}")
-    if r.status_code == 200:
-        data = r.json()
-        check(data.get("range_days") == 30, "invalid range defaulted to 30", f"got={data.get('range_days')}")
-    check(r.status_code != 500, "invalid range NOT 500", f"status={r.status_code}")
-
-
-def test_shape(data):
-    section("6) Shape verification - required top-level keys")
-    required_keys = [
-        "range_days", "start_date", "end_date",
-        "groups_per_day", "gmv_per_day", "aov_per_day",
-        "signups_per_day", "contributions_per_day",
-        "top_referrers", "card_metrics", "master_account",
-        "funnel", "totals",
-    ]
-    for k in required_keys:
-        check(k in data, f"top-level key '{k}'", f"keys={list(data.keys())}")
-    check(is_iso_date(data.get("start_date")), "start_date ISO", f"got={data.get('start_date')}")
-    check(is_iso_date(data.get("end_date")), "end_date ISO", f"got={data.get('end_date')}")
-
-
-def test_totals(data):
-    section("7) totals object keys")
-    totals = data.get("totals") or {}
-    required = ["users", "verified_users", "groups", "groups_in_range", "contributions",
-                "gmv", "gmv_in_range", "gross_processed_in_range", "signups_in_range", "verified_in_range"]
-    for k in required:
-        check(k in totals, f"totals.{k} present", f"totals keys={list(totals.keys())}")
-
-
-def test_funnel(data):
-    section("8) funnel object")
-    funnel = data.get("funnel") or {}
-    required = ["signups", "verified", "joined_group", "contributed", "settled_groups"]
-    for k in required:
-        check(k in funnel, f"funnel.{k} present", f"funnel keys={list(funnel.keys())}")
-    totals = data.get("totals") or {}
-    check(funnel.get("signups") == totals.get("users"),
-          "funnel.signups == totals.users",
-          f"funnel.signups={funnel.get('signups')} totals.users={totals.get('users')}")
-    check(funnel.get("verified") == totals.get("verified_users"),
-          "funnel.verified == totals.verified_users",
-          f"funnel.verified={funnel.get('verified')} totals.verified_users={totals.get('verified_users')}")
-
-
-def test_card_metrics(data):
-    section("9) card_metrics object")
-    cm = data.get("card_metrics") or {}
-    for k in ["total_issued", "active", "inactive", "total_spent"]:
-        check(k in cm, f"card_metrics.{k} present", f"keys={list(cm.keys())}")
-    if all(k in cm for k in ["total_issued", "active", "inactive"]):
-        check(cm["active"] + cm["inactive"] <= cm["total_issued"],
-              "active+inactive <= total_issued",
-              f"active={cm['active']} inactive={cm['inactive']} total={cm['total_issued']}")
-
-
-def test_master_account(data):
-    section("10) master_account object")
-    ma = data.get("master_account") or {}
-    check("balance" in ma, "master_account.balance present", f"keys={list(ma.keys())}")
-    check("entries" in ma, "master_account.entries present", f"keys={list(ma.keys())}")
-    check(isinstance(ma.get("balance"), (int, float)), "balance is number", f"type={type(ma.get('balance')).__name__}")
-    check(isinstance(ma.get("entries"), (int, float)), "entries is number", f"type={type(ma.get('entries')).__name__}")
-
-
-def test_top_referrers(data):
-    section("11) top_referrers array shape")
-    tr = data.get("top_referrers")
-    check(isinstance(tr, list), "top_referrers is list", f"type={type(tr).__name__}")
-    if isinstance(tr, list):
-        check(len(tr) <= 10, "top_referrers length <=10", f"len={len(tr)}")
-        for i, item in enumerate(tr):
-            for k in ["user_id", "name", "referral_code", "signups", "verified_signups"]:
-                check(k in item, f"top_referrers[{i}].{k} present", f"keys={list(item.keys())}")
-
-
-def test_auth(token):
-    section("12) Auth: no token -> 401; manager-role -> 200")
-    r = requests.get(f"{API}/admin/analytics", timeout=20)
-    check(r.status_code == 401, "no token -> 401", f"status={r.status_code} body={r.text[:200]}")
-
-    suffix = uuid.uuid4().hex[:8]
-    mgr_email = f"mgr_g5_{suffix}@kwiktech.net"
-    mgr_password = "ManagerPass123!"
-    r = requests.post(
-        f"{API}/admin/admins",
-        headers={**hdr(token), "Content-Type": "application/json"},
-        json={"email": mgr_email, "password": mgr_password, "name": "Manager G5", "role": "manager"},
-        timeout=20,
-    )
-    if r.status_code not in (200, 409):
-        check(False, "create manager admin", f"status={r.status_code} body={r.text[:300]}")
-        return
-    r = requests.post(
-        f"{API}/admin/auth/login",
-        json={"email": mgr_email, "password": mgr_password},
-        timeout=20,
-    )
-    if r.status_code != 200:
-        check(False, "manager login", f"status={r.status_code} body={r.text[:300]}")
-        return
-    mgr_token = r.json()["token"]
-    r = requests.get(f"{API}/admin/analytics", headers=hdr(mgr_token), timeout=30)
-    check(r.status_code == 200, "manager-role analytics -> 200", f"status={r.status_code} body={r.text[:300]}")
-
-
-def test_regressions(token):
-    section("13) Regression spot-checks")
-    endpoints = [
-        "/admin/integrations/issuing",
-        "/admin/security/kms-status",
-        "/admin/reconciliations",
-        "/admin/master-account",
-    ]
-    for path in endpoints:
-        r = requests.get(f"{API}{path}", headers=hdr(token), timeout=20)
-        check(r.status_code == 200, f"GET {path} -> 200", f"status={r.status_code} body={r.text[:300]}")
-
-    suffix = uuid.uuid4().hex[:6]
-    name = f"AnalyticsUser_{suffix}"
-    r = requests.post(f"{API}/auth/register", json={"name": name}, timeout=20)
-    if r.status_code != 200:
-        check(False, "POST /auth/register (helper)", f"status={r.status_code} body={r.text[:300]}")
-        return
-    j = r.json()
-    uid = j.get("id") or j.get("user_id")
-    phone = f"+1555{int(time.time()) % 10000000:07d}"
-    r = requests.post(f"{API}/auth/send-otp", json={"user_id": uid, "phone": phone}, timeout=20)
-    check(r.status_code == 200, "POST /auth/send-otp -> 200", f"status={r.status_code} body={r.text[:300]}")
+def verify_otp(user_id, phone, code="123456", confirm_existing=None):
+    body = {"user_id": user_id, "phone": phone, "code": code}
+    if confirm_existing is not None:
+        body["confirm_existing"] = confirm_existing
+    return requests.post(f"{BASE}/auth/verify-otp", json=body, timeout=30)
 
 
 def main():
-    print(f"BASE={BASE}")
-    print(f"API ={API}")
-    print(f"Logging in super_admin {ADMIN_EMAIL}...")
-    try:
-        token = login_super_admin()
-        print("  PASS  super_admin login")
-    except Exception as e:
-        print(f"  FAIL  super_admin login failed: {e}")
-        sys.exit(2)
+    ts = int(time.time())
+    print(f"\n=== Phase H2 — phone-already-registered + safe merge — ts={ts} ===\n")
+    print(f"BASE: {BASE}\n")
 
-    data30_default = test_default_range(token)
-    data7 = test_range(token, "7d", 7)
-    data30 = test_range(token, "30d", 30)
-    data90 = test_range(token, "90d", 90)
-    test_invalid_range(token)
+    # ─────────────────────────────────────────────
+    # Step 1: Setup Bob (verified)
+    # ─────────────────────────────────────────────
+    print("STEP 1: Register + verify Bob.")
+    bob_phone = fresh_phone()
+    bob_reg = register(f"Bob{ts}")
+    bob_id = bob_reg["id"]
+    send_otp(bob_id, bob_phone)
+    r = verify_otp(bob_id, bob_phone)
+    assert_eq("Bob verify-otp status", r.status_code, 200)
+    bob = r.json()
+    assert_true("Bob.verified", bob.get("verified") is True)
+    assert_eq("Bob.name", bob["name"], f"Bob{ts}")
+    assert_eq("Bob.id stable", bob["id"], bob_id)
+    print(f"  Bob id={bob_id} phone={bob_phone}\n")
 
-    pick = data30 or data7 or data30_default or data90
-    if pick:
-        test_shape(pick)
-        test_totals(pick)
-        test_funnel(pick)
-        test_card_metrics(pick)
-        test_master_account(pick)
-        test_top_referrers(pick)
-    else:
-        check(False, "have analytics payload to inspect", "all calls failed")
+    # ─────────────────────────────────────────────
+    # Step 2-4: lookup-phone variants
+    # ─────────────────────────────────────────────
+    print("STEP 2: lookup-phone of Bob's phone (no exclude).")
+    r = requests.get(f"{BASE}/auth/lookup-phone", params={"phone": bob_phone}, timeout=15)
+    assert_eq("lookup status", r.status_code, 200)
+    d = r.json()
+    assert_eq("lookup exists", d.get("exists"), True)
+    assert_eq("lookup name", d.get("name"), f"Bob{ts}")
+    assert_eq("lookup blocked", d.get("blocked"), False)
 
-    test_auth(token)
-    test_regressions(token)
+    print("STEP 3: lookup-phone with exclude_user_id=Bob.id.")
+    r = requests.get(
+        f"{BASE}/auth/lookup-phone",
+        params={"phone": bob_phone, "exclude_user_id": bob_id},
+        timeout=15,
+    )
+    assert_eq("lookup self-excluded status", r.status_code, 200)
+    d = r.json()
+    assert_eq("lookup self-excluded exists", d.get("exists"), False)
 
-    print("\n=========================================")
-    print(f"PASS: {PASS}  FAIL: {FAIL}")
+    print("STEP 4: lookup-phone of unused number.")
+    r = requests.get(f"{BASE}/auth/lookup-phone", params={"phone": "+19999999999"}, timeout=15)
+    assert_eq("lookup unused status", r.status_code, 200)
+    d = r.json()
+    assert_eq("lookup unused exists", d.get("exists"), False)
+    print()
+
+    # ─────────────────────────────────────────────
+    # Step 5-6: Setup Robert as a placeholder + create a group as a placeholder lead
+    # ─────────────────────────────────────────────
+    print("STEP 5: Register placeholder Robert.")
+    robert_reg = register(f"Robert{ts}")
+    robert_id = robert_reg["id"]
+    print(f"  Robert id={robert_id} (placeholder)")
+    assert_true("Robert is unverified", robert_reg.get("verified") is False)
+
+    print("STEP 6: Insert a group with Robert as lead via direct Mongo seeding.")
+    mongo = MongoClient(MONGO_URL)
+    db = mongo[DB_NAME]
+    group_id = f"g_h2_{ts}_{random.randint(1000, 9999)}"
+    group_doc = {
+        "id": group_id,
+        "code": f"H2{ts % 100000:05d}",
+        "title": "Robert's Lunch",
+        "lead_id": robert_id,
+        "members": [
+            {"user_id": robert_id, "role": "lead", "joined_at": "2025-01-01T00:00:00Z"}
+        ],
+        "items": [],
+        "assignments": [],
+        "contributions": [],
+        "repayments": [],
+        "split_mode": "fast",
+        "status": "open",
+        "total_amount": 30.0,
+        "tax": 0.0,
+        "tip": 0.0,
+        "created_at": "2025-01-01T00:00:00Z",
+    }
+    db.groups.insert_one(group_doc.copy())
+    g = db.groups.find_one({"id": group_id}, {"_id": 0})
+    assert_eq("seeded group lead_id", g.get("lead_id"), robert_id)
+    assert_eq("seeded group members count", len(g.get("members", [])), 1)
+    assert_eq("seeded group member user_id", g["members"][0]["user_id"], robert_id)
+    print()
+
+    # ─────────────────────────────────────────────
+    # Step 7-8: Robert sends OTP to Bob's phone, then verify WITHOUT confirm_existing
+    # ─────────────────────────────────────────────
+    print("STEP 7: Robert send-otp to Bob's phone.")
+    r = send_otp(robert_id, bob_phone)
+    assert_true("send-otp ok", r.get("ok") is True)
+
+    print("STEP 8: Robert verify-otp WITHOUT confirm_existing → expect 409.")
+    r = verify_otp(robert_id, bob_phone, code="123456")
+    assert_eq("verify-otp 409 status", r.status_code, 409)
+    body = r.json()
+    assert_eq("verify-otp 409 code", body.get("code"), "phone_already_registered")
+    assert_eq("verify-otp 409 existing_name", body.get("existing_name"), f"Bob{ts}")
+    assert_true(
+        "verify-otp 409 message present",
+        isinstance(body.get("message"), str) and len(body["message"]) > 0,
+        detail=str(body.get("message"))[:80],
+    )
+    print()
+
+    # Confirm Robert is still a placeholder, group still belongs to him
+    rob = db.users.find_one({"id": robert_id}, {"_id": 0})
+    assert_true("Robert NOT deleted yet (pre-confirm)", rob is not None)
+    g = db.groups.find_one({"id": group_id}, {"_id": 0})
+    assert_eq("group lead still Robert (pre-confirm)", g.get("lead_id"), robert_id)
+    bob_check = db.users.find_one({"id": bob_id}, {"_id": 0})
+    assert_eq("Bob.name unchanged after 409", bob_check.get("name"), f"Bob{ts}")
+    print()
+
+    # ─────────────────────────────────────────────
+    # Step 9: Verify WITH confirm_existing=true → 200 (merge)
+    # ─────────────────────────────────────────────
+    print("STEP 9: Robert verify-otp WITH confirm_existing=true → expect 200.")
+    r = verify_otp(robert_id, bob_phone, code="123456", confirm_existing=True)
+    assert_eq("verify-otp 200 status", r.status_code, 200)
+    out = r.json()
+    assert_eq("merged user.id == Bob.id", out.get("id"), bob_id)
+    assert_eq("merged user.name == Bob (name preserved)", out.get("name"), f"Bob{ts}")
+    assert_eq("merged user.phone == Bob phone", out.get("phone"), bob_phone)
+    assert_true("merged user.verified", out.get("verified") is True)
+    print()
+
+    # ─────────────────────────────────────────────
+    # Step 10: Post-merge invariants
+    # ─────────────────────────────────────────────
+    print("STEP 10: Post-merge invariants via API.")
+    r = requests.get(f"{BASE}/users/{robert_id}", timeout=15)
+    assert_eq("GET Robert → 404 (placeholder deleted)", r.status_code, 404)
+
+    r = requests.get(f"{BASE}/users/{bob_id}", timeout=15)
+    assert_eq("GET Bob → 200", r.status_code, 200)
+    bob_after = r.json()
+    assert_eq("Bob.name STILL 'Bob' (NOT renamed to Robert)", bob_after["name"], f"Bob{ts}")
+
+    r = requests.get(f"{BASE}/groups/{group_id}", timeout=15)
+    assert_eq("GET group → 200", r.status_code, 200)
+    g_after = r.json()
+    assert_eq("group.lead_id == Bob.id", g_after.get("lead_id"), bob_id)
+    members = g_after.get("members", [])
+    assert_eq("group has 1 member", len(members), 1)
+    if members:
+        assert_eq("member.user_id == Bob.id", members[0].get("user_id"), bob_id)
+        assert_eq("member.role == lead", members[0].get("role"), "lead")
+    print()
+
+    # Also re-verify directly in Mongo to be sure
+    g_db = db.groups.find_one({"id": group_id}, {"_id": 0})
+    assert_eq("DB: group.lead_id", g_db.get("lead_id"), bob_id)
+    rob_db = db.users.find_one({"id": robert_id}, {"_id": 0})
+    assert_true("DB: Robert deleted", rob_db is None)
+    bob_db = db.users.find_one({"id": bob_id}, {"_id": 0})
+    assert_eq("DB: Bob.name preserved", bob_db.get("name"), f"Bob{ts}")
+    print()
+
+    # ─────────────────────────────────────────────
+    # Step 11: Regression — fresh placeholder + brand-new phone
+    # ─────────────────────────────────────────────
+    print("STEP 11: Regression — Charlie placeholder + fresh phone, NO confirm_existing.")
+    charlie_phone = fresh_phone()
+    charlie_reg = register(f"Charlie{ts}")
+    charlie_id = charlie_reg["id"]
+    send_otp(charlie_id, charlie_phone)
+    r = verify_otp(charlie_id, charlie_phone, code="123456")
+    assert_eq("Charlie verify-otp status (no 409)", r.status_code, 200)
+    out = r.json()
+    assert_eq("Charlie.id stable", out.get("id"), charlie_id)
+    assert_eq("Charlie.name", out.get("name"), f"Charlie{ts}")
+    assert_true("Charlie.verified", out.get("verified") is True)
+    print()
+
+    # ─────────────────────────────────────────────
+    # Step 12: Regression spot — /users/{id}/groups + POST /groups
+    # ─────────────────────────────────────────────
+    print("STEP 12: Regression spot — /users/{id}/groups + POST /groups.")
+    r = requests.get(f"{BASE}/users/{bob_id}/groups", timeout=15)
+    assert_eq("GET Bob/groups status", r.status_code, 200)
+    groups_list = r.json()
+    assert_true(
+        "Bob's groups includes the merged group",
+        any(g.get("id") == group_id for g in (groups_list if isinstance(groups_list, list) else [])),
+        detail=f"len={len(groups_list) if isinstance(groups_list, list) else 'NA'}",
+    )
+
+    new_group_payload = {
+        "lead_id": charlie_id,
+        "title": f"Charlie's Pizza {ts}",
+        "items": [{"name": "Pizza", "price": 12.0, "quantity": 1}],
+        "tax": 0.0,
+        "tip": 0.0,
+        "split_mode": "fast",
+    }
+    r = requests.post(f"{BASE}/groups", json=new_group_payload, timeout=30)
+    assert_eq("POST /groups (Charlie) status", r.status_code, 200)
+    if r.status_code == 200:
+        new_g = r.json()
+        assert_eq("new group lead_id", new_g.get("lead_id"), charlie_id)
+    print()
+
+    # Final
+    print("=" * 60)
+    print(f"TOTAL: {PASS} PASS, {FAIL} FAIL")
     if FAILS:
-        print("FAILED:")
+        print("\nFailures:")
         for f in FAILS:
-            print(f"  - {f}")
-    print("=========================================")
-    sys.exit(0 if FAIL == 0 else 1)
+            print("  -", f)
+    print("=" * 60)
+    return 0 if FAIL == 0 else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -205,6 +205,9 @@ def build_admin_router(db):
     attach_credits_routes(router, db, _attach_admin)
     # Mount Phase D integrations admin routes
     attach_integrations_routes(router, db, _attach_admin)
+    # Phase G1: Reconciliation admin routes
+    from admin_reconciliation import attach_reconciliation_routes
+    attach_reconciliation_routes(router, db, _attach_admin)
 
     return router
 

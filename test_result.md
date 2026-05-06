@@ -1164,13 +1164,152 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Batch B refactor — server.py split into routes/* modules (regression test)"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
+backend:
+  - task: "Phase G1 — Stripe Reconciliation tracking + Master Account ledger"
+    implemented: true
+    working: true
+    file: "backend/reconciliation.py, backend/admin_reconciliation.py, backend/admin_routes.py, backend/issuing_reveal.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Phase G1 backend tested end-to-end via /app/g1_test.py against the live preview
+            backend (https://joint-pay-1.preview.emergentagent.com/api). 49/50 assertions PASS.
+            NO 5xx, NO unhandled exceptions. Test suite is idempotent (uses ts-based names
+            + cleanup at the end).
+
+            ✅ PASSING — by section:
+
+              Step 1) GET /admin/reconciliation-settings → 200 with expected keys
+              (credit_contributors_enabled, auto_disable_card, master_account_id == "MASTER_KWIKPAY").
+              (Defaults observed on current DB: credit_contributors_enabled=false,
+              auto_disable_card=true, as expected.)
+
+              Step 2) POST /admin/reconciliation-settings {credit_contributors_enabled:true}
+              → 200; response reflects true; updated_at + updated_by populated
+              (updated_by == admin email); subsequent GET confirms persistence.
+
+              Step 3) POST /admin/reconciliation-settings {auto_disable_card:false}
+              → 200; auto_disable_card flipped to false; credit_contributors_enabled REMAINED
+              true (correct partial-update behavior). Audit row
+              "admin.update_reconciliation_settings" present in /admin/audit-log with
+              target_type='settings' and target_id containing 'reconciliation'.
+
+              Step 4) RBAC: created fresh manager admin, logged in, then
+              POST /admin/reconciliation-settings → 403 (route uses
+              require_role("super_admin"), verified).
+
+              Step 5) GET /admin/reconciliations → 200 with {items: [...], total, skip:0, limit:50}.
+              GET /admin/reconciliations?action=credit_contributors&q=foo → 200 with
+              filtered result shape.
+
+              Step 6) GET /admin/master-account → 200 with {items: [...], total, balance (numeric)}.
+
+              Step 7a) POST /admin/groups/g_does_not_exist/reconcile → 400 with
+              detail containing "not found" ("Group g_does_not_exist not found").
+
+              Step 7b) Created a real verified user + group via /auth/register +
+              /auth/verify-otp + /groups (no card issued). POST /admin/groups/{id}/reconcile
+              → 400 "Group has no Stripe Issuing card — nothing to reconcile." ✓
+
+              Step 8) Idempotency verified via direct Mongo seeding:
+                - Inserted synthetic group with stripe_card_id="ic_g1test_fake",
+                  contributions=[{amount:30}], virtual_card.spent=25, status=inactive.
+                - First reconcile_group() call → finalized record created (leftover=$5,
+                  action="moved_to_master" because credit_contributors_enabled=false, plus
+                  a master_account_ledger row).
+                - Second reconcile_group() call → returned the SAME existing finalized
+                  record (same rec.id), no duplicate reconciliations row inserted
+                  (count_after_first == count_after_second == 1).
+
+              Step 9 — Regression spot-checks:
+                - POST /admin/auth/login → 200 ✓
+                - GET /admin/integrations → 200 with stripe, twilio, signalwire, sms_routing
+                  keys all present (also has 'reminders' key).
+                - GET /admin/metrics → 200 ✓
+                - POST /admin/integrations/sms-routing {primary:'signalwire', fallback:'twilio'}
+                  → 200 ✓ (reset to twilio/null at end)
+                - POST /auth/send-otp → 200 ✓ (multi-provider SMS still works after
+                  switching sms_routing primary to signalwire)
+
+              Step 10) /admin/audit-log confirmed the "admin.update_reconciliation_settings"
+              entry from Step 3 is present with target_type=settings and target_id
+              containing 'reconciliation'.
+
+            ❌ MINOR GAP (1/50, non-blocking):
+
+              Step 9.b.1 — GET /admin/integrations response is missing a 'reconciliation'
+              sub-key. The review request expected /admin/integrations to include 'stripe',
+              'twilio', 'signalwire', 'sms_routing', AND 'reconciliation'. Current
+              implementation (backend/admin_integrations.py line 76-80) returns only
+              stripe/twilio/reminders + signalwire/sms_routing — 'reconciliation' is NOT
+              projected into this combined response. This does NOT break functionality
+              because the dedicated /admin/reconciliation-settings endpoint is the
+              primary surface and works correctly (Steps 1-3 all pass).
+
+              Suggested fix (non-blocking): in admin_integrations.py's get_integrations
+              handler, also merge in {'reconciliation': await get_reconciliation_settings(db)}.
+              Frontend admin Integrations UI may still read via the dedicated endpoint.
+
+            Backend log notes (informational, not blockers):
+              - passlib bcrypt cosmetic warning (known, no functional impact).
+              - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes; ≥32 recommended).
+              - [reminders] background loop running (interval=900s) — expected.
+
+            Test file: /app/g1_test.py (self-contained, uses ts-based naming and cleans
+            up reconciliation settings at the end). Marking Phase G1 as working — only
+            the admin_integrations projection gap is outstanding and is non-blocking.
+
 agent_communication:
+    - agent: "main"
+      message: |
+        PHASE G1 — Reconciliation tracking. New backend module + admin endpoints.
+
+        NEW MODULE:
+          /app/backend/reconciliation.py
+            • ensure_reconciliation_settings(db) — seeds defaults in app_settings.integrations.reconciliation
+            • reconcile_group(db, group_id, source, actor_email) — runs reconciliation, returns the record
+            • maybe_auto_reconcile(db, group_id) — called after each issuing_transaction webhook (idempotent; only fires when card is fully settled OR drained)
+            • list_reconciliations / list_master_account / get_reconciliation_detail
+
+        NEW ADMIN ENDPOINTS (all under /api/admin):
+          GET  /reconciliations               — list with filters (q, action, limit, skip)
+          GET  /reconciliations/{rec_id}      — detail
+          POST /groups/{group_id}/reconcile    — manual trigger (super_admin OR manager)
+          GET  /master-account                — ledger + balance
+          GET  /reconciliation-settings       — current settings
+          POST /reconciliation-settings       — update toggles (credit_contributors_enabled, auto_disable_card)
+
+        WIRED UP:
+          • /app/backend/issuing_reveal.py — webhook handler for issuing_transaction.created now calls
+            maybe_auto_reconcile(db, group_id) AFTER record_issuing_transaction + maybe_auto_disable_after_settlement.
+          • /app/backend/admin_routes.py — attach_reconciliation_routes wired in build_admin_router.
+          • /app/backend/server.py — startup hook calls ensure_reconciliation_settings(db).
+
+        VERIFY:
+          1) GET /api/admin/reconciliation-settings (admin auth) → 200 with credit_contributors_enabled=false, auto_disable_card=true defaults.
+          2) POST /api/admin/reconciliation-settings {credit_contributors_enabled:true} → 200 saves; subsequent GET returns true. Audit row "admin.update_reconciliation_settings" created.
+          3) POST same with auto_disable_card:false → 200 saves only that field; previous credit_contributors_enabled stays true.
+          4) GET /api/admin/reconciliations → 200 {items:[], total:0, ...} on a fresh DB.
+          5) GET /api/admin/master-account → 200 {items:[], total:0, balance:0, ...}.
+          6) Manual reconcile of a non-existent group: POST /api/admin/groups/g_nope/reconcile → 400 "Group g_nope not found".
+          7) Manual reconcile of a real group with no Stripe Issuing card: POST /api/admin/groups/{id}/reconcile → 400 "Group has no Stripe Issuing card — nothing to reconcile."
+          8) Manager role can call POST /reconciliations (manual reconcile) but cannot call POST /reconciliation-settings (super_admin only) — should get 403.
+          9) Confirm GET /api/admin/integrations still works (regression — no breakage from new admin route attach).
+          10) Confirm /api/auth/send-otp still works (regression on multi-provider SMS).
+
+        Note: cannot fully E2E test "auto reconciliation on webhook" without real Stripe Issuing transaction events; please verify the wiring + endpoint contracts, not Stripe-side webhooks.
+
+        Admin: [email protected] / ChangeMe123!
+
     - agent: "main"
       message: |
         BATCH B — Massive server.py refactor (post Phase F2.2). Pure code-organization
@@ -2169,3 +2308,36 @@ agent_communication:
 
         NO CODE CHANGES required — refactor is production-safe. Main agent may
         proceed and summarise.
+
+    - agent: "testing"
+      message: |
+        PHASE G1 — Stripe Reconciliation + Master Account ledger: 49/50 PASS.
+        See /app/g1_test.py. Results appended to backend task entry.
+
+        ✅ VERIFIED:
+          1) GET /admin/reconciliation-settings → 200 with defaults (credit_contributors_enabled=false,
+             auto_disable_card=true, master_account_id="MASTER_KWIKPAY").
+          2) POST with credit_contributors_enabled=true → 200; updated_at + updated_by populated;
+             persists on subsequent GET.
+          3) POST with auto_disable_card=false → 200; credit_contributors_enabled STILL true (partial
+             update works); audit row "admin.update_reconciliation_settings" present.
+          4) Manager admin POST → 403 (route uses require_role("super_admin"), confirmed).
+          5) GET /admin/reconciliations (with + without filters) → 200 {items, total, skip, limit}.
+          6) GET /admin/master-account → 200 {items, total, balance}.
+          7a) Manual reconcile nonexistent group → 400 "Group g_does_not_exist not found".
+          7b) Real group without Stripe card → 400 "no Stripe Issuing card — nothing to reconcile".
+          8) Idempotency (seeded via direct Mongo insert): second reconcile_group() call returns the
+             same finalized record (same id), and no duplicate reconciliations row is inserted.
+          9) Regression: admin login, /admin/integrations, /admin/metrics, sms-routing POST, and
+             /auth/send-otp all still work.
+          10) Audit log: admin.update_reconciliation_settings present with target_type=settings,
+              target_id containing 'reconciliation'.
+
+        ❌ MINOR NIT (1/50, non-blocking):
+          GET /admin/integrations response projects keys [stripe, twilio, reminders, signalwire,
+          sms_routing] — MISSING 'reconciliation' subobject that the review request expected.
+          Fix (non-blocking): in backend/admin_integrations.py get_integrations, merge in
+          {'reconciliation': await get_reconciliation_settings(db)}. Dedicated endpoint
+          /admin/reconciliation-settings works fine, so no functional regression.
+
+        No 5xx, no unhandled exceptions. Phase G1 is working and production-safe.

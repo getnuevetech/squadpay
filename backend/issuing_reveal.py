@@ -282,6 +282,13 @@ def attach_reveal_routes(api_router: APIRouter, db):
                     })
                     # Auto-disable if mode=auto and cap reached
                     await maybe_auto_disable_after_settlement(db, group["id"])
+                    # Phase G1: try auto reconciliation (idempotent; only triggers
+                    # when card is fully settled OR drained).
+                    try:
+                        from reconciliation import maybe_auto_reconcile
+                        await maybe_auto_reconcile(db, group["id"])
+                    except Exception as _re:
+                        logger.warning(f"[issuing-webhook] auto reconcile failed: {_re}")
         except Exception as e:
             logger.warning(f"[issuing-webhook] handler failed: {e}")
 

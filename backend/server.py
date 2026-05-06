@@ -112,6 +112,12 @@ async def _on_startup():
         start_reminder_loop(db, interval_seconds=900)
     except Exception as e:
         print("[startup] reminder loop failed:", e)
+    # Phase G1: seed reconciliation defaults (idempotent)
+    try:
+        from reconciliation import ensure_reconciliation_settings
+        await ensure_reconciliation_settings(db)
+    except Exception as e:
+        print("[startup] reconciliation settings failed:", e)
 
 
 @app.on_event("shutdown")

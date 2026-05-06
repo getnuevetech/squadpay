@@ -266,19 +266,94 @@ export default function PayScreen() {
   };
 
   const verifyCode = async () => {
+    if (!userId) return;
     if (otp.length !== 6) {
       Alert.alert('Enter the 6-digit code');
       return;
     }
     setVerifyLoading(true);
     try {
-      const u = await api.verifyOtp(userId, phone.trim(), otp);
-      await saveUser(u);
-      setIsVerified(true);
-      setVerifyStep('idle');
-      setOtp('');
+      // Phase H2 (pay flow) — pre-flight: detect "phone already registered to another account"
+      // BEFORE we hand over the OTP, so we can ask the user before merging — same UX as
+      // the initial sign-in screen.
+      let confirmExisting = false;
+      try {
+        const lookup = await api.lookupPhone(phone.trim(), userId);
+        if (lookup?.exists && !lookup.blocked && lookup.name) {
+          const proceed = await new Promise<boolean>((resolve) => {
+            Alert.alert(
+              'Phone already registered',
+              `An account with this number is already registered as "${lookup.name}".\n\nDo you want to sign in to that account? Your current session will switch to "${lookup.name}", and any group you started will stay yours under the registered name.`,
+              [
+                { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+                { text: `Use ${lookup.name}`, onPress: () => resolve(true) },
+              ],
+              { cancelable: false },
+            );
+          });
+          if (!proceed) {
+            setVerifyLoading(false);
+            return;
+          }
+          confirmExisting = true;
+        } else if (lookup?.blocked) {
+          Alert.alert(
+            'Account blocked',
+            'This phone number is associated with a blocked account. Please contact support.',
+          );
+          setVerifyLoading(false);
+          return;
+        }
+      } catch (_e) {
+        // best-effort; fall back to server 409 below
+      }
+
+      const finishVerify = async (u: any) => {
+        await saveUser(u);
+        // If the account merged, our local userId changes to the merged account's id.
+        if (u?.id && u.id !== userId) {
+          setUserId(u.id);
+          // Refresh group so per_user / membership reflects the merged identity.
+          try {
+            const g = await api.getGroup(id as string);
+            setGroup(g);
+          } catch (_e) {
+            // non-fatal — group view will refresh on next focus
+          }
+        }
+        setIsVerified(true);
+        setVerifyStep('idle');
+        setOtp('');
+      };
+
+      try {
+        const u = await api.verifyOtp(userId, phone.trim(), otp, confirmExisting);
+        await finishVerify(u);
+      } catch (e: any) {
+        const msg = String(e?.message || '');
+        if (msg.includes('phone_already_registered') || msg.includes('already registered')) {
+          // Server fallback (e.g. lookup couldn't run): surface the same prompt.
+          const proceed = await new Promise<boolean>((resolve) => {
+            Alert.alert(
+              'Phone already registered',
+              'An account with this number is already registered. Do you want to sign in to that account?',
+              [
+                { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+                { text: 'Use existing', onPress: () => resolve(true) },
+              ],
+              { cancelable: false },
+            );
+          });
+          if (proceed) {
+            const u = await api.verifyOtp(userId, phone.trim(), otp, true);
+            await finishVerify(u);
+          }
+        } else {
+          throw e;
+        }
+      }
     } catch (e: any) {
-      Alert.alert('Invalid code', e.message);
+      Alert.alert('Invalid code', e?.message || 'Verification failed');
     } finally {
       setVerifyLoading(false);
     }

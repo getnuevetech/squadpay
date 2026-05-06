@@ -208,6 +208,9 @@ def build_admin_router(db):
     # Phase G1: Reconciliation admin routes
     from admin_reconciliation import attach_reconciliation_routes
     attach_reconciliation_routes(router, db, _attach_admin)
+    # Phase G2: Security/KMS admin routes
+    from admin_security import attach_security_routes
+    attach_security_routes(router, db, _attach_admin)
 
     return router
 

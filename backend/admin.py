@@ -11,7 +11,6 @@ from typing import Optional, List, Literal
 
 import jwt
 from passlib.context import CryptContext
-from cryptography.fernet import Fernet
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
@@ -35,33 +34,21 @@ def verify_password(password: str, hashed: str) -> bool:
 
 
 # Symmetric key for storing third-party API secrets (Stripe/Twilio API keys etc).
-# Falls back to a derived key from JWT_SECRET if SECRETS_KEY missing.
-def _resolve_fernet_key() -> bytes:
-    key = os.environ.get("SECRETS_KEY")
-    if key:
-        return key.encode() if isinstance(key, str) else key
-    # Derive a 32-byte key from JWT_SECRET (urlsafe base64 of sha256)
-    import hashlib, base64
-    seed = (os.environ.get("JWT_SECRET") or "dev-jwt-secret").encode()
-    return base64.urlsafe_b64encode(hashlib.sha256(seed).digest())
-
-
-_fernet = Fernet(_resolve_fernet_key())
+# Phase G2: delegated to crypto_kms (single source of truth, supports KMS_MASTER_KEY +
+# legacy/derived fallback so existing ciphertexts stay readable).
+from crypto_kms import encrypt as _kms_encrypt, decrypt as _kms_decrypt  # noqa: E402
 
 
 def encrypt_secret(plain: str) -> str:
     if not plain:
         return ""
-    return _fernet.encrypt(plain.encode()).decode()
+    return _kms_encrypt(plain) or ""
 
 
 def decrypt_secret(token: str) -> str:
     if not token:
         return ""
-    try:
-        return _fernet.decrypt(token.encode()).decode()
-    except Exception:
-        return ""
+    return _kms_decrypt(token) or ""
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +197,7 @@ AUDIT_ACTIONS_DESTRUCTIVE = {
     "admin.update_reminder_settings",
     "admin.run_reminders_now",
     "admin.test_twilio",
+    "admin.kms_rotate",
 }
 
 

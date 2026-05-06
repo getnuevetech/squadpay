@@ -226,6 +226,11 @@ export const adminApi = {
     );
   },
 
+  // ---- Phase G2: Security / KMS ----
+  getKmsStatus: () => request<KmsStatus>(`/security/kms-status`),
+  reloadKms: () => request<KmsStatus>(`/security/kms-reload`, { method: 'POST' }),
+  rotateKms: () => request<KmsRotateResult>(`/security/kms-rotate`, { method: 'POST' }),
+
   // ---- Feature toggles ----
   getFeatures: () =>
     request<{ credits_enabled: boolean; invite_friends_enabled: boolean; updated_at?: string; updated_by?: string }>(`/features`),
@@ -465,6 +470,26 @@ export type RemindersIn = {
 };
 
 // ---- Phase G1: Reconciliation ----
+
+// ---- Phase G2: Security / KMS ----
+
+export type KmsStatus = {
+  key_source: 'kms_master' | 'secrets_key' | 'jwt_derived';
+  secure: boolean;
+  primary_fingerprint: string | null;
+  legacy_fingerprints: string[];
+  warning: string | null;
+  encrypted_field_count?: number | null;
+};
+
+export type KmsRotateResult = {
+  rotated: number;
+  skipped: number;
+  failed: number;
+  elapsed_ms: number;
+  primary_fingerprint: string;
+  key_source: string;
+};
 
 export type ReconciliationSettings = {
   credit_contributors_enabled: boolean;

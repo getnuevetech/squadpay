@@ -74,7 +74,6 @@ def attach_reconciliation_routes(router: APIRouter, db, attach_admin):
                 "amount_spent": rec.get("amount_spent"),
             },
             request=request,
-            destructive=False,
         )
         return rec
 

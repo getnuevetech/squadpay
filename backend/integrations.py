@@ -1,51 +1,32 @@
 """Provider integration helpers (Phase D).
 
-- Lightweight at-rest encryption for secrets using Fernet (key derived from JWT_SECRET).
+- At-rest encryption for secrets is delegated to crypto_kms (Phase G2).
 - Stripe / Twilio / Reminders config persisted in db.app_settings (key: 'integrations').
 - Twilio sender abstraction: if enabled & keys present, sends real SMS; else logs to console.
-
-Note: This is intentionally minimal — the Fernet key is derived from JWT_SECRET (not from a
-KMS) which is sufficient for an MVP but should be upgraded for production.
 """
 from __future__ import annotations
-import base64
-import hashlib
 import logging
 import os
 from typing import Optional, Tuple
 
-from cryptography.fernet import Fernet, InvalidToken
+# Phase G2: at-rest encryption is now centralized in crypto_kms (single source
+# of truth, supports KMS_MASTER_KEY + legacy/derived fallback so existing
+# ciphertexts stay readable).
+from crypto_kms import encrypt as _kms_encrypt, decrypt as _kms_decrypt
 
 logger = logging.getLogger(__name__)
-
-_FERNET: Optional[Fernet] = None
-
-
-def _get_fernet() -> Fernet:
-    global _FERNET
-    if _FERNET is not None:
-        return _FERNET
-    seed = (os.environ.get("JWT_SECRET") or "grouppay-admin-default-secret").encode("utf-8")
-    # Fernet requires a 32-byte URL-safe base64 key
-    key = base64.urlsafe_b64encode(hashlib.sha256(seed).digest())
-    _FERNET = Fernet(key)
-    return _FERNET
 
 
 def encrypt_secret(plain: Optional[str]) -> Optional[str]:
     if not plain:
         return None
-    return _get_fernet().encrypt(plain.encode("utf-8")).decode("utf-8")
+    return _kms_encrypt(plain)
 
 
 def decrypt_secret(token: Optional[str]) -> Optional[str]:
     if not token:
         return None
-    try:
-        return _get_fernet().decrypt(token.encode("utf-8")).decode("utf-8")
-    except (InvalidToken, ValueError) as e:
-        logger.warning(f"[integrations] decrypt failed: {e}")
-        return None
+    return _kms_decrypt(token)
 
 
 def mask_secret(plain: Optional[str], visible: int = 4) -> str:

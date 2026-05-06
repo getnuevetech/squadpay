@@ -40,6 +40,12 @@ export default function AdminIntegrations() {
   const [rmSms, setRmSms] = useState(true);
   const [runResult, setRunResult] = useState<string | null>(null);
 
+  // Issuing form (Phase F1)
+  const [issEnabled, setIssEnabled] = useState(true);
+  const [issName, setIssName] = useState('KWIKPAY');
+  const [issDisableMode, setIssDisableMode] = useState<'auto' | 'manual'>('auto');
+  const [issCardholderId, setIssCardholderId] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     setBusy(true);
     try {
@@ -58,6 +64,14 @@ export default function AdminIntegrations() {
       setRmHours((v.reminders.schedule_hours || []).join(','));
       setRmMax(String(v.reminders.max_reminders_per_user || 3));
       setRmSms(v.reminders.send_via_sms);
+      // Phase F1: Issuing
+      try {
+        const iss = await adminApi.getIssuingSettings();
+        setIssEnabled(!!iss.enabled);
+        setIssName(iss.cardholder_name || 'KWIKPAY');
+        setIssDisableMode(iss.card_disable_mode || 'auto');
+        setIssCardholderId(iss.cardholder_id || null);
+      } catch {}
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'Failed to load');
     } finally { setBusy(false); }
@@ -77,8 +91,7 @@ export default function AdminIntegrations() {
       await load();
       Alert.alert('Saved', `Stripe ${stEnabled ? 'enabled' : 'disabled'} (${stMode})`);
     } catch (e: any) { Alert.alert('Error', e?.message || 'Failed'); }
-    finally { setSaving(null); }
-  };
+    finally { setSaving(null); }  };
 
   const saveTwilio = async () => {
     setSaving('twilio');
@@ -133,6 +146,22 @@ export default function AdminIntegrations() {
     finally { setSaving(null); }
   };
 
+  const saveIssuing = async () => {
+    setSaving('iss');
+    try {
+      await adminApi.setIssuingSettings({
+        enabled: issEnabled,
+        cardholder_name: issName.trim() || 'KWIKPAY',
+        card_disable_mode: issDisableMode,
+      });
+      await load();
+      Alert.alert('Saved', `Issuing ${issEnabled ? 'enabled' : 'disabled'} · disable mode: ${issDisableMode}`);
+    } catch (e: any) { Alert.alert('Error', e?.message || 'Failed'); }
+    finally { setSaving(null); }
+  };
+    finally { setSaving(null); }
+  };
+
   if (busy || !view) return <View style={styles.center}><ActivityIndicator color={COLORS.primary} /></View>;
 
   return (
@@ -179,6 +208,52 @@ export default function AdminIntegrations() {
           <Save size={14} color="#fff" /><Text style={styles.saveBtnText}>{saving === 'stripe' ? 'Saving…' : 'Save Stripe settings'}</Text>
         </TouchableOpacity>
         {view.stripe.updated_at ? <Text style={styles.metaSmall}>Last updated {new Date(view.stripe.updated_at).toLocaleString()} by {view.stripe.updated_by}</Text> : null}
+      </View>
+
+      {/* Issuing — Phase F1 */}
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <View style={styles.cardIcon}><CreditCard size={18} color="#0EA5E9" /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.cardTitle}>Stripe Issuing (Virtual cards)</Text>
+            <Text style={styles.cardSub}>Auto-issue a real Stripe-issued virtual card per fully-funded group. Cardholder = your business (KWIKPAY). Cards are auto-cancelled after group settles or admin can disable manually.</Text>
+          </View>
+          <View style={{ flexDirection: 'row', gap: 6 }}>
+            <StatusPill ok={issEnabled} label={issEnabled ? 'Enabled' : 'Disabled'} />
+            <StatusPill ok={!!issCardholderId} label={issCardholderId ? 'Cardholder linked' : 'Cardholder missing'} />
+          </View>
+        </View>
+
+        <View style={styles.toggleRow}>
+          <Text style={styles.label}>Enable Issuing</Text>
+          <Switch value={issEnabled} onValueChange={setIssEnabled} trackColor={{ false: COLORS.disabledBg, true: '#0EA5E9' }} thumbColor="#fff" testID="admin-issuing-enable" />
+        </View>
+
+        <Text style={styles.label}>Business name (used as card nickname prefix)</Text>
+        <TextInput style={styles.input} value={issName} onChangeText={setIssName} placeholder="KWIKPAY" placeholderTextColor={COLORS.disabledText} testID="admin-issuing-name" />
+        <Text style={styles.helper}>Each group's card will be named "{issName.trim() || 'KWIKPAY'} - {'{Group title}'}".</Text>
+
+        <Text style={styles.label}>Card disable mode</Text>
+        <View style={styles.formRow}>
+          <TouchableOpacity onPress={() => setIssDisableMode('auto')} style={[styles.toggle, issDisableMode === 'auto' && styles.toggleActive]} activeOpacity={0.85} testID="admin-issuing-mode-auto">
+            <Text style={[styles.toggleText, issDisableMode === 'auto' && { color: '#fff' }]}>Auto · disable after merchant settlement</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setIssDisableMode('manual')} style={[styles.toggle, issDisableMode === 'manual' && styles.toggleActive]} activeOpacity={0.85} testID="admin-issuing-mode-manual">
+            <Text style={[styles.toggleText, issDisableMode === 'manual' && { color: '#fff' }]}>Manual · admin disables only</Text>
+          </TouchableOpacity>
+        </View>
+
+        {issCardholderId ? (
+          <Text style={styles.metaSmall}>Cardholder: {issCardholderId}</Text>
+        ) : (
+          <Text style={[styles.metaSmall, { color: COLORS.warning }]}>
+            No active cardholder linked. Create one in Stripe Dashboard → Issuing → Cardholders.
+          </Text>
+        )}
+
+        <TouchableOpacity onPress={saveIssuing} disabled={saving === 'iss'} style={[styles.saveBtn, { backgroundColor: '#0EA5E9', opacity: saving === 'iss' ? 0.6 : 1 }]} activeOpacity={0.85} testID="admin-issuing-save">
+          <Save size={14} color="#fff" /><Text style={styles.saveBtnText}>{saving === 'iss' ? 'Saving…' : 'Save Issuing settings'}</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Twilio */}

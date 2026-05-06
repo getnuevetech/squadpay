@@ -170,6 +170,14 @@ export const adminApi = {
   setReminders: (r: RemindersIn) => request<IntegrationsView>('/integrations/reminders', { method: 'POST', body: JSON.stringify(r) }),
   runRemindersNow: () => request<{ enabled: boolean; scanned: number; sent_real: number; logged: number; skipped: number; schedule_hours?: number[] }>(`/integrations/reminders/run-now`, { method: 'POST' }),
 
+  // ---- Phase F1: Issuing ----
+  getIssuingSettings: () =>
+    request<{ enabled: boolean; cardholder_id: string | null; cardholder_name: string; card_disable_mode: 'auto' | 'manual'; updated_at?: string }>(`/integrations/issuing`),
+  setIssuingSettings: (body: { enabled?: boolean; cardholder_name?: string; card_disable_mode?: 'auto' | 'manual' }) =>
+    request<any>(`/integrations/issuing`, { method: 'POST', body: JSON.stringify(body) }),
+  disableGroupCard: (groupId: string) =>
+    request<{ ok: boolean; virtual_card: any }>(`/groups/${groupId}/disable-card`, { method: 'POST' }),
+
   // ---- Phase C1: Referrals ----
   getReferralSettings: () => request<ReferralSettings>('/referrals/settings'),
   setReferralSettings: (s: ReferralSettings) =>

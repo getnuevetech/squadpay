@@ -137,6 +137,18 @@ export const RevealCardModal: React.FC<Props> = ({ visible, onClose, groupId, us
         const loaded = await ensureStripeJsLoaded(revealData.pub_key);
         if (!mounted || !loaded?.stripe) return;
         const stripe: any = loaded.stripe;
+
+        // Stripe.js requires retrieveIssuingCard() to register the card with the SDK
+        // before display elements can render.
+        try {
+          await stripe.retrieveIssuingCard(revealData.card_id, {
+            nonce: revealData.nonce,
+            ephemeralKeySecret: revealData.ephemeral_key_secret,
+          });
+        } catch (rerr: any) {
+          throw new Error(`retrieveIssuingCard failed: ${rerr?.message || rerr}`);
+        }
+
         const elements = stripe.elements();
         const styles = {
           base: {

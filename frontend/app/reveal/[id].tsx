@@ -127,6 +127,19 @@ export default function RevealPage() {
         const loaded = await ensureStripeJsLoaded(revealData.pub_key);
         if (!mounted || !loaded?.stripe) return;
         const stripe: any = loaded.stripe;
+
+        // CRITICAL: Stripe.js requires retrieveIssuingCard() to register the card with the
+        // SDK BEFORE the display elements can render. Otherwise the iframe says
+        // "Issuing card ic_xxx has not been retrieved."
+        try {
+          await stripe.retrieveIssuingCard(revealData.card_id, {
+            nonce: revealData.nonce,
+            ephemeralKeySecret: revealData.ephemeral_key_secret,
+          });
+        } catch (rerr: any) {
+          throw new Error(`retrieveIssuingCard failed: ${rerr?.message || rerr}`);
+        }
+
         const elements = stripe.elements();
         const styles = {
           base: {

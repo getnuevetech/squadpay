@@ -15,8 +15,11 @@ import { Receipt, Plus, Link2, QrCode, ChevronRight, Sparkles, LogOut, Gift, Wal
 import { Button } from '../src/Button';
 import { api } from '../src/api';
 import { clearUser, loadUser, refreshUser } from '../src/session';
-import { COLORS, FONT, RADIUS, SPACING } from '../src/theme';
+import { COLORS, FONT, RADIUS, SPACING, SHADOW } from '../src/theme';
 import { StatusBadge } from '../src/StatusBadge';
+import { PressableScale } from '../src/components/PressableScale';
+import { SkeletonGroupRow, Skeleton } from '../src/components/Skeleton';
+import { EmptyState } from '../src/components/EmptyState';
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -32,7 +35,6 @@ export default function HomeScreen() {
   const load = useCallback(async () => {
     const u = await refreshUser();
     setUser(u);
-    // Load feature toggles in parallel (non-blocking)
     api.getAppFeatures().then(setFeatures).catch(() => {});
     if (u) {
       try {
@@ -47,9 +49,7 @@ export default function HomeScreen() {
     setLoading(false);
   }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useEffect(() => { load(); }, [load]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -57,7 +57,8 @@ export default function HomeScreen() {
     setRefreshing(false);
   };
 
-  if (loading) {
+  // ───── Loading state ─────
+  if (loading && !user) {
     return (
       <SafeAreaView style={styles.center} testID="home-loading">
         <ActivityIndicator color={COLORS.primary} />
@@ -65,12 +66,13 @@ export default function HomeScreen() {
     );
   }
 
+  // ───── Welcome (unauth) ─────
   if (!user) {
     return (
       <SafeAreaView style={styles.container} testID="home-unauth">
         <ScrollView contentContainerStyle={styles.welcomeContent}>
           <View style={styles.welcomeIconWrap}>
-            <Sparkles color={COLORS.primary} size={40} />
+            <Sparkles color={COLORS.primary} size={36} strokeWidth={2.2} />
           </View>
           <Text style={styles.welcomeTitle}>GroupPay</Text>
           <Text style={styles.welcomeSub}>
@@ -78,9 +80,9 @@ export default function HomeScreen() {
           </Text>
           <View style={styles.welcomeFeatures}>
             {[
-              { icon: <QrCode color={COLORS.primary} size={18} />, text: 'Share QR to split the bill' },
-              { icon: <Receipt color={COLORS.primary} size={18} />, text: 'Claim items you ordered' },
-              { icon: <Link2 color={COLORS.primary} size={18} />, text: 'Track repayments automatically' },
+              { icon: <QrCode color={COLORS.primary} size={20} />, text: 'Share a QR or link to split' },
+              { icon: <Receipt color={COLORS.primary} size={20} />, text: 'Claim only the items you ordered' },
+              { icon: <Link2 color={COLORS.primary} size={20} />, text: 'Track repayments automatically' },
             ].map((f, i) => (
               <View key={i} style={styles.welcomeFeatureRow}>
                 <View style={styles.welcomeFeatureIcon}>{f.icon}</View>
@@ -88,16 +90,37 @@ export default function HomeScreen() {
               </View>
             ))}
           </View>
-          <Button
-            title="Get Started"
-            testID="home-get-started-btn"
-            onPress={() => router.push('/auth')}
-            style={{ marginTop: SPACING.lg }}
-          />
+          {/* Dual CTA at the bottom — primary "Start" + secondary "Join" */}
+          <View style={styles.welcomeCtaRow}>
+            <PressableScale
+              testID="home-get-started-btn"
+              onPress={() => router.push('/auth')}
+              style={[styles.welcomeStartBtn, SHADOW.primary]}
+            >
+              <View>
+                <Plus color="#fff" size={18} strokeWidth={2.6} />
+                <Text style={styles.welcomeStartText}>Start a bill</Text>
+              </View>
+            </PressableScale>
+            <PressableScale
+              testID="home-join-btn-unauth"
+              onPress={() => router.push('/auth?intent=join')}
+              style={styles.welcomeJoinBtn}
+            >
+              <View>
+                <QrCode color={COLORS.primary} size={18} />
+                <Text style={styles.welcomeJoinText}>Join a bill</Text>
+              </View>
+            </PressableScale>
+          </View>
         </ScrollView>
       </SafeAreaView>
     );
   }
+
+  // ───── Authenticated home ─────
+  const activeCount = groups.filter(g => ((g as any).derived_status || g.status) !== 'settled' && g.status !== 'closed' && g.status !== 'bill_settled').length;
+  const settledCount = groups.length - activeCount;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']} testID="home-auth">
@@ -105,6 +128,7 @@ export default function HomeScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />}
         contentContainerStyle={{ padding: SPACING.md, paddingBottom: SPACING.xxl }}
       >
+        {/* Header */}
         <View style={styles.header}>
           <View>
             <Text style={styles.hello} testID="home-hello">Hello,</Text>
@@ -121,85 +145,101 @@ export default function HomeScreen() {
               setGroups([]);
             }}
             style={styles.iconBtn}
+            activeOpacity={0.7}
           >
             <LogOut color={COLORS.text} size={18} />
           </TouchableOpacity>
         </View>
 
-        <View style={styles.heroCard} testID="home-hero-card">
-          <Text style={styles.heroLabel}>Active bills</Text>
-          <Text style={styles.heroAmount}>{groups.filter(g => ((g as any).derived_status || g.status) !== 'settled' && g.status !== 'closed').length}</Text>
+        {/* Hero — active bills */}
+        <View style={[styles.heroCard, SHADOW.lg]} testID="home-hero-card">
+          <View style={styles.heroTop}>
+            <Text style={styles.heroLabel}>Active bills</Text>
+            <View style={styles.heroDot} />
+          </View>
+          <Text style={styles.heroAmount}>{activeCount}</Text>
           <View style={styles.heroFooter}>
-            <Text style={styles.heroFooterText}>
-              {groups.filter(g => ((g as any).derived_status || (g.status === 'closed' ? 'settled' : '')) === 'settled').length} settled • {groups.length} total
-            </Text>
+            <View style={styles.heroChip}>
+              <Text style={styles.heroChipText}>{settledCount} settled</Text>
+            </View>
+            <Text style={styles.heroFooterText}>{groups.length} total</Text>
           </View>
         </View>
 
+        {/* Action cards — Start (primary) + Join (secondary) */}
         <View style={styles.actionsRow}>
-          <TouchableOpacity
+          <PressableScale
             testID="home-start-bill-btn"
-            style={[styles.actionCard, styles.actionPrimary]}
             onPress={() => router.push('/create')}
-            activeOpacity={0.9}
+            style={[styles.actionCard, styles.actionPrimary, SHADOW.primary]}
           >
             <View style={styles.actionIconWhite}>
               <Plus color="#FFFFFF" size={26} strokeWidth={2.6} />
             </View>
             <Text style={styles.actionPrimaryTitle}>Start a Bill</Text>
             <Text style={styles.actionPrimarySub}>Scan or enter total</Text>
-          </TouchableOpacity>
+          </PressableScale>
 
-          <TouchableOpacity
+          <PressableScale
             testID="home-join-bill-btn"
-            style={[styles.actionCard, styles.actionSecondary]}
             onPress={() => router.push('/join/code')}
-            activeOpacity={0.9}
+            style={[styles.actionCard, styles.actionSecondary, SHADOW.sm]}
           >
             <View style={styles.actionIcon}>
               <QrCode color={COLORS.primary} size={24} />
             </View>
             <Text style={styles.actionTitle}>Join a Bill</Text>
             <Text style={styles.actionSub}>Enter code or link</Text>
-          </TouchableOpacity>
+          </PressableScale>
         </View>
 
+        {/* Recent activity */}
         <Text style={styles.sectionTitle}>Recent Activity</Text>
-        {groups.length === 0 ? (
-          <View style={styles.empty}>
-            <Receipt color={COLORS.border} size={48} />
-            <Text style={styles.emptyText}>No bills yet</Text>
-            <Text style={styles.emptySub}>Start your first bill to split with friends</Text>
-          </View>
+        {refreshing && groups.length === 0 ? (
+          <>
+            <SkeletonGroupRow testID="home-skel-1" />
+            <SkeletonGroupRow testID="home-skel-2" />
+            <SkeletonGroupRow testID="home-skel-3" />
+          </>
+        ) : groups.length === 0 ? (
+          <EmptyState
+            Icon={Receipt}
+            title="No bills yet"
+            subtitle="Start your first bill to split with friends — it's free and takes under a minute."
+            cta={{ label: 'Start your first bill', onPress: () => router.push('/create'), testID: 'home-empty-cta' }}
+            testID="home-empty"
+          />
         ) : (
           <FlatList
             data={groups}
             keyExtractor={(g) => g.id}
             scrollEnabled={false}
             renderItem={({ item }) => (
-              <TouchableOpacity
+              <PressableScale
                 testID={`home-group-${item.id}`}
-                style={styles.groupRow}
                 onPress={() => router.push(`/group/${item.id}`)}
-                activeOpacity={0.7}
+                style={[styles.groupRow, SHADOW.sm]}
+                scaleTo={0.99}
               >
-                <View style={styles.groupIcon}>
-                  <Receipt color={COLORS.primary} size={20} />
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.md }}>
+                  <View style={styles.groupIcon}>
+                    <Receipt color={COLORS.primary} size={20} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.groupTitle} numberOfLines={1}>{item.title}</Text>
+                    <Text style={styles.groupMeta}>
+                      {item.member_count} {item.member_count === 1 ? 'member' : 'members'} · ${Number(item.total || 0).toFixed(2)}
+                    </Text>
+                  </View>
+                  <StatusBadge status={(item as any).derived_status || (item.status === 'closed' ? 'settled' : item.status === 'paid' ? 'repaying' : 'contributing')} testID={`home-status-${item.id}`} />
+                  <ChevronRight color={COLORS.subtext} size={18} />
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.groupTitle}>{item.title}</Text>
-                  <Text style={styles.groupMeta}>
-                    {item.member_count} {item.member_count === 1 ? 'member' : 'members'} • ${Number(item.total || 0).toFixed(2)}
-                  </Text>
-                </View>
-                <StatusBadge status={(item as any).derived_status || (item.status === 'closed' ? 'settled' : item.status === 'paid' ? 'repaying' : 'contributing')} testID={`home-status-${item.id}`} />
-                <ChevronRight color={COLORS.subtext} size={18} />
-              </TouchableOpacity>
+              </PressableScale>
             )}
           />
         )}
 
-        {/* Secondary actions — Referrals + My Credits, low-key text-only buttons */}
+        {/* Secondary actions — Referrals + Credits */}
         {(features.invite_friends_enabled || features.credits_enabled) ? (
           <View style={styles.secondaryRow}>
             {features.invite_friends_enabled ? (
@@ -234,15 +274,17 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.bg },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.bg },
+
+  // Welcome (unauth)
   welcomeContent: {
     padding: SPACING.lg,
-    paddingTop: SPACING.xxl,
+    paddingTop: SPACING.xl,
     flexGrow: 1,
   },
   welcomeIconWrap: {
     width: 72,
     height: 72,
-    borderRadius: 18,
+    borderRadius: 20,
     backgroundColor: COLORS.primaryLight,
     alignItems: 'center',
     justifyContent: 'center',
@@ -260,17 +302,56 @@ const styles = StyleSheet.create({
     color: COLORS.subtext,
     lineHeight: 24,
   },
-  welcomeFeatures: { marginTop: SPACING.xl, gap: SPACING.md },
-  welcomeFeatureRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.md },
+  welcomeFeatures: { marginTop: SPACING.xl, gap: SPACING.md, flex: 1 },
+  welcomeFeatureRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+    backgroundColor: COLORS.surface,
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.md,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
   welcomeFeatureIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
+    width: 40,
+    height: 40,
+    borderRadius: 12,
     backgroundColor: COLORS.primaryLight,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  welcomeFeatureText: { fontSize: FONT.sizes.md, color: COLORS.text, flex: 1 },
+  welcomeFeatureText: { fontSize: FONT.sizes.md, color: COLORS.text, flex: 1, fontWeight: FONT.weights.medium },
+  welcomeCtaRow: {
+    flexDirection: 'row',
+    gap: SPACING.md,
+    marginTop: SPACING.xl,
+  },
+  welcomeStartBtn: {
+    flex: 1.4,
+    backgroundColor: COLORS.primary,
+    borderRadius: RADIUS.lg,
+    paddingVertical: 18,
+    paddingHorizontal: SPACING.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  welcomeStartText: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: FONT.sizes.md, marginTop: 6, textAlign: 'center' },
+  welcomeJoinBtn: {
+    flex: 1,
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.lg,
+    paddingVertical: 18,
+    paddingHorizontal: SPACING.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: COLORS.primary,
+  },
+  welcomeJoinText: { color: COLORS.primary, fontWeight: FONT.weights.bold, fontSize: FONT.sizes.md, marginTop: 6, textAlign: 'center' },
+
+  // Auth header
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -279,7 +360,7 @@ const styles = StyleSheet.create({
   },
   hello: { color: COLORS.subtext, fontSize: FONT.sizes.sm },
   name: { color: COLORS.text, fontSize: FONT.sizes.xxl, fontWeight: FONT.weights.bold },
-  verifyHint: { color: COLORS.warning, fontSize: FONT.sizes.xs, marginTop: 2, fontWeight: FONT.weights.medium },
+  verifyHint: { color: COLORS.warning, fontSize: FONT.sizes.xs, marginTop: 2, fontWeight: FONT.weights.semibold },
   iconBtn: {
     width: 40,
     height: 40,
@@ -290,64 +371,81 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
   },
+
+  // Hero
   heroCard: {
-    backgroundColor: COLORS.text,
+    backgroundColor: COLORS.slate900,
     borderRadius: RADIUS.xl,
     padding: SPACING.lg,
     marginBottom: SPACING.lg,
+    overflow: 'hidden',
   },
-  heroLabel: { color: '#9CA3AF', fontSize: FONT.sizes.sm, textTransform: 'uppercase', letterSpacing: 1 },
+  heroTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  heroLabel: { color: COLORS.slate400, fontSize: FONT.sizes.xs, textTransform: 'uppercase', letterSpacing: 1.2, fontWeight: FONT.weights.semibold },
+  heroDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.success },
   heroAmount: {
     color: '#fff',
-    fontSize: 56,
+    fontSize: FONT.sizes.display,
     fontWeight: FONT.weights.heavy,
-    marginTop: 4,
+    marginTop: 6,
     letterSpacing: -2,
+    lineHeight: 64,
   },
-  heroFooter: { marginTop: SPACING.md },
-  heroFooterText: { color: '#9CA3AF', fontSize: FONT.sizes.sm },
+  heroFooter: { marginTop: SPACING.md, flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
+  heroChip: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: RADIUS.pill, backgroundColor: 'rgba(255,255,255,0.1)' },
+  heroChipText: { color: '#fff', fontSize: FONT.sizes.xs, fontWeight: FONT.weights.semibold },
+  heroFooterText: { color: COLORS.slate400, fontSize: FONT.sizes.sm },
+
+  // Action cards
   actionsRow: { flexDirection: 'row', gap: SPACING.md, marginBottom: SPACING.lg },
-  inviteCard: { flexDirection: 'row', alignItems: 'center', gap: SPACING.md, padding: SPACING.md, marginBottom: SPACING.lg, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.primary, borderRadius: RADIUS.md },
-  inviteIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: COLORS.primaryLight, alignItems: 'center', justifyContent: 'center' },
-  inviteTitle: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },
-  inviteSub: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
   actionCard: {
     flex: 1,
     borderRadius: RADIUS.lg,
     padding: SPACING.lg,
-    minHeight: 150,
+    minHeight: 152,
   },
-  actionPrimary: {
-    backgroundColor: COLORS.primary,
-    // Elevated so it reads as THE primary action — nothing else should overshadow it
-    shadowColor: COLORS.primary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 10,
-    elevation: 6,
-  },
-  actionSecondary: {
-    backgroundColor: COLORS.surface,
-    borderWidth: 1.5,
-    borderColor: COLORS.primary,
-  },
+  actionPrimary: { backgroundColor: COLORS.primary },
+  actionSecondary: { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border },
   actionIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 12,
+    width: 48, height: 48, borderRadius: 14,
     backgroundColor: COLORS.primaryLight,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: 'center', justifyContent: 'center',
   },
   actionIconWhite: {
-    width: 48,
-    height: 48,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 48, height: 48, borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center', justifyContent: 'center',
   },
-  // Compact secondary row for Referrals + Credits — text-only buttons in primary color
+  actionPrimaryTitle: { marginTop: SPACING.md, color: '#fff', fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold },
+  actionPrimarySub: { color: '#E0E7FF', fontSize: FONT.sizes.xs, marginTop: 2 },
+  actionTitle: { marginTop: SPACING.md, color: COLORS.text, fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold },
+  actionSub: { color: COLORS.subtext, fontSize: FONT.sizes.xs, marginTop: 2 },
+
+  sectionTitle: {
+    fontSize: FONT.sizes.lg,
+    fontWeight: FONT.weights.bold,
+    color: COLORS.text,
+    marginBottom: SPACING.md,
+  },
+
+  // Group rows
+  groupRow: {
+    backgroundColor: COLORS.surface,
+    padding: SPACING.md,
+    borderRadius: RADIUS.md,
+    marginBottom: SPACING.sm,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  groupIcon: {
+    width: 40, height: 40, borderRadius: 12,
+    backgroundColor: COLORS.primaryLight,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  groupTitle: { color: COLORS.text, fontWeight: FONT.weights.semibold, fontSize: FONT.sizes.md },
+  groupMeta: { color: COLORS.subtext, fontSize: FONT.sizes.xs, marginTop: 2 },
+
+  // Secondary text-only buttons
   secondaryRow: {
     flexDirection: 'row',
     justifyContent: 'center',
@@ -369,78 +467,4 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
     fontWeight: FONT.weights.semibold,
   },
-  // Legacy (kept in case referenced elsewhere)
-  secondaryPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingVertical: 6, paddingHorizontal: 10,
-    borderRadius: 999,
-    backgroundColor: COLORS.surface,
-    borderWidth: 1, borderColor: COLORS.border,
-  },
-  secondaryPillText: { fontSize: FONT.sizes.xs, color: COLORS.subtext, fontWeight: FONT.weights.medium },
-  actionPrimaryTitle: {
-    marginTop: SPACING.md,
-    color: '#fff',
-    fontSize: FONT.sizes.lg,
-    fontWeight: FONT.weights.bold,
-  },
-  actionPrimarySub: { color: '#E0E7FF', fontSize: FONT.sizes.xs, marginTop: 2 },
-  actionTitle: {
-    marginTop: SPACING.md,
-    color: COLORS.text,
-    fontSize: FONT.sizes.lg,
-    fontWeight: FONT.weights.bold,
-  },
-  actionSub: { color: COLORS.subtext, fontSize: FONT.sizes.xs, marginTop: 2 },
-  sectionTitle: {
-    fontSize: FONT.sizes.lg,
-    fontWeight: FONT.weights.bold,
-    color: COLORS.text,
-    marginBottom: SPACING.md,
-  },
-  empty: {
-    alignItems: 'center',
-    paddingVertical: SPACING.xl,
-    backgroundColor: COLORS.surface,
-    borderRadius: RADIUS.lg,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  emptyText: {
-    marginTop: SPACING.md,
-    fontSize: FONT.sizes.md,
-    fontWeight: FONT.weights.semibold,
-    color: COLORS.text,
-  },
-  emptySub: { marginTop: 4, fontSize: FONT.sizes.sm, color: COLORS.subtext },
-  groupRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: COLORS.surface,
-    padding: SPACING.md,
-    borderRadius: RADIUS.md,
-    marginBottom: SPACING.sm,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    gap: SPACING.md,
-  },
-  groupIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: COLORS.primaryLight,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  groupTitle: { color: COLORS.text, fontWeight: FONT.weights.semibold, fontSize: FONT.sizes.md },
-  groupMeta: { color: COLORS.subtext, fontSize: FONT.sizes.xs, marginTop: 2 },
-  statusPill: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: RADIUS.pill,
-  },
-  statusPillText: { fontSize: FONT.sizes.xs, fontWeight: FONT.weights.semibold },
-  statusOpen: { backgroundColor: COLORS.warningLight },
-  statusPaid: { backgroundColor: COLORS.primaryLight },
-  statusClosed: { backgroundColor: COLORS.successLight },
 });

@@ -185,15 +185,19 @@ def attach_reveal_routes(api_router: APIRouter, db):
         }
 
     # ----- Push provisioning stub (Apple/Google Pay) -----
-    @api_router.post("/groups/{group_id}/card/push-provisioning")
+    @api_router.post("/groups/{group_id}/card/push-provisioning", status_code=501)
     async def push_provisioning(group_id: str):
         # Real push provisioning requires Apple PNO + Google PSP onboarding (production-only).
-        return {
-            "ok": False,
-            "available": False,
-            "reason": "Push provisioning to Apple/Google Wallet requires PSP onboarding (production-only).",
-            "alternative": "Use 'Reveal card details' to copy PAN/CVV manually.",
-        }, 501
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=501,
+            content={
+                "ok": False,
+                "available": False,
+                "reason": "Push provisioning to Apple/Google Wallet requires PSP onboarding (production-only).",
+                "alternative": "Use 'Reveal card details' to copy PAN/CVV manually.",
+            },
+        )
 
     # ----- Issuing webhook -----
     @api_router.post("/webhook/stripe/issuing")

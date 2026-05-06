@@ -552,6 +552,54 @@ backend:
               M) RBAC: support-role admin → grant/revoke/set-discount/set-lead-discount all return 403.
               N) Idempotency on revoke: revoking already-revoked row → 200 returns row, no double-audit.
 
+  - task: "Phase G5 — Admin Analytics dashboard (GET /api/admin/analytics)"
+    implemented: true
+    working: true
+    file: "backend/admin_analytics.py, backend/admin_routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Phase G5 verified end-to-end via /app/backend_test.py against the live preview
+            backend (https://joint-pay-1.preview.emergentagent.com/api). 121/121 PASS, 0 FAIL,
+            no 5xx anywhere.
+
+            Coverage executed (all PASS):
+              - super_admin login OK.
+              - GET /api/admin/analytics (no param) → 200, range_days=30.
+              - ?range=7d → 200, range_days=7. signups_per_day, groups_per_day, gmv_per_day,
+                aov_per_day, contributions_per_day each have exactly 7 entries; every entry's
+                date field is a valid ISO date string.
+              - ?range=30d → 30 entries each. ?range=90d → 90 entries each.
+              - ?range=invalid → 200, range_days defaulted to 30 (no 500).
+              - Shape: range_days, start_date, end_date, groups_per_day, gmv_per_day,
+                aov_per_day, signups_per_day, contributions_per_day, top_referrers,
+                card_metrics, master_account, funnel, totals all present. start_date and
+                end_date are valid ISO dates.
+              - totals object includes all 10 required keys: users, verified_users, groups,
+                groups_in_range, contributions, gmv, gmv_in_range, gross_processed_in_range,
+                signups_in_range, verified_in_range.
+              - funnel includes signups, verified, joined_group, contributed, settled_groups;
+                funnel.signups == totals.users; funnel.verified == totals.verified_users.
+              - card_metrics includes total_issued, active, inactive, total_spent;
+                active+inactive ≤ total_issued holds.
+              - master_account.balance and entries are both numbers.
+              - top_referrers is a list (3 items observed, ≤10), each item has user_id,
+                name, referral_code, signups, verified_signups.
+              - Auth: GET without token → 401 "Admin auth required". Created fresh manager
+                admin via POST /admin/admins (super_admin), logged in → manager-role token
+                → GET /admin/analytics returns 200 (read access for all admin roles).
+              - Regression spot-checks all 200: GET /admin/integrations/issuing,
+                /admin/security/kms-status, /admin/reconciliations, /admin/master-account;
+                POST /auth/send-otp (real user_id + fresh phone) → 200.
+
+            Backend log notes (informational, not blockers): passlib bcrypt cosmetic
+            warning; jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes; ≥32 recommended).
+            No 5xx and no exceptions in the analytics endpoint.
+
 frontend:
   - task: "Items screen — '+' button opens add-item form"
     implemented: true
@@ -1164,13 +1212,102 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Phase G4 — Push provisioning (Apple Pay + Google Pay) drop-in"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
+    - agent: "testing"
+      message: |
+        PHASE G5 — Admin Analytics dashboard backend tests COMPLETED.
+        /app/backend_test.py executed against live preview backend
+        (https://joint-pay-1.preview.emergentagent.com/api). 121/121 PASS, 0 FAIL,
+        no 5xx anywhere.
+
+        Coverage executed (all PASS):
+          1) super_admin login OK.
+          2) GET /api/admin/analytics (no param) -> 200, range_days=30.
+          3) ?range=7d -> 200, range_days=7. signups_per_day, groups_per_day, gmv_per_day,
+             aov_per_day, contributions_per_day each have exactly 7 entries; every entry's
+             date field is a valid ISO date string.
+          4) ?range=30d -> 30 entries each. ?range=90d -> 90 entries each.
+          5) ?range=invalid -> 200, range_days defaulted to 30 (no 500).
+          6) Response shape: top-level keys present and start_date/end_date are valid ISO.
+          7) totals: users, verified_users, groups, groups_in_range, contributions, gmv,
+             gmv_in_range, gross_processed_in_range, signups_in_range, verified_in_range
+             all present.
+          8) funnel: signups, verified, joined_group, contributed, settled_groups present;
+             funnel.signups == totals.users; funnel.verified == totals.verified_users.
+          9) card_metrics: total_issued, active, inactive, total_spent present;
+             active+inactive <= total_issued.
+         10) master_account: balance + entries both numbers.
+         11) top_referrers: list (3 items observed, <=10), each with user_id, name,
+             referral_code, signups, verified_signups.
+         12) Auth: GET without token -> 401 "Admin auth required". Created fresh manager
+             admin via POST /admin/admins (super_admin), logged in -> manager-role token
+             -> GET /admin/analytics returns 200 (read access for all admin roles).
+         13) Regression spot-checks all 200:
+             - GET /admin/integrations/issuing
+             - GET /admin/security/kms-status
+             - GET /admin/reconciliations
+             - GET /admin/master-account
+             - POST /auth/send-otp (real user_id + fresh phone) -> 200.
+
+        Backend log notes (informational, not blockers): passlib bcrypt cosmetic warning;
+        jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes; >=32 recommended). No 5xx and
+        no exceptions in the analytics endpoint.
+
+        Marking Phase G5 as working. No further backend action required.
+
+    - agent: "main"
+      message: |
+        PHASE G5 — Admin Analytics dashboard.
+
+        WHAT'S NEW:
+          /app/backend/admin_analytics.py
+            GET /api/admin/analytics?range=7d|30d|90d
+              Returns comprehensive analytics payload with:
+                - groups_per_day [{date, count}]
+                - gmv_per_day [{date, amount}]
+                - aov_per_day [{date, value}]
+                - signups_per_day [{date, count, verified_count}]
+                - contributions_per_day [{date, amount, count}]
+                - top_referrers (top 10 by signups)
+                - card_metrics {total_issued, active, inactive, total_spent}
+                - master_account {balance, entries}
+                - funnel {signups, verified, joined_group, contributed, settled_groups}
+                - totals (aggregate counts: in-range and all-time)
+
+          /app/frontend/app/admin/analytics.tsx (new admin page)
+            - Range selector (7d / 30d / 90d)
+            - 4 KPI cards (signups, bills, GMV, cards)
+            - 4 bar-chart cards (custom flex-based, no external dep)
+            - Conversion funnel with colored progress bars
+            - Top referrers leaderboard
+            - Stripe Issuing + Master Account summary grid
+
+          Sidebar nav now includes "Analytics" (between Dashboard and Users).
+
+        VERIFY:
+          1) GET /api/admin/analytics with no range → defaults to 30d, 200 OK.
+          2) ?range=7d → range_days=7, signups_per_day has 7 rows.
+          3) ?range=30d → 30 rows. ?range=90d → 90 rows. ?range=invalid → defaults to 30d.
+          4) Response shape includes: groups_per_day, gmv_per_day, aov_per_day, signups_per_day,
+             contributions_per_day, top_referrers, card_metrics, master_account, funnel, totals.
+          5) totals.users matches GET /api/admin/users count.
+          6) funnel.signups equals totals.users; funnel.verified equals totals.verified_users.
+          7) card_metrics.total_issued matches count of groups with virtual_card.stripe_card_id.
+          8) Auth: any admin role can access (read-only); no token → 401.
+          9) Regression spot-checks:
+             - GET /api/admin/integrations/issuing → 200 with all toggles present.
+             - GET /api/admin/security/kms-status → 200.
+             - GET /api/admin/reconciliations → 200.
+             - GET /api/admin/master-account → 200.
+             - POST /api/auth/send-otp → 200.
+
+        Admin: [email protected] / ChangeMe123!
+
     - agent: "main"
       message: |
         PHASE G4 — Push provisioning (Apple/Google Pay) drop-in code.

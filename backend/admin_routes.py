@@ -211,6 +211,9 @@ def build_admin_router(db):
     # Phase G2: Security/KMS admin routes
     from admin_security import attach_security_routes
     attach_security_routes(router, db, _attach_admin)
+    # Phase G5: Analytics admin routes
+    from admin_analytics import attach_analytics_routes
+    attach_analytics_routes(router, db, _attach_admin)
 
     return router
 

@@ -2,7 +2,7 @@
 
 Multi-provider SMS sending with automatic failover. Currently supports:
   - Twilio (REST API)
-  - SignalWire (REST API — Twilio-compatible)
+  - SignalWire (Programmable Messaging API — `/api/messaging/messages`)
 
 Admin can configure either or both. They pick a `primary` and `fallback`. On any
 failure of the primary (timeout, 4xx/5xx), we automatically retry with the fallback.
@@ -24,6 +24,7 @@ Schema additions to app_settings.integrations:
 from __future__ import annotations
 import datetime as dt
 import logging
+import re
 from typing import Optional, Tuple
 
 from integrations import (
@@ -33,6 +34,40 @@ from integrations import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------- Phone normalization (Phase H5) ----------
+
+def _normalize_phone(raw: Optional[str], default_country_code: str = "+1") -> str:
+    """Normalize a phone number to E.164.
+
+    Rules:
+      • If it already starts with '+', keep digits and '+' only.
+      • If it's a 10-digit US number ('8325933512'), prepend '+1'.
+      • If it's an 11-digit US number starting with '1' ('18325933512'), prepend '+'.
+      • Otherwise return digits with `default_country_code` prefix as best-effort.
+
+    This guarantees Twilio/SignalWire receive a valid E.164 string and avoids
+    silent "invalid number" 4xx failures.
+    """
+    if not raw:
+        return ""
+    s = str(raw).strip()
+    if not s:
+        return ""
+    # Preserve leading + if present, strip everything else non-digit
+    has_plus = s.startswith("+")
+    digits = re.sub(r"\D", "", s)
+    if not digits:
+        return ""
+    if has_plus:
+        return "+" + digits
+    if len(digits) == 10:
+        return f"{default_country_code}{digits}"
+    if len(digits) == 11 and digits.startswith("1"):
+        return f"+{digits}"
+    # Fallback: assume the user already typed a valid country code
+    return f"+{digits}"
 
 
 # ---------- Defaults injected into app_settings.integrations ----------
@@ -87,9 +122,10 @@ async def _send_via_twilio(rec: dict, to: str, body: str) -> Tuple[bool, str]:
         return False, "Twilio not enabled"
     sid = decrypt_secret(t.get("account_sid_enc"))
     token = decrypt_secret(t.get("auth_token_enc"))
-    from_num = t.get("from_number")
-    if not (sid and token and from_num):
-        return False, "Twilio credentials incomplete"
+    from_num = _normalize_phone(t.get("from_number"))
+    to = _normalize_phone(to)
+    if not (sid and token and from_num and to):
+        return False, "Twilio credentials/number incomplete"
     import httpx
     url = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
     try:
@@ -111,22 +147,37 @@ async def _send_via_signalwire(rec: dict, to: str, body: str) -> Tuple[bool, str
     project_id = decrypt_secret(sw.get("project_id_enc"))
     token = decrypt_secret(sw.get("api_token_enc"))
     space = (sw.get("space_url") or "").replace("https://", "").replace("http://", "").rstrip("/")
-    from_num = sw.get("from_number")
-    if not (project_id and token and space and from_num):
-        return False, "SignalWire credentials incomplete"
-    # SignalWire's compatibility API mirrors Twilio's:
-    #   POST https://{space}/api/laml/2010-04-01/Accounts/{project_id}/Messages.json
+    from_num = _normalize_phone(sw.get("from_number"))
+    to = _normalize_phone(to)
+    if not (project_id and token and space and from_num and to):
+        return False, "SignalWire credentials/number incomplete"
+    # Phase H5 — Use SignalWire's modern Programmable Messaging API (the same
+    # endpoint that the user verified works via curl):
+    #   POST https://{space}/api/messaging/messages
+    #   Auth: Basic (project_id : token)
+    #   JSON body: {"to", "from", "body"}
     import httpx
-    url = f"https://{space}/api/laml/2010-04-01/Accounts/{project_id}/Messages.json"
+    url = f"https://{space}/api/messaging/messages"
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
-                url, data={"To": to, "From": from_num, "Body": body}, auth=(project_id, token)
+                url,
+                json={"to": to, "from": from_num, "body": body},
+                auth=(project_id, token),
+                headers={"Content-Type": "application/json"},
             )
-        if resp.status_code in (200, 201):
-            data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
-            return True, f"signalwire sid={data.get('sid', 'ok')}"
-        return False, f"signalwire {resp.status_code}: {resp.text[:160]}"
+        if resp.status_code in (200, 201, 202):
+            data = {}
+            try:
+                data = resp.json()
+            except Exception:
+                pass
+            mid = data.get("id") or data.get("sid") or "ok"
+            err_msg = data.get("error_message")
+            if err_msg:
+                return False, f"signalwire error: {err_msg}"
+            return True, f"signalwire id={mid} status={data.get('status', 'queued')}"
+        return False, f"signalwire {resp.status_code}: {resp.text[:200]}"
     except Exception as e:
         return False, f"signalwire exception: {e}"
 

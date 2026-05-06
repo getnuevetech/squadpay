@@ -1,8 +1,6 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -18,6 +16,8 @@ import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 import { StatusBadge } from '../../../src/StatusBadge';
 import { EditMetaModal } from '../../../src/EditMetaModal';
+import { toast } from '../../../src/components/Toast';
+import { Skeleton, SkeletonGroupRow } from '../../../src/components/Skeleton';
 
 export default function SummaryScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -39,7 +39,7 @@ export default function SummaryScreen() {
       const g = await api.getGroup(id);
       setGroup(g);
     } catch (e: any) {
-      Alert.alert('Error', e.message);
+      toast.error(e?.message || 'Could not load summary');
     }
   }, [id, router]);
 
@@ -57,8 +57,14 @@ export default function SummaryScreen() {
 
   if (!group || !userId) {
     return (
-      <SafeAreaView style={styles.center}>
-        <ActivityIndicator color={COLORS.primary} />
+      <SafeAreaView style={styles.center} testID="summary-loading">
+        <View style={{ width: '90%', gap: 16 }}>
+          <Skeleton width={'70%'} height={28} />
+          <Skeleton width={'40%'} height={48} />
+          <Skeleton width={'100%'} height={120} radius={16} />
+          <SkeletonGroupRow />
+          <SkeletonGroupRow />
+        </View>
       </SafeAreaView>
     );
   }

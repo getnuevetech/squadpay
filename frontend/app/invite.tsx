@@ -1,11 +1,13 @@
 import { useEffect, useState, useCallback } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Share, Platform } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Share, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { ArrowLeft, Gift, Copy, Share2, ShieldCheck, Wallet, UserPlus } from 'lucide-react-native';
 import { api, ReferralSummary } from '../src/api';
 import { loadUser } from '../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../src/theme';
+import { toast } from '../src/components/Toast';
+import { Skeleton } from '../src/components/Skeleton';
 
 async function copyText(text: string) {
   try {
@@ -57,9 +59,10 @@ export default function InviteScreen() {
     const ok = await copyText(code);
     if (ok) {
       setCopied(true);
+      toast.success('Code copied to clipboard');
       setTimeout(() => setCopied(false), 1500);
     } else {
-      Alert.alert('Code', code);
+      toast.info(`Your code: ${code}`);
     }
   };
 
@@ -67,7 +70,8 @@ export default function InviteScreen() {
     try {
       if (Platform.OS === 'web') {
         const ok = await copyText(shareMsg);
-        Alert.alert(ok ? 'Copied!' : 'Share', shareMsg);
+        if (ok) toast.success('Invite copied to clipboard');
+        else toast.info(shareMsg);
         return;
       }
       await Share.share({ message: shareMsg });
@@ -75,7 +79,16 @@ export default function InviteScreen() {
   };
 
   if (busy || !user) {
-    return <SafeAreaView style={styles.center}><ActivityIndicator color={COLORS.primary} /></SafeAreaView>;
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={['top']} testID="invite-loading">
+        <ScrollView contentContainerStyle={{ padding: SPACING.md }}>
+          <Skeleton width={80} height={20} style={{ marginBottom: SPACING.lg }} />
+          <Skeleton width={'100%'} height={140} radius={20} style={{ marginBottom: SPACING.md }} />
+          <Skeleton width={'100%'} height={80} radius={16} style={{ marginBottom: SPACING.md }} />
+          <Skeleton width={'100%'} height={80} radius={16} />
+        </ScrollView>
+      </SafeAreaView>
+    );
   }
 
   return (

@@ -57,11 +57,17 @@ export default function HomeScreen() {
     setRefreshing(false);
   };
 
-  // ───── Loading state ─────
+  // ───── Loading state (Home: skeleton hero + group rows) ─────
   if (loading && !user) {
     return (
-      <SafeAreaView style={styles.center} testID="home-loading">
-        <ActivityIndicator color={COLORS.primary} />
+      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} testID="home-loading">
+        <ScrollView contentContainerStyle={{ padding: SPACING.md }}>
+          <Skeleton width={140} height={28} style={{ marginBottom: SPACING.md }} />
+          <Skeleton width={'100%'} height={140} radius={20} style={{ marginBottom: SPACING.lg }} />
+          <Skeleton width={120} height={14} style={{ marginVertical: SPACING.md }} />
+          <SkeletonGroupRow />
+          <SkeletonGroupRow />
+        </ScrollView>
       </SafeAreaView>
     );
   }

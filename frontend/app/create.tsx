@@ -1,7 +1,6 @@
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
-  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -11,6 +10,7 @@ import {
   TouchableOpacity,
   View,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -19,6 +19,7 @@ import { Button } from '../src/Button';
 import { api } from '../src/api';
 import { loadUser } from '../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../src/theme';
+import { toast } from '../src/components/Toast';
 
 type Mode = 'fast' | 'smart' | 'itemized';
 
@@ -76,7 +77,7 @@ export default function CreateBillScreen() {
       setTip(parsed.tip ? String(parsed.tip) : '');
       setMode('itemized');
     } catch (e: any) {
-      Alert.alert('Scan failed', e.message);
+      toast.error(e?.message || 'Receipt scan failed');
     } finally {
       setScanning(false);
     }
@@ -96,11 +97,11 @@ export default function CreateBillScreen() {
     const subtotal = computedSubtotal();
     const total = computedTotal();
     if (subtotal <= 0) {
-      Alert.alert('Add items', 'Add at least one item to start the bill.');
+      toast.info('Add at least one item to start the bill');
       return;
     }
     if (mode === 'itemized' && items.length === 0) {
-      Alert.alert('Add items', 'Itemized split needs at least one item.');
+      toast.info('Itemized split needs at least one item');
       return;
     }
     setLoading(true);
@@ -123,7 +124,7 @@ export default function CreateBillScreen() {
       });
       router.replace(`/group/${group.id}`);
     } catch (e: any) {
-      Alert.alert('Error', e.message);
+      toast.error(e?.message || 'Could not create bill');
     } finally {
       setLoading(false);
     }

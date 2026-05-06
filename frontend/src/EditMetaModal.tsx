@@ -8,12 +8,12 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
-  Alert,
 } from 'react-native';
 import { X } from 'lucide-react-native';
 import { Button } from './Button';
 import { COLORS, FONT, RADIUS, SPACING } from './theme';
 import { api, Group } from './api';
+import { toast } from './components/Toast';
 
 type Props = {
   visible: boolean;
@@ -45,7 +45,7 @@ export function EditMetaModal({ visible, onClose, onSaved, group, userId, field 
       if (field === 'title') {
         const t = title.trim();
         if (!t) {
-          Alert.alert('Title required', 'Please enter a non-empty bill name.');
+          toast.error('Please enter a non-empty bill name');
           setSaving(false);
           return;
         }
@@ -58,7 +58,7 @@ export function EditMetaModal({ visible, onClose, onSaved, group, userId, field 
       onSaved(updated);
       onClose();
     } catch (e: any) {
-      Alert.alert('Could not save', e?.message || 'Please try again.');
+      toast.error(e?.message || 'Could not save changes');
     } finally {
       setSaving(false);
     }

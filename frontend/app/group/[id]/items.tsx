@@ -20,6 +20,8 @@ import { Button } from '../../../src/Button';
 import { api, Group, Item } from '../../../src/api';
 import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
+import { toast } from '../../../src/components/Toast';
+import { Skeleton, SkeletonGroupRow } from '../../../src/components/Skeleton';
 
 export default function ItemsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -47,7 +49,7 @@ export default function ItemsScreen() {
       const g = await api.getGroup(id);
       setGroup(g);
     } catch (e: any) {
-      Alert.alert('Error', e.message);
+      toast.error(e?.message || 'Could not load items');
     }
   }, [id, router]);
 
@@ -79,7 +81,7 @@ export default function ItemsScreen() {
       const g = await api.assign(group.id, userId, item.id, qty);
       setGroup(g);
     } catch (e: any) {
-      Alert.alert('Cannot claim', e.message);
+      toast.error(e?.message || 'Cannot claim');
     } finally {
       setSaving(null);
     }
@@ -93,7 +95,7 @@ export default function ItemsScreen() {
         .filter((a) => a.item_id === item.id)
         .reduce((s, a) => s + a.quantity, 0);
     if (remaining <= 0) {
-      Alert.alert('Already fully claimed');
+      toast.info('Item already fully claimed');
       return;
     }
     Alert.alert(
@@ -110,7 +112,7 @@ export default function ItemsScreen() {
               const g = await api.assign(group.id, m.user_id, item.id, existing + 1);
               setGroup(g);
             } catch (e: any) {
-              Alert.alert('Failed', e.message);
+              Alert.alert('Failed to assign', e?.message || 'Please try again', [{ text: 'OK' }]);
             }
           },
         })),
@@ -121,8 +123,14 @@ export default function ItemsScreen() {
 
   if (!group || !userId) {
     return (
-      <SafeAreaView style={styles.center}>
-        <ActivityIndicator color={COLORS.primary} />
+      <SafeAreaView style={styles.center} testID="items-loading">
+        <View style={{ width: '90%', gap: 12 }}>
+          <Skeleton width={'60%'} height={22} />
+          <Skeleton width={'100%'} height={80} radius={16} />
+          <SkeletonGroupRow />
+          <SkeletonGroupRow />
+          <SkeletonGroupRow />
+        </View>
       </SafeAreaView>
     );
   }
@@ -132,12 +140,12 @@ export default function ItemsScreen() {
 
   const submitNewItem = async () => {
     if (!newName.trim()) {
-      Alert.alert('Item name required');
+      toast.error('Item name required');
       return;
     }
     const priceNum = parseFloat(newPrice);
     if (!priceNum || priceNum <= 0) {
-      Alert.alert('Enter a valid price');
+      toast.error('Enter a valid price');
       return;
     }
     setAdding(true);
@@ -151,7 +159,7 @@ export default function ItemsScreen() {
       setNewQty('1');
       setShowAddForm(false);
     } catch (e: any) {
-      Alert.alert('Failed', e.message);
+      toast.error(e?.message || 'Failed to add item');
     } finally {
       setAdding(false);
     }
@@ -168,7 +176,7 @@ export default function ItemsScreen() {
             const g = await api.deleteItem(group.id, itemId, userId);
             setGroup(g);
           } catch (e: any) {
-            Alert.alert('Failed', e.message);
+            toast.error(e?.message || 'Failed to delete item');
           }
         },
       },
@@ -192,7 +200,7 @@ export default function ItemsScreen() {
       const g = await api.patchItemQty(group!.id, itemId, userId!, delta);
       setGroup(g);
     } catch (e: any) {
-      Alert.alert('Cannot change quantity', e.message);
+      toast.error(e?.message || 'Cannot change quantity');
     }
   };
 

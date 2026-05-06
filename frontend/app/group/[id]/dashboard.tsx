@@ -1,8 +1,6 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -15,6 +13,8 @@ import { CheckCircle2, Clock, Zap, Landmark, TrendingUp, Plus } from 'lucide-rea
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
+import { toast } from '../../../src/components/Toast';
+import { Skeleton, SkeletonGroupRow } from '../../../src/components/Skeleton';
 
 export default function DashboardScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -34,7 +34,7 @@ export default function DashboardScreen() {
       const g = await api.getGroup(id);
       setGroup(g);
     } catch (e: any) {
-      Alert.alert('Error', e.message);
+      toast.error(e?.message || 'Could not load dashboard');
     }
   }, [id, router]);
 
@@ -52,8 +52,14 @@ export default function DashboardScreen() {
 
   if (!group || !userId) {
     return (
-      <SafeAreaView style={styles.center}>
-        <ActivityIndicator color={COLORS.primary} />
+      <SafeAreaView style={styles.center} testID="dashboard-loading">
+        <View style={{ width: '90%', gap: 16 }}>
+          <Skeleton width={'50%'} height={14} />
+          <Skeleton width={'70%'} height={48} />
+          <Skeleton width={'100%'} height={120} radius={16} />
+          <SkeletonGroupRow />
+          <SkeletonGroupRow />
+        </View>
       </SafeAreaView>
     );
   }
@@ -83,12 +89,10 @@ export default function DashboardScreen() {
   const withdrawable = leadFronted ? group.funding?.total_repaid || 0 : 0;
 
   const withdraw = (kind: 'instant' | 'standard') => {
-    Alert.alert(
-      kind === 'instant' ? 'Instant Withdraw' : 'Standard Withdraw',
+    toast.info(
       kind === 'instant'
-        ? `$${withdrawable.toFixed(2)} will arrive in minutes. A 1.5% fee applies.`
-        : `$${withdrawable.toFixed(2)} will arrive in 1–2 business days. No fee.`,
-      [{ text: 'OK' }],
+        ? `Instant withdraw of $${withdrawable.toFixed(2)} — arrives in minutes (1.5% fee)`
+        : `Standard withdraw of $${withdrawable.toFixed(2)} — arrives in 1–2 business days`,
     );
   };
 

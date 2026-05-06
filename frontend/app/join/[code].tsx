@@ -1,8 +1,6 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
@@ -16,6 +14,8 @@ import { Button } from '../../src/Button';
 import { api } from '../../src/api';
 import { loadUser } from '../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
+import { toast } from '../../src/components/Toast';
+import { Skeleton } from '../../src/components/Skeleton';
 
 export default function JoinScreen() {
   const { code } = useLocalSearchParams<{ code: string }>();
@@ -36,7 +36,7 @@ export default function JoinScreen() {
       await api.joinGroup(group.id, u.id);
       router.replace(`/group/${group.id}`);
     } catch (e: any) {
-      Alert.alert('Join failed', e.message);
+      toast.error(e?.message || 'Join failed');
       setLoading(false);
     } finally {
       setJoining(false);
@@ -54,9 +54,13 @@ export default function JoinScreen() {
 
   if (loading || joining) {
     return (
-      <SafeAreaView style={styles.center}>
-        <ActivityIndicator color={COLORS.primary} />
-        <Text style={styles.loadingText}>Joining bill...</Text>
+      <SafeAreaView style={styles.center} testID="join-loading">
+        <View style={{ alignItems: 'center', gap: 16 }}>
+          <Skeleton width={56} height={56} radius={28} />
+          <Skeleton width={180} height={18} />
+          <Skeleton width={120} height={12} />
+        </View>
+        <Text style={[styles.loadingText, { marginTop: 16 }]}>Joining bill…</Text>
       </SafeAreaView>
     );
   }

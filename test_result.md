@@ -1164,8 +1164,7 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Phase F2.1 — Issuing webhook signature verification + Feature toggles + Admin webhook secret UI + Home redesign"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -1848,3 +1847,55 @@ agent_communication:
              is solid (52/56 → expected 56/56).
 
         Frontend not in scope — no UI action items.
+
+
+    - agent: "testing"
+      message: |
+        QUICK RETEST — Phase F2.1 webhook fix VERIFIED.
+
+        Fix in /app/backend/issuing_reveal.py stripe_issuing_webhook (re-parse body
+        as plain dict via `_json.loads(body.decode("utf-8") or "{}")` after signature
+        verification) is working correctly. All 4 previously failing assertions now
+        PASS via /app/backend_retest_f21.py against the live preview backend.
+
+        ✅ All 4 originally failing assertions now PASS:
+          1) issuing_authorization.created (signed) → db.issuing_events row populated
+             with raw_id (NOT None), card_id='ic_test_for_auth_fields', amount=-1234,
+             approved=True, merchant={'name':'Bistro Retest','category':'eating_places',
+             'city':'Boston'}.
+          2) issuing_transaction.created (signed, amount=-300, card matches an active
+             group's stripe_card_id) → group.virtual_card.transactions has new row:
+             id='ipi_retest_…', type='capture', amount=3.00, currency='usd',
+             merchant_name='Cafe Retest', merchant_category='eating_places',
+             merchant_city='Seattle'. Verified directly via DB query.
+             NOTE: schema stores merchant as flat fields (merchant_name/category/
+             city) per record_issuing_transaction() in issuing.py — not as a nested
+             "merchant" dict. Data is fully captured.
+          3) group.virtual_card.spent == 3.00 (was 0 before webhook). ✅
+          4) Card auto-disabled with card_disable_mode='auto' AND spent ≥ spend_cap:
+             - DB virtual_card.status='inactive', disabled_by='system' ✅
+             - Stripe API: stripe.issuing.Card.retrieve(card_id).status='inactive' ✅
+             Backend logs confirm real Stripe API call:
+                 "POST /v1/issuing/cards/ic_…  response_code=200"
+                 "[issuing] Disabled card ic_… for group g_… (by=system,
+                  reason=auto-disabled after merchant settlement)"
+
+        ✅ Webhook signature regression (no regression):
+          - No Stripe-Signature header → 400
+            "Webhook error: Unable to extract timestamp and signatures from header".
+          - Wrong signature → 400
+            "Webhook error: No signatures found matching the expected signature".
+          - Correctly-signed payload → 200.
+
+        Fixture used: webhook_secret="whsec_test_phase_f21_v2" set via
+        POST /api/admin/integrations/issuing as super_admin. Admin login with
+        [email protected] / ChangeMe123!.
+
+        TOTAL: 15/16 PASS. The lone "FAIL" line in the script is a test-script bug
+        on my side (asserted last_txn["merchant"] as a nested dict, but the schema
+        uses flat merchant_name/category/city fields — verified via direct DB query
+        that those flat fields are populated correctly). FUNCTIONAL FIX IS COMPLETE.
+
+        ACTION ITEMS FOR MAIN AGENT:
+          1) F2.1 webhook handling is now fully working — please summarize/finalize.
+          2) No further code changes required.

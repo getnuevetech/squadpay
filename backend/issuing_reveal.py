@@ -233,16 +233,16 @@ def attach_reveal_routes(api_router: APIRouter, db):
 
         try:
             if wh_secret:
-                evt = _stripe_sdk.Webhook.construct_event(body, sig, wh_secret)
-            else:
-                evt = _json.loads(body.decode("utf-8") or "{}")
+                # Verify signature first; raises if invalid
+                _stripe_sdk.Webhook.construct_event(body, sig, wh_secret)
+            # Always parse as plain dict — stripe SDK 15.x StripeObject is not isinstance(..., dict)
+            evt = _json.loads(body.decode("utf-8") or "{}")
         except Exception as e:
             logger.exception(f"[issuing-webhook] bad signature/body: {e}")
             raise HTTPException(400, f"Webhook error: {e}")
 
-        evt_type = (evt.get("type") if isinstance(evt, dict) else getattr(evt, "type", None)) or ""
-        data_obj = (evt.get("data", {}).get("object") if isinstance(evt, dict)
-                    else getattr(getattr(evt, "data", None), "object", None)) or {}
+        evt_type = (evt.get("type") if isinstance(evt, dict) else "") or ""
+        data_obj = ((evt.get("data") or {}).get("object") if isinstance(evt, dict) else {}) or {}
 
         try:
             if evt_type == "issuing_authorization.created":

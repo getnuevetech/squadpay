@@ -3,11 +3,15 @@
   "cleanUrls": true,
   "trailingSlash": false,
   "rewrites": [
-    { "source": "/admin/groups/:id", "destination": "/admin/groups/[id]" },
-    { "source": "/group/:id", "destination": "/group/[id]" },
-    { "source": "/group/:id/items", "destination": "/group/[id]/items" },
-    { "source": "/group/:id/pay", "destination": "/group/[id]/pay" },
-    { "source": "/group/:id/summary", "destination": "/group/[id]/summary" },
-    { "source": "/reveal/:id", "destination": "/reveal/[id]" }
+    { "source": "/admin/groups/:id", "destination": "/admin/groups/[id].html" },
+    { "source": "/admin/users/:id",  "destination": "/admin/users/[id].html" },
+    { "source": "/group/:id",        "destination": "/group/[id].html" },
+    { "source": "/group/:id/items",   "destination": "/group/[id]/items.html" },
+    { "source": "/group/:id/pay",     "destination": "/group/[id]/pay.html" },
+    { "source": "/group/:id/summary", "destination": "/group/[id]/summary.html" },
+    { "source": "/group/:id/success", "destination": "/group/[id]/success.html" },
+    { "source": "/group/:id/dashboard","destination": "/group/[id]/dashboard.html" },
+    { "source": "/reveal/:id",       "destination": "/reveal/[id].html" },
+    { "source": "/join/:code",       "destination": "/join/[code].html" }
   ]
 }

@@ -92,7 +92,7 @@ export default function HomeScreen() {
             <Text style={styles.welcomeBrand}>SquadPay</Text>
           </View>
 
-          <Text style={styles.welcomeTitle}>Split bills,{'\n'}not friendships.</Text>
+          <Text style={styles.welcomeTitle}>Split the bill.{'\n'}Pay together.</Text>
           <Text style={styles.welcomeSub}>
             Scan a receipt, share a link, and only pay for what you ordered.
           </Text>

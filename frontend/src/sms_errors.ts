@@ -16,25 +16,16 @@ export function friendlySmsError(raw: string | undefined | null): {
 } {
   const s = (raw || '').toLowerCase();
 
-  // SignalWire trial: only verified caller-IDs allowed
+  // SignalWire trial / Twilio trial: number not verified.
   if (
     s.includes('integration_test_verified_caller_required') ||
     s.includes('verified caller id') ||
-    s.includes('trial campaign')
+    s.includes('trial campaign') ||
+    (s.includes('unverified') && s.includes('twilio'))
   ) {
     return {
       title: 'Number not verified',
-      message:
-        'On a trial SMS account, the destination number must be verified first. ' +
-        'Please use a verified test number, or contact support to upgrade the SMS plan.',
-    };
-  }
-
-  // Twilio similar trial restrictions
-  if (s.includes('unverified') && s.includes('twilio')) {
-    return {
-      title: 'Number not verified',
-      message: 'This number must be verified in the Twilio console before SMS can be sent to it.',
+      message: 'Contact Support For Help',
     };
   }
 

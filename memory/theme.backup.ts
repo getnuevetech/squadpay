@@ -10,22 +10,17 @@
 import { Platform } from 'react-native';
 
 export const COLORS = {
-  primary: '#7C3AED',          // violet — new SquadPay primary
-  primaryDark: '#4F46E5',      // indigo — gradient end & deeper variant
-  primaryLight: '#F5F3FF',     // violet-50 — soft tint backgrounds
-  primarySoft: '#EDE9FE',      // violet-100 — for text-on-primary subtitles & hovers
-  accent: '#22D3EE',           // cyan-400 — secondary highlight (new)
-  accentLight: '#CFFAFE',      // cyan-100 — soft accent background (new)
-  gradientStart: '#7C3AED',    // gradient brand start (new)
-  gradientEnd: '#4F46E5',      // gradient brand end (new)
-  dark: '#0F172A',             // slate-900 — deepest brand surface (new)
+  primary: '#4F46E5',
+  primaryDark: '#4338CA',
+  primaryLight: '#EEF2FF',
+  primarySoft: '#E0E7FF',     // slightly darker than primaryLight, used for hovers
   success: '#16A34A',
   successLight: '#DCFCE7',
   warning: '#F59E0B',
   warningLight: '#FEF3C7',
   danger: '#DC2626',
   dangerLight: '#FEE2E2',
-  bg: '#F8FAFC',               // slate-50 — app background
+  bg: '#F9FAFB',
   surface: '#FFFFFF',
   surfaceElevated: '#FFFFFF', // alias — used with SHADOW.md to convey depth
   text: '#111827',
@@ -122,7 +117,7 @@ export const SHADOW = {
     shadowRadius: 14,
     elevation: 8,
     ...(Platform.OS === 'web'
-      ? { boxShadow: `0 6px 14px rgba(124, 58, 237, 0.28)` } as any
+      ? { boxShadow: `0 6px 14px rgba(79, 70, 229, 0.28)` } as any
       : {}),
   },
 };

@@ -132,7 +132,7 @@ export default function AdminAnalytics() {
       {/* KPI Cards */}
       <View style={styles.kpiGrid}>
         <View style={styles.kpiCard}>
-          <View style={[styles.kpiIcon, { backgroundColor: '#EEF2FF' }]}><Users size={18} color="#4F46E5" /></View>
+          <View style={[styles.kpiIcon, { backgroundColor: '#F5F3FF' }]}><Users size={18} color="#7C3AED" /></View>
           <Text style={styles.kpiLabel}>New signups</Text>
           <Text style={styles.kpiValue} testID="kpi-signups">{t.signups_in_range}</Text>
           <Text style={styles.kpiSub}>{t.verified_in_range} verified ({t.signups_in_range > 0 ? Math.round(t.verified_in_range / t.signups_in_range * 100) : 0}%)</Text>
@@ -163,7 +163,7 @@ export default function AdminAnalytics() {
         <Text style={styles.cardSub}>{t.groups_in_range} bills in {data.range_days} days · avg {(t.groups_in_range / data.range_days).toFixed(1)}/day</Text>
         <BarChart
           data={data.groups_per_day.map((d) => ({ date: d.date, value: d.count }))}
-          color="#4F46E5"
+          color="#7C3AED"
           testID="chart-groups"
         />
       </View>
@@ -202,7 +202,7 @@ export default function AdminAnalytics() {
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Conversion funnel (all-time)</Text>
         <Text style={styles.cardSub}>From signup to settled bill</Text>
-        <FunnelStep label="Signed up" value={f.signups} total={f.signups || 1} color="#4F46E5" />
+        <FunnelStep label="Signed up" value={f.signups} total={f.signups || 1} color="#7C3AED" />
         <FunnelStep label="Verified phone" value={f.verified} total={f.signups || 1} color="#0EA5E9" />
         <FunnelStep label="Joined a bill" value={f.joined_group} total={f.signups || 1} color="#10B981" />
         <FunnelStep label="Contributed" value={f.contributed} total={f.signups || 1} color="#D97706" />

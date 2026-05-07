@@ -529,7 +529,7 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.md,
   },
   yourLabel: {
-    color: '#E0E7FF',
+    color: '#EDE9FE',
     fontSize: FONT.sizes.sm,
     textTransform: 'uppercase',
     letterSpacing: 1,
@@ -544,7 +544,7 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.md,
   },
   breakdownRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
-  breakdownKey: { color: '#E0E7FF', fontSize: FONT.sizes.sm },
+  breakdownKey: { color: '#EDE9FE', fontSize: FONT.sizes.sm },
   breakdownVal: { color: '#fff', fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold },
   progressCard: {
     backgroundColor: COLORS.surface,

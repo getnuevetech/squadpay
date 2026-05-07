@@ -207,7 +207,7 @@ export default function CreateBillScreen() {
               >
                 <View>{m.icon}</View>
                 <Text style={[styles.modeTitle, mode === m.k && { color: '#fff' }]}>{m.title}</Text>
-                <Text style={[styles.modeSub, mode === m.k && { color: '#E0E7FF' }]}>{m.sub}</Text>
+                <Text style={[styles.modeSub, mode === m.k && { color: '#EDE9FE' }]}>{m.sub}</Text>
               </TouchableOpacity>
             ))}
           </View>

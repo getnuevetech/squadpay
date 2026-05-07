@@ -452,7 +452,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   actionPrimaryTitle: { marginTop: SPACING.md, color: '#fff', fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold },
-  actionPrimarySub: { color: '#E0E7FF', fontSize: FONT.sizes.xs, marginTop: 2 },
+  actionPrimarySub: { color: '#EDE9FE', fontSize: FONT.sizes.xs, marginTop: 2 },
   actionTitle: { marginTop: SPACING.md, color: COLORS.text, fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold },
   actionSub: { color: COLORS.subtext, fontSize: FONT.sizes.xs, marginTop: 2 },
 

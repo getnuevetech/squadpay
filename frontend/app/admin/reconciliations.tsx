@@ -10,7 +10,7 @@ function fmtDate(s?: string) { if (!s) return '—'; try { return new Date(s).to
 function ActionPill({ action }: { action: string | null }) {
   let bg = COLORS.disabledBg, fg = COLORS.subtext, label = action || '—';
   if (action === 'credit_contributors') { bg = '#ECFDF5'; fg = '#059669'; label = 'Credited'; }
-  else if (action === 'moved_to_master') { bg = '#EEF2FF'; fg = '#4F46E5'; label = 'Moved to Master'; }
+  else if (action === 'moved_to_master') { bg = '#F5F3FF'; fg = '#7C3AED'; label = 'Moved to Master'; }
   else if (action === 'no_leftover') { bg = COLORS.disabledBg; fg = COLORS.subtext; label = 'No leftover'; }
   return (
     <View style={[styles.pill, { backgroundColor: bg }]}>

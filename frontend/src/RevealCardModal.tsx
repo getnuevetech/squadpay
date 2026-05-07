@@ -517,7 +517,7 @@ const styles = StyleSheet.create({
   cardChip: {
     position: 'absolute', right: -50, top: -50,
     width: 180, height: 180, borderRadius: 90,
-    backgroundColor: 'rgba(79, 70, 229, 0.18)',
+    backgroundColor: 'rgba(124, 58, 237, 0.18)',
   },
   cardFaceLabel: { color: 'rgba(255,255,255,0.55)', fontSize: 10, marginBottom: 4, letterSpacing: 1.4, textTransform: 'uppercase', fontWeight: '600' as any },
   cardFooter: { flexDirection: 'row', gap: 16 },

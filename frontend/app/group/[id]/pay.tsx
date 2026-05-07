@@ -827,7 +827,7 @@ export default function PayScreen() {
                       activeOpacity={0.85}
                     >
                       <Text style={[styles.loanGiftTitle, isLoan && { color: '#fff' }]}>Loan</Text>
-                      <Text style={[styles.loanGiftSub, isLoan && { color: '#E0E7FF' }]}>
+                      <Text style={[styles.loanGiftSub, isLoan && { color: '#EDE9FE' }]}>
                         Gets repaid
                       </Text>
                     </TouchableOpacity>
@@ -838,7 +838,7 @@ export default function PayScreen() {
                       activeOpacity={0.85}
                     >
                       <Text style={[styles.loanGiftTitle, !isLoan && { color: '#fff' }]}>Gift</Text>
-                      <Text style={[styles.loanGiftSub, !isLoan && { color: '#E0E7FF' }]}>
+                      <Text style={[styles.loanGiftSub, !isLoan && { color: '#EDE9FE' }]}>
                         No repayment
                       </Text>
                     </TouchableOpacity>

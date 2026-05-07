@@ -165,7 +165,7 @@ export default function GroupLobbyScreen() {
         <View style={[styles.qrCard, SHADOW.sm]}>
           <Text style={styles.qrLabel}>Scan to join</Text>
           <View style={styles.qrBox}>
-            <QRCode value={joinUrl} size={200} backgroundColor="white" color={COLORS.text} />
+            <QRCode value={joinUrl} size={240} backgroundColor="white" color={COLORS.text} />
           </View>
           <Text style={styles.codeText} testID="lobby-code">Code: {group.code}</Text>
           <View style={styles.shareRow}>

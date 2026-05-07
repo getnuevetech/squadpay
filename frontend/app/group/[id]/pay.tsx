@@ -96,6 +96,10 @@ export default function PayScreen() {
   const [shortfallMode, setShortfallMode] = useState<'lead' | 'member' | 'split_equal'>('lead');
   const [isLoan, setIsLoan] = useState<boolean>(true);
   const [funderMemberId, setFunderMemberId] = useState<string | null>(null);
+  // Phase H6.4 — track whether the OTP we just sent was mocked or live so the
+  // hint UI can show "(Demo: 123456)" only in mock mode.
+  // NOTE: kept up here (above the early-return guard) so hook order stays stable.
+  const [otpMocked, setOtpMocked] = useState<boolean | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -300,10 +304,6 @@ export default function PayScreen() {
   }
 
   const blockedNoAmount = amount <= 0;
-
-  // Phase H6.4 — track whether the OTP we just sent was mocked or live so the
-  // hint UI can show "(Demo: 123456)" only in mock mode.
-  const [otpMocked, setOtpMocked] = useState<boolean | null>(null);
 
   const sendOtp = async () => {
     const cleaned = phone.trim();

@@ -165,6 +165,51 @@ export default function GroupLobbyScreen() {
           </View>
         </View>
 
+        {/* Phase H7 — Overpayment refund banner (visible only to the
+             overpaid user; e.g. lead paid full bill, then group expanded) */}
+        {(() => {
+          const me = group.per_user.find((p) => p.user_id === userId);
+          const overpaid = me?.overpaid || 0;
+          if (overpaid <= 0.01) return null;
+          return (
+            <PressableScale
+              onPress={async () => {
+                try {
+                  const r = await api.refundOverpayment(group.id, userId!);
+                  setGroup(r.group);
+                  if (r.refunded > 0.01) {
+                    const breakdown = r.breakdown || [];
+                    const stripeCount = breakdown.filter((b) => b.via === 'stripe').length;
+                    const creditCount = breakdown.filter((b) => b.via === 'wallet_credit').length;
+                    let msg = `Refunded $${r.refunded.toFixed(2)}`;
+                    if (stripeCount && !creditCount) msg += ' to your card (5–10 days)';
+                    else if (creditCount && !stripeCount) msg += ' to your wallet';
+                    else if (stripeCount && creditCount) msg += ' (mixed: card + wallet)';
+                    toast.success(msg);
+                  } else {
+                    toast.error(r.info || 'Refund failed');
+                  }
+                } catch (e: any) {
+                  toast.error(e?.message || 'Could not request refund');
+                }
+              }}
+              testID="lobby-refund-overpayment"
+              style={[styles.refundBanner, SHADOW.sm]}
+            >
+              <View style={styles.refundIcon}>
+                <Receipt size={20} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.refundTitle}>Refund overpayment</Text>
+                <Text style={styles.refundSub}>
+                  You paid ${(me!.contributed + me!.repaid).toFixed(2)} but your share is only ${me!.total.toFixed(2)}.
+                  Tap to refund ${overpaid.toFixed(2)} back to your card.
+                </Text>
+              </View>
+            </PressableScale>
+          );
+        })()}
+
         {/* Virtual card (lead-only) — Real Stripe Issuing card (Phase F1) */}
         {isLead && group.virtual_card && group.virtual_card.stripe_card_id && (
           <View style={styles.cardWrap} testID="lobby-virtual-card">
@@ -493,6 +538,23 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
   },
+  // Phase H7 — Overpayment refund CTA banner
+  refundBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+    padding: SPACING.md,
+    backgroundColor: COLORS.success,
+    borderRadius: RADIUS.lg,
+    marginBottom: SPACING.md,
+  },
+  refundIcon: {
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.22)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  refundTitle: { color: '#fff', fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, marginBottom: 2 },
+  refundSub: { color: 'rgba(255,255,255,0.92)', fontSize: FONT.sizes.xs, lineHeight: 16, fontWeight: FONT.weights.medium },
   membersHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.md },
   membersTitle: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },
   memberRow: {

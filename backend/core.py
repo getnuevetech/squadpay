@@ -315,6 +315,13 @@ async def _recompute_group(group: dict) -> dict:
         else:
             total_owed = p["total"] + p["shortfall_owed"]
             p["outstanding"] = round(max(0.0, total_owed - p["contributed"] - p["repaid"]), 2)
+        # Phase H7 — Overpayment tracking. When the group expands or a member
+        # paid more than their fair share (e.g. lead paid full bill before adding
+        # members, then equal-split halves their share), surface the difference
+        # so the user can request a refund.
+        owed_for_overpaid_calc = p["total"] + p["shortfall_owed"]
+        already_paid = p["contributed"] + p["repaid"]
+        p["overpaid"] = round(max(0.0, already_paid - owed_for_overpaid_calc), 2)
 
     total_contributed = round(sum(contrib_by_user.values()), 2)
     total_repaid = round(sum(repaid_by_user.values()), 2)

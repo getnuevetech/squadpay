@@ -83,6 +83,9 @@ export type PerUser = {
   repaid: number;
   shortfall_owed: number;
   outstanding: number;
+  /** Phase H7 — amount the member has overpaid (e.g. lead paid full bill, then
+   *  group expanded and equal-split halved their share). 0 if not overpaid. */
+  overpaid?: number;
 };
 
 export type Repayment = {
@@ -222,6 +225,20 @@ export const api = {
     request<{ user_id: string; balance: number; items: Array<{ id: string; amount: number; consumed_amount: number; remaining: number; kind: string; status: string; note: string | null; created_at: string; last_consumed_at: string | null }>; lead_auto_discount: any }>(
       `/users/${user_id}/credits`,
     ),
+  // Phase H7 — refund a member's overpayment when the group expanded
+  // (e.g. lead paid full bill, then equal-split halved their share).
+  refundOverpayment: (group_id: string, user_id: string, amount?: number) =>
+    request<{
+      ok: boolean;
+      refunded: number;
+      breakdown: Array<{ contribution_id: string; via: 'stripe' | 'wallet_credit' | 'stripe_failed'; amount: number; stripe_refund_id?: string; credit_id?: string }>;
+      remaining_overpaid: number;
+      group: Group;
+      info: string;
+    }>(`/groups/${group_id}/refund-overpayment`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id, amount }),
+    }),
   getUserGroups: (user_id: string) =>
     request<
       {

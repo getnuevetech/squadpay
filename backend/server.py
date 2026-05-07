@@ -59,6 +59,13 @@ attach_referrals_credits_routes(api_router, db)
 attach_misc_routes(api_router, db)
 attach_kyc_routes(api_router, db)
 
+# ---------- Refund / overpayment (Phase H7) ----------
+try:
+    from routes.refund_routes import make_refund_router
+    api_router.include_router(make_refund_router(db))
+except Exception as _e:
+    print("[startup] refund routes attach failed:", _e)
+
 
 # ---------- Admin dashboard ----------
 from admin_routes import build_admin_router  # noqa: E402

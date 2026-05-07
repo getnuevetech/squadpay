@@ -652,7 +652,7 @@ export default function PayScreen() {
                     testID="pay-verify-phone-input"
                     value={phone}
                     onChangeText={setPhone}
-                    placeholder="+1 555 123 4567"
+                    placeholder="555 123 4567"
                     placeholderTextColor={COLORS.disabledText}
                     keyboardType="phone-pad"
                     style={styles.input}

@@ -33,7 +33,7 @@ export function friendlySmsError(raw: string | undefined | null): {
   if (s.includes('21211') || s.includes('invalid') && s.includes('phone')) {
     return {
       title: 'Invalid phone number',
-      message: 'Please double-check the number and try again. Use the format +1 555 123 4567.',
+      message: 'Please double-check the number and try again. Use the format 555 123 4567.',
     };
   }
   if (s.includes('21610') || s.includes('blocked')) {

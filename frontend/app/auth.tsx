@@ -322,7 +322,7 @@ export default function AuthScreen() {
               testID="auth-phone-input"
               value={phone}
               onChangeText={setPhone}
-              placeholder="+1 555 123 4567"
+              placeholder="555 123 4567"
               placeholderTextColor={COLORS.disabledText}
               style={styles.input}
               keyboardType="phone-pad"

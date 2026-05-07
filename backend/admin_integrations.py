@@ -177,7 +177,7 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
         admin=Depends(attach_admin),
         _check=Depends(require_role("super_admin", "manager")),
     ):
-        msg = body.body or f"GroupPay Admin test SMS at {_now()}"
+        msg = body.body or f"SquadPay Admin test SMS at {_now()}"
         sent_real, info = await send_sms_via_twilio(db, body.to_number, msg)
         await write_audit(
             db,
@@ -260,7 +260,7 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
         admin=Depends(attach_admin),
         _check=Depends(require_role("super_admin", "manager")),
     ):
-        msg = body.body or f"KWIKPAY SignalWire test SMS at {_now()}"
+        msg = body.body or f"SquadPay SignalWire test SMS at {_now()}"
         from sms_providers import _send_via_signalwire
         rec = await get_integrations_doc(db)
         # Phase H5 — Test SMS UX: if the admin explicitly clicks "Test", we want

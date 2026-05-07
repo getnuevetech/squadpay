@@ -177,7 +177,7 @@ def attach_auth_routes(router: APIRouter, db):
         code, sent_real, info, mode = await generate_and_send_otp(
             db=db,
             phone=body.phone,
-            body_template="Your KWIKPAY verification code is {code}. Valid for 5 minutes.",
+            body_template="Your SquadPay verification code is {code}. Valid for 5 minutes.",
             purpose_label="send-otp",
         )
         await db.otp_codes.update_one(

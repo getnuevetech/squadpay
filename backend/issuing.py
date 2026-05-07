@@ -16,7 +16,7 @@ from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_BUSINESS_NAME = "KWIKPAY"
+DEFAULT_BUSINESS_NAME = "SquadPay"
 SETTINGS_KEY = "integrations"
 
 
@@ -40,7 +40,7 @@ async def get_issuing_settings(db) -> Dict[str, Any]:
     {
       "enabled": bool,
       "cardholder_id": str | None,
-      "cardholder_name": "KWIKPAY",
+      "cardholder_name": "SquadPay",
       "card_disable_mode": "auto" | "manual",
       "require_otp_for_card_reveal": bool,
       "reveal_ttl_seconds": int,
@@ -95,7 +95,7 @@ async def set_issuing_settings(db, patch: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def get_or_create_business_cardholder(db) -> str:
-    """Return existing KWIKPAY cardholder id or auto-create a new one.
+    """Return existing SquadPay cardholder id or auto-create a new one.
 
     For test mode, we attempt to reuse the most-recent active cardholder if
     the persisted ID is missing/invalid.
@@ -190,7 +190,7 @@ async def issue_group_card(db, group: Dict[str, Any]) -> Dict[str, Any]:
                 "group_id": group["id"],
                 "group_title": (group.get("title") or "")[:80],
                 "lead_id": str(group.get("lead_id") or ""),
-                "kwikpay_kind": "group_card",
+                "squadpay_kind": "group_card",
             },
             spending_controls=spending_controls,
         )

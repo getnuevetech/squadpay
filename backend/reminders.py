@@ -104,7 +104,7 @@ async def run_reminder_pass(db, force: bool = False) -> dict:
                     continue
                 phone = user.get("phone")
                 msg = (
-                    f"GroupPay: You still owe ${share:.2f} on \"{g.get('title') or 'a bill'}\""
+                    f"SquadPay: You still owe ${share:.2f} on \"{g.get('title') or 'a bill'}\""
                     f" (code {g.get('code')}). Pay your share to settle up."
                 )
                 sent = False

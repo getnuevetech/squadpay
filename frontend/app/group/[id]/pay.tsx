@@ -568,7 +568,7 @@ export default function PayScreen() {
                   <BreakRow label="Tax & tip share" value={myPer.tax_tip} />
                 )}
                 {(myPer.platform_fee || 0) > 0.001 && (
-                  <BreakRow label="Service fee" value={myPer.platform_fee} hint="Helps us keep KWIKPAY running" />
+                  <BreakRow label="Service fee" value={myPer.platform_fee} hint="Helps us keep SquadPay running" />
                 )}
                 {(myPer.shortfall_owed || 0) > 0.001 && (
                   <BreakRow label="Shortfall obligation" value={myPer.shortfall_owed} tone="warning" />

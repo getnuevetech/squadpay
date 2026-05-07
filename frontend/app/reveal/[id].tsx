@@ -201,7 +201,7 @@ export default function RevealPage() {
   if (!userId || !groupId) {
     return (
       <View style={styles.center}>
-        <Text style={styles.errorText}>Missing parameters. Please reopen this page from the KWIKPAY app.</Text>
+        <Text style={styles.errorText}>Missing parameters. Please reopen this page from the SquadPay app.</Text>
       </View>
     );
   }
@@ -301,7 +301,7 @@ export default function RevealPage() {
               <Text style={styles.timerText}>Hides in {secondsLeft}s · then close this tab</Text>
             </View>
             <Text style={styles.metaSmall}>
-              Stripe-secured iframe. PAN/CVC never touch the KWIKPAY server. To reveal again, close
+              Stripe-secured iframe. PAN/CVC never touch the SquadPay server. To reveal again, close
               this tab and tap "Reveal" again from the app.
             </Text>
           </View>

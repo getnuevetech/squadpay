@@ -127,7 +127,7 @@ def attach_contribute_routes(router: APIRouter, db):
                 line_items=[{
                     "price_data": {
                         "currency": "usd",
-                        "product_data": {"name": f"KWIKPAY contribution — {group.get('title') or 'Group Bill'}"},
+                        "product_data": {"name": f"SquadPay contribution — {group.get('title') or 'Group Bill'}"},
                         "unit_amount": int(round(cash_owed * 100)),
                     },
                     "quantity": 1,

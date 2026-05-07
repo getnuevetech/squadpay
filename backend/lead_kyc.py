@@ -3,7 +3,7 @@
 When `app_settings.integrations.issuing.require_lead_kyc` is ON:
   - Each lead gets their own Stripe Issuing cardholder (type="individual")
   - The cardholder is created lazily on first card issuance
-  - The cardholder's name + phone come from the lead's KWIKPAY user record
+  - The cardholder's name + phone come from the lead's SquadPay user record
   - In Stripe Test Mode, individual cardholders go straight to status="active"
   - In Live Mode, Stripe will return `requirements.disabled_reason="requirements.past_due"`
     and the operator must run KYC (Stripe Identity or hosted onboarding) before the
@@ -94,9 +94,9 @@ async def get_or_create_lead_cardholder(db, user: Dict[str, Any]) -> Dict[str, A
             # fall through and create a new one
 
     # 2. Create a new individual cardholder for this lead.
-    name = (user.get("name") or "KWIKPAY Lead").strip()[:60]
+    name = (user.get("name") or "SquadPay Lead").strip()[:60]
     phone = _format_e164_or_default(user.get("phone"))
-    email = user.get("email") or f"lead-{user_id}@kwikpay.example"
+    email = user.get("email") or f"lead-{user_id}@squadpay.example"
 
     # Minimal billing address (US default — required by Stripe Issuing).
     billing = {
@@ -121,8 +121,8 @@ async def get_or_create_lead_cardholder(db, user: Dict[str, Any]) -> Dict[str, A
                 "last_name": (" ".join(name.split()[1:]) or "User") if name else "User",
             },
             metadata={
-                "kwikpay_user_id": user_id,
-                "kwikpay_kind": "lead",
+                "squadpay_user_id": user_id,
+                "squadpay_kind": "lead",
             },
         )
     except Exception as e:

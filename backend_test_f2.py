@@ -12,7 +12,7 @@ Endpoints covered:
 
 Phase F1 regression touchpoints:
   - POST /api/groups/{id}/contribute (Path A credit-only) → ends up auto-issuing a
-    real ic_… card under the KWIKPAY cardholder.
+    real ic_… card under the SquadPay cardholder.
   - GET /api/contribute/status/{session_id}
   - POST /api/admin/groups/{id}/disable-card
 

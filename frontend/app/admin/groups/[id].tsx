@@ -150,7 +150,7 @@ export default function AdminGroupDetailPage() {
       {/* Phase F1: Stripe Issuing virtual card */}
       {(group as any).virtual_card?.stripe_card_id ? (
         <View style={styles.section}>
-          <View style={styles.sectionHeader}><Crown size={14} color={COLORS.text} /><Text style={styles.sectionTitle}>Virtual card · {(group as any).virtual_card.nickname || 'KWIKPAY'}</Text></View>
+          <View style={styles.sectionHeader}><Crown size={14} color={COLORS.text} /><Text style={styles.sectionTitle}>Virtual card · {(group as any).virtual_card.nickname || 'SquadPay'}</Text></View>
           <Text style={styles.metaSmall}>
             {(group as any).virtual_card.brand} •••• {(group as any).virtual_card.last4} · exp {String((group as any).virtual_card.exp_month).padStart(2,'0')}/{String((group as any).virtual_card.exp_year).slice(-2)} · status {(group as any).virtual_card.status}
           </Text>

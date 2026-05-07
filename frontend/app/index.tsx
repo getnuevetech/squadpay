@@ -80,7 +80,7 @@ export default function HomeScreen() {
           <View style={styles.welcomeIconWrap}>
             <Sparkles color={COLORS.primary} size={36} strokeWidth={2.2} />
           </View>
-          <Text style={styles.welcomeTitle}>GroupPay</Text>
+          <Text style={styles.welcomeTitle}>SquadPay</Text>
           <Text style={styles.welcomeSub}>
             Split restaurant bills instantly. No more chasing friends for money.
           </Text>

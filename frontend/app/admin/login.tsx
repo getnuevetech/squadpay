@@ -28,7 +28,7 @@ export default function AdminLogin() {
   return (
     <View style={styles.wrap}>
       <View style={styles.card}>
-        <View style={styles.brandRow}><Shield color={COLORS.primary} size={24} /><Text style={styles.brand}>GroupPay Admin</Text></View>
+        <View style={styles.brandRow}><Shield color={COLORS.primary} size={24} /><Text style={styles.brand}>SquadPay Admin</Text></View>
         <Text style={styles.subtitle}>Sign in with your admin email</Text>
         <Text style={styles.label}>Email</Text>
         <TextInput testID="admin-login-email" style={styles.input} value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" placeholder="[email protected]" placeholderTextColor={COLORS.disabledText} />

@@ -58,7 +58,7 @@ export default function AdminIntegrations() {
 
   // Issuing form (Phase F1+F2)
   const [issEnabled, setIssEnabled] = useState(true);
-  const [issName, setIssName] = useState('KWIKPAY');
+  const [issName, setIssName] = useState('SquadPay');
   const [issDisableMode, setIssDisableMode] = useState<'auto' | 'manual'>('auto');
   const [issCardholderId, setIssCardholderId] = useState<string | null>(null);
   const [issRequireOtp, setIssRequireOtp] = useState(true);
@@ -105,7 +105,7 @@ export default function AdminIntegrations() {
       try {
         const iss = await adminApi.getIssuingSettings();
         setIssEnabled(!!iss.enabled);
-        setIssName(iss.cardholder_name || 'KWIKPAY');
+        setIssName(iss.cardholder_name || 'SquadPay');
         setIssDisableMode(iss.card_disable_mode || 'auto');
         setIssCardholderId(iss.cardholder_id || null);
         setIssRequireOtp((iss as any).require_otp_for_card_reveal !== false);
@@ -272,7 +272,7 @@ export default function AdminIntegrations() {
     try {
       await adminApi.setIssuingSettings({
         enabled: issEnabled,
-        cardholder_name: issName.trim() || 'KWIKPAY',
+        cardholder_name: issName.trim() || 'SquadPay',
         card_disable_mode: issDisableMode,
         require_otp_for_card_reveal: issRequireOtp,
         reveal_ttl_seconds: parseInt(issRevealTtl, 10) || 60,
@@ -350,7 +350,7 @@ export default function AdminIntegrations() {
           <View style={styles.cardIcon}><CreditCard size={18} color="#0EA5E9" /></View>
           <View style={{ flex: 1 }}>
             <Text style={styles.cardTitle}>Stripe Issuing (Virtual cards)</Text>
-            <Text style={styles.cardSub}>Auto-issue a real Stripe-issued virtual card per fully-funded group. Cardholder = your business (KWIKPAY). Cards are auto-cancelled after group settles or admin can disable manually.</Text>
+            <Text style={styles.cardSub}>Auto-issue a real Stripe-issued virtual card per fully-funded group. Cardholder = your business (SquadPay). Cards are auto-cancelled after group settles or admin can disable manually.</Text>
           </View>
           <View style={{ flexDirection: 'row', gap: 6 }}>
             <StatusPill ok={issEnabled} label={issEnabled ? 'Enabled' : 'Disabled'} />
@@ -364,8 +364,8 @@ export default function AdminIntegrations() {
         </View>
 
         <Text style={styles.label}>Business name (used as card nickname prefix)</Text>
-        <TextInput style={styles.input} value={issName} onChangeText={setIssName} placeholder="KWIKPAY" placeholderTextColor={COLORS.disabledText} testID="admin-issuing-name" />
-        <Text style={styles.helper}>Each group's card will be named "{issName.trim() || 'KWIKPAY'} - {'{Group title}'}".</Text>
+        <TextInput style={styles.input} value={issName} onChangeText={setIssName} placeholder="SquadPay" placeholderTextColor={COLORS.disabledText} testID="admin-issuing-name" />
+        <Text style={styles.helper}>Each group's card will be named "{issName.trim() || 'SquadPay'} - {'{Group title}'}".</Text>
 
         <Text style={styles.label}>Card disable mode</Text>
         <View style={styles.formRow}>

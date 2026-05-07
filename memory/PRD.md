@@ -1,9 +1,9 @@
-# GroupPay — Product Requirements (MVP)
+# SquadPay — Product Requirements (MVP)
 
 ## Problem
 At group meals, one person pays upfront and others delay repayment; or
 everyone tries to split at checkout and it slows things down. Lead ends
-up chasing everyone. GroupPay solves this by letting the lead pay
+up chasing everyone. SquadPay solves this by letting the lead pay
 instantly while the system automatically tracks who owes what and
 collects repayments.
 

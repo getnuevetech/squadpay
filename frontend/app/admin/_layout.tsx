@@ -26,7 +26,7 @@ function AdminSidebar({ profile, onLogout }: { profile: AdminProfile | null; onL
     <View style={styles.sidebar}>
       <View style={styles.sidebarHeader}>
         <Shield size={20} color={COLORS.primary} />
-        <Text style={styles.sidebarTitle}>GroupPay Admin</Text>
+        <Text style={styles.sidebarTitle}>SquadPay Admin</Text>
       </View>
       <View style={{ flex: 1, gap: 4 }}>
         {NAV_ITEMS.filter((it) => !it.requireRole || (profile && (it.requireRole as readonly string[]).includes(profile.role))).map((it) => {

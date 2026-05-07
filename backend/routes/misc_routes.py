@@ -180,7 +180,7 @@ def attach_misc_routes(router: APIRouter, db):
 
     @router.get("/")
     async def root():
-        return {"message": "GroupPay API", "ok": True}
+        return {"message": "SquadPay API", "ok": True}
 
     @router.get("/app-features")
     async def get_app_features():
@@ -214,7 +214,7 @@ def attach_misc_routes(router: APIRouter, db):
             final += f"#{parsed.fragment}"
         safe_final = final.replace('"', "%22")
         html = f"""<!DOCTYPE html>
-<html><head><meta charset=\"utf-8\"><title>Returning to KWIKPAY…</title>
+<html><head><meta charset=\"utf-8\"><title>Returning to SquadPay…</title>
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
 <style>
   body{{font-family:-apple-system,system-ui,sans-serif;background:#0F172A;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;padding:20px}}
@@ -224,7 +224,7 @@ def attach_misc_routes(router: APIRouter, db):
 </style></head><body><div class=\"box\">
   <div class=\"spin\"></div>
   <h2>{'Cancelled' if cancel == '1' else 'Payment confirmed'}</h2>
-  <p>Returning you to the KWIKPAY app…</p>
+  <p>Returning you to the SquadPay app…</p>
   <p style=\"font-size:13px;color:#94A3B8\">If nothing happens, <a href=\"{safe_final}\">tap here</a>.</p>
 </div>
 <script>

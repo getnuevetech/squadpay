@@ -1,4 +1,4 @@
-"""KWIKPAY (formerly GroupPay) — FastAPI entrypoint.
+"""SquadPay (formerly SquadPay) — FastAPI entrypoint.
 
 Batch B refactor (post-Phase F2.2): the bulk of route handlers and helpers
 have been moved out of this file. This module is now a thin assembler:

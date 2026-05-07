@@ -60,7 +60,7 @@ def attach_reveal_routes(api_router: APIRouter, db):
         code, sent_real, info, mode = await generate_and_send_otp(
             db=db,
             phone=user["phone"],
-            body_template="Your KWIKPAY card reveal code is {code}. Valid for 5 minutes.",
+            body_template="Your SquadPay card reveal code is {code}. Valid for 5 minutes.",
             purpose_label="sensitive-send-otp",
         )
         await db.sensitive_otp_codes.update_one(

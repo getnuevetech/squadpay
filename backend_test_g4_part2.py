@@ -88,7 +88,7 @@ def main():
     fake_card = {
         "stripe_card_id": f"ic_FAKE_g4_{ts}",
         "cardholder_id": "ich_test",
-        "nickname": f"KWIKPAY - G4-Test",
+        "nickname": f"SquadPay - G4-Test",
         "status": "active",
         "last4": "4242",
         "brand": "Visa",

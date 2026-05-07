@@ -270,7 +270,7 @@ export const RevealCardModal: React.FC<Props> = ({ visible, onClose, groupId, us
           {Platform.OS === 'web' && (
             <View style={styles.subRow}>
               <Text style={styles.sub} numberOfLines={1}>
-                {cardNickname || 'KWIKPAY card'}{cardLast4 ? ` · •${cardLast4}` : ''}
+                {cardNickname || 'SquadPay card'}{cardLast4 ? ` · •${cardLast4}` : ''}
               </Text>
               <View style={styles.lockPill}>
                 <Lock size={11} color={COLORS.success} />

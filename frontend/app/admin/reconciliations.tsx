@@ -82,7 +82,7 @@ export default function AdminReconciliations() {
             <View style={{ flex: 1 }}>
               <Text style={styles.label}>Credit contributors on leftover</Text>
               <Text style={styles.helper}>
-                When ON — leftover funds are refunded to each contributor's KWIKPAY wallet, proportional to what they contributed.
+                When ON — leftover funds are refunded to each contributor's SquadPay wallet, proportional to what they contributed.
                 When OFF — leftover funds are moved to the Master Account.
               </Text>
             </View>

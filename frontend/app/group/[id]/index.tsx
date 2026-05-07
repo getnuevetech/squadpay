@@ -102,7 +102,7 @@ export default function GroupLobbyScreen() {
   const share = async () => {
     try {
       await Share.share({
-        message: `Join my bill "${group.title}" on GroupPay: ${joinUrl}`,
+        message: `Join my bill "${group.title}" on SquadPay: ${joinUrl}`,
       });
     } catch {}
   };
@@ -222,7 +222,7 @@ export default function GroupLobbyScreen() {
               <View style={styles.cardRow}>
                 <CreditCard size={20} color="rgba(255,255,255,0.9)" />
                 <View>
-                  <Text style={styles.cardBrand}>{group.virtual_card.nickname || 'KWIKPAY'}</Text>
+                  <Text style={styles.cardBrand}>{group.virtual_card.nickname || 'SquadPay'}</Text>
                   <Text style={styles.cardGroupName} numberOfLines={1}>{group.title}</Text>
                 </View>
               </View>

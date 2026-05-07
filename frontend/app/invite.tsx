@@ -52,7 +52,7 @@ export default function InviteScreen() {
   const referrerCredit = summary?.settings?.referrer_credit || 0;
   const refereeCredit = summary?.settings?.referee_credit || 0;
 
-  const shareMsg = `Join me on GroupPay — easiest way to split bills with friends. Use my code ${code} when you sign up${enabled && refereeCredit > 0 ? ` and get $${refereeCredit.toFixed(2)} welcome credit` : ''}.`;
+  const shareMsg = `Join me on SquadPay — easiest way to split bills with friends. Use my code ${code} when you sign up${enabled && refereeCredit > 0 ? ` and get $${refereeCredit.toFixed(2)} welcome credit` : ''}.`;
 
   const onCopy = async () => {
     if (!code) return;
@@ -118,7 +118,7 @@ export default function InviteScreen() {
           <View style={styles.heroIcon}>
             <Gift size={28} color="#fff" />
           </View>
-          <Text style={styles.heroTitle}>Invite friends to GroupPay</Text>
+          <Text style={styles.heroTitle}>Invite friends to SquadPay</Text>
           <Text style={styles.heroSub}>Share your code. The next bill splits itself.</Text>
         </View>
 

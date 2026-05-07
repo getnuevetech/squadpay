@@ -4,7 +4,7 @@ Tracks merchant spend vs. funds collected for each group's virtual card. When
 the group is settled (card is disabled / drained), any leftover funds are:
 
   • If `credit_contributors_enabled` is ON → credited back to each contributor's
-    KWIKPAY wallet, proportional to what they contributed.
+    SquadPay wallet, proportional to what they contributed.
   • Else → moved to the "Master Account" ledger (a virtual account owned by the
     business). The master account log is visible in the Admin Dashboard.
 
@@ -57,7 +57,7 @@ def _new_id(prefix: str) -> str:
 DEFAULT_RECONCILIATION = {
     "credit_contributors_enabled": False,
     "auto_disable_card": True,
-    "master_account_id": "MASTER_KWIKPAY",
+    "master_account_id": "MASTER_SQUADPAY",
     "updated_at": None,
     "updated_by": None,
 }
@@ -96,7 +96,7 @@ async def get_reconciliation_settings(db) -> dict:
     return rec.get("reconciliation") or DEFAULT_RECONCILIATION.copy()
 
 
-async def get_master_account_balance(db, master_id: str = "MASTER_KWIKPAY") -> float:
+async def get_master_account_balance(db, master_id: str = "MASTER_SQUADPAY") -> float:
     """Sum of all entries in master_account_ledger for the given master account."""
     cursor = db.master_account_ledger.find(
         {"master_account_id": master_id}, {"_id": 0, "amount": 1}
@@ -232,7 +232,7 @@ async def reconcile_group(
         rec["contributor_credits"] = contrib_credits
     else:
         rec["action"] = "moved_to_master"
-        master_id = settings.get("master_account_id") or "MASTER_KWIKPAY"
+        master_id = settings.get("master_account_id") or "MASTER_SQUADPAY"
         prev_balance = await get_master_account_balance(db, master_id)
         new_balance = round(prev_balance + leftover, 2)
         ledger_id = _new_id("mae_")
@@ -329,7 +329,7 @@ async def get_reconciliation_detail(db, rec_id: str) -> Optional[dict]:
 
 
 async def list_master_account(
-    db, *, master_id: str = "MASTER_KWIKPAY", limit: int = 50, skip: int = 0,
+    db, *, master_id: str = "MASTER_SQUADPAY", limit: int = 50, skip: int = 0,
 ) -> dict:
     flt = {"master_account_id": master_id}
     total = await db.master_account_ledger.count_documents(flt)

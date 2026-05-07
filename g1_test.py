@@ -69,8 +69,8 @@ def main():
     check("has key credit_contributors_enabled", "credit_contributors_enabled" in data,
           f"keys={list(data.keys())}")
     check("has key auto_disable_card", "auto_disable_card" in data, f"keys={list(data.keys())}")
-    check("master_account_id == MASTER_KWIKPAY",
-          data.get("master_account_id") == "MASTER_KWIKPAY",
+    check("master_account_id == MASTER_SQUADPAY",
+          data.get("master_account_id") == "MASTER_SQUADPAY",
           f"got {data.get('master_account_id')}")
     initial_credit_contrib = data.get("credit_contributors_enabled")
     initial_auto_disable = data.get("auto_disable_card")

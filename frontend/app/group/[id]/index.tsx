@@ -16,6 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import QRCode from 'react-native-qrcode-svg';
 import * as Clipboard from 'expo-clipboard';
 import { CheckCircle2, Copy, Share2, Crown, Users, CreditCard, Pencil, Eye, Receipt, Smartphone } from 'lucide-react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Button } from '../../../src/Button';
 import { api, BACKEND_URL, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
@@ -26,6 +27,7 @@ import { RevealCardModal } from '../../../src/RevealCardModal';
 import { toast } from '../../../src/components/Toast';
 import { Skeleton, SkeletonGroupRow } from '../../../src/components/Skeleton';
 import { PressableScale } from '../../../src/components/PressableScale';
+import { AvatarRing } from '../../../src/components/AvatarRing';
 
 export default function GroupLobbyScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -121,7 +123,12 @@ export default function GroupLobbyScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />}
         contentContainerStyle={{ padding: SPACING.md, paddingBottom: 120 }}
       >
-        <View style={[styles.headerCard, SHADOW.md]}>
+        <LinearGradient
+          colors={[COLORS.gradientStart, COLORS.gradientEnd]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={[styles.headerCard, SHADOW.lg]}
+        >
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
               <Text style={styles.title} testID="lobby-title">{group.title}</Text>
@@ -131,21 +138,29 @@ export default function GroupLobbyScreen() {
                   onPress={() => setEditTitleVisible(true)}
                   hitSlop={10}
                 >
-                  <Pencil size={16} color="rgba(255,255,255,0.7)" />
+                  <Pencil size={16} color="rgba(255,255,255,0.85)" />
                 </TouchableOpacity>
               )}
             </View>
             <StatusBadge status={group.derived_status} testID="lobby-status-badge" />
           </View>
+          <Text style={styles.totalLabel}>Bill total</Text>
           <Text style={styles.total}>${group.total.toFixed(2)}</Text>
-          <Text style={styles.modeLabel}>
-            {group.split_mode === 'fast'
-              ? 'Equal split'
-              : group.split_mode === 'smart'
-              ? 'Smart split'
-              : 'Itemized split'}
-          </Text>
-        </View>
+          <View style={styles.headerFooter}>
+            <View style={styles.headerChip}>
+              <Text style={styles.headerChipText}>
+                {group.split_mode === 'fast'
+                  ? 'Equal split'
+                  : group.split_mode === 'smart'
+                  ? 'Smart split'
+                  : 'Itemized split'}
+              </Text>
+            </View>
+            <Text style={styles.headerCount}>
+              {group.members.length} {group.members.length === 1 ? 'member' : 'members'}
+            </Text>
+          </View>
+        </LinearGradient>
 
         <View style={[styles.qrCard, SHADOW.sm]}>
           <Text style={styles.qrLabel}>Scan to join</Text>
@@ -358,9 +373,7 @@ export default function GroupLobbyScreen() {
           </View>
           {group.members.map((m) => (
             <View key={m.user_id} style={styles.memberRow} testID={`lobby-member-${m.user_id}`}>
-              <View style={styles.avatar}>
-                <Text style={styles.avatarText}>{(m.name || '?').slice(0, 1).toUpperCase()}</Text>
-              </View>
+              <AvatarRing name={m.name || '?'} seed={m.user_id} size={44} showLeadCrown={m.role === 'lead'} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.memberName}>
                   {m.name} {m.user_id === userId ? '(You)' : ''}
@@ -411,17 +424,48 @@ export default function GroupLobbyScreen() {
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.bg },
   headerCard: {
-    backgroundColor: COLORS.slate900,
     borderRadius: RADIUS.xl,
     padding: SPACING.lg,
     marginBottom: SPACING.md,
+    overflow: 'hidden',
   },
-  title: { color: '#fff', fontSize: FONT.sizes.lg, fontWeight: FONT.weights.semibold },
+  title: { color: '#fff', fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold },
+  totalLabel: {
+    color: 'rgba(255,255,255,0.75)',
+    fontSize: FONT.sizes.xs,
+    textTransform: 'uppercase',
+    letterSpacing: 1.4,
+    fontWeight: FONT.weights.semibold,
+    marginTop: SPACING.sm,
+  },
   total: { color: '#fff', fontSize: 48, fontWeight: FONT.weights.heavy, letterSpacing: -1, marginTop: 2 },
   modeLabel: {
     color: COLORS.slate400,
     fontSize: FONT.sizes.sm,
     marginTop: 4,
+    fontWeight: FONT.weights.medium,
+  },
+  headerFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: SPACING.md,
+  },
+  headerChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: RADIUS.pill,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+  },
+  headerChipText: {
+    color: '#fff',
+    fontSize: FONT.sizes.xs,
+    fontWeight: FONT.weights.bold,
+    letterSpacing: 0.3,
+  },
+  headerCount: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: FONT.sizes.sm,
     fontWeight: FONT.weights.medium,
   },
   qrCard: {

@@ -20,6 +20,8 @@ import { StatusBadge } from '../src/StatusBadge';
 import { PressableScale } from '../src/components/PressableScale';
 import { SkeletonGroupRow, Skeleton } from '../src/components/Skeleton';
 import { EmptyState } from '../src/components/EmptyState';
+import { GradientButton } from '../src/components/GradientButton';
+import { SquadPayHero } from '../src/illustrations/SquadPayHero';
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -72,18 +74,29 @@ export default function HomeScreen() {
     );
   }
 
-  // ───── Welcome (unauth) ─────
+  // ───── Welcome (unauth) — vibrant single-page intro with hero illustration ─────
   if (!user) {
     return (
       <SafeAreaView style={styles.container} testID="home-unauth">
-        <ScrollView contentContainerStyle={styles.welcomeContent}>
-          <View style={styles.welcomeIconWrap}>
-            <Sparkles color={COLORS.primary} size={36} strokeWidth={2.2} />
+        <ScrollView contentContainerStyle={styles.welcomeContent} showsVerticalScrollIndicator={false}>
+          {/* Hero illustration */}
+          <View style={styles.welcomeHeroWrap}>
+            <SquadPayHero size={280} />
           </View>
-          <Text style={styles.welcomeTitle}>SquadPay</Text>
+
+          <View style={styles.welcomeBrandRow}>
+            <View style={styles.welcomeIconWrapSmall}>
+              <Sparkles color={COLORS.primary} size={18} strokeWidth={2.4} />
+            </View>
+            <Text style={styles.welcomeBrand}>SquadPay</Text>
+          </View>
+
+          <Text style={styles.welcomeTitle}>Split bills,{'\n'}not friendships.</Text>
           <Text style={styles.welcomeSub}>
-            Split restaurant bills instantly. No more chasing friends for money.
+            Scan a receipt, share a link, and only pay for what you ordered. No more
+            chasing your squad for money.
           </Text>
+
           <View style={styles.welcomeFeatures}>
             {[
               { icon: <QrCode color={COLORS.primary} size={20} />, text: 'Share a QR or link to split' },
@@ -96,26 +109,24 @@ export default function HomeScreen() {
               </View>
             ))}
           </View>
-          {/* Dual CTA at the bottom — primary "Start" + secondary "Join" */}
-          <View style={styles.welcomeCtaRow}>
-            <PressableScale
+
+          {/* Gradient primary CTA + secondary "Join" link */}
+          <View style={styles.welcomeCtaCol}>
+            <GradientButton
               testID="home-get-started-btn"
+              title="Let's Get Started"
               onPress={() => router.push('/auth')}
-              style={[styles.welcomeStartBtn, SHADOW.primary]}
-            >
-              <View>
-                <Plus color="#fff" size={18} strokeWidth={2.6} />
-                <Text style={styles.welcomeStartText}>Start a bill</Text>
-              </View>
-            </PressableScale>
+              icon={<Plus color="#fff" size={18} strokeWidth={2.6} />}
+            />
             <PressableScale
               testID="home-join-btn-unauth"
               onPress={() => router.push('/auth?intent=join')}
-              style={styles.welcomeJoinBtn}
+              style={styles.welcomeJoinLinkBtn}
+              scaleTo={0.97}
             >
-              <View>
-                <QrCode color={COLORS.primary} size={18} />
-                <Text style={styles.welcomeJoinText}>Join a bill</Text>
+              <View style={styles.welcomeJoinLinkRow}>
+                <Text style={styles.welcomeJoinLinkText}>Already have a code? </Text>
+                <Text style={styles.welcomeJoinLinkAction}>Join a bill</Text>
               </View>
             </PressableScale>
           </View>
@@ -293,8 +304,35 @@ const styles = StyleSheet.create({
   // Welcome (unauth)
   welcomeContent: {
     padding: SPACING.lg,
-    paddingTop: SPACING.xl,
+    paddingTop: SPACING.lg,
+    paddingBottom: SPACING.xxl,
     flexGrow: 1,
+  },
+  welcomeHeroWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: SPACING.sm,
+    marginBottom: SPACING.md,
+  },
+  welcomeBrandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: SPACING.sm,
+  },
+  welcomeIconWrapSmall: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: COLORS.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  welcomeBrand: {
+    fontSize: FONT.sizes.lg,
+    fontWeight: FONT.weights.bold,
+    color: COLORS.primary,
+    letterSpacing: 0.2,
   },
   welcomeIconWrap: {
     width: 72,
@@ -309,7 +347,8 @@ const styles = StyleSheet.create({
     fontSize: FONT.sizes.huge,
     fontWeight: FONT.weights.heavy,
     color: COLORS.text,
-    letterSpacing: -1,
+    letterSpacing: -1.2,
+    lineHeight: 46,
   },
   welcomeSub: {
     marginTop: SPACING.sm,
@@ -317,7 +356,7 @@ const styles = StyleSheet.create({
     color: COLORS.subtext,
     lineHeight: 24,
   },
-  welcomeFeatures: { marginTop: SPACING.xl, gap: SPACING.md, flex: 1 },
+  welcomeFeatures: { marginTop: SPACING.lg, gap: SPACING.sm },
   welcomeFeatureRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -338,32 +377,33 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   welcomeFeatureText: { fontSize: FONT.sizes.md, color: COLORS.text, flex: 1, fontWeight: FONT.weights.medium },
-  welcomeCtaRow: {
-    flexDirection: 'row',
-    gap: SPACING.md,
+  welcomeCtaCol: {
     marginTop: SPACING.xl,
+    gap: SPACING.md,
   },
-  welcomeStartBtn: {
-    flex: 1.4,
-    backgroundColor: COLORS.primary,
-    borderRadius: RADIUS.lg,
-    paddingVertical: 18,
-    paddingHorizontal: SPACING.lg,
+  welcomeJoinLinkBtn: {
     alignItems: 'center',
-    justifyContent: 'center',
+    paddingVertical: SPACING.sm,
   },
+  welcomeJoinLinkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  welcomeJoinLinkText: {
+    fontSize: FONT.sizes.sm,
+    color: COLORS.subtext,
+  },
+  welcomeJoinLinkAction: {
+    fontSize: FONT.sizes.sm,
+    color: COLORS.primary,
+    fontWeight: FONT.weights.bold,
+    textDecorationLine: 'underline',
+  },
+  // Legacy (kept for back-compat in case of partial rollback) — unused below.
+  welcomeCtaRow: { flexDirection: 'row', gap: SPACING.md, marginTop: SPACING.xl },
+  welcomeStartBtn: { flex: 1.4, backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingVertical: 18, paddingHorizontal: SPACING.lg, alignItems: 'center', justifyContent: 'center' },
   welcomeStartText: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: FONT.sizes.md, marginTop: 6, textAlign: 'center' },
-  welcomeJoinBtn: {
-    flex: 1,
-    backgroundColor: COLORS.surface,
-    borderRadius: RADIUS.lg,
-    paddingVertical: 18,
-    paddingHorizontal: SPACING.lg,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1.5,
-    borderColor: COLORS.primary,
-  },
+  welcomeJoinBtn: { flex: 1, backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, paddingVertical: 18, paddingHorizontal: SPACING.lg, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: COLORS.primary },
   welcomeJoinText: { color: COLORS.primary, fontWeight: FONT.weights.bold, fontSize: FONT.sizes.md, marginTop: 6, textAlign: 'center' },
 
   // Auth header

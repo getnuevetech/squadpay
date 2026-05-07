@@ -87,7 +87,7 @@ export default function HomeScreen() {
 
           <View style={styles.welcomeBrandRow}>
             <View style={styles.welcomeIconWrapSmall}>
-              <Sparkles color={COLORS.primary} size={16} strokeWidth={2.4} />
+              <Sparkles color={COLORS.primary} size={24} strokeWidth={2.4} />
             </View>
             <Text style={styles.welcomeBrand}>SquadPay</Text>
           </View>
@@ -336,23 +336,23 @@ const styles = StyleSheet.create({
   welcomeBrandRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    marginBottom: 4,
+    gap: 10,
+    marginTop: SPACING.md,
+    marginBottom: 6,
   },
   welcomeIconWrapSmall: {
-    width: 26,
-    height: 26,
-    borderRadius: 8,
+    width: 44,
+    height: 44,
+    borderRadius: 14,
     backgroundColor: COLORS.primaryLight,
     alignItems: 'center',
     justifyContent: 'center',
   },
   welcomeBrand: {
-    fontSize: FONT.sizes.sm,
-    fontWeight: FONT.weights.bold,
+    fontSize: 28,
+    fontWeight: FONT.weights.heavy,
     color: COLORS.primary,
-    letterSpacing: 0.3,
-    textTransform: 'uppercase',
+    letterSpacing: -0.5,
   },
   welcomeIconWrap: {
     width: 72,

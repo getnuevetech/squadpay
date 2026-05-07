@@ -170,12 +170,16 @@ export default function GroupLobbyScreen() {
           <Text style={styles.codeText} testID="lobby-code">Code: {group.code}</Text>
           <View style={styles.shareRow}>
             <PressableScale testID="lobby-copy-btn" onPress={copy} style={styles.shareBtn}>
-              <Copy size={16} color={COLORS.primary} />
-              <Text style={styles.shareBtnText}>Copy link</Text>
+              <View style={styles.shareBtnInner}>
+                <Copy size={16} color={COLORS.primary} />
+                <Text style={styles.shareBtnText} numberOfLines={1}>Copy link</Text>
+              </View>
             </PressableScale>
             <PressableScale testID="lobby-share-btn" onPress={share} style={styles.shareBtn}>
-              <Share2 size={16} color={COLORS.primary} />
-              <Text style={styles.shareBtnText}>Share</Text>
+              <View style={styles.shareBtnInner}>
+                <Share2 size={16} color={COLORS.primary} />
+                <Text style={styles.shareBtnText} numberOfLines={1}>Share</Text>
+              </View>
             </PressableScale>
           </View>
         </View>
@@ -499,14 +503,12 @@ const styles = StyleSheet.create({
   },
   shareRow: { flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.md },
   shareBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
     paddingHorizontal: SPACING.md,
     paddingVertical: 10,
     borderRadius: RADIUS.pill,
     backgroundColor: COLORS.primaryLight,
   },
+  shareBtnInner: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   shareBtnText: { color: COLORS.primary, fontWeight: FONT.weights.semibold, fontSize: FONT.sizes.sm },
   cardWrap: { marginBottom: SPACING.md },
   cardLabel: {

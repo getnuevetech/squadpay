@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Receipt, Plus, Link2, QrCode, ChevronRight, Sparkles, LogOut, Gift, Wallet } from 'lucide-react-native';
+import { Receipt, Plus, Link2, QrCode, ChevronRight, Sparkles, LogOut, Gift, Wallet, ShieldAlert } from 'lucide-react-native';
 import { Button } from '../src/Button';
 import { api } from '../src/api';
 import { clearUser, loadUser, refreshUser } from '../src/session';
@@ -140,7 +140,16 @@ export default function HomeScreen() {
             <Text style={styles.hello} testID="home-hello">Hello,</Text>
             <Text style={styles.name}>{user.name}</Text>
             {!user.verified ? (
-              <Text style={styles.verifyHint}>Verify phone to pay</Text>
+              <TouchableOpacity
+                onPress={() => router.push(`/auth?mode=verify&user_id=${user.id}`)}
+                style={styles.verifyCta}
+                testID="home-verify-cta"
+                activeOpacity={0.85}
+              >
+                <ShieldAlert size={14} color={COLORS.warning} />
+                <Text style={styles.verifyCtaText}>Verify phone to pay</Text>
+                <ChevronRight size={14} color={COLORS.warning} />
+              </TouchableOpacity>
             ) : null}
           </View>
           <TouchableOpacity
@@ -367,6 +376,26 @@ const styles = StyleSheet.create({
   hello: { color: COLORS.subtext, fontSize: FONT.sizes.sm },
   name: { color: COLORS.text, fontSize: FONT.sizes.xxl, fontWeight: FONT.weights.bold },
   verifyHint: { color: COLORS.warning, fontSize: FONT.sizes.xs, marginTop: 2, fontWeight: FONT.weights.semibold },
+  // Phase H6.3 — verify-phone CTA pill on home (replaces the static hint text).
+  verifyCta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    alignSelf: 'flex-start',
+    marginTop: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: COLORS.warningLight,
+    borderRadius: RADIUS.pill,
+    borderWidth: 1,
+    borderColor: COLORS.warning,
+  },
+  verifyCtaText: {
+    color: COLORS.warning,
+    fontSize: FONT.sizes.xs,
+    fontWeight: FONT.weights.bold,
+    letterSpacing: 0.2,
+  },
   iconBtn: {
     width: 40,
     height: 40,

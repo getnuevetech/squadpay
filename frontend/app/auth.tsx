@@ -1,4 +1,4 @@
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useState, useEffect } from 'react';
 import {
   Alert,
@@ -11,26 +11,46 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { ArrowLeft } from 'lucide-react-native';
 import { Button } from '../src/Button';
 import { api } from '../src/api';
-import { saveUser } from '../src/session';
+import { saveUser, loadUser } from '../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../src/theme';
 
 type Step = 'name' | 'phone' | 'otp';
 
 export default function AuthScreen() {
   const router = useRouter();
-  const [step, setStep] = useState<Step>('name');
+  // Phase H6.3 — when redirected from /home with `?mode=verify&user_id=...` we
+  // skip the name step entirely and go straight to phone capture for the
+  // existing (unverified) account.
+  const params = useLocalSearchParams<{ mode?: string; user_id?: string }>();
+  const verifyMode = params.mode === 'verify' && !!params.user_id;
+  const [step, setStep] = useState<Step>(verifyMode ? 'phone' : 'name');
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [otp, setOtp] = useState('');
-  const [userId, setUserId] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(verifyMode ? (params.user_id as string) : null);
   const [loading, setLoading] = useState(false);
   // C1: optional referral code at signup
   const [showRefCode, setShowRefCode] = useState(false);
   const [refCode, setRefCode] = useState('');
   const [refValidated, setRefValidated] = useState<{ name: string; bonus: number } | null>(null);
   const [refError, setRefError] = useState<string | null>(null);
+
+  // Phase H6.3 — when starting in verify mode, prefill the existing user's name
+  // so it can be shown above the phone input ("Verifying for: Alex").
+  useEffect(() => {
+    if (verifyMode && params.user_id) {
+      (async () => {
+        try {
+          const u = await loadUser();
+          if (u && u.id === params.user_id) setName(u.name);
+        } catch {}
+      })();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [verifyMode, params.user_id]);
   // Polish: resend timer for OTP
   const [resendIn, setResendIn] = useState(0);
   const [resending, setResending] = useState(false);
@@ -200,6 +220,26 @@ export default function AuthScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       style={{ flex: 1, backgroundColor: COLORS.bg }}
     >
+      {/* Phase H6.3 — back button. Visible on every step:
+            • step=name  → routes to / (home/welcome)
+            • step=phone → if verifyMode, routes to /; else step=name
+            • step=otp   → step=phone (re-enter number) */}
+      <View style={styles.topBar}>
+        <TouchableOpacity
+          onPress={() => {
+            if (step === 'otp') { setOtp(''); setStep('phone'); return; }
+            if (step === 'phone' && !verifyMode) { setStep('name'); return; }
+            router.replace('/');
+          }}
+          style={styles.backBtn}
+          hitSlop={12}
+          testID="auth-back-btn"
+          activeOpacity={0.7}
+        >
+          <ArrowLeft size={20} color={COLORS.text} />
+          <Text style={styles.backText}>Home</Text>
+        </TouchableOpacity>
+      </View>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {step === 'name' && (
           <View testID="auth-step-name">
@@ -342,7 +382,26 @@ export default function AuthScreen() {
 }
 
 const styles = StyleSheet.create({
-  content: { padding: SPACING.lg, paddingTop: SPACING.xl },
+  topBar: {
+    paddingTop: Platform.OS === 'ios' ? 56 : 16,
+    paddingHorizontal: SPACING.lg,
+    paddingBottom: SPACING.sm,
+  },
+  backBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: RADIUS.md,
+  },
+  backText: {
+    fontSize: FONT.sizes.md,
+    color: COLORS.text,
+    fontWeight: FONT.weights.semibold,
+  },
+  content: { padding: SPACING.lg, paddingTop: SPACING.md },
   title: {
     fontSize: FONT.sizes.xxl,
     fontWeight: FONT.weights.bold,

@@ -170,27 +170,32 @@ def attach_auth_routes(router: APIRouter, db):
         user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
         if not user:
             raise HTTPException(404, "User not found")
-        code = "123456"
+        # Phase H6.2 — mode-aware OTP. In LIVE mode the code is cryptographically
+        # random and never returned in the response. In MOCK mode the code is
+        # "123456" and surfaced in `message` so demo/dev can sign in without SMS.
+        from otp_helpers import generate_and_send_otp, build_otp_response
+        code, sent_real, info, mode = await generate_and_send_otp(
+            db=db,
+            phone=body.phone,
+            body_template="Your KWIKPAY verification code is {code}. Valid for 5 minutes.",
+            purpose_label="send-otp",
+        )
         await db.otp_codes.update_one(
             {"user_id": body.user_id},
-            {"$set": {"phone": body.phone, "code": code, "created_at": now_iso()}},
+            {"$set": {"phone": body.phone, "code": code, "created_at": now_iso(), "mode": mode}},
             upsert=True,
         )
-        sent_real = False
-        info = "Twilio disabled — mock OTP"
-        try:
-            from integrations import send_sms_via_twilio
-            sent_real, info = await send_sms_via_twilio(
-                db, body.phone, f"Your GroupPay verification code is {code}. Valid for 5 minutes."
+        if mode == "live" and not sent_real:
+            # Code was generated but the SMS provider failed. Don't expose code.
+            raise HTTPException(
+                502,
+                detail=f"Could not send verification SMS. {info}",
             )
-        except Exception as e:
-            logger.warning(f"[send-otp] twilio attempt failed: {e}")
-        return {
-            "ok": True,
-            "message": f"OTP sent. Use {code}" if not sent_real else "OTP SMS sent",
-            "mocked": not sent_real,
-            "twilio_info": info,
-        }
+        return build_otp_response(
+            code, sent_real, info, mode,
+            label_for_user="OTP",
+            success_msg_live="OTP sent via SMS. Check your phone.",
+        )
 
     # Phase H2 — phone-lookup endpoint. Used by the auth flow BEFORE verify-otp
     # to detect the "phone already registered to another account" case so the

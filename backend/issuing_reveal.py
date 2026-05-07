@@ -55,8 +55,14 @@ def attach_reveal_routes(api_router: APIRouter, db):
             raise HTTPException(403, "Phone verification required")
         if user.get("is_blocked"):
             raise HTTPException(403, "Account blocked")
-        # Mock OTP 123456 (consistent with /auth/send-otp). If Twilio enabled, send real SMS.
-        code = "123456"
+        # Phase H6.2 — mode-aware OTP (mock=123456, live=random + real SMS only).
+        from otp_helpers import generate_and_send_otp, build_otp_response
+        code, sent_real, info, mode = await generate_and_send_otp(
+            db=db,
+            phone=user["phone"],
+            body_template="Your KWIKPAY card reveal code is {code}. Valid for 5 minutes.",
+            purpose_label="sensitive-send-otp",
+        )
         await db.sensitive_otp_codes.update_one(
             {"user_id": body.user_id},
             {"$set": {
@@ -64,24 +70,20 @@ def attach_reveal_routes(api_router: APIRouter, db):
                 "code": code,
                 "purpose": "card_reveal",
                 "created_at": _now(),
+                "mode": mode,
             }},
             upsert=True,
         )
-        sent_real = False
-        info = "Twilio disabled — mock OTP"
-        try:
-            from integrations import send_sms_via_twilio
-            sent_real, info = await send_sms_via_twilio(
-                db, user["phone"], f"Your KWIKPAY card reveal code is {code}. Valid for 5 minutes."
+        if mode == "live" and not sent_real:
+            raise HTTPException(
+                502,
+                detail=f"Could not send reveal SMS. {info}",
             )
-        except Exception as e:
-            logger.warning(f"[sensitive-send-otp] twilio failed: {e}")
-        return {
-            "ok": True,
-            "mocked": not sent_real,
-            "message": f"Reveal code sent. Use {code}" if not sent_real else "Reveal code SMS sent",
-            "twilio_info": info,
-        }
+        return build_otp_response(
+            code, sent_real, info, mode,
+            label_for_user="Reveal code",
+            success_msg_live="Reveal code SMS sent. Check your phone.",
+        )
 
     @api_router.post("/auth/sensitive/verify-otp")
     async def sensitive_verify_otp(body: SensitiveOtpVerifyIn):

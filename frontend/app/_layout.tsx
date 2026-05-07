@@ -39,7 +39,7 @@ export default function RootLayout() {
           }}
         >
           <Stack.Screen name="index" options={{ title: 'Home', headerShown: false }} />
-          <Stack.Screen name="auth" options={{ title: 'Sign in', headerRight: undefined }} />
+          <Stack.Screen name="auth" options={{ title: 'Sign in', headerShown: false }} />
           <Stack.Screen name="admin" options={{ headerShown: false }} />
           <Stack.Screen name="create" options={{ title: 'Start a Bill' }} />
           <Stack.Screen name="group/[id]/index" options={{ title: 'Group' }} />

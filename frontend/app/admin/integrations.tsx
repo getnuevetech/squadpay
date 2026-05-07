@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { View, Text, ScrollView, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Switch } from 'react-native';
+import { View, Text, ScrollView, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Switch, Platform } from 'react-native';
 import { CreditCard, MessageSquare, Bell, Save, Send, Play, CheckCircle2, XCircle, AlertCircle, Radio } from 'lucide-react-native';
 import { adminApi, IntegrationsView } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
@@ -213,31 +213,30 @@ export default function AdminIntegrations() {
     finally { setSaving(null); }
   };
 
-  // Phase H6 — SMS Mode (mock | live)
+  // Phase H6 — SMS Mode (mock | live). Direct toggle, no confirmation modal —
+  // the toast/alert at the end already tells the admin which mode was applied,
+  // and the Test SMS button gives a live trial without needing global mode flip.
   const saveSmsMode = async (mode: 'mock' | 'live') => {
     if (mode === smsMode) return;
-    if (mode === 'live') {
-      const proceed = await new Promise<boolean>((resolve) => {
-        Alert.alert(
-          'Switch to Live SMS?',
-          'All OTP and reminder SMS will be sent via the configured provider — real charges may apply. You can switch back to Mock anytime.',
-          [
-            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-            { text: 'Go Live', style: 'destructive', onPress: () => resolve(true) },
-          ],
-          { cancelable: false },
-        );
-      });
-      if (!proceed) return;
-    }
+    if (saving === 'smsMode') return;
+    // eslint-disable-next-line no-console
+    console.log('[admin] saveSmsMode →', mode);
     setSaving('smsMode');
     try {
       const v = await adminApi.setSmsMode(mode);
       setView(v);
       setSmsMode(mode);
-      Alert.alert('SMS Mode', mode === 'live' ? '📡 Live SMS — provider active' : '🧪 Mock SMS — no real SMS will be sent');
-    } catch (e: any) { Alert.alert('Error', e?.message || 'Failed'); }
-    finally { setSaving(null); }
+      Alert.alert(
+        'SMS Mode',
+        mode === 'live'
+          ? '📡 Live SMS — provider active. Real SMS will be sent for OTPs and reminders.'
+          : '🧪 Mock SMS — no real SMS will be sent. Use OTP 123456.',
+      );
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Failed to switch mode');
+    } finally {
+      setSaving(null);
+    }
   };
 
   const saveReminders = async () => {

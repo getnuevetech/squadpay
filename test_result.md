@@ -552,6 +552,101 @@ backend:
               M) RBAC: support-role admin → grant/revoke/set-discount/set-lead-discount all return 403.
               N) Idempotency on revoke: revoking already-revoked row → 200 returns row, no double-audit.
 
+  - task: "Phase H6 — SMS Mock/Live Mode + OTP refactor"
+    implemented: true
+    working: true
+    file: "backend/sms_providers.py, backend/otp_helpers.py, backend/admin_integrations.py, backend/routes/auth_routes.py, backend/issuing_reveal.py, backend/integrations.py, backend/reminders.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Phase H6 (SMS Mock/Live Mode + OTP refactor) end-to-end tested via
+            /app/backend_test.py against live preview backend. 37/37 assertions PASS,
+            no 5xx unhandled exceptions, no code leaks in any HTTP response.
+
+            Coverage by scenario (all PASS):
+
+            1) SMS Mode toggle POST /api/admin/integrations/sms-mode
+               - mode=mock → GET /admin/integrations → sms_routing.mode == "mock" ✅
+               - mode=live → reflects "live" ✅
+               - invalid mode "live2" → 422 ✅
+               - unauthenticated → 401 ✅
+               - manager (non-super_admin) → 403 ✅
+
+            2) Phone normalization (sms_providers._normalize_phone) — all 7 cases pass:
+               "8325933512"→"+18325933512", "18325933512"→"+18325933512",
+               "+447712345678"→"+447712345678", "(832) 593-3512"→"+18325933512",
+               ""→"", None→"", "  +1 (832) 593-3512  "→"+18325933512". ✅
+
+            3) /api/auth/send-otp mode-aware:
+               - Mock mode: response {mocked:true, live:false, message contains "Use 123456",
+                 info present}; DB otp_codes row has code="123456" + mode="mock". ✅
+               - Live mode + SignalWire enabled (recipient is unverified caller-id so
+                 SignalWire returns 422 — expected per review): endpoint returns 502
+                 "Could not send verification SMS"; response detail does NOT leak code.
+                 DB row has 6-digit random code (e.g. "703017") ≠ "123456" + mode="live". ✅
+               - Live mode + provider DISABLED (force fail): 502 "Could not send verification
+                 SMS. signalwire=SignalWire not enabled" — code never exposed. ✅
+
+            4) /api/auth/verify-otp mode safety:
+               - Live mode + code "123456" → 400 "Invalid OTP code" (backdoor closed). ✅
+               - Live mode + actual stored DB code → 200 with verified=true. ✅
+               - Mock mode + "123456" → 200 verified (consistent dev/demo flow). ✅
+
+            5) /api/auth/sensitive/send-otp (card-reveal OTP — same helper):
+               - Mock: code="123456" stored, message contains "123456", mocked=true. ✅
+               - Live: DB has 6-digit code != "123456" + mode="live", message no leak. ✅
+               - Live + verify-otp with "123456" → 400 (sensitive backdoor closed). ✅
+
+            6) Admin Test SMS endpoints bypass `enabled=false`:
+               - SignalWire toggled to enabled=false in DB; POST
+                 /admin/integrations/signalwire/test still attempted the network call —
+                 returned signalwire 422 (real Stripe-style validation_error). info does
+                 NOT contain "not enabled". ✅
+               - Twilio test endpoint also delegates and reaches the multi-provider
+                 chain, info reflects actual provider attempts (not "twilio disabled"). ✅
+
+            7) SignalWire save UX guard:
+               - Save with all 4 fields populated + enabled=false + NO new
+                 project_id/api_token → endpoint auto-flipped enabled=true. ✅
+               - Save with enabled=false AND new project_id → respects explicit toggle
+                 (stayed disabled). ✅
+               - REAL signalwire creds (project_id_enc, api_token_enc) were backed up
+                 BEFORE this scenario and restored AFTER (project_id ends ...bdc5,
+                 api_token ends ...2926 — confirmed unchanged post-test).
+
+            8) /api/auth/lookup-phone regression — exists=true for verified user with
+               correct name; exists=false for unknown phone. ✅
+
+            9) Reminders cron path:
+               - reminders.py imports without error. ✅
+               - reminders.py calls send_sms_via_twilio (legacy alias). Inspected
+                 integrations.send_sms_via_twilio — it now delegates to
+                 sms_providers.send_sms (mode-aware multi-provider chain). Therefore the
+                 reminder path IS mode-aware (mode=mock → [sms-mock-mode] log line; mode=live
+                 → real SignalWire/Twilio attempt with auto-failover). Verified live in
+                 backend logs:
+                 "[sms-mock-mode] -> +18918033077: GroupPay: You still owe $5.00 ..." ✅
+
+            FINAL STATE LEFT:
+              - sms_routing.mode = "mock" (per review request — no SMS credits burned).
+              - signalwire creds intact (verified ends ...bdc5 / ...2926).
+              - signalwire.enabled = true.
+              - twilio.enabled = false (unchanged from initial state).
+
+            Backend log notes (informational, not blockers):
+              - passlib bcrypt cosmetic warning (no functional impact).
+              - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes; ≥32 recommended).
+              - SignalWire 422 "integration_test_verified_caller_required" expected for
+                non-verified test recipients in trial campaign.
+
+            Test suite saved at /app/backend_test.py — idempotent (uses TS-based names +
+            fresh phones each run). All Phase H6 acceptance criteria pass. No backend
+            action required.
+
   - task: "Phase G5 — Admin Analytics dashboard (GET /api/admin/analytics)"
     implemented: true
     working: true
@@ -1212,13 +1307,57 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Phase H2 — Phone-already-registered confirmation + safe placeholder merge"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
+    - agent: "testing"
+      message: |
+        PHASE H6 — SMS Mock/Live Mode + OTP refactor regression test COMPLETE.
+        37/37 backend assertions PASS. Ran via /app/backend_test.py against live preview.
+
+        Coverage summary (all PASS):
+        ✅ /admin/integrations/sms-mode toggle: mock/live, 422 on invalid, 401 unauth, 403 manager.
+        ✅ Phone normalization (sms_providers._normalize_phone): all 7 cases (US 10-digit,
+           US 11-digit, +44 international, formatted, empty, None, whitespace).
+        ✅ /auth/send-otp mock mode: mocked=true, message contains "Use 123456",
+           DB has code="123456" + mode="mock".
+        ✅ /auth/send-otp live mode: returns 502 "Could not send verification SMS" when
+           SignalWire 4xx (unverified caller-id) — NO code leak in detail. DB has 6-digit
+           random code != "123456" + mode="live".
+        ✅ /auth/send-otp live + provider disabled: 502 with helpful detail, no code leak.
+        ✅ /auth/verify-otp mode safety: in live mode "123456" → 400 (backdoor closed),
+           real DB code → 200 verified. Mock mode "123456" → 200 verified.
+        ✅ /auth/sensitive/send-otp (card-reveal OTP): same mock/live behavior; live mode
+           verify with "123456" → 400 (sensitive backdoor also closed).
+        ✅ Admin /signalwire/test endpoint bypasses enabled=false: forces enabled=true on
+           a temporary copy and attempts the network call (hit real SignalWire 422). Twilio
+           test endpoint also delegates correctly.
+        ✅ SignalWire save UX guard: enabled=false + all 4 fields set + no new creds →
+           auto-flip to enabled=true. enabled=false + new project_id → respects explicit
+           toggle (stays disabled).
+        ✅ /auth/lookup-phone unchanged — exists/non-exists work.
+        ✅ Reminders cron: imports OK; reminders.py calls send_sms_via_twilio which now
+           delegates to sms_providers.send_sms — so the reminder path IS mode-aware.
+           Verified [sms-mock-mode] log fires when mode=mock during reminder dispatch.
+
+        FINAL STATE LEFT (per review request):
+          • sms_routing.mode = "mock" (no SMS credits being burned).
+          • signalwire creds preserved & restored (project_id ends ...bdc5,
+            api_token ends ...2926 — same as initial state).
+          • signalwire.enabled = true.
+          • twilio.enabled = false (unchanged).
+
+        Note: I observed mode=live had been flipped on between my cleanup and final state
+        check — may have been the main agent or another concurrent tester. I force-set
+        it back to mock at the end. Please leave it in mock mode for downstream QA.
+
+        No 5xx errors. No code leaks. No regressions on lookup-phone. All H6 acceptance
+        criteria from the review request are met.
+
+
     - agent: "main"
       message: |
         PHASE H2 — Critical bug fix: phone-already-registered merge.

@@ -16,6 +16,7 @@ import { Button } from '../src/Button';
 import { api } from '../src/api';
 import { saveUser, loadUser } from '../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../src/theme';
+import { friendlySmsError } from '../src/sms_errors';
 
 type Step = 'name' | 'phone' | 'otp';
 
@@ -72,7 +73,8 @@ export default function AuthScreen() {
       setOtpMocked(!!r.mocked);
       startResendCooldown();
     } catch (e: any) {
-      Alert.alert('Could not resend', e?.message || 'Try again');
+      const f = friendlySmsError(e?.message);
+      Alert.alert(f.title, f.message);
     } finally {
       setResending(false);
     }
@@ -131,7 +133,8 @@ export default function AuthScreen() {
       setStep('otp');
       startResendCooldown();
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to send code');
+      const f = friendlySmsError(e?.message);
+      Alert.alert(f.title, f.message);
     } finally {
       setLoading(false);
     }

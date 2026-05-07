@@ -18,6 +18,7 @@ import { api, Group } from '../../../src/api';
 import { refreshUser, saveUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SHADOW, SPACING } from '../../../src/theme';
 import { toast } from '../../../src/components/Toast';
+import { friendlySmsError } from '../../../src/sms_errors';
 
 type Kind = 'lead' | 'repay' | 'contribute';
 type VerifyStep = 'idle' | 'phone' | 'otp';
@@ -319,13 +320,8 @@ export default function PayScreen() {
         toast.success('Code sent to your phone');
       }
     } catch (e: any) {
-      // Live-mode SMS failure surfaces as 502 with detail "Could not send..."
-      const msg = e?.message || 'Failed to send code';
-      if (msg.toLowerCase().includes('could not send')) {
-        toast.error(msg);
-      } else {
-        Alert.alert('Error', msg);
-      }
+      const f = friendlySmsError(e?.message);
+      Alert.alert(f.title, f.message);
     } finally {
       setVerifyLoading(false);
     }

@@ -264,15 +264,20 @@ export const RevealCardModal: React.FC<Props> = ({ visible, onClose, groupId, us
             </TouchableOpacity>
           </View>
 
-          <View style={styles.subRow}>
-            <Text style={styles.sub} numberOfLines={1}>
-              {cardNickname || 'KWIKPAY card'}{cardLast4 ? ` · •${cardLast4}` : ''}
-            </Text>
-            <View style={styles.lockPill}>
-              <Lock size={11} color={COLORS.success} />
-              <Text style={styles.lockPillText}>Encrypted</Text>
+          {/* Phase H7.2 — On native, the inner WebView page already shows its
+              own card details + lock pill + timer, so we don't repeat the
+              "•0252 · Encrypted" sub-row to keep vertical space free. */}
+          {Platform.OS === 'web' && (
+            <View style={styles.subRow}>
+              <Text style={styles.sub} numberOfLines={1}>
+                {cardNickname || 'KWIKPAY card'}{cardLast4 ? ` · •${cardLast4}` : ''}
+              </Text>
+              <View style={styles.lockPill}>
+                <Lock size={11} color={COLORS.success} />
+                <Text style={styles.lockPillText}>Encrypted</Text>
+              </View>
             </View>
-          </View>
+          )}
 
           {Platform.OS !== 'web' ? (
             // Native: embed the same /reveal/{id} web page in a WebView so everything
@@ -537,11 +542,12 @@ const styles = StyleSheet.create({
   nativeText: { fontSize: FONT.sizes.sm, color: COLORS.subtext, textAlign: 'center' },
   webviewWrap: {
     flex: 1,
-    minHeight: 480,
-    borderRadius: RADIUS.lg,
+    minHeight: Platform.OS === 'web' ? 480 : 600,
+    borderRadius: Platform.OS === 'web' ? RADIUS.lg : RADIUS.md,
     overflow: 'hidden',
     backgroundColor: COLORS.bg,
-    borderWidth: 1,
+    borderWidth: Platform.OS === 'web' ? 1 : 0,
     borderColor: COLORS.border,
+    marginTop: Platform.OS === 'web' ? 0 : SPACING.sm,
   },
 });

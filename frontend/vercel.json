@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "rewrites": [
+    { "source": "/admin/groups/:id", "destination": "/admin/groups/[id]" },
+    { "source": "/group/:id", "destination": "/group/[id]" },
+    { "source": "/group/:id/items", "destination": "/group/[id]/items" },
+    { "source": "/group/:id/pay", "destination": "/group/[id]/pay" },
+    { "source": "/group/:id/summary", "destination": "/group/[id]/summary" },
+    { "source": "/reveal/:id", "destination": "/reveal/[id]" }
+  ]
+}

@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Receipt, Plus, Link2, QrCode, ChevronRight, Sparkles, LogOut, Gift, Wallet, ShieldAlert } from 'lucide-react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Button } from '../src/Button';
 import { api } from '../src/api';
 import { clearUser, loadUser, refreshUser } from '../src/session';
@@ -109,24 +110,44 @@ export default function HomeScreen() {
             ))}
           </View>
 
-          {/* Two equally-sized side-by-side gradient CTAs */}
+          {/* Two equally-sized side-by-side gradient CTA cards (icon stacked above label) */}
           <View style={styles.welcomeCtaRow}>
-            <View style={{ flex: 1 }}>
-              <GradientButton
-                testID="home-get-started-btn"
-                title="Split a Bill"
-                onPress={() => router.push('/auth')}
-                icon={<Plus color="#fff" size={16} strokeWidth={2.6} />}
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <GradientButton
-                testID="home-join-btn-unauth"
-                title="Join a Bill"
-                onPress={() => router.push('/auth?intent=join')}
-                icon={<QrCode color="#fff" size={16} strokeWidth={2.4} />}
-              />
-            </View>
+            <PressableScale
+              testID="home-get-started-btn"
+              onPress={() => router.push('/auth')}
+              style={[styles.welcomeCtaCard, SHADOW.primary]}
+              scaleTo={0.97}
+            >
+              <LinearGradient
+                colors={[COLORS.gradientStart, COLORS.gradientEnd]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.welcomeCtaCardInner}
+              >
+                <View style={styles.welcomeCtaIconBubble}>
+                  <Plus color="#fff" size={26} strokeWidth={2.6} />
+                </View>
+                <Text style={styles.welcomeCtaCardText}>Split a Bill</Text>
+              </LinearGradient>
+            </PressableScale>
+            <PressableScale
+              testID="home-join-btn-unauth"
+              onPress={() => router.push('/auth?intent=join')}
+              style={[styles.welcomeCtaCard, SHADOW.primary]}
+              scaleTo={0.97}
+            >
+              <LinearGradient
+                colors={[COLORS.gradientStart, COLORS.gradientEnd]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.welcomeCtaCardInner}
+              >
+                <View style={styles.welcomeCtaIconBubble}>
+                  <QrCode color="#fff" size={26} strokeWidth={2.4} />
+                </View>
+                <Text style={styles.welcomeCtaCardText}>Join a Bill</Text>
+              </LinearGradient>
+            </PressableScale>
           </View>
         </View>
       </SafeAreaView>
@@ -378,9 +399,38 @@ const styles = StyleSheet.create({
   welcomeFeatureText: { fontSize: FONT.sizes.sm, color: COLORS.text, flex: 1, fontWeight: FONT.weights.medium },
   welcomeCtaRow: {
     flexDirection: 'row',
-    gap: SPACING.sm,
+    gap: SPACING.md,
     marginTop: 'auto',
     paddingTop: SPACING.md,
+  },
+  welcomeCtaCard: {
+    flex: 1,
+    borderRadius: RADIUS.xl,
+    overflow: 'hidden',
+  },
+  welcomeCtaCardInner: {
+    paddingVertical: SPACING.lg,
+    paddingHorizontal: SPACING.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 130,
+    gap: 12,
+  },
+  welcomeCtaIconBubble: {
+    width: 52,
+    height: 52,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.28)',
+  },
+  welcomeCtaCardText: {
+    color: '#fff',
+    fontSize: FONT.sizes.md,
+    fontWeight: FONT.weights.bold,
+    letterSpacing: 0.2,
   },
   // Legacy (kept for back-compat) — unused below.
   welcomeCtaCol: { marginTop: SPACING.xl, gap: SPACING.md },

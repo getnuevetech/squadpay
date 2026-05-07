@@ -37,6 +37,9 @@ export default function AuthScreen() {
   const [refCode, setRefCode] = useState('');
   const [refValidated, setRefValidated] = useState<{ name: string; bonus: number } | null>(null);
   const [refError, setRefError] = useState<string | null>(null);
+  // Phase H6.4 — track whether last sent OTP was mocked, so we can hide the
+  // "Demo: 123456" hint when SMS is in live mode.
+  const [otpMocked, setOtpMocked] = useState<boolean | null>(null);
 
   // Phase H6.3 — when starting in verify mode, prefill the existing user's name
   // so it can be shown above the phone input ("Verifying for: Alex").
@@ -65,7 +68,8 @@ export default function AuthScreen() {
     if (!userId || !phone || resendIn > 0) return;
     setResending(true);
     try {
-      await api.sendOtp(userId, phone);
+      const r = await api.sendOtp(userId, phone);
+      setOtpMocked(!!r.mocked);
       startResendCooldown();
     } catch (e: any) {
       Alert.alert('Could not resend', e?.message || 'Try again');
@@ -122,11 +126,12 @@ export default function AuthScreen() {
     }
     setLoading(true);
     try {
-      await api.sendOtp(userId, cleaned);
+      const r = await api.sendOtp(userId, cleaned);
+      setOtpMocked(!!r.mocked);
       setStep('otp');
       startResendCooldown();
     } catch (e: any) {
-      Alert.alert('Error', e.message);
+      Alert.alert('Error', e?.message || 'Failed to send code');
     } finally {
       setLoading(false);
     }
@@ -343,13 +348,16 @@ export default function AuthScreen() {
           <View testID="auth-step-otp">
             <Text style={styles.title}>Enter the code</Text>
             <Text style={styles.sub}>
-              We sent a 6-digit code to {phone}. For demo, use <Text style={{ fontWeight: '700' }}>123456</Text>.
+              We sent a 6-digit code to {phone}.
+              {otpMocked ? (
+                <>{' '}For demo, use <Text style={{ fontWeight: '700' }}>123456</Text>.</>
+              ) : null}
             </Text>
             <TextInput
               testID="auth-otp-input"
               value={otp}
               onChangeText={(t) => setOtp(t.replace(/\D/g, '').slice(0, 6))}
-              placeholder="123456"
+              placeholder={otpMocked ? '123456' : '000000'}
               placeholderTextColor={COLORS.disabledText}
               style={[styles.input, styles.otpInput]}
               keyboardType="number-pad"

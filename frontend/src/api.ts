@@ -199,7 +199,7 @@ export const api = {
     ),
   getReferralSummary: (user_id: string) => request<ReferralSummary>(`/users/${user_id}/referrals`),
   sendOtp: (user_id: string, phone: string) =>
-    request<{ ok: boolean; message: string }>('/auth/send-otp', {
+    request<{ ok: boolean; message: string; mocked?: boolean; live?: boolean; info?: string }>('/auth/send-otp', {
       method: 'POST',
       body: JSON.stringify({ user_id, phone }),
     }),

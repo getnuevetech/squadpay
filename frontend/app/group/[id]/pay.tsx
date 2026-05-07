@@ -300,6 +300,10 @@ export default function PayScreen() {
 
   const blockedNoAmount = amount <= 0;
 
+  // Phase H6.4 — track whether the OTP we just sent was mocked or live so the
+  // hint UI can show "(Demo: 123456)" only in mock mode.
+  const [otpMocked, setOtpMocked] = useState<boolean | null>(null);
+
   const sendOtp = async () => {
     const cleaned = phone.trim();
     if (cleaned.length < 7) {
@@ -308,10 +312,20 @@ export default function PayScreen() {
     }
     setVerifyLoading(true);
     try {
-      await api.sendOtp(userId, cleaned);
+      const r = await api.sendOtp(userId, cleaned);
+      setOtpMocked(!!r.mocked);
       setVerifyStep('otp');
+      if (r.live) {
+        toast.success('Code sent to your phone');
+      }
     } catch (e: any) {
-      Alert.alert('Error', e.message);
+      // Live-mode SMS failure surfaces as 502 with detail "Could not send..."
+      const msg = e?.message || 'Failed to send code';
+      if (msg.toLowerCase().includes('could not send')) {
+        toast.error(msg);
+      } else {
+        Alert.alert('Error', msg);
+      }
     } finally {
       setVerifyLoading(false);
     }
@@ -663,14 +677,16 @@ export default function PayScreen() {
               {verifyStep === 'otp' && (
                 <>
                   <Text style={styles.fieldLabel}>
-                    Enter the code sent to {phone}.{' '}
-                    <Text style={{ fontWeight: '700' }}>(Demo: 123456)</Text>
+                    Enter the code sent to {phone}.
+                    {otpMocked ? (
+                      <Text style={{ fontWeight: '700' }}> (Demo: 123456)</Text>
+                    ) : null}
                   </Text>
                   <TextInput
                     testID="pay-verify-otp-input"
                     value={otp}
                     onChangeText={(t) => setOtp(t.replace(/\D/g, '').slice(0, 6))}
-                    placeholder="123456"
+                    placeholder={otpMocked ? '123456' : '000000'}
                     placeholderTextColor={COLORS.disabledText}
                     keyboardType="number-pad"
                     style={[styles.input, styles.otpInput]}

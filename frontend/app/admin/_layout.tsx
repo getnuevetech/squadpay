@@ -67,7 +67,11 @@ export default function AdminLayout() {
 
   useEffect(() => {
     (async () => {
-      const onLogin = pathname === '/admin/login' || pathname === '/admin';
+      const onLogin =
+        pathname === '/admin/login' ||
+        pathname === '/admin' ||
+        pathname === '/admin/forgot-password' ||
+        pathname === '/admin/reset-password';
       const token = await getToken();
       if (!token) {
         if (!onLogin) router.replace('/admin/login');
@@ -77,7 +81,7 @@ export default function AdminLayout() {
       try {
         const me = await adminApi.me();
         setProfile(me);
-        if (onLogin) router.replace('/admin/dashboard');
+        if (pathname === '/admin/login' || pathname === '/admin') router.replace('/admin/dashboard');
       } catch {
         await clearSession();
         if (!onLogin) router.replace('/admin/login');
@@ -95,8 +99,12 @@ export default function AdminLayout() {
     );
   }
 
-  // Login route renders without sidebar shell
-  if (pathname === '/admin/login' || !profile) {
+  // Login / forgot-password / reset-password render without sidebar shell
+  const isPublicRoute =
+    pathname === '/admin/login' ||
+    pathname === '/admin/forgot-password' ||
+    pathname === '/admin/reset-password';
+  if (isPublicRoute || !profile) {
     return (
       <Stack
         screenOptions={{

@@ -91,6 +91,13 @@ except Exception as _e:
 # ---------- Mount + middleware ----------
 app.include_router(api_router)
 
+# ---------- Admin password reset (Phase H7) — mounted directly on app ----------
+try:
+    from admin_password_reset import router as admin_pw_reset_router
+    app.include_router(admin_pw_reset_router)
+except Exception as _e:
+    print("[startup] admin password reset routes attach failed:", _e)
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,

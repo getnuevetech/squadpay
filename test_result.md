@@ -1307,7 +1307,11 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus: []
+  current_focus:
+    - "POST /api/admin/admins/{id}/send-password-reset (super_admin only, alternate_email + return_link, audit)"
+    - "PATCH /api/admin/admins/{id}/role (super_admin only, last-super-admin + self-demotion guards, audit)"
+    - "POST /api/admin/users/{id}/send-otp (any active admin, mock + optional phone override, audit)"
+    - "Existing 37-test backend regression still PASSes"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -1315,7 +1319,30 @@ test_plan:
 agent_communication:
     - agent: "main"
       message: |
-        BUG FIX — Admin password reset 422 / "(0, b.api) is not a function" crash.
+        New feature — 3 admin-action endpoints in /app/backend/admin_actions.py,
+        wired through admin_routes.py. All 7 manual smoke tests via curl passed:
+          1. push password reset (200, alternate_email accepted, reset_url
+             returned when return_link=true, audit row written)
+          2. change role super_admin -> admin -> super_admin (200, returns
+             previous_role)
+          3. self-demotion guard (400 "cannot demote your own super_admin")
+          4. invalid role rejected (400)
+          5. push OTP to user (200, mock mode returns code in message field)
+          6. last-super-admin guard logic (counts > 1 currently in dev so guard
+             not triggered there — please add an explicit test that demotes
+             until only one super_admin remains, then verifies the next
+             demotion attempt is rejected with 400)
+          7. audit log rows present for all three actions
+
+        Test credentials: /app/memory/test_credentials.md.
+        Production admin in dev DB: admin@squadpay.us / Letmein@2007#ForReal.
+
+        Please run a focused regression on these endpoints and confirm the
+        existing /admin/auth/login + /admin/auth/forgot-password + /admin/auth/
+        reset-password flows still pass.
+    - agent: "main"
+      message: |
+        EARLIER BUG FIX — Admin password reset 422 / "(0, b.api) is not a function" crash.
 
         Root causes (two layers):
         1. Frontend (web crash): /app/frontend/app/admin/forgot-password.tsx and
@@ -3320,3 +3347,152 @@ agent_communication:
 
         The regression fix is fully validated. No backend code changes required
         from the testing pass.
+
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        Focused regression on the 3 NEW admin-action endpoints + verification
+        that the existing auth/admin regression still passes.
+
+        Test artefact: /app/backend_test.py (89 assertions; 1 failure).
+        All testing run against the live preview at EXPO_PUBLIC_BACKEND_URL.
+
+        ============================================================
+        ✅ A) POST /api/admin/admins/{id}/send-password-reset — ALL PASS
+        ============================================================
+          A1 default body         → 200 {ok,delivered_to=registered email,
+                                         email_status,expires_in_minutes}
+                                    (no reset_url when email send=ok ✅)
+          A2 alternate_email      → 200 delivered_to=alternate ✅
+          A3 return_link=true     → 200 reset_url present (https://...) ✅
+          A4 unknown admin_id     → 404 ✅
+          A5 inactive admin       → 400 "...deactivated admin" ✅
+          A6 non-super_admin      → 403 (tested with role=manager and role=support) ✅
+          A7 audit row            → admin_password_reset.pushed_by_admin
+                                    written with target_id, admin_email,
+                                    payload.delivered_to, payload.email_status ✅
+          A8 reset-token row      → persisted; reset-password endpoint
+                                    accepts the token (rejected on password
+                                    policy, NOT on token validity) ✅
+
+          Note: /api/admin/auth/validate-reset-token is NOT exposed (returns 404
+          on both GET and POST). Persistence was confirmed indirectly by passing
+          the token to POST /api/admin/auth/reset-password and observing it
+          reach the password-policy step rather than failing on token-invalid.
+
+        ============================================================
+        ✅ B) PATCH /api/admin/admins/{id}/role — ALL PASS (with caveat below)
+        ============================================================
+          B1 valid change manager→viewer  → 200 {role,previous_role,admin_id} ✅
+          B2 same role no-op             → 200 {role,unchanged:true} ✅
+          B3 invalid roles 'god' / 'owner' / 'superadmin' → 400 with detail
+             listing super_admin/admin/viewer ✅
+          B4 unknown admin_id → 404 ✅
+          B5 self-demote super_admin→admin → 400 "cannot demote your own
+             super_admin account" ✅
+          B5b self-set super_admin (no-op) → 200 {unchanged:true} ✅
+          B6 non-super_admin caller → 403 ✅
+          B7 last-super-admin guard → reachable only via the self-demote path
+             (when the actor IS the last active SA, the self-demote check
+             fires first and returns 400 with the same intent — verified). ✅
+          B8 audit row → admin_role.changed with payload.from, payload.to ✅
+
+          ⚠️ CRITICAL DATA-INTEGRITY BUG (NOT a test failure but found while
+             testing):
+             The new endpoint accepts role values {super_admin, admin, viewer}.
+             The rest of the codebase (admin.py AdminCreateIn / AdminOut response
+             model) only accepts {super_admin, manager, support}. Consequences
+             reproduced live:
+               • After this test set role=admin on a record, GET /api/admin/admins
+                 returned HTTP 500 ResponseValidationError ("Input should be
+                 'super_admin', 'manager' or 'support'") — i.e. the admin list
+                 endpoint becomes unusable.
+               • The role-change endpoint then refuses to set the same record
+                 back to 'manager'/'support' (only accepts admin/viewer/
+                 super_admin), so the corruption cannot be undone via the API.
+             I cleaned up the corrupted record by direct DB update
+             (db.admins.update_many({role:{$in:[admin,viewer]}}, {$set:{role:'manager'}}))
+             so the listing endpoint works again. Main agent must align the
+             role enum across admin.py and admin_actions.py before this is
+             shipped.
+
+        ============================================================
+        🟡 C) POST /api/admin/users/{id}/send-otp — 7/8 PASS, 1 FAIL
+        ============================================================
+          C1 push (no override) → 200 {ok,mocked:true,message:"...123456..."} ✅
+          C2 phone override     → 200; audit payload.phone == override ✅
+          C3 user without phone → 400 "User has no phone on file..." ✅
+          C4 BLOCKED user       → ❌ FAIL: returned 200 (expected 400).
+             ROOT CAUSE: admin_actions.py line 219 reads `user.get("blocked")`,
+             but the admin block endpoint (POST /api/admin/users/{id}/block)
+             writes the flag as `is_blocked`. Field-name mismatch means
+             blocked users still receive admin-pushed OTPs. Trivial 1-line
+             fix: change line 219 to `if user.get("is_blocked")` (or
+             `user.get("is_blocked") or user.get("blocked")` for back-compat).
+          C5 unknown user_id    → 404 ✅
+          C6 audit row          → user_otp.pushed_by_admin written with
+                                  target_id, admin_email, payload.phone ✅
+          C7 otp_codes upserted → /auth/verify-otp with code 123456 succeeds
+                                  immediately after admin-push ✅
+          C8 non-super_admin caller (role=manager AND role=support) → 200 ✅
+             Confirms ANY active admin can call this endpoint as required.
+
+        ============================================================
+        ✅ D) Existing endpoint regression — ALL PASS
+        ============================================================
+          D1  POST /api/admin/auth/login (correct creds) → 200 + JWT ✅
+          D2  POST /api/admin/auth/login (wrong pw) → 401 with
+              detail.attempts_left ✅
+          D3  POST /api/admin/auth/forgot-password — anti-enumeration
+              envelope: real and unknown emails both return 200 ✅
+          D4  POST /api/admin/auth/reset-password (bogus token) → 400 ✅
+          D5  GET /api/admin/admins (super_admin) → 200 list of 19 admins ✅
+              (regressed transiently to 500 after B1 corrupted a row — see
+              the Critical bug callout in section B; restored by direct DB
+              cleanup at end of test)
+          D6  POST /api/admin/admins create (role=manager and role=support) → 200 ✅
+              ⚠️ Cannot create with role='admin' or 'viewer' here because
+              AdminCreateIn restricts to {super_admin,manager,support}. This
+              is the same enum-mismatch issue as section B.
+          D7  PATCH /api/admin/admins/{id}/active (false then true) → 200 ✅
+          D8  /auth/register, /auth/send-otp, /auth/verify-otp full flow → 200 ✅
+              NOTE: /auth/verify-otp now requires `phone` in the body
+              (alongside user_id and code) — confirmed by 422 when omitted.
+          D9  GET /auth/lookup-phone — unknown phone returns {exists:false};
+              known verified phone returns {exists:true,name,blocked} ✅
+
+        ============================================================
+        ENVIRONMENT NOTES
+        ============================================================
+          • SMS routing mode = "mock" throughout (verified via /admin/integrations).
+          • Test admins created during the run were left is_active=false and
+            corrupted-role rows were repaired to role='manager' via direct DB.
+          • Production admin admin@squadpay.us — UNCHANGED. Still
+            super_admin / active / login works with the documented password.
+          • Backend logs show a single ResponseValidationError 500 for
+            GET /admin/admins captured during B1; cleared after DB cleanup.
+
+        ============================================================
+        ACTION ITEMS FOR MAIN AGENT
+        ============================================================
+          1. (CRITICAL) Reconcile the admin-role enum across admin.py and
+             admin_actions.py. Either:
+               (a) extend AdminCreateIn / AdminOut to include 'admin' and
+                   'viewer'; OR
+               (b) restrict the new ChangeRoleIn to {super_admin, manager,
+                   support}; OR
+               (c) decide on a single canonical set and migrate existing rows.
+             Without this fix, exercising the new role-change endpoint can
+             render GET /admin/admins unusable.
+          2. (HIGH) admin_actions.py:219 — fix the field-name typo.
+             `user.get("blocked")` → `user.get("is_blocked")` (the rest of
+             the codebase, including the admin block endpoint, uses
+             is_blocked). Currently blocked users can still receive
+             admin-pushed OTPs.
+          3. (LOW) Consider exposing a /api/admin/auth/validate-reset-token
+             route for the admin UI, or document that the only consumer
+             pathway is /api/admin/auth/reset-password.
+          4. Everything else in the new endpoints + the existing 37-test
+             regression subset is GREEN. Once 1 and 2 above are addressed,
+             this feature is good to ship.

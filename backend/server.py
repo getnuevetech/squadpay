@@ -109,10 +109,25 @@ try:
 except Exception as _e:
     print("[startup] admin password reset routes attach failed:", _e)
 
+# CORS — When `allow_credentials=True`, the spec forbids `allow_origins=["*"]`.
+# Browsers silently reject cross-origin responses with that combo (manifests as
+# "Failed to fetch" client-side). We use an explicit allowlist plus a regex
+# for Vercel preview deploys / Emergent preview hosts.
+_default_origins = [
+    "https://squadpay.us",
+    "https://www.squadpay.us",
+    "http://localhost:3000",
+    "http://localhost:8081",
+    "https://joint-pay-1.preview.emergentagent.com",
+]
+_extra = [o.strip() for o in os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+_allowed_origins = list(dict.fromkeys(_default_origins + _extra))
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
+    allow_origin_regex=r"^https://([a-z0-9-]+\.)*(vercel\.app|preview\.emergentagent\.com)$",
     allow_methods=["*"],
     allow_headers=["*"],
 )

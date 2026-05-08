@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, TextInput, StyleSheet, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, TextInput, StyleSheet, Alert, ActivityIndicator, Modal, Platform } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { adminApi, AdminProfile, AdminRole } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
-import { Plus, Power } from 'lucide-react-native';
+import { Plus, Power, KeyRound, UserCog } from 'lucide-react-native';
+
+const ROLES: AdminRole[] = ['super_admin', 'manager', 'support'];
 
 export default function AdminUsers() {
   const [admins, setAdmins] = useState<AdminProfile[]>([]);
@@ -12,6 +15,16 @@ export default function AdminUsers() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<AdminRole>('support');
+
+  // Push-reset modal state
+  const [resetTarget, setResetTarget] = useState<AdminProfile | null>(null);
+  const [altEmail, setAltEmail] = useState('');
+  const [resetBusy, setResetBusy] = useState(false);
+
+  // Change-role modal state
+  const [roleTarget, setRoleTarget] = useState<AdminProfile | null>(null);
+  const [pendingRole, setPendingRole] = useState<AdminRole>('support');
+  const [roleBusy, setRoleBusy] = useState(false);
 
   const load = async () => { setBusy(true); try { setAdmins(await adminApi.listAdmins()); } finally { setBusy(false); } };
   useEffect(() => { load(); }, []);
@@ -29,6 +42,57 @@ export default function AdminUsers() {
     try { await adminApi.toggleAdmin(a.id, !a.is_active); await load(); } catch (e: any) { Alert.alert('Could not update', e?.message || ''); }
   };
 
+  const openPushReset = (a: AdminProfile) => {
+    setResetTarget(a);
+    setAltEmail('');
+  };
+
+  const submitPushReset = async (returnLink: boolean) => {
+    if (!resetTarget) return;
+    setResetBusy(true);
+    try {
+      const r = await adminApi.pushAdminPasswordReset(resetTarget.id, {
+        alternate_email: altEmail.trim() || undefined,
+        return_link: returnLink,
+      });
+      const lines = [
+        `Delivered to: ${r.delivered_to}`,
+        `Email status: ${r.email_status}${r.email_error ? ` (${r.email_error})` : ''}`,
+        `Expires in: ${r.expires_in_minutes} min`,
+      ];
+      if (r.reset_url) {
+        try { await Clipboard.setStringAsync(r.reset_url); } catch {}
+        lines.push('', 'Reset link copied to clipboard.');
+      }
+      Alert.alert('Reset link sent', lines.join('\n'));
+      setResetTarget(null);
+    } catch (e: any) {
+      Alert.alert('Could not send reset', e?.message || '');
+    } finally {
+      setResetBusy(false);
+    }
+  };
+
+  const openChangeRole = (a: AdminProfile) => {
+    setRoleTarget(a);
+    setPendingRole(a.role);
+  };
+
+  const submitChangeRole = async () => {
+    if (!roleTarget) return;
+    if (pendingRole === roleTarget.role) { setRoleTarget(null); return; }
+    setRoleBusy(true);
+    try {
+      await adminApi.changeAdminRole(roleTarget.id, pendingRole);
+      setRoleTarget(null);
+      await load();
+    } catch (e: any) {
+      Alert.alert('Could not change role', e?.message || '');
+    } finally {
+      setRoleBusy(false);
+    }
+  };
+
   return (
     <ScrollView contentContainerStyle={{ paddingBottom: 80 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.sm }}>
@@ -37,7 +101,7 @@ export default function AdminUsers() {
           <Plus size={16} color="#fff" /><Text style={{ color: '#fff', fontWeight: FONT.weights.semibold }}>{showForm ? 'Close' : 'Add admin'}</Text>
         </TouchableOpacity>
       </View>
-      <Text style={styles.subheading}>Only super-admins can add or toggle.</Text>
+      <Text style={styles.subheading}>Only super-admins can add, toggle, push reset, or change role.</Text>
       {showForm ? (
         <View style={styles.form}>
           <Text style={styles.label}>Name</Text><TextInput style={styles.input} value={name} onChangeText={setName} placeholder="Jane Doe" placeholderTextColor={COLORS.disabledText} testID="admin-create-name" />
@@ -45,7 +109,7 @@ export default function AdminUsers() {
           <Text style={styles.label}>Password</Text><TextInput style={styles.input} value={password} onChangeText={setPassword} secureTextEntry placeholder="min 8 chars" placeholderTextColor={COLORS.disabledText} testID="admin-create-password" />
           <Text style={styles.label}>Role</Text>
           <View style={{ flexDirection: 'row', gap: 8 }}>
-            {(['super_admin','manager','support'] as AdminRole[]).map((r) => (
+            {ROLES.map((r) => (
               <TouchableOpacity key={r} onPress={() => setRole(r)} style={[styles.roleChip, role === r && styles.roleChipActive]} activeOpacity={0.85} testID={`admin-create-role-${r}`}>
                 <Text style={[styles.roleChipText, role === r && { color: '#fff' }]}>{r}</Text>
               </TouchableOpacity>
@@ -61,6 +125,26 @@ export default function AdminUsers() {
             <Text style={styles.name}>{a.name} <Text style={styles.role}>{a.role}</Text></Text>
             <Text style={styles.metaTxt}>{a.email}</Text>
             <Text style={styles.metaTxt}>last login: {a.last_login_at ? new Date(a.last_login_at).toLocaleString() : 'never'}</Text>
+            <View style={styles.rowActions}>
+              <TouchableOpacity
+                onPress={() => openPushReset(a)}
+                style={styles.actionBtn}
+                activeOpacity={0.85}
+                testID={`admin-push-reset-${a.id}`}
+              >
+                <KeyRound size={12} color={COLORS.primary} />
+                <Text style={styles.actionBtnText}>Push reset</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => openChangeRole(a)}
+                style={styles.actionBtn}
+                activeOpacity={0.85}
+                testID={`admin-change-role-${a.id}`}
+              >
+                <UserCog size={12} color={COLORS.primary} />
+                <Text style={styles.actionBtnText}>Change role</Text>
+              </TouchableOpacity>
+            </View>
           </View>
           <TouchableOpacity onPress={() => toggle(a)} style={[styles.toggle, !a.is_active && { backgroundColor: COLORS.danger + '22', borderColor: COLORS.danger }]} activeOpacity={0.85} testID={`admin-toggle-${a.id}`}>
             <Power size={14} color={a.is_active ? COLORS.success : COLORS.danger} />
@@ -68,6 +152,92 @@ export default function AdminUsers() {
           </TouchableOpacity>
         </View>
       ))}
+
+      {/* Push reset modal */}
+      <Modal visible={!!resetTarget} transparent animationType="fade" onRequestClose={() => setResetTarget(null)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard} testID="admin-push-reset-modal">
+            <Text style={styles.modalTitle}>Push password reset</Text>
+            {resetTarget ? (
+              <Text style={styles.modalSub}>Send a one-time reset link to <Text style={{ fontWeight: FONT.weights.semibold }}>{resetTarget.email}</Text>. Link expires in 30 minutes.</Text>
+            ) : null}
+            <Text style={styles.label}>Override email (optional)</Text>
+            <TextInput
+              style={styles.input}
+              value={altEmail}
+              onChangeText={setAltEmail}
+              autoCapitalize="none"
+              keyboardType="email-address"
+              placeholder={resetTarget?.email || ''}
+              placeholderTextColor={COLORS.disabledText}
+              testID="admin-push-reset-alt-email"
+            />
+            <Text style={styles.helperTxt}>Use this if the registered admin email isn't deliverable (e.g. same-domain Gmail routing).</Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: SPACING.md }}>
+              <TouchableOpacity onPress={() => setResetTarget(null)} style={[styles.modalBtn, styles.modalBtnGhost]} activeOpacity={0.85}>
+                <Text style={styles.modalBtnGhostText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => submitPushReset(false)}
+                style={[styles.modalBtn, styles.modalBtnPrimary]}
+                activeOpacity={0.85}
+                disabled={resetBusy}
+                testID="admin-push-reset-send"
+              >
+                <Text style={styles.modalBtnPrimaryText}>{resetBusy ? 'Sending…' : 'Send email'}</Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              onPress={() => submitPushReset(true)}
+              style={[styles.modalBtn, styles.modalBtnGhost, { marginTop: 8 }]}
+              activeOpacity={0.85}
+              disabled={resetBusy}
+              testID="admin-push-reset-copy-link"
+            >
+              <Text style={styles.modalBtnGhostText}>Send + copy link to clipboard</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Change role modal */}
+      <Modal visible={!!roleTarget} transparent animationType="fade" onRequestClose={() => setRoleTarget(null)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard} testID="admin-change-role-modal">
+            <Text style={styles.modalTitle}>Change role</Text>
+            {roleTarget ? (
+              <Text style={styles.modalSub}>{roleTarget.name} ({roleTarget.email})</Text>
+            ) : null}
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: SPACING.sm }}>
+              {ROLES.map((r) => (
+                <TouchableOpacity
+                  key={r}
+                  onPress={() => setPendingRole(r)}
+                  style={[styles.roleChip, pendingRole === r && styles.roleChipActive]}
+                  activeOpacity={0.85}
+                  testID={`admin-change-role-chip-${r}`}
+                >
+                  <Text style={[styles.roleChipText, pendingRole === r && { color: '#fff' }]}>{r}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: SPACING.md }}>
+              <TouchableOpacity onPress={() => setRoleTarget(null)} style={[styles.modalBtn, styles.modalBtnGhost]} activeOpacity={0.85}>
+                <Text style={styles.modalBtnGhostText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={submitChangeRole}
+                style={[styles.modalBtn, styles.modalBtnPrimary]}
+                activeOpacity={0.85}
+                disabled={roleBusy}
+                testID="admin-change-role-save"
+              >
+                <Text style={styles.modalBtnPrimaryText}>{roleBusy ? 'Saving…' : 'Save'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -89,4 +259,17 @@ const styles = StyleSheet.create({
   metaTxt: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
   toggle: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: SPACING.sm, paddingVertical: 6, borderRadius: RADIUS.pill, borderWidth: 1, borderColor: COLORS.success, backgroundColor: COLORS.success + '22' },
   toggleText: { fontSize: FONT.sizes.xs, fontWeight: FONT.weights.bold },
+  rowActions: { flexDirection: 'row', gap: 6, marginTop: SPACING.sm, flexWrap: 'wrap' },
+  actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: SPACING.sm, paddingVertical: 4, borderRadius: RADIUS.pill, borderWidth: 1, borderColor: COLORS.primary + '55', backgroundColor: COLORS.primaryLight },
+  actionBtnText: { fontSize: 11, fontWeight: FONT.weights.semibold, color: COLORS.primary },
+  helperTxt: { fontSize: 11, color: COLORS.subtext, marginTop: 2, lineHeight: 14 },
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', padding: SPACING.lg },
+  modalCard: { backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, padding: SPACING.lg, ...Platform.select({ ios: { shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 16, shadowOffset: { width: 0, height: 8 } }, android: { elevation: 8 } }) },
+  modalTitle: { fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold, color: COLORS.text, marginBottom: 4 },
+  modalSub: { fontSize: FONT.sizes.sm, color: COLORS.subtext, marginBottom: SPACING.sm },
+  modalBtn: { flex: 1, height: 42, borderRadius: RADIUS.md, alignItems: 'center', justifyContent: 'center', flexDirection: 'row' },
+  modalBtnPrimary: { backgroundColor: COLORS.primary },
+  modalBtnPrimaryText: { color: '#fff', fontWeight: FONT.weights.bold },
+  modalBtnGhost: { borderWidth: 1, borderColor: COLORS.border },
+  modalBtnGhostText: { color: COLORS.text, fontWeight: FONT.weights.semibold },
 });

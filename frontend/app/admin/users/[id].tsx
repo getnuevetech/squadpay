@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Platform, TextInput } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ArrowLeft, Ban, ShieldCheck, Crown, Users as UsersIcon, Wallet, Plus, X as XIcon, Percent, DollarSign, Trash2 } from 'lucide-react-native';
+import { ArrowLeft, Ban, ShieldCheck, Crown, Users as UsersIcon, Wallet, Plus, X as XIcon, Percent, DollarSign, Trash2, KeyRound } from 'lucide-react-native';
 import { adminApi, AdminUserDetail, AdminGroupRow, UserCreditWallet, LeadAutoDiscount } from '../../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 
@@ -120,6 +120,26 @@ export default function AdminUserDetailPage() {
     );
   };
 
+  const onPushOtp = async () => {
+    if (!user) return;
+    if (!user.phone) {
+      Alert.alert('No phone on file', 'This user has no phone number registered, so we can\'t send a verification code.');
+      return;
+    }
+    confirm(
+      'Send verification code?',
+      `A 6-digit OTP will be sent via SMS to ${user.phone}. ${user.name} can use it to verify on their next sign-in.`,
+      async () => {
+        try {
+          const r = await adminApi.pushUserOtp(user.id);
+          Alert.alert('OTP sent', r.message || 'Code sent via SMS.');
+        } catch (e: any) {
+          Alert.alert('Could not send OTP', e?.message || '');
+        }
+      }
+    );
+  };
+
   if (busy || !user) return <View style={styles.center}><ActivityIndicator color={COLORS.primary} /></View>;
 
   const renderGroup = (g: AdminGroupRow, i: number) => (
@@ -192,6 +212,17 @@ export default function AdminUserDetailPage() {
             </TouchableOpacity>
           </View>
         )}
+        {!user.is_blocked && user.phone ? (
+          <TouchableOpacity
+            onPress={onPushOtp}
+            style={[styles.actionBtn, { backgroundColor: COLORS.primary, marginTop: 8 }]}
+            activeOpacity={0.85}
+            testID="admin-user-push-otp"
+          >
+            <KeyRound size={16} color="#fff" />
+            <Text style={styles.actionBtnText}>Send verification code</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
 
       <View style={styles.section}>

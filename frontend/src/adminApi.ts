@@ -141,6 +141,33 @@ export const adminApi = {
     request<AdminProfile>('/admins', { method: 'POST', body: JSON.stringify(body) }),
   toggleAdmin: (id: string, is_active: boolean) =>
     request<AdminProfile>(`/admins/${id}/active`, { method: 'PATCH', body: JSON.stringify({ is_active }) }),
+  // ---- Admin actions: push reset / change role / push OTP ----
+  pushAdminPasswordReset: (
+    id: string,
+    opts?: { alternate_email?: string; return_link?: boolean },
+  ) =>
+    request<{
+      ok: boolean;
+      delivered_to: string;
+      email_status: 'sent' | 'skipped' | 'failed';
+      email_error?: string;
+      expires_in_minutes: number;
+      reset_url?: string;
+      link_note?: string;
+    }>(`/admins/${id}/send-password-reset`, {
+      method: 'POST',
+      body: JSON.stringify(opts || {}),
+    }),
+  changeAdminRole: (id: string, role: AdminRole) =>
+    request<{ ok: boolean; admin_id?: string; role: AdminRole; previous_role?: AdminRole; unchanged?: boolean }>(
+      `/admins/${id}/role`,
+      { method: 'PATCH', body: JSON.stringify({ role }) },
+    ),
+  pushUserOtp: (id: string, opts?: { phone?: string }) =>
+    request<{ ok: boolean; mocked: boolean; live: boolean; message: string; info?: string }>(
+      `/users/${id}/send-otp`,
+      { method: 'POST', body: JSON.stringify(opts || {}) },
+    ),
 
   // ---- Phase B: Users ----
   listUsers: (params?: { q?: string; verified?: boolean; blocked?: boolean; limit?: number; skip?: number }) => {

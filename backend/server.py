@@ -37,6 +37,17 @@ db = client[os.environ["DB_NAME"]]
 
 # ---------- App ----------
 app = FastAPI()
+
+# ---------- Rate limiting (slowapi) ----------
+# In-memory limiter keyed off the client IP. For multi-replica deployments swap
+# the storage_uri to redis://... — the rest of the code stays identical.
+from slowapi import Limiter, _rate_limit_exceeded_handler  # noqa: E402
+from slowapi.errors import RateLimitExceeded  # noqa: E402
+from slowapi.util import get_remote_address  # noqa: E402
+limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 api_router = APIRouter(prefix="/api")
 
 logger = logging.getLogger(__name__)

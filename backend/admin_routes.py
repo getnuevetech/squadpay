@@ -46,7 +46,22 @@ def build_admin_router(db):
     LOGIN_ATTEMPT_LIMIT = 3
     LOGIN_LOCK_MIN = 15
 
+    # Rate-limit the login endpoint to slow brute-force attempts.
+    # The DB-level lockout (3 attempts → 15 min) is the primary defense, but a
+    # network-level throttle blocks distributed attempts before they hit Mongo.
+    try:
+        from server import limiter as _limiter
+    except Exception:
+        _limiter = None
+
+    def _maybe_limit(spec: str):
+        """Decorator that applies the slowapi rate limit only when available."""
+        def deco(fn):
+            return _limiter.limit(spec)(fn) if _limiter else fn
+        return deco
+
     @router.post("/auth/login", response_model=AdminAuthResponse)
+    @_maybe_limit("10/minute")
     async def login(body: AdminLoginIn, request: Request):
         # Make sure the seed admin exists every time (idempotent).
         await ensure_seed_admin(db)

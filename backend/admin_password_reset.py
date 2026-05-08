@@ -89,7 +89,19 @@ class ResetPasswordIn(BaseModel):
 def build_password_reset_router(db) -> APIRouter:
     router = APIRouter(prefix="/api/admin/auth", tags=["admin-auth-reset"])
 
+    # Optional rate limiter (slowapi). Falls back to no-op if not initialized.
+    try:
+        from server import limiter as _limiter
+    except Exception:
+        _limiter = None
+
+    def _maybe_limit(spec: str):
+        def deco(fn):
+            return _limiter.limit(spec)(fn) if _limiter else fn
+        return deco
+
     @router.post("/forgot-password")
+    @_maybe_limit("5/minute")
     async def forgot_password(payload: ForgotPasswordIn, request: Request):
         email = payload.email.strip().lower()
 

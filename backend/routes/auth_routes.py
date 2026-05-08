@@ -1,6 +1,6 @@
 """Auth + user fetch routes (extracted from server.py — Batch B)."""
 import logging
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from core import (
@@ -165,8 +165,20 @@ def attach_auth_routes(router: APIRouter, db):
         await db.users.insert_one(user.copy())
         return UserOut(**user)
 
+    # Rate limiter (slowapi) — best-effort; falls back to no-op if not initialized.
+    try:
+        from server import limiter as _limiter
+    except Exception:
+        _limiter = None
+
+    def _maybe_limit(spec: str):
+        def deco(fn):
+            return _limiter.limit(spec)(fn) if _limiter else fn
+        return deco
+
     @router.post("/auth/send-otp")
-    async def send_otp(body: SendOtpIn):
+    @_maybe_limit("5/minute")
+    async def send_otp(body: SendOtpIn, request: Request):
         user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
         if not user:
             raise HTTPException(404, "User not found")

@@ -28,7 +28,8 @@ from email_service import EmailNotConfigured, render_admin_reset_email, send_ema
 
 log = logging.getLogger("admin_actions")
 
-ALLOWED_ROLES = ("super_admin", "admin", "viewer")
+# Roles must stay in sync with admin.py:: Role = Literal["super_admin","manager","support"].
+ALLOWED_ROLES = ("super_admin", "manager", "support")
 
 
 class PushPasswordResetIn(BaseModel):
@@ -216,7 +217,7 @@ def attach_admin_actions_routes(router: APIRouter, db, _attach_admin):
         phone = (body.phone or user.get("phone") or "").strip()
         if not phone:
             raise HTTPException(400, "User has no phone on file. Pass `phone` explicitly to override.")
-        if user.get("blocked"):
+        if user.get("blocked") or user.get("is_blocked"):
             raise HTTPException(400, "User account is blocked.")
 
         from otp_helpers import generate_and_send_otp, build_otp_response

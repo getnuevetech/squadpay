@@ -36,7 +36,7 @@ export default function AdminResetPasswordScreen() {
         return;
       }
       try {
-        const r = await api(`/api/admin/auth/reset-password/validate?token=${encodeURIComponent(token)}`, { method: 'GET' });
+        const r = await api.adminValidateResetToken(token);
         if (cancelled) return;
         if (r.valid) {
           setState('valid');
@@ -76,10 +76,7 @@ export default function AdminResetPasswordScreen() {
     }
     setBusy(true);
     try {
-      await api('/api/admin/auth/reset-password', {
-        method: 'POST',
-        body: JSON.stringify({ token, new_password: pw1 }),
-      });
+      await api.adminResetPassword(token, pw1);
       setSuccess(true);
     } catch (e: any) {
       setError(e?.message || 'Could not reset password. Please request a new link.');

@@ -62,7 +62,7 @@ def build_admin_router(db):
 
     @router.post("/auth/login", response_model=AdminAuthResponse)
     @_maybe_limit("10/minute")
-    async def login(body: AdminLoginIn, request: Request):
+    async def login(request: Request, body: AdminLoginIn):
         # Make sure the seed admin exists every time (idempotent).
         await ensure_seed_admin(db)
         admin = await db.admins.find_one({"email": body.email.lower()}, {"_id": 0})

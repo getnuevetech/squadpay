@@ -16,7 +16,11 @@ Security:
   - On reset, all outstanding tokens for the admin are invalidated AND any active
     sessions are killed (force re-login on every device).
 """
-from __future__ import annotations
+"""
+from __future__ import annotations — REMOVED. Combined with slowapi's @limiter.limit
+wrapper, PEP-563 string annotations prevent FastAPI from recognizing `Request`
+and `payload: BaseModel`, causing the body to be treated as a query parameter.
+"""
 import datetime as dt
 import hashlib
 import logging
@@ -102,7 +106,7 @@ def build_password_reset_router(db) -> APIRouter:
 
     @router.post("/forgot-password")
     @_maybe_limit("5/minute")
-    async def forgot_password(payload: ForgotPasswordIn, request: Request):
+    async def forgot_password(request: Request, payload: ForgotPasswordIn):
         email = payload.email.strip().lower()
 
         # Always-200 envelope (defense against email enumeration).
@@ -171,7 +175,7 @@ def build_password_reset_router(db) -> APIRouter:
         return {"valid": True}
 
     @router.post("/reset-password")
-    async def reset_password(payload: ResetPasswordIn, request: Request):
+    async def reset_password(request: Request, payload: ResetPasswordIn):
         pw_err = _password_strong_enough(payload.new_password)
         if pw_err:
             raise HTTPException(status_code=400, detail=pw_err)

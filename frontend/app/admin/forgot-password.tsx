@@ -30,10 +30,7 @@ export default function AdminForgotPasswordScreen() {
     }
     setBusy(true);
     try {
-      await api('/api/admin/auth/forgot-password', {
-        method: 'POST',
-        body: JSON.stringify({ email: trimmed }),
-      });
+      await api.adminForgotPassword(trimmed);
       setSent(true);
     } catch (e: any) {
       // Backend always returns 200 to avoid email enumeration, so any error

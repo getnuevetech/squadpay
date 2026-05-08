@@ -25,11 +25,17 @@ export default function AuthScreen() {
   // Phase H6.3 — when redirected from /home with `?mode=verify&user_id=...` we
   // skip the name step entirely and go straight to phone capture for the
   // existing (unverified) account.
-  const params = useLocalSearchParams<{ mode?: string; user_id?: string }>();
+  const params = useLocalSearchParams<{ mode?: string; user_id?: string; intent?: string }>();
   const verifyMode = params.mode === 'verify' && !!params.user_id;
-  const [step, setStep] = useState<Step>(verifyMode ? 'phone' : 'name');
+  // Phase: explicit Sign-In flow (from "Already have an account? Sign in").
+  // - Skips the name step and starts at phone capture.
+  // - Hides "Skip for now" since the user explicitly wants to sign in.
+  // - On verify, silently merges into the existing account (no name-replacement popup).
+  const signinMode = params.intent === 'signin' && !verifyMode;
+  const [step, setStep] = useState<Step>(verifyMode || signinMode ? 'phone' : 'name');
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
+  const [phoneError, setPhoneError] = useState<string | null>(null);
   const [otp, setOtp] = useState('');
   const [userId, setUserId] = useState<string | null>(verifyMode ? (params.user_id as string) : null);
   const [loading, setLoading] = useState(false);
@@ -120,15 +126,56 @@ export default function AuthScreen() {
   };
 
   const submitPhone = async () => {
-    if (!userId) return;
     const cleaned = phone.trim();
+    setPhoneError(null);
     if (cleaned.length < 7) {
-      Alert.alert('Enter a valid phone number');
+      setPhoneError('Enter a valid phone number');
       return;
     }
     setLoading(true);
     try {
-      const r = await api.sendOtp(userId, cleaned);
+      // Sign-in flow: phone must already belong to a verified account.
+      // We pre-check, then create a placeholder user under the hood so the
+      // existing OTP/verify endpoints can merge into the real account.
+      let activeUserId = userId;
+      if (signinMode && !activeUserId) {
+        try {
+          const lookup = await api.lookupPhone(cleaned);
+          if (!lookup?.exists) {
+            setPhoneError("No account with this number. Tap \u201CSplit a Bill\u201D on the home screen to create one.");
+            setLoading(false);
+            return;
+          }
+          if (lookup.blocked) {
+            setPhoneError('This account has been blocked. Please contact support.');
+            setLoading(false);
+            return;
+          }
+          // Capture the existing name so we can preload it post-verify.
+          if (lookup.name) setName(lookup.name);
+        } catch (e) {
+          // Best-effort lookup; if it fails (e.g. offline) we still proceed
+          // and let the verify-otp 409 path handle the merge.
+        }
+        // Quietly create a placeholder user. After verify-otp(confirm_existing=true)
+        // the backend reuses the existing account and discards this stub.
+        try {
+          const placeholder = await api.register('Sign in');
+          activeUserId = placeholder.id;
+          setUserId(activeUserId);
+          await saveUser(placeholder);
+        } catch (e: any) {
+          setPhoneError(e?.message || 'Could not start sign in');
+          setLoading(false);
+          return;
+        }
+      }
+      if (!activeUserId) {
+        setPhoneError('Session error — please go back and try again.');
+        setLoading(false);
+        return;
+      }
+      const r = await api.sendOtp(activeUserId, cleaned);
       setOtpMocked(!!r.mocked);
       setStep('otp');
       startResendCooldown();
@@ -148,6 +195,29 @@ export default function AuthScreen() {
     }
     setLoading(true);
     try {
+      // Sign-in flow: user explicitly chose "Sign in", so we silently merge
+      // into the existing account if the phone matches one (no popup).
+      if (signinMode) {
+        try {
+          const verified = await api.verifyOtp(userId, phone.trim(), otp, true);
+          await saveUser(verified);
+          router.replace('/');
+          return;
+        } catch (e: any) {
+          // If the placeholder didn't match an existing account (e.g. lookup
+          // skipped due to network), fall back to a clear error rather than
+          // silently creating a brand-new "Sign in" account.
+          const msg = String(e?.message || '');
+          if (msg.includes('phone_already_registered') || msg.includes('already registered')) {
+            const verified = await api.verifyOtp(userId, phone.trim(), otp, true);
+            await saveUser(verified);
+            router.replace('/');
+            return;
+          }
+          throw e;
+        }
+      }
+
       // Phase H2 — pre-flight: detect "phone already registered to another account"
       // BEFORE we hand over the OTP, so we can ask the user before merging.
       let confirmExisting = false;
@@ -236,7 +306,7 @@ export default function AuthScreen() {
         <TouchableOpacity
           onPress={() => {
             if (step === 'otp') { setOtp(''); setStep('phone'); return; }
-            if (step === 'phone' && !verifyMode) { setStep('name'); return; }
+            if (step === 'phone' && !verifyMode && !signinMode) { setStep('name'); return; }
             router.replace('/');
           }}
           style={styles.backBtn}
@@ -314,36 +384,43 @@ export default function AuthScreen() {
 
         {step === 'phone' && (
           <View testID="auth-step-phone">
-            <Text style={styles.title}>Add your phone</Text>
+            <Text style={styles.title}>{signinMode ? 'Welcome back' : 'Add your phone'}</Text>
             <Text style={styles.sub}>
-              Required to pay or receive money. We'll send a 6-digit code.
+              {signinMode
+                ? 'Enter the phone number tied to your account. We\u2019ll send a 6-digit code.'
+                : 'Required to pay or receive money. We\u2019ll send a 6-digit code.'}
             </Text>
             <TextInput
               testID="auth-phone-input"
               value={phone}
-              onChangeText={setPhone}
+              onChangeText={(t) => { setPhone(t); if (phoneError) setPhoneError(null); }}
               placeholder="555 123 4567"
               placeholderTextColor={COLORS.disabledText}
-              style={styles.input}
+              style={[styles.input, phoneError ? styles.inputError : null]}
               keyboardType="phone-pad"
               autoFocus
               returnKeyType="next"
               onSubmitEditing={submitPhone}
             />
+            {phoneError ? (
+              <Text style={styles.inlineError} testID="auth-phone-error">{phoneError}</Text>
+            ) : null}
             <Button
-              title="Send code"
+              title={signinMode ? 'Send code' : 'Send code'}
               onPress={submitPhone}
               loading={loading}
               testID="auth-phone-continue-btn"
               style={{ marginTop: SPACING.lg }}
             />
-            <Button
-              title="Skip for now"
-              onPress={skipPhone}
-              variant="ghost"
-              testID="auth-phone-skip-btn"
-              style={{ marginTop: SPACING.sm }}
-            />
+            {!signinMode ? (
+              <Button
+                title="Skip for now"
+                onPress={skipPhone}
+                variant="ghost"
+                testID="auth-phone-skip-btn"
+                style={{ marginTop: SPACING.sm }}
+              />
+            ) : null}
           </View>
         )}
 
@@ -436,6 +513,8 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontWeight: FONT.weights.bold,
   },
+  inputError: { borderColor: COLORS.danger },
+  inlineError: { color: COLORS.danger, fontSize: FONT.sizes.sm, marginTop: SPACING.sm, fontWeight: FONT.weights.semibold },
   refToggle: { color: COLORS.primary, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold, marginTop: SPACING.md, textDecorationLine: 'underline' },
   refBox: { marginTop: SPACING.md, padding: SPACING.md, backgroundColor: COLORS.primaryLight, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.primary },
   refLabel: { fontSize: FONT.sizes.xs, color: COLORS.primary, fontWeight: FONT.weights.bold, textTransform: 'uppercase', marginBottom: SPACING.sm },

@@ -375,6 +375,22 @@ export const api = {
     request<{ session_id: string; status: string; payment_status: string; amount_total: number; currency: string; applied: boolean; group_id: string }>(
       `/checkout/status/${encodeURIComponent(sessionId)}`,
     ),
+  // ---- Admin password reset (public — by-email) ----
+  adminForgotPassword: (email: string) =>
+    request<{ ok: boolean }>(`/admin/auth/forgot-password`, {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+  adminValidateResetToken: (token: string) =>
+    request<{ valid: boolean; reason?: string }>(
+      `/admin/auth/reset-password/validate?token=${encodeURIComponent(token)}`,
+    ),
+  adminResetPassword: (token: string, new_password: string) =>
+    request<{ ok: boolean }>(`/admin/auth/reset-password`, {
+      method: 'POST',
+      body: JSON.stringify({ token, new_password }),
+    }),
+
   scanReceipt: (image_base64: string) =>
     request<{
       items: { name: string; price: number; quantity: number }[];

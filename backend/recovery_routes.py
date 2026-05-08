@@ -73,20 +73,42 @@ def _validate_password(pw: str) -> Optional[str]:
     return None
 
 
-def _check_token(provided: Optional[str]) -> None:
-    """Validates X-Recovery-Token. Raises 503 if disabled, 401 if mismatch."""
-    expected = os.environ.get("ADMIN_RECOVERY_TOKEN") or ""
-    expected = expected.strip()
-    if not expected or len(expected) < MIN_TOKEN_LEN:
+def _check_token(provided: Optional[str]) -> str:
+    """Validates X-Recovery-Token. Returns which gate was used ('admin_recovery_token'
+    or 'jwt_secret_fallback') for audit logging. Raises 503 if both gates are
+    unavailable, 401 if mismatch.
+
+    Two acceptable gates, in priority order:
+      1. ADMIN_RECOVERY_TOKEN env var (purpose-built, preferred)
+      2. JWT_SECRET env var (fallback for deployments where adding new env vars
+         isn't possible — user supplies their JWT_SECRET as the recovery token,
+         then rotates JWT_SECRET in the dashboard after recovery to invalidate
+         the gate AND invalidate any leaked admin sessions in one step).
+    """
+    provided = (provided or "").strip()
+    expected_dedicated = (os.environ.get("ADMIN_RECOVERY_TOKEN") or "").strip()
+    expected_fallback = (os.environ.get("JWT_SECRET") or "").strip()
+
+    has_dedicated = len(expected_dedicated) >= MIN_TOKEN_LEN
+    has_fallback = len(expected_fallback) >= MIN_TOKEN_LEN
+
+    if not has_dedicated and not has_fallback:
         raise HTTPException(
             status_code=503,
             detail=(
-                "Admin recovery is not enabled. Set ADMIN_RECOVERY_TOKEN "
-                f"(>= {MIN_TOKEN_LEN} chars) in backend env and redeploy."
+                "Admin recovery is not enabled. Either set "
+                f"ADMIN_RECOVERY_TOKEN (>= {MIN_TOKEN_LEN} chars) in backend env, "
+                f"or ensure JWT_SECRET (>= {MIN_TOKEN_LEN} chars) is configured "
+                "(it normally is) so it can act as the recovery gate."
             ),
         )
-    if not provided or not hmac.compare_digest(provided.strip(), expected):
-        raise HTTPException(status_code=401, detail="Invalid recovery token")
+
+    if has_dedicated and provided and hmac.compare_digest(provided, expected_dedicated):
+        return "admin_recovery_token"
+    if has_fallback and provided and hmac.compare_digest(provided, expected_fallback):
+        return "jwt_secret_fallback"
+
+    raise HTTPException(status_code=401, detail="Invalid recovery token")
 
 
 def _now_iso() -> str:
@@ -118,13 +140,25 @@ class ResetIn(BaseModel):
 def build_recovery_router(db) -> APIRouter:
     router = APIRouter(prefix="/api/admin/_recovery", tags=["admin-recovery"])
 
+    # Optional rate limiter (slowapi) — stops brute-force attempts on the gate.
+    try:
+        from server import limiter as _limiter
+    except Exception:
+        _limiter = None
+
+    def _maybe_limit(spec: str):
+        def deco(fn):
+            return _limiter.limit(spec)(fn) if _limiter else fn
+        return deco
+
     @router.get("/diagnose")
+    @_maybe_limit("10/minute")
     async def diagnose(
         request: Request,
         email: str = Query(..., min_length=3),
         x_recovery_token: Optional[str] = Header(None, alias="X-Recovery-Token"),
     ):
-        _check_token(x_recovery_token)
+        gate = _check_token(x_recovery_token)
         client_ip = request.client.host if request.client else "?"
         email_l = email.strip().lower()
         out: dict = {
@@ -249,20 +283,22 @@ def build_recovery_router(db) -> APIRouter:
                 action="admin_recovery.diagnose",
                 target_type="admin",
                 target_id=admin_id or email_l,
-                payload={"email": email_l, "client_ip": client_ip},
+                payload={"email": email_l, "client_ip": client_ip, "gate": gate},
             )
         except Exception:  # noqa: BLE001
             pass
 
+        out["recovered_via"] = gate
         return out
 
     @router.post("/reset-password")
+    @_maybe_limit("5/minute")
     async def reset_password(
         request: Request,
         body: ResetIn,
         x_recovery_token: Optional[str] = Header(None, alias="X-Recovery-Token"),
     ):
-        _check_token(x_recovery_token)
+        gate = _check_token(x_recovery_token)
         client_ip = request.client.host if request.client else "?"
         email_l = body.email.strip().lower()
 
@@ -335,14 +371,15 @@ def build_recovery_router(db) -> APIRouter:
                     "force_password_reset": force_reset,
                     "client_ip": client_ip,
                     "password_generated": generated,
+                    "gate": gate,
                 },
             )
         except Exception:  # noqa: BLE001
             pass
 
         log.warning(
-            "[admin_recovery] reset for email=%s admin_id=%s created=%s force=%s ip=%s",
-            email_l, admin_id, created, force_reset, client_ip,
+            "[admin_recovery] reset for email=%s admin_id=%s created=%s force=%s ip=%s gate=%s",
+            email_l, admin_id, created, force_reset, client_ip, gate,
         )
 
         return {
@@ -355,12 +392,19 @@ def build_recovery_router(db) -> APIRouter:
             "password_generated": generated,
             "outstanding_tokens_invalidated": rt.modified_count,
             "sessions_killed": s.deleted_count,
+            "recovered_via": gate,
             "sign_in_url": "https://www.squadpay.us/admin/login",
             "note": (
                 "Use this password to sign in immediately."
                 if not force_reset else
                 "force_password_reset=true — you'll be required to change "
                 "the password on first login."
+            ),
+            "post_recovery_advice": (
+                "You used the JWT_SECRET fallback gate. ROTATE JWT_SECRET in your "
+                "Emergent backend Custom Keys dashboard now to (a) invalidate the "
+                "recovery gate, (b) invalidate any leaked admin sessions."
+                if gate == "jwt_secret_fallback" else None
             ),
         }
 

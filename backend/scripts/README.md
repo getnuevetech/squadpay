@@ -77,6 +77,10 @@ When you only have access to the deploy dashboard's env vars + a way to make HTT
 
 ### 🔓 1. Activate
 
+There are **two** ways to activate the recovery endpoints — pick whichever matches your access:
+
+#### Option A — Dedicated env var (preferred when you can add custom env vars)
+
 In the backend deployment dashboard, set:
 
 ```
@@ -85,7 +89,28 @@ ADMIN_RECOVERY_TOKEN=<a long random string, 24+ chars>
 
 > Tip: generate one with `python -c 'import secrets;print(secrets.token_urlsafe(32))'` locally, or any password generator.
 
-**Redeploy the backend.** With the env unset/empty/<24 chars the endpoints return `503 Service Unavailable` — they don't even respond.
+**Redeploy the backend.** The endpoints become available.
+
+#### Option B — Reuse `JWT_SECRET` as the gate (no new env var needed)
+
+If your deployment platform doesn't let you add new custom env vars (e.g., Emergent's "Edit Custom keys" dialog only allows editing the keys declared at initial deploy), you can use the **already-configured** `JWT_SECRET` as the recovery token:
+
+1. Open your deployment dashboard's Custom Keys section.
+2. Click the 👁 reveal icon on `JWT_SECRET` and copy its value.
+3. Use that value as the `X-Recovery-Token` header in the calls below.
+4. **After recovery, ROTATE `JWT_SECRET`** in the same dashboard. This:
+   - Invalidates the recovery gate (no one can replay the call).
+   - Invalidates all currently-issued admin JWTs → forces every admin to re-login (which is healthy hygiene after a recovery event anyway).
+
+The endpoint priority-order is `ADMIN_RECOVERY_TOKEN` first, then `JWT_SECRET`. Either matching value unlocks the endpoint. The response includes `recovered_via: "admin_recovery_token"` or `"jwt_secret_fallback"` so the audit trail makes the gate explicit.
+
+#### State machine
+
+| Both env vars unset/short | `503 Service Unavailable` |
+| Either set + correct token sent | `200 OK` |
+| Either set + wrong token sent | `401 Invalid recovery token` |
+
+`MIN_TOKEN_LEN` is 24 chars. Tokens shorter than that are rejected at server boot to avoid weak-secret accidents.
 
 ### 🩺 2. Diagnose (read-only)
 
@@ -142,10 +167,18 @@ The same DB mutations + audit-log entry as the CLI path are applied. Audit actio
 
 Once you're back in:
 
+**If you used `ADMIN_RECOVERY_TOKEN`:**
 1. Remove `ADMIN_RECOVERY_TOKEN` from the deployment env vars.
 2. **Redeploy.** Endpoints will return `503` again.
 
-Leaving the token live is equivalent to leaving an unauthenticated password-reset endpoint open. Don't.
+**If you used the `JWT_SECRET` fallback:**
+1. Open your deployment dashboard's Custom Keys section.
+2. Click into `JWT_SECRET` and replace its value with a fresh random string (32+ chars).
+3. **Save / redeploy.** This single rotation does two things at once:
+   - Invalidates the recovery gate (the value you used is no longer valid).
+   - Invalidates every active admin JWT → forces re-login with the new password.
+
+Leaving the recovery gate active is equivalent to leaving an unauthenticated password-reset endpoint open. Don't.
 
 ---
 

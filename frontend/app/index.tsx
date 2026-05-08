@@ -149,6 +149,19 @@ export default function HomeScreen() {
               </LinearGradient>
             </PressableScale>
           </View>
+
+          {/* Returning user — sign in via phone + OTP */}
+          <PressableScale
+            testID="home-signin-link"
+            onPress={() => router.push('/auth?intent=signin')}
+            style={styles.welcomeSigninLinkBtn}
+            scaleTo={0.97}
+          >
+            <View style={styles.welcomeSigninLinkRow}>
+              <Text style={styles.welcomeSigninLinkText}>Already have an account? </Text>
+              <Text style={styles.welcomeSigninLinkAction}>Sign in</Text>
+            </View>
+          </PressableScale>
         </View>
       </SafeAreaView>
     );
@@ -431,6 +444,24 @@ const styles = StyleSheet.create({
     fontSize: FONT.sizes.md,
     fontWeight: FONT.weights.bold,
     letterSpacing: 0.2,
+  },
+  welcomeSigninLinkBtn: {
+    alignItems: 'center',
+    paddingVertical: 12,
+    marginTop: 4,
+  },
+  welcomeSigninLinkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  welcomeSigninLinkText: {
+    fontSize: FONT.sizes.sm,
+    color: COLORS.subtext,
+  },
+  welcomeSigninLinkAction: {
+    fontSize: FONT.sizes.sm,
+    color: COLORS.primary,
+    fontWeight: FONT.weights.bold,
   },
   // Legacy (kept for back-compat) — unused below.
   welcomeCtaCol: { marginTop: SPACING.xl, gap: SPACING.md },

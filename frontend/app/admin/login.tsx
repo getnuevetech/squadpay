@@ -37,7 +37,14 @@ export default function AdminLogin() {
         <TouchableOpacity testID="admin-login-submit" style={[styles.btn, busy && { opacity: 0.6 }]} onPress={submit} disabled={busy} activeOpacity={0.85}>
           {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Sign in</Text>}
         </TouchableOpacity>
-        <Text style={styles.hint}>Default super-admin credentials are seeded from ADMIN_EMAIL / ADMIN_PASSWORD env vars.</Text>
+        <TouchableOpacity
+          testID="admin-login-forgot"
+          onPress={() => router.push('/admin/forgot-password')}
+          activeOpacity={0.7}
+          style={{ alignSelf: 'center', marginTop: 8 }}
+        >
+          <Text style={styles.forgotLink}>Forgot password?</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -54,4 +61,5 @@ const styles = StyleSheet.create({
   btn: { marginTop: SPACING.md, height: 46, borderRadius: RADIUS.md, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center' },
   btnText: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: FONT.sizes.md },
   hint: { fontSize: 11, color: COLORS.subtext, marginTop: SPACING.md, lineHeight: 16 },
+  forgotLink: { fontSize: FONT.sizes.sm, color: COLORS.primary, fontWeight: FONT.weights.semibold },
 });

@@ -93,8 +93,8 @@ app.include_router(api_router)
 
 # ---------- Admin password reset (Phase H7) — mounted directly on app ----------
 try:
-    from admin_password_reset import router as admin_pw_reset_router
-    app.include_router(admin_pw_reset_router)
+    from admin_password_reset import build_password_reset_router
+    app.include_router(build_password_reset_router(db))
 except Exception as _e:
     print("[startup] admin password reset routes attach failed:", _e)
 

@@ -27,16 +27,18 @@ class EmailNotConfigured(RuntimeError):
 def _config():
     host = os.environ.get("EMAIL_HOST")
     port = int(os.environ.get("EMAIL_PORT") or 587)
-    user = os.environ.get("EMAIL_USER")
-    password = os.environ.get("EMAIL_PASSWORD")
+    user = os.environ.get("EMAIL_USER")          # SMTP login (must be a real mailbox)
+    password = os.environ.get("EMAIL_PASSWORD")  # App Password
     from_name = os.environ.get("EMAIL_FROM_NAME") or "SquadPay"
+    # Optional: send-as alias. Falls back to the SMTP login if not configured.
+    from_addr = os.environ.get("EMAIL_FROM") or user
     if not (host and user and password):
         raise EmailNotConfigured(
             "EMAIL_HOST / EMAIL_USER / EMAIL_PASSWORD must be set in backend env"
         )
     # Gmail App Passwords are sometimes pasted with spaces — strip them defensively.
     password = password.replace(" ", "")
-    return host, port, user, password, from_name
+    return host, port, user, password, from_name, from_addr
 
 
 def send_email(
@@ -47,13 +49,15 @@ def send_email(
     reply_to: str | None = None,
 ) -> None:
     """Send a transactional email via SMTP. Raises on failure so caller can react."""
-    host, port, user, password, from_name = _config()
+    host, port, user, password, from_name, from_addr = _config()
     recipients = [to] if isinstance(to, str) else list(to)
     if not recipients:
         raise ValueError("send_email called with no recipients")
 
     msg = EmailMessage()
-    msg["From"] = formataddr((from_name, user))
+    # Show the friendly alias as the From: header. SMTP login still uses `user`
+    # (the real Workspace mailbox).
+    msg["From"] = formataddr((from_name, from_addr))
     msg["To"] = ", ".join(recipients)
     msg["Subject"] = subject
     if reply_to:

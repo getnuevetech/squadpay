@@ -181,8 +181,15 @@ def build_password_reset_router(db) -> APIRouter:
 
         await db.admins.update_one(
             {"id": admin_id},
-            {"$set": {"password_hash": hash_password(payload.new_password),
-                      "password_updated_at": _iso(_now())}}
+            {"$set": {
+                "password_hash": hash_password(payload.new_password),
+                "password_updated_at": _iso(_now()),
+                # Reset all lockout state so the admin can sign in immediately.
+                "failed_logins": 0,
+                "locked_until": None,
+                "lock_round": 0,
+                "force_password_reset": False,
+            }}
         )
         # Invalidate ALL outstanding tokens for the admin (single-use + cleanup).
         await db[COLL].update_many(

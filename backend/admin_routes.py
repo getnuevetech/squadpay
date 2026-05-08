@@ -43,19 +43,132 @@ def build_admin_router(db):
     from admin_integrations import attach_integrations_routes  # noqa: F401
 
     # ----- Auth -----
+    LOGIN_ATTEMPT_LIMIT = 3
+    LOGIN_LOCK_MIN = 15
+
     @router.post("/auth/login", response_model=AdminAuthResponse)
     async def login(body: AdminLoginIn, request: Request):
         # Make sure the seed admin exists every time (idempotent).
         await ensure_seed_admin(db)
         admin = await db.admins.find_one({"email": body.email.lower()}, {"_id": 0})
-        if not admin or not verify_password(body.password, admin.get("password_hash", "")):
+        if not admin:
             raise HTTPException(401, "Invalid email or password")
+
+        now = dt.datetime.now(dt.timezone.utc)
+
+        # ── Hard block: previously-flagged force-reset state.
+        if admin.get("force_password_reset"):
+            raise HTTPException(
+                status_code=423,
+                detail={
+                    "code": "password_reset_required",
+                    "message": (
+                        "Your account is locked due to repeated failed sign-ins. "
+                        "Please reset your password to continue."
+                    ),
+                },
+            )
+
+        # ── Soft block: temporary lockout window not yet expired.
+        locked_until_iso = admin.get("locked_until")
+        if locked_until_iso:
+            try:
+                locked_until = dt.datetime.fromisoformat(locked_until_iso)
+            except Exception:
+                locked_until = None
+            if locked_until and locked_until > now:
+                remaining = max(0, int((locked_until - now).total_seconds()))
+                raise HTTPException(
+                    status_code=423,
+                    detail={
+                        "code": "locked",
+                        "message": f"Too many failed sign-ins. Try again in {(remaining + 59) // 60} minute(s).",
+                        "retry_after_seconds": remaining,
+                    },
+                )
+
+        # ── Verify password.
+        if not verify_password(body.password, admin.get("password_hash", "")):
+            failed = int(admin.get("failed_logins", 0)) + 1
+            lock_round = int(admin.get("lock_round", 0))
+            updates: dict = {"failed_logins": failed}
+
+            # Hit the per-round threshold? Apply lock or escalate to forced reset.
+            if failed >= LOGIN_ATTEMPT_LIMIT:
+                if lock_round == 0:
+                    # First lockout: 15-min cool-off.
+                    lock_until = (now + dt.timedelta(minutes=LOGIN_LOCK_MIN)).isoformat()
+                    updates.update({
+                        "locked_until": lock_until,
+                        "lock_round": 1,
+                        "failed_logins": 0,  # reset counter for next round
+                    })
+                    user_msg = (
+                        f"Account locked for {LOGIN_LOCK_MIN} minutes after "
+                        f"{LOGIN_ATTEMPT_LIMIT} failed sign-ins."
+                    )
+                else:
+                    # Already had one lockout round — escalate to forced password reset.
+                    updates.update({
+                        "force_password_reset": True,
+                        "locked_until": None,
+                        "failed_logins": 0,
+                    })
+                    user_msg = (
+                        "Too many failed sign-ins. Your account is locked — "
+                        "please reset your password to continue."
+                    )
+                await db.admins.update_one({"id": admin["id"]}, {"$set": updates})
+                await write_audit(
+                    db, admin_id=admin["id"], admin_email=admin["email"],
+                    action="admin.login_locked",
+                    payload={"lock_round": updates.get("lock_round", lock_round),
+                             "force_reset": bool(updates.get("force_password_reset"))},
+                    request=request,
+                )
+                raise HTTPException(
+                    status_code=423,
+                    detail={
+                        "code": "password_reset_required" if updates.get("force_password_reset") else "locked",
+                        "message": user_msg,
+                        "retry_after_seconds": LOGIN_LOCK_MIN * 60 if not updates.get("force_password_reset") else None,
+                    },
+                )
+
+            await db.admins.update_one({"id": admin["id"]}, {"$set": updates})
+            await write_audit(
+                db, admin_id=admin["id"], admin_email=admin["email"],
+                action="admin.login_failed",
+                payload={"attempt": failed, "limit": LOGIN_ATTEMPT_LIMIT},
+                request=request,
+            )
+            attempts_left = LOGIN_ATTEMPT_LIMIT - failed
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "invalid_credentials",
+                    "message": (
+                        f"Invalid email or password. {attempts_left} attempt"
+                        f"{'s' if attempts_left != 1 else ''} remaining before lock."
+                    ),
+                    "attempts_left": attempts_left,
+                },
+            )
+
         if not admin.get("is_active", True):
             raise HTTPException(403, "Account is disabled")
+
+        # ── Success: reset counters and issue token.
         token = create_access_token(admin["id"], admin["role"])
         await db.admins.update_one(
             {"id": admin["id"]},
-            {"$set": {"last_login_at": dt.datetime.now(dt.timezone.utc).isoformat()}},
+            {"$set": {
+                "last_login_at": now.isoformat(),
+                "failed_logins": 0,
+                "locked_until": None,
+                "lock_round": 0,
+                "force_password_reset": False,
+            }},
         )
         await write_audit(
             db,

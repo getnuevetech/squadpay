@@ -79,18 +79,35 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   try { body = text ? JSON.parse(text) : null; } catch { body = text; }
   if (!res.ok) {
     // Auto-handle expired/missing admin token: clear session + redirect to login.
+    // BUT skip the redirect on the login page itself — otherwise the page reload
+    // wipes the inline error message before the user can see it.
     if (res.status === 401) {
-      try { await clearSession(); } catch {}
       try {
-        // Best-effort web-only redirect; native redirects via the layout's auth check.
-        if (typeof window !== 'undefined' && (window as any).location) {
-          const onLogin = (window as any).location.pathname?.startsWith('/admin/login');
-          if (!onLogin) (window as any).location.replace('/admin/login');
+        const onLogin =
+          typeof window !== 'undefined' &&
+          (window as any).location?.pathname?.startsWith('/admin/login');
+        if (!onLogin) {
+          await clearSession();
+          if (typeof window !== 'undefined' && (window as any).location) {
+            (window as any).location.replace('/admin/login');
+          }
         }
       } catch {}
     }
+    const detail = body?.detail;
+    // Surface the structured object (with code / attempts_left / retry_after_seconds)
+    // when the backend returns one, so the caller can branch on it.
+    if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+      const err = new Error(detail.message || `HTTP ${res.status}`) as Error & { code?: string; data?: any };
+      err.code = detail.code;
+      err.data = detail;
+      (err as any).status = res.status;
+      throw err;
+    }
     const msg = (body && (body.detail?.[0]?.msg || body.detail || body.message)) || `HTTP ${res.status}`;
-    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+    const err = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg)) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
   }
   return body as T;
 }

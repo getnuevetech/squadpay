@@ -109,6 +109,15 @@ try:
 except Exception as _e:
     print("[startup] admin password reset routes attach failed:", _e)
 
+# ---------- Admin recovery (gated by ADMIN_RECOVERY_TOKEN env) ----------
+# Disabled by default: every endpoint returns 503 unless the env var is set.
+# See /app/backend/scripts/README.md for the full activation flow.
+try:
+    from recovery_routes import build_recovery_router
+    app.include_router(build_recovery_router(db))
+except Exception as _e:
+    print("[startup] admin recovery routes attach failed:", _e)
+
 # CORS — When `allow_credentials=True`, the spec forbids `allow_origins=["*"]`.
 # Browsers silently reject cross-origin responses with that combo (manifests as
 # "Failed to fetch" client-side). We use an explicit allowlist plus a regex

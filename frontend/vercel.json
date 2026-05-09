@@ -3,6 +3,6 @@
   "trailingSlash": false,
   "rewrites": [
     { "source": "/api/:path*", "destination": "https://joint-pay-1.emergent.host/api/:path*" },
-    { "source": "/((?!_expo|assets|favicon|.*\\..*).*)", "destination": "/" }
+    { "source": "/(.*)", "destination": "/" }
   ]
 }

@@ -8,15 +8,15 @@
     { "source": "/admin/reset-password",  "destination": "/admin/reset-password.html" },
     { "source": "/legal/privacy",         "destination": "/legal/privacy.html" },
     { "source": "/legal/terms",           "destination": "/legal/terms.html" },
-    { "source": "/admin/groups/:id", "destination": "/admin/groups/%5Bid%5D.html" },
-    { "source": "/admin/users/:id",  "destination": "/admin/users/%5Bid%5D.html" },
-    { "source": "/group/:id",        "destination": "/group/%5Bid%5D.html" },
-    { "source": "/group/:id/items",   "destination": "/group/%5Bid%5D/items.html" },
-    { "source": "/group/:id/pay",     "destination": "/group/%5Bid%5D/pay.html" },
-    { "source": "/group/:id/summary", "destination": "/group/%5Bid%5D/summary.html" },
-    { "source": "/group/:id/success", "destination": "/group/%5Bid%5D/success.html" },
-    { "source": "/group/:id/dashboard","destination": "/group/%5Bid%5D/dashboard.html" },
-    { "source": "/reveal/:id",       "destination": "/reveal/%5Bid%5D.html" },
-    { "source": "/join/:code",       "destination": "/join/%5Bcode%5D.html" }
+    { "source": "/admin/groups/:id",         "destination": "/index.html" },
+    { "source": "/admin/users/:id",          "destination": "/index.html" },
+    { "source": "/group/:id",                "destination": "/index.html" },
+    { "source": "/group/:id/items",          "destination": "/index.html" },
+    { "source": "/group/:id/pay",            "destination": "/index.html" },
+    { "source": "/group/:id/summary",        "destination": "/index.html" },
+    { "source": "/group/:id/success",        "destination": "/index.html" },
+    { "source": "/group/:id/dashboard",      "destination": "/index.html" },
+    { "source": "/reveal/:id",               "destination": "/index.html" },
+    { "source": "/join/:code",               "destination": "/index.html" }
   ]
 }

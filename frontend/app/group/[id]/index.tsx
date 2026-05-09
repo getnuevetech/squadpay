@@ -94,7 +94,18 @@ export default function GroupLobbyScreen() {
   }
 
   const isLead = group.lead_id === userId;
-  const joinUrl = `${BACKEND_URL}/join/${group.code}`;
+  // Share link must point at the WEB FRONTEND (not the backend API host).
+  // Priority: EXPO_PUBLIC_WEB_BASE_URL env var → browser origin (web) → backend
+  // host (legacy fallback for dev so old test links still resolve).
+  const webBase = (() => {
+    const fromEnv = process.env.EXPO_PUBLIC_WEB_BASE_URL;
+    if (fromEnv && fromEnv.trim()) return fromEnv.replace(/\/$/, '');
+    if (typeof window !== 'undefined' && window?.location?.origin) {
+      return window.location.origin.replace(/\/$/, '');
+    }
+    return (BACKEND_URL || '').replace(/\/$/, '');
+  })();
+  const joinUrl = `${webBase}/join/${group.code}`;
 
   const copy = async () => {
     await Clipboard.setStringAsync(joinUrl);

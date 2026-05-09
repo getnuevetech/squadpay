@@ -31,6 +31,19 @@ const REQUIRED = {
     placeholders: ['pk_live_REPLACE_ME', 'pk_test_REPLACE_ME', 'REPLACE_ME', ''],
     mustStartWith: 'pk_',
   },
+  EXPO_PUBLIC_WEB_BASE_URL: {
+    profiles: ['preview', 'production'],
+    placeholders: [
+      'your-web-domain.example.com',
+      'REPLACE_ME',
+      // Backend host accidentally used as web base — historically what caused
+      // join links to 404 (FastAPI does not serve the join screen).
+      'emergent.host',
+      '.emergentagent.com',
+      '',
+    ],
+    mustStartWith: 'https://',
+  },
 };
 
 const profile = process.env.EAS_BUILD_PROFILE || process.env.NODE_ENV || 'development';

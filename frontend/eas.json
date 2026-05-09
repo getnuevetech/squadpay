@@ -16,7 +16,8 @@
         "simulator": true
       },
       "env": {
-        "EXPO_PUBLIC_BACKEND_URL": "https://joint-pay-1.emergent.host"
+        "EXPO_PUBLIC_BACKEND_URL": "https://joint-pay-1.emergent.host",
+        "EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY": "pk_test_51T2maQJuc7vKWKrLMJFxnJftqA9gYCP0bhoq2RteCOdMGxTZzDO9gTWaZrCbiUZOs49owASyMkbiEDZ3gTnAhz8n00Gcy5DGJC"
       }
     },
     "preview": {

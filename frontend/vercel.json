@@ -1,22 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "cleanUrls": true,
   "trailingSlash": false,
   "rewrites": [
     { "source": "/api/:path*", "destination": "https://joint-pay-1.emergent.host/api/:path*" },
-    { "source": "/admin/forgot-password", "destination": "/admin/forgot-password.html" },
-    { "source": "/admin/reset-password",  "destination": "/admin/reset-password.html" },
-    { "source": "/legal/privacy",         "destination": "/legal/privacy.html" },
-    { "source": "/legal/terms",           "destination": "/legal/terms.html" },
-    { "source": "/admin/groups/:id",         "destination": "/index.html" },
-    { "source": "/admin/users/:id",          "destination": "/index.html" },
-    { "source": "/group/:id",                "destination": "/index.html" },
-    { "source": "/group/:id/items",          "destination": "/index.html" },
-    { "source": "/group/:id/pay",            "destination": "/index.html" },
-    { "source": "/group/:id/summary",        "destination": "/index.html" },
-    { "source": "/group/:id/success",        "destination": "/index.html" },
-    { "source": "/group/:id/dashboard",      "destination": "/index.html" },
-    { "source": "/reveal/:id",               "destination": "/index.html" },
-    { "source": "/join/:code",               "destination": "/index.html" }
+    { "source": "/((?!_expo|assets|favicon|.*\\..*).*)", "destination": "/" }
   ]
 }

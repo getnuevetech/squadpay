@@ -244,6 +244,7 @@ def attach_users_and_groups_routes(router: APIRouter, db, attach_admin):
             "split_mode": g.get("split_mode"),
             "funding_mode": g.get("funding_mode"),
             "lead_paid_at": g.get("lead_paid_at"),
+            "lead_reassigned_at": g.get("lead_reassigned_at"),
         }
 
     @router.post("/groups/{group_id}/block")

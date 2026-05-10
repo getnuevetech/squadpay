@@ -13,9 +13,10 @@ type Props = {
   height?: number;
 };
 
-const AVATAR_LEFT = 'https://images.unsplash.com/photo-1618298363483-e31a31f1a1e2?crop=entropy&cs=srgb&fm=jpg&w=160&q=80';
-const AVATAR_RIGHT_MAN = 'https://images.unsplash.com/photo-1762709412730-321a0d81b517?crop=entropy&cs=srgb&fm=jpg&w=160&q=80';
-const AVATAR_RIGHT_WOMAN = 'https://images.unsplash.com/photo-1764216069652-fbff0e0337f6?crop=entropy&cs=srgb&fm=jpg&w=160&q=80';
+// Per user request: white girl (top-left), Hispanic guy + Black girl (bottom-right pair).
+const AVATAR_LEFT = 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?crop=entropy&cs=srgb&fm=jpg&w=160&q=80';
+const AVATAR_RIGHT_MAN = 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?crop=entropy&cs=srgb&fm=jpg&w=160&q=80';
+const AVATAR_RIGHT_WOMAN = 'https://images.unsplash.com/photo-1531123897727-8f129e1688ce?crop=entropy&cs=srgb&fm=jpg&w=160&q=80';
 
 function PhotoAvatar({ uri, size = 64 }: { uri: string; size?: number }) {
   return (

@@ -261,6 +261,25 @@ def attach_pay_routes(router: APIRouter, db):
             user_share = float(per.get("total")) if per else 0.0
             user_contributed = float(per.get("contributed")) if per else 0.0
             user_outstanding = float(per.get("outstanding")) if per else 0.0
+
+            # Phase L+3 — surface paid_count (# members fully covered) and
+            # contributed_total (sum collected so far) so the home featured
+            # card "X of N paid · $A of $B" line is real, not mock.
+            per_users = e.get("per_user") or []
+            non_lead = [p for p in per_users if p.get("user_id") != g.get("lead_id")]
+            # A member is "paid" if their outstanding is settled OR they have
+            # contributed at least their share into the wallet.
+            paid_count = sum(
+                1 for p in non_lead
+                if float(p.get("outstanding") or 0) <= 0.01
+                and (float(p.get("contributed") or 0) > 0 or float(p.get("repaid") or 0) > 0)
+            )
+            funding = e.get("funding") or {}
+            contributed_total = float(
+                funding.get("total_contributed") or funding.get("contributed_total") or 0
+            )
+            total_repaid = float(funding.get("total_repaid") or 0)
+
             enriched.append({
                 "id": g["id"],
                 "title": g["title"],
@@ -275,5 +294,15 @@ def attach_pay_routes(router: APIRouter, db):
                 "user_share": round(user_share, 2),
                 "user_contributed": round(user_contributed, 2),
                 "user_outstanding": round(user_outstanding, 2),
+                # Group-level progress (used by FeaturedBillCard)
+                "paid_count": paid_count,
+                # member_count includes the lead; the "X of N" tile excludes
+                # the lead, so expose the non-lead count too for accurate UX.
+                "member_count_non_lead": len(non_lead),
+                "funding": {
+                    "total_contributed": round(contributed_total, 2),
+                    "total_repaid": round(total_repaid, 2),
+                    "contributed_total": round(contributed_total, 2),  # legacy alias
+                },
             })
         return enriched

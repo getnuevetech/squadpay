@@ -269,24 +269,18 @@ export default function HomeScreen() {
                   title={featured.title}
                   userShare={Number((featured as any).user_share || 0)}
                   groupTotal={Number(featured.total || 0)}
-                  paidAmount={Number((featured as any).funding?.contributed_total || 0)}
+                  paidAmount={Number((featured as any).funding?.contributed_total || (featured as any).funding?.total_contributed || 0)}
                   paidCount={Number((featured as any).paid_count || 0)}
-                  totalCount={Number(featured.member_count || 0)}
+                  totalCount={Number((featured as any).member_count_non_lead || Math.max(0, (Number(featured.member_count || 1) - 1)))}
                   leadId={featured.lead_id}
                   members={(featured as any).members_preview || []}
                   selfId={user.id}
                   selfName={user.name || ''}
-                  onPress={() => router.push(`/group/${featured.id}/dashboard`)}
+                  onPress={() => router.push(`/group/${featured.id}/summary`)}
                   onPay={() => {
-                    // If user hasn't claimed any items yet → route to items list.
-                    // Otherwise → go straight to pay.
-                    const contributed = Number((featured as any).user_contributed || 0);
-                    const share = Number((featured as any).user_share || 0);
-                    if (share <= 0.005 && contributed <= 0.005) {
-                      router.push(`/group/${featured.id}/items`);
-                    } else {
-                      router.push(`/group/${featured.id}/pay`);
-                    }
+                    // Always route to Your Share page; user can choose to view items
+                    // or pay from there. This makes the flow consistent for lead & member.
+                    router.push(`/group/${featured.id}/summary`);
                   }}
                   onAddFriend={() => router.push(`/group/${featured.id}`)}
                   onPlusToItems={() => router.push(`/group/${featured.id}/items`)}
@@ -329,10 +323,9 @@ export default function HomeScreen() {
               renderItem={({ item }) => (
                 <Pressable
                   onPress={() => {
-                    // Lead → goes to dashboard (manage / withdraw view).
-                    // Member → goes to items list so they can claim their share.
-                    const isLead = item.lead_id === user.id;
-                    router.push(`/group/${item.id}/${isLead ? 'dashboard' : 'items'}`);
+                    // Always open Your Share page; from there users can navigate
+                    // to items, dashboard (lead), or pay.
+                    router.push(`/group/${item.id}/summary`);
                   }}
                   style={({ pressed }) => [styles.groupRow, pressed && { opacity: 0.95 }]}
                   testID={`home-group-row-${item.id}`}

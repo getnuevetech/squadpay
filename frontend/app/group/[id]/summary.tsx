@@ -158,6 +158,11 @@ export default function SummaryScreen() {
             <StatusBadge status={group.derived_status} size="sm" testID="summary-status-badge" />
           </View>
           <Text style={styles.yourAmount} testID="summary-your-amount">${myShare.toFixed(2)}</Text>
+          <View style={styles.totalChip} testID="summary-group-total-chip">
+            <Receipt size={12} color="#fff" />
+            <Text style={styles.totalChipLabel}>{group.title} · Bill total</Text>
+            <Text style={styles.totalChipAmount}>${Number(group.total || 0).toFixed(2)}</Text>
+          </View>
           <View style={styles.breakdownRow}>
             <Text style={styles.breakdownKey}>Items</Text>
             <Text style={styles.breakdownVal}>${myFood.toFixed(2)}</Text>
@@ -330,11 +335,14 @@ export default function SummaryScreen() {
           })}
         </View>
 
-        {/* Item 14 — Collapsible per-member items breakdown (post-contribution, smart/itemized only) */}
+        {/* Item 14 — Collapsible per-member items breakdown.
+            Visible whenever there are items + assignments, regardless of phase,
+            so members can always see "who paid for what" — including during
+            the open contribution phase (read-only). Equal-split bills (fast)
+            don't have item assignments so this card is skipped. */}
         {group.split_mode !== 'fast' &&
-          group.derived_status &&
-          ['contributed', 'repaying', 'settled'].includes(group.derived_status) &&
-          group.items.length > 0 && (
+          group.items.length > 0 &&
+          group.assignments.length > 0 && (
             <View style={styles.breakdownCard} testID="summary-items-breakdown">
               <TouchableOpacity
                 onPress={() => setItemsExpanded((v) => !v)}
@@ -343,7 +351,7 @@ export default function SummaryScreen() {
                 testID="summary-items-breakdown-toggle"
               >
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.breakdownTitle}>Who paid for what</Text>
+                  <Text style={styles.breakdownTitle}>Who's paying for what</Text>
                   <Text style={styles.breakdownSubtitle}>
                     Tap to {itemsExpanded ? 'collapse' : 'expand'} the per-member item list
                   </Text>
@@ -363,7 +371,7 @@ export default function SummaryScreen() {
                           <Text style={styles.breakdownMemberName}>
                             {m.name} {m.user_id === userId ? '(You)' : ''}
                           </Text>
-                          <Text style={styles.breakdownEmpty}>No items claimed</Text>
+                          <Text style={styles.breakdownEmpty}>No items claimed yet</Text>
                         </View>
                       );
                     }
@@ -420,8 +428,12 @@ export default function SummaryScreen() {
           </View>
         )}
 
-        {/* Lead-only: add more items as long as bill is not settled */}
-        {isLead && group.status !== 'closed' && (
+        {/* Lead-only: add more items as long as bill is not settled.
+            Per UX: during the OPEN contribution phase we lock items so the
+            list members are paying for can't change underneath them. The
+            lead can resume editing once the bill is past contribution
+            (e.g. paid the merchant and is now collecting repayments). */}
+        {isLead && group.status !== 'open' && group.status !== 'closed' && (
           <TouchableOpacity
             testID="summary-add-items-btn"
             style={styles.addItemsBtn}
@@ -542,6 +554,29 @@ const styles = StyleSheet.create({
     letterSpacing: -1,
     marginTop: 2,
     marginBottom: SPACING.md,
+  },
+  totalChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(255,255,255,0.16)',
+    borderColor: 'rgba(255,255,255,0.22)',
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: RADIUS.md,
+    marginBottom: SPACING.md,
+  },
+  totalChipLabel: {
+    color: '#EDE9FE',
+    fontSize: FONT.sizes.xs,
+    fontWeight: FONT.weights.semibold,
+    flex: 1,
+  },
+  totalChipAmount: {
+    color: '#fff',
+    fontSize: FONT.sizes.md,
+    fontWeight: FONT.weights.bold,
   },
   breakdownRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
   breakdownKey: { color: '#EDE9FE', fontSize: FONT.sizes.sm },

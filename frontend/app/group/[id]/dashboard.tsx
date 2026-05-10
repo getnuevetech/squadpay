@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { CheckCircle2, Clock, Zap, Landmark, TrendingUp, Plus, ArrowLeft, Receipt, UserPlus, CreditCard } from 'lucide-react-native';
+import { CheckCircle2, Clock, Zap, Landmark, TrendingUp, Plus, ArrowLeft, Receipt, UserPlus, CreditCard, ChevronDown } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
@@ -23,6 +23,7 @@ export default function DashboardScreen() {
   const [group, setGroup] = useState<Group | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [itemsExpanded, setItemsExpanded] = useState(false);
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -313,7 +314,75 @@ export default function DashboardScreen() {
           })}
         </View>
 
-        {group.repayments.length > 0 && (
+        {/* Per-member items breakdown (collapsible) — visible whenever the
+            bill has assignable items, regardless of phase. */}
+        {(group as any).split_mode !== 'fast' &&
+          group.items.length > 0 &&
+          group.assignments.length > 0 && (
+            <View style={styles.itemsBreakCard} testID="dashboard-items-breakdown">
+              <TouchableOpacity
+                onPress={() => setItemsExpanded((v) => !v)}
+                style={styles.itemsBreakToggle}
+                activeOpacity={0.85}
+                testID="dashboard-items-breakdown-toggle"
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.itemsBreakTitle}>Who's paying for what</Text>
+                  <Text style={styles.itemsBreakSub}>
+                    Tap to {itemsExpanded ? 'collapse' : 'expand'} per-member item list
+                  </Text>
+                </View>
+                <View style={[itemsExpanded && { transform: [{ rotate: '180deg' }] }]}>
+                  <ChevronDown size={18} color={COLORS.subtext} />
+                </View>
+              </TouchableOpacity>
+              {itemsExpanded && (
+                <View style={styles.itemsBreakBody}>
+                  {group.members.map((m) => {
+                    const claims = group.assignments.filter((a) => a.user_id === m.user_id);
+                    const isLeadRow = m.user_id === group.lead_id;
+                    if (claims.length === 0) {
+                      return (
+                        <View key={m.user_id} style={styles.itemsBreakMember}>
+                          <Text style={styles.itemsBreakMemberName}>
+                            {m.name}{m.user_id === userId ? ' (You)' : ''}{isLeadRow ? ' • Lead' : ''}
+                          </Text>
+                          <Text style={styles.itemsBreakEmpty}>No items claimed yet</Text>
+                        </View>
+                      );
+                    }
+                    const memberTotal = claims.reduce((s, a) => {
+                      const it = group.items.find((i) => i.id === a.item_id);
+                      return s + ((it?.price || 0) * (a.quantity || 0));
+                    }, 0);
+                    return (
+                      <View key={m.user_id} style={styles.itemsBreakMember}>
+                        <View style={styles.itemsBreakMemberHeader}>
+                          <Text style={styles.itemsBreakMemberName}>
+                            {m.name}{m.user_id === userId ? ' (You)' : ''}{isLeadRow ? ' • Lead' : ''}
+                          </Text>
+                          <Text style={styles.itemsBreakMemberTotal}>${memberTotal.toFixed(2)}</Text>
+                        </View>
+                        {claims.map((a) => {
+                          const it = group.items.find((i) => i.id === a.item_id);
+                          if (!it) return null;
+                          const cost = (it.price || 0) * (a.quantity || 0);
+                          return (
+                            <View key={`${a.item_id}-${m.user_id}`} style={styles.itemsBreakRow}>
+                              <Text style={styles.itemsBreakItemName}>
+                                {it.name} × {a.quantity}
+                              </Text>
+                              <Text style={styles.itemsBreakItemAmt}>${cost.toFixed(2)}</Text>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
+            </View>
+          )}
           <>
             <Text style={styles.sectionTitle}>Repayment history</Text>
             <View style={styles.listCard}>
@@ -590,4 +659,37 @@ const styles = StyleSheet.create({
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
   statusText: { fontSize: FONT.sizes.xs, color: COLORS.subtext, fontWeight: FONT.weights.medium },
   amount: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },
+  // Items breakdown (collapsible, per-member)
+  itemsBreakCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginTop: SPACING.md,
+    marginBottom: SPACING.md,
+    overflow: 'hidden',
+  },
+  itemsBreakToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: SPACING.md,
+    gap: SPACING.sm,
+  },
+  itemsBreakTitle: { color: COLORS.text, fontWeight: FONT.weights.bold, fontSize: FONT.sizes.md },
+  itemsBreakSub: { color: COLORS.subtext, fontSize: FONT.sizes.xs, marginTop: 2 },
+  itemsBreakBody: {
+    paddingHorizontal: SPACING.md,
+    paddingBottom: SPACING.md,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    paddingTop: SPACING.sm,
+  },
+  itemsBreakMember: { marginTop: SPACING.sm, paddingTop: SPACING.sm, borderTopWidth: 1, borderTopColor: COLORS.border },
+  itemsBreakMemberHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  itemsBreakMemberName: { color: COLORS.text, fontWeight: FONT.weights.semibold, fontSize: FONT.sizes.sm },
+  itemsBreakMemberTotal: { color: COLORS.primary, fontWeight: FONT.weights.bold, fontSize: FONT.sizes.sm },
+  itemsBreakEmpty: { color: COLORS.subtext, fontSize: FONT.sizes.xs, fontStyle: 'italic' },
+  itemsBreakRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3, paddingLeft: 8 },
+  itemsBreakItemName: { color: COLORS.subtext, fontSize: FONT.sizes.xs, flex: 1 },
+  itemsBreakItemAmt: { color: COLORS.text, fontSize: FONT.sizes.xs, fontWeight: FONT.weights.medium },
 });

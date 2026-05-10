@@ -4203,6 +4203,67 @@ agent_communication:
           - Section header now reads "Members ({group.members.length})" so the
             count is explicit at a glance.
           - New styles added: avatarLead, nameRow, leadBadge, leadBadgeText.
+
+# ──────────────────────────────────────────────────────────────────────────
+# Phase L+3 — User-reported UX/data bugs fixed (MAIN AGENT)
+# ──────────────────────────────────────────────────────────────────────────
+agent_communication:
+    - agent: "main"
+      message: |
+        User reported 7 issues. All addressed:
+
+        1) [BACKEND] /api/users/{user_id}/groups now returns:
+             paid_count               → # non-lead members fully covered
+             member_count_non_lead    → total non-lead members
+             funding.contributed_total
+             funding.total_contributed
+             funding.total_repaid
+           File: /app/backend/routes/pay_routes.py
+           This unblocks the Featured Bill Card "X of N paid · $A of $B" line
+           which was hard-coded 0 because these fields weren't surfaced.
+           Verified via curl: real numbers returned (paid_count=1,
+           contributed_total=125.55, etc.).
+
+        2) [FRONTEND] /app/frontend/app/index.tsx
+           - FeaturedBillCard now reads the new backend fields
+             (paidAmount, paidCount, totalCount=member_count_non_lead).
+           - "Pay Now" CTA on the featured card now routes to
+             /group/[id]/summary (Your Share) instead of conditional items/pay
+             routing — single, predictable destination.
+           - Tapping any group row in the bills list also goes straight to
+             /group/[id]/summary (was: lead→dashboard, member→items).
+
+        3) [FRONTEND] /app/frontend/app/group/[id]/summary.tsx
+           - Added prominent "Bill total" chip inside the violet "Your share"
+             hero card (right under the big amount) so the user sees both
+             their share AND the group grand total, just like the home page.
+           - "Add more items" lead-only CTA is now hidden while
+             status === 'open' (contribution phase) — items are locked the
+             moment the bill is opened for contributions.
+           - "Who's paying for what" collapsible breakdown is now visible
+             during ALL phases (was previously gated to post-contribution
+             only) so members can see what they're paying for in real time.
+           - Empty-claim copy updated to "No items claimed yet".
+
+        4) [FRONTEND] /app/frontend/app/group/[id]/dashboard.tsx
+           - Added the same "Who's paying for what" collapsible breakdown
+             card right after the Members list, with per-member totals and
+             item details.  Lead can see at a glance who has claimed what.
+           - Members list keeps the LEAD badge fix from Phase L+2 (lead is
+             rendered in the Members list with violet avatar + LEAD pill).
+
+        5) Issue #6 (lead missing from member list) was already addressed in
+           Phase L+2; no further code change needed.  The user likely needs
+           to refresh / pull-to-refresh on the dashboard.
+
+        Verification:
+        - Backend lint passes.
+        - Metro bundles iOS + Web with no errors.
+        - Curl against /api/users/.../groups returns the new fields with
+          accurate values.
+
+        No tests or auth credentials changed.
+
           - `flexShrink: 1` added to `memberName` so long names don't push the
             LEAD pill off-screen.
 

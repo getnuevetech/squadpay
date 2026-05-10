@@ -282,11 +282,9 @@ export default function HomeScreen() {
                     router.push(`/group/${featured.id}/${isLead ? 'dashboard' : 'summary'}`);
                   }}
                   onPay={() => {
-                    // Same routing rule as the card body so the user lands
-                    // on the right page for their role; from there they can
-                    // tap Pay/Items as needed.
-                    const isLead = featured.lead_id === user.id;
-                    router.push(`/group/${featured.id}/${isLead ? 'dashboard' : 'summary'}`);
+                    // Always route to the Pay screen — user can pay their share
+                    // immediately without an extra hop.
+                    router.push(`/group/${featured.id}/pay`);
                   }}
                   onAddFriend={() => router.push(`/group/${featured.id}`)}
                   onPlusToItems={() => router.push(`/group/${featured.id}/items`)}

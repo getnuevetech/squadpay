@@ -82,6 +82,13 @@ export default function DashboardScreen() {
     .filter((p) => p.user_id !== group.lead_id)
     .reduce((s, p) => s + p.total, 0);
   const pct = totalOwed > 0 ? Math.min(100, (totalCollected / totalOwed) * 100) : 100;
+  // Cap displayed % at 99 if anyone still has outstanding — collection
+  // can't be "100%" while a member is unpaid.
+  const totalOutstandingAll = (group.per_user || []).reduce(
+    (s: number, p: any) => s + Number(p.outstanding || 0),
+    0,
+  );
+  const displayedPct = totalOutstandingAll > 0.01 ? Math.min(99, pct) : pct;
   const pendingMembers = group.members.filter((m) => {
     if (m.user_id === group.lead_id) return false;
     const per = group.per_user.find((p) => p.user_id === m.user_id);
@@ -200,10 +207,10 @@ export default function DashboardScreen() {
             <Text style={styles.heroV2MetaPrimary}>
               ${totalCollected.toFixed(0)} of ${totalOwed.toFixed(0)} collected
             </Text>
-            <Text style={styles.heroV2MetaSecondary}>{Math.round(pct)}%</Text>
+            <Text style={styles.heroV2MetaSecondary}>{Math.round(displayedPct)}%</Text>
           </View>
           <View style={styles.heroV2Track}>
-            <View style={[styles.heroV2Fill, { width: `${Math.min(100, pct)}%` }]} />
+            <View style={[styles.heroV2Fill, { width: `${Math.min(100, displayedPct)}%` }]} />
           </View>
           <View style={styles.heroV2RemainingRow}>
             <Text style={styles.heroV2RemainingLabel}>Remaining</Text>
@@ -366,7 +373,7 @@ export default function DashboardScreen() {
 
 
 
-        {leadFronted ? (
+        {leadFronted && withdrawable > 0.01 ? (
           <>
             <View style={styles.withdrawHero} testID="dashboard-withdraw-hero">
               <View style={{ flex: 1 }}>
@@ -411,23 +418,7 @@ export default function DashboardScreen() {
               </TouchableOpacity>
             </View>
           </>
-        ) : (
-          <View style={styles.noWithdrawCard} testID="dashboard-no-withdraw">
-            <View style={styles.noWithdrawIcon}>
-              <Landmark size={20} color={COLORS.subtext} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.noWithdrawTitle}>No withdrawal needed</Text>
-              <Text style={styles.noWithdrawSub}>
-                {group.status === 'open'
-                  ? 'Withdrawal unlocks once you cover any shortfall when paying the merchant.'
-                  : group.funding_mode === 'group'
-                  ? 'Bill was fully group-funded — the wallet went straight to the merchant, so there is nothing to withdraw.'
-                  : 'No outstanding amount to withdraw.'}
-              </Text>
-            </View>
-          </View>
-        )}
+        ) : null}
 
         <Text style={styles.sectionTitle}>Members ({group.members.length})</Text>
         <View style={styles.listCard}>
@@ -593,9 +584,9 @@ const styles = StyleSheet.create({
   heroV2GroupTitle: {
     color: '#FFFFFF',
     fontWeight: FONT.weights.heavy,
-    fontSize: 24,
-    letterSpacing: -0.4,
-    lineHeight: 28,
+    fontSize: 18,
+    letterSpacing: -0.3,
+    lineHeight: 22,
   },
   heroV2SubLabel: {
     color: '#D7C7FB',

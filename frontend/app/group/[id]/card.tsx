@@ -154,8 +154,11 @@ export default function GroupCardScreen() {
   const fullyFunded = collected >= total - 0.01;
   const isActive = hasCard && vc.status === 'active';
   const isDisabled = hasCard && vc.status === 'inactive';
-  const cap = Number(vc?.spend_cap || total || 0);
+  // Card "balance" is what members have actually contributed (not the
+  // expected total), minus any spend.
+  const cap = collected;
   const spent = Number(vc?.spent || 0);
+  const available = Math.max(0, cap - spent);
   const spendPct = cap > 0 ? Math.min(100, (spent / cap) * 100) : 0;
 
   return (
@@ -215,14 +218,12 @@ export default function GroupCardScreen() {
                   <Text style={styles.cardValue}>${spent.toFixed(2)}</Text>
                 </View>
                 <View>
-                  <Text style={styles.cardTinyLabel}>Cap</Text>
-                  <Text style={styles.cardValue}>${cap.toFixed(2)}</Text>
+                  <Text style={styles.cardTinyLabel}>Available</Text>
+                  <Text style={styles.cardValue}>${available.toFixed(2)}</Text>
                 </View>
                 <View>
-                  <Text style={styles.cardTinyLabel}>Exp</Text>
-                  <Text style={styles.cardValue}>
-                    {String(vc.exp_month).padStart(2, '0')}/{String(vc.exp_year).slice(-2)}
-                  </Text>
+                  <Text style={styles.cardTinyLabel}>Funded</Text>
+                  <Text style={styles.cardValue}>${cap.toFixed(2)}</Text>
                 </View>
               </View>
             </LinearGradient>

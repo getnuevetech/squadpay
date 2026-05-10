@@ -410,15 +410,15 @@ export default function GroupLobbyScreen() {
       <View style={[styles.bottomBar, SHADOW.lg]}>
         {isLead ? (
           <Button
-            title={group.split_mode === 'fast' ? 'Continue to Split' : 'Continue to Items'}
+            title="Lead Dashboard"
             testID="lobby-continue-btn"
-            onPress={continueToItems}
+            onPress={() => router.replace(`/group/${group.id}/dashboard`)}
           />
         ) : (
           <Button
-            title="See your share"
+            title="User Dashboard"
             testID="lobby-continue-btn"
-            onPress={continueToItems}
+            onPress={() => router.replace(`/group/${group.id}/summary`)}
           />
         )}
       </View>

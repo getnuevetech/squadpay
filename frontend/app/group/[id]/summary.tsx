@@ -110,6 +110,13 @@ export default function SummaryScreen() {
 
   const funding = group.funding;
   const collectedPct = group.total > 0 ? Math.min(100, (funding.total_contributed / group.total) * 100) : 0;
+  // If anyone still has outstanding, cap displayed % at 99 — collection
+  // is only "100%" once every share is paid.
+  const _outstandingTotal = (group.per_user || []).reduce(
+    (s: number, p: any) => s + Number(p.outstanding || 0),
+    0,
+  );
+  const displayedPct = _outstandingTotal > 0.01 ? Math.min(99, collectedPct) : collectedPct;
   const remaining = funding.remaining_to_collect;
 
   const memberName = (uid?: string) => {
@@ -232,12 +239,12 @@ export default function SummaryScreen() {
               ${funding.total_contributed.toFixed(0)} of ${Number(group.total || 0).toFixed(0)} collected
             </Text>
             <Text style={styles.heroV2MetaSecondary}>
-              {Math.round(collectedPct)}%
+              {Math.round(displayedPct)}%
             </Text>
           </View>
           <View style={styles.heroV2Track}>
             <View
-              style={[styles.heroV2Fill, { width: `${Math.min(100, collectedPct)}%` }]}
+              style={[styles.heroV2Fill, { width: `${Math.min(100, displayedPct)}%` }]}
             />
           </View>
           <View style={styles.heroV2RemainingRow}>
@@ -633,12 +640,12 @@ const styles = StyleSheet.create({
   heroV2GroupTitle: {
     color: '#FFFFFF',
     fontWeight: FONT.weights.heavy,
-    fontSize: 24,
-    letterSpacing: -0.4,
-    lineHeight: 28,
+    fontSize: 18,
+    letterSpacing: -0.3,
+    lineHeight: 22,
   },
   heroV2AmountRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
-  heroV2AmountCol: { marginTop: 8 },
+  heroV2AmountCol: { marginTop: 8, alignItems: 'flex-end' },
   heroV2Label: {
     color: '#fff',
     fontSize: 13,

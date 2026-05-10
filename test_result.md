@@ -4758,6 +4758,75 @@ backend:
 
         - Metro bundles iOS + Web cleanly (HTTP 200, landing page screenshot
           renders perfectly with all redesign elements intact).
+
+# ──────────────────────────────────────────────────────────────────────────
+# Phase L+10 — 11-item dashboard tightening (MAIN AGENT)
+# ──────────────────────────────────────────────────────────────────────────
+agent_communication:
+    - agent: "main"
+      message: |
+        Eleven user-reported polish items addressed.
+
+        #1 — heroV2AmountCol now `alignItems: 'flex-end'` so "Your Share"
+              label + dollar value + "of $X.XX bill total" subtitle sit
+              right-aligned together.
+
+        #2 — Home FeaturedBillCard "Pay Now" CTA now routes directly to
+              /group/[id]/pay (not the dashboard hop).
+
+        #3 — Lead has just ONE dashboard. Routing rule is unchanged:
+              isLead → /dashboard, else → /summary. The "two dashboards"
+              issue is simply the existing /summary route — leads don't
+              navigate there because the home click goes straight to
+              /dashboard.
+
+        #4 — /group/[id]/index.tsx (lobby/QR page) bottom CTA now reads:
+                · "Lead Dashboard" → /dashboard   (when isLead)
+                · "User Dashboard" → /summary     (when member)
+              Previously it was "Continue to Items / See your share".
+
+        #5 — Withdraw section completely hidden on Lead Dashboard when
+              `withdrawable <= 0.01`. Previously a "No withdrawal needed"
+              empty-state was shown — that block is gone.
+
+        #6 — Collection percentage (and progress-bar fill) is now capped at
+              99% when any member still has outstanding > $0.01:
+                `displayedPct = anyOutstanding ? Math.min(99, raw) : raw`
+              Applied on both summary.tsx and dashboard.tsx hero.
+
+        #7 — (already addressed in earlier phases) Inline per-member
+              expander shows item × qty + amount for each item the member
+              claimed. Group-level Bill / Fund Breakdown (collapsible)
+              shows the group totals.
+
+        #8 — Group title in heroV2GroupTitle reduced from 24px/heavy to
+              18px/heavy, lineHeight 22, on both summary.tsx and dashboard.tsx.
+
+        #9 — "NEW Lead Change Test" no longer renders on the Virtual Card
+              page. The card-face now displays a static "SquadPay" brand
+              instead of `vc.nickname` (which Stripe stored as
+              "<biz> - <group title>" at issuance time).
+
+        #10 — Card-face values are now driven by ACTUAL group contributions:
+                  cap       = group.funding.total_contributed
+                  spent     = vc.spent
+                  available = max(0, cap − spent)
+              Footer fields now read: Spent / Available / Funded.
+              The expected/spend_cap value is no longer surfaced — only
+              what's actually in the wallet.
+
+        #11 — Items remain locked when contributions exist:
+              `itemsLocked = (group.contributions?.length || 0) > 0`.
+              Already in items.tsx; the lock applies to the lead too. The
+              "Items locked — contributions started" banner shows once
+              any contribution lands.
+
+        Unrelated: console "Text strings must be rendered within Text"
+        warning on Lead Dashboard was traced to an orphan `<>` fragment
+        + dangling `)}` left over from a previous sed-based deletion.
+        Fixed in Phase L+9 — re-wrapped the Repayment History block.
+        Verified: zero text-string warnings on landing reload.
+
         - All edits are scoped to summary.tsx, dashboard.tsx,
           group/[id]/index.tsx, FeaturedBillCard.tsx, _layout.tsx.
 

@@ -136,27 +136,7 @@ export default function HomeScreen() {
             Scan a receipt, share a link, and only pay for what you ordered.
           </Text>
 
-          {/* Three feature cards — exactly like reference */}
-          <View style={styles.featureList}>
-            <View style={styles.featureRow} testID="landing-feature-share">
-              <View style={styles.featureIcon}>
-                <PlusSquare size={22} color={COLORS.primary} strokeWidth={2.2} />
-              </View>
-              <Text style={styles.featureLabel}>Share a QR or link to split</Text>
-            </View>
-            <View style={styles.featureRow} testID="landing-feature-claim">
-              <View style={styles.featureIcon}>
-                <FileText size={22} color={COLORS.primary} strokeWidth={2.2} />
-              </View>
-              <Text style={styles.featureLabel}>Claim only what you ordered</Text>
-            </View>
-            <View style={styles.featureRow} testID="landing-feature-track">
-              <View style={styles.featureIcon}>
-                <RotateCw size={22} color={COLORS.primary} strokeWidth={2.2} />
-              </View>
-              <Text style={styles.featureLabel}>Track repayments automatically</Text>
-            </View>
-          </View>
+          {/* Three feature cards removed per request — keeping only headline + 2 big CTAs. */}
 
           {/* Two big CTA cards — Split a Bill (primary violet) + Join a Bill (secondary white) */}
           <View style={styles.ctaPair}>
@@ -378,7 +358,7 @@ const styles = StyleSheet.create({
   landingScroll: { padding: SPACING.lg, paddingBottom: SPACING.xl, alignItems: 'stretch' },
   heroFrameSlot: { alignItems: 'center', marginTop: SPACING.md, marginBottom: SPACING.lg },
   brandRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 4, marginBottom: SPACING.md },
-  headline: { textAlign: 'center', fontSize: 38, fontWeight: FONT.weights.bold, lineHeight: 46, letterSpacing: -1.2 },
+  headline: { textAlign: 'center', fontSize: 40, fontWeight: '900', lineHeight: 48, letterSpacing: -1.4 },
   headlineDark: { color: '#0E0726' },
   headlineViolet: { color: COLORS.primary },
   subhead: {

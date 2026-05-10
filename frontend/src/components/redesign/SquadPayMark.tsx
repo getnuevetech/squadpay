@@ -56,8 +56,8 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   wordmark: {
-    fontWeight: FONT.weights.bold,
-    letterSpacing: -0.8,
+    fontWeight: '900',
+    letterSpacing: -1,
   },
 });
 

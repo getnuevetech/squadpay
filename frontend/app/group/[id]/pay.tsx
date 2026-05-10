@@ -14,6 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Check, CreditCard, Lock, Smartphone, Wallet, ShieldCheck, Sparkles, Receipt } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
+import { GradientButton } from '../../../src/components/GradientButton';
 import { api, Group } from '../../../src/api';
 import { refreshUser, saveUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SHADOW, SPACING } from '../../../src/theme';
@@ -888,20 +889,20 @@ export default function PayScreen() {
             </View>
           ) : null}
           {!isVerified && verifyStep === 'idle' ? (
-            <Button
+            <GradientButton
               title="Verify phone to continue"
               onPress={() => setVerifyStep('phone')}
               testID="pay-start-verify-btn"
-              leftIcon={<ShieldCheck size={18} color="#fff" />}
+              icon={<ShieldCheck size={18} color="#fff" />}
             />
           ) : (
             <>
-              <Button
+              <GradientButton
                 title={`Pay $${amount.toFixed(2)}`}
                 loading={loading}
                 onPress={doPay}
                 testID="pay-submit-btn"
-                leftIcon={<CreditCard size={18} color="#fff" />}
+                icon={<CreditCard size={18} color="#fff" />}
                 disabled={!isVerified || blockedNoAmount}
               />
               {kind === 'lead' && isVerified && !blockedNoAmount && (group.funding?.remaining_to_collect || 0) > 0.01 ? (

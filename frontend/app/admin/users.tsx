@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { View, Text, ScrollView, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Search, Ban, ShieldCheck, ChevronRight, Filter } from 'lucide-react-native';
+import { Search, Ban, ShieldCheck, ChevronRight, Filter, FileCheck2 } from 'lucide-react-native';
 import { adminApi, AdminUserRow } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
 
@@ -88,6 +88,13 @@ export default function AdminUsersList() {
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
               <Text style={styles.name} numberOfLines={1}>{u.name || '—'}</Text>
               {u.verified ? <ShieldCheck size={12} color={COLORS.success} /> : null}
+              {u.terms_accepted_at ? (
+                <FileCheck2
+                  size={12}
+                  color={COLORS.success}
+                  testID={`admin-users-terms-${u.id}`}
+                />
+              ) : null}
               {u.is_blocked ? (
                 <View style={styles.blockedBadge}><Ban size={10} color={COLORS.danger} /><Text style={styles.blockedBadgeText}>Blocked</Text></View>
               ) : null}

@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Platform, TextInput } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ArrowLeft, Ban, ShieldCheck, Crown, Users as UsersIcon, Wallet, Plus, X as XIcon, Percent, DollarSign, Trash2, KeyRound } from 'lucide-react-native';
+import { ArrowLeft, Ban, ShieldCheck, Crown, Users as UsersIcon, Wallet, Plus, X as XIcon, Percent, DollarSign, Trash2, KeyRound, FileCheck2, FileWarning } from 'lucide-react-native';
 import { adminApi, AdminUserDetail, AdminGroupRow, UserCreditWallet, LeadAutoDiscount } from '../../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 
@@ -182,6 +182,31 @@ export default function AdminUserDetailPage() {
           {user.is_blocked && user.blocked_reason ? (
             <Text style={styles.blockedReason}>Reason: {user.blocked_reason}</Text>
           ) : null}
+          {/* T&C agreement status — surfaces user agreement check stored on the
+              user account so support staff can confirm acceptance. */}
+          <View
+            testID="admin-user-terms-row"
+            style={[
+              styles.termsRow,
+              user.terms_accepted_at ? styles.termsRowOk : styles.termsRowMissing,
+            ]}
+          >
+            {user.terms_accepted_at ? (
+              <>
+                <FileCheck2 size={12} color={COLORS.success} />
+                <Text style={styles.termsTextOk} testID="admin-user-terms-accepted">
+                  Terms agreed · {new Date(user.terms_accepted_at).toLocaleDateString()}
+                </Text>
+              </>
+            ) : (
+              <>
+                <FileWarning size={12} color={COLORS.warning} />
+                <Text style={styles.termsTextMissing} testID="admin-user-terms-missing">
+                  Terms not yet agreed
+                </Text>
+              </>
+            )}
+          </View>
         </View>
       </View>
 
@@ -370,6 +395,22 @@ const styles = StyleSheet.create({
   blockedPill: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: COLORS.dangerLight, paddingHorizontal: 6, paddingVertical: 2, borderRadius: RADIUS.pill },
   blockedPillText: { fontSize: 10, color: COLORS.danger, fontWeight: FONT.weights.bold },
   blockedReason: { fontSize: FONT.sizes.xs, color: COLORS.danger, marginTop: 6, fontStyle: 'italic' },
+  // T&C agreement pill — green when signed, amber if pre-T&C / not yet agreed.
+  termsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: RADIUS.pill,
+    borderWidth: 1,
+  },
+  termsRowOk: { backgroundColor: COLORS.successLight, borderColor: COLORS.success },
+  termsRowMissing: { backgroundColor: COLORS.warningLight, borderColor: COLORS.warning },
+  termsTextOk: { fontSize: 11, color: COLORS.success, fontWeight: FONT.weights.semibold },
+  termsTextMissing: { fontSize: 11, color: COLORS.warning, fontWeight: FONT.weights.semibold },
   statsRow: { flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.md, flexWrap: 'wrap' },
   statCard: { flex: 1, minWidth: 120, padding: SPACING.md, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS.md },
   statLabel: { fontSize: FONT.sizes.xs, color: COLORS.subtext, textTransform: 'uppercase', fontWeight: FONT.weights.medium },

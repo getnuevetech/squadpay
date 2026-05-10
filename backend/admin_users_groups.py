@@ -24,6 +24,9 @@ def _user_public(u: dict) -> dict:
         "blocked_reason": u.get("blocked_reason"),
         "blocked_at": u.get("blocked_at"),
         "created_at": u.get("created_at"),
+        # T&C acceptance — surfaced in admin so support can confirm a user
+        # has agreed to the latest terms (or hasn't, for legacy accounts).
+        "terms_accepted_at": u.get("terms_accepted_at"),
     }
 
 

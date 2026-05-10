@@ -233,9 +233,29 @@ def attach_pay_routes(router: APIRouter, db):
         groups = await db.groups.find(
             {"members.user_id": user_id}, {"_id": 0}
         ).sort("created_at", -1).to_list(100)
+
+        # Resolve all member names in one round-trip so we can render avatar
+        # stacks on the home screen without N+1 queries.
+        all_member_ids = list({m.get("user_id") for g in groups for m in (g.get("members") or []) if m.get("user_id")})
+        users = await db.users.find(
+            {"id": {"$in": all_member_ids}}, {"_id": 0, "id": 1, "name": 1}
+        ).to_list(length=None) if all_member_ids else []
+        name_map = {u["id"]: u.get("name") or "" for u in users}
+
         enriched = []
         for g in groups:
             e = await _recompute_group(g)
+            members = g.get("members", []) or []
+            # Lead first, then up to 4 total — used by home screen for stacked
+            # avatar rings ("show first 4 colorful AvatarRings stacked").
+            ordered = sorted(
+                members,
+                key=lambda m: (0 if m.get("user_id") == g.get("lead_id") else 1, m.get("joined_at") or ""),
+            )
+            preview = [
+                {"user_id": m.get("user_id"), "name": name_map.get(m.get("user_id"), "")}
+                for m in ordered[:4]
+            ]
             enriched.append({
                 "id": g["id"],
                 "title": g["title"],
@@ -244,6 +264,7 @@ def attach_pay_routes(router: APIRouter, db):
                 "derived_status": e["derived_status"],
                 "lead_id": g["lead_id"],
                 "created_at": g["created_at"],
-                "member_count": len(g.get("members", [])),
+                "member_count": len(members),
+                "members_preview": preview,
             })
         return enriched

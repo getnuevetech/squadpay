@@ -1,7 +1,7 @@
 import { Stack, useRouter, usePathname } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Platform, ActivityIndicator } from 'react-native';
-import { LayoutDashboard, ScrollText, Users, LogOut, Shield, UserCog, Receipt, Gift, Plug, Wallet, RefreshCw, Lock, BarChart3 } from 'lucide-react-native';
+import { LayoutDashboard, ScrollText, Users, LogOut, Shield, UserCog, Receipt, Gift, Plug, Wallet, RefreshCw, Lock, BarChart3, FileText } from 'lucide-react-native';
 import { adminApi, AdminProfile, getProfile, getToken, clearSession } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
 
@@ -16,6 +16,7 @@ const NAV_ITEMS = [
   { href: '/admin/master-account', label: 'Master Account', icon: Wallet },
   { href: '/admin/security', label: 'Security', icon: Lock, requireRole: ['super_admin'] as const },
   { href: '/admin/audit', label: 'Audit log', icon: ScrollText },
+  { href: '/admin/legal-pages', label: 'Legal pages', icon: FileText },
   { href: '/admin/admins', label: 'Admins', icon: Users, requireRole: ['super_admin'] as const },
 ];
 

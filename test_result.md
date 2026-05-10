@@ -3589,3 +3589,330 @@ backend:
                 clears unconditionally.
 
             All single-session acceptance criteria pass. No backend changes needed.
+
+
+# ───────────────────────────────────────────────────────────────────
+# Phase J — Admin Legal Pages CMS + T&C visibility + Home avatar stack
+#   (this update batch — backend should be tested)
+# ───────────────────────────────────────────────────────────────────
+
+backend:
+  - task: "Admin user T&C agreement visibility (admin_users_groups.py)"
+    implemented: true
+    working: true
+    file: "/app/backend/admin_users_groups.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Added terms_accepted_at to _user_public(), so it appears on:
+              - GET /api/admin/users (list)
+              - GET /api/admin/users/{user_id} (detail)
+            Acceptance criteria:
+              1. New field present (string ISO date or null) on every row in
+                 list payload + on user detail.
+              2. For users that called POST /users/{user_id}/accept-terms before,
+                 the field equals the stored timestamp.
+              3. For legacy (pre-T&C) users the field is null.
+              4. No regression on the rest of the /api/admin/users(.../{id})
+                 payload (groups_led, groups_joined, total_billed_as_lead,
+                 led_groups, joined_groups still present).
+        -working: true
+        -agent: "testing"
+        -comment: |
+            Phase J — VERIFIED end-to-end via /app/backend_test_phase_j.py against
+            http://localhost:8001/api with admin@squadpay.us. All assertions pass.
+            • GET /admin/users?limit=50 → every row (50/50) includes
+              terms_accepted_at along with id,name,phone,verified,is_blocked,
+              blocked_reason,blocked_at,created_at,groups_led,groups_joined,
+              total_billed_as_lead.
+            • GET /admin/users/{id} → response includes terms_accepted_at,
+              led_groups [list], joined_groups [list], + all user_public fields.
+            • Legacy never-accepted user: terms_accepted_at returned as null
+              (field present, value None) — not missing.
+            • POST /users/{id}/accept-terms returned ts
+              "2026-05-10T03:35:03.154850+00:00"; same ts subsequently surfaced
+              on both list and detail endpoints (== match). Idempotent — second
+              accept-terms call returned the identical timestamp.
+
+  - task: "Members preview (lead-first, first 4) on /api/users/{user_id}/groups"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/pay_routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Each item now includes `members_preview`: array of up to 4 entries
+            { user_id, name } sorted lead-first then by joined_at. Used by the
+            home group cards to render stacked AvatarRings. Verify:
+              1. For groups with N members:
+                 - len(members_preview) == min(4, N)
+                 - members_preview[0].user_id == lead_id
+                 - names resolved from users collection (not blank for known users)
+              2. member_count remains accurate (count of all members, not preview).
+              3. Other fields unchanged: id, title, total, status, derived_status,
+                 lead_id, created_at, member_count.
+        -working: true
+        -agent: "testing"
+        -comment: |
+            Phase J — VERIFIED. Tested against 3 size buckets:
+              =1 (lead-only): n=1, preview=['Bless'].
+              2-4: n=3, preview=['Lead-…','Member2-…','Mem4-…'] (first==lead).
+              >=5: n=5, preview=4 entries (truncated), first==lead, all names
+                    non-empty.
+            For every bucket:
+              • len(members_preview) == min(4, member_count) ✅
+              • members_preview[0].user_id == lead_id ✅
+              • All entries shaped {user_id, name} ✅
+              • member_count is the TOTAL count (not preview length) ✅
+              • All other fields preserved (id, title, total, status,
+                derived_status, lead_id, created_at, member_count) ✅
+            Note: a few orphan-lead groups exist in the dev DB (lead_id pointing
+            to a deleted user). For those, the resolution code returns "" for
+            unknown user_id rather than crashing — handled gracefully.
+
+  - task: "Admin legal-pages CMS endpoints (legal_routes.py)"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/legal_routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            (Pre-existing endpoints, but new admin UI now consumes them — please
+            re-verify against current admin role checks.)
+              GET    /api/admin/legal/pages           → returns 3 rows (support/
+                     privacy/terms) with is_default flag, requires admin auth.
+              PUT    /api/admin/legal/pages/{slug}    → updates title +
+                     content_html for valid slug only; rejects unknown slug
+                     with 400.
+              POST   /api/admin/legal/upload          → multipart upload, returns
+                     {id,url,size,mime_type}. Rejects non image/* or video/*
+                     (400) and >10MB (413).
+              GET    /api/legal/pages/{slug}          → public; reflects latest
+                     PUT immediately (no caching).
+              GET    /api/legal/media/{id}            → public; serves stored
+                     bytes with Cache-Control: public, max-age=86400.
+            Sanity that the smoke test passed locally:
+              - PUT support → updated_at set, updated_by = admin id.
+              - GET public support reflects new content.
+        -working: true
+        -agent: "testing"
+        -comment: |
+            Phase J — VERIFIED end-to-end. All admin gating, validation, and
+            multipart upload paths pass:
+              Auth: GET /admin/legal/pages without bearer → 401; PUT without
+                    bearer → 401; with admin token → 200.
+              Read: 3 rows returned (slugs=privacy,support,terms); each row has
+                    slug,title,content_html,updated_at,is_default.
+              Write: PUT support {title,content_html} → 200 with ok=true and
+                    record echoed; consecutive PUTs are idempotent (latest wins).
+                    PUT foobar → 400 "Invalid slug". Empty title → 422.
+                    >500_000-char content_html → 422.
+              Public read: GET /legal/pages/support immediately reflects latest
+                    PUT (title + content_html match). GET /legal/pages/foobar →
+                    404.
+              Upload: 75-byte PNG → 200 {id,url:'/api/legal/media/{id}',size:75,
+                    mime_type:'image/png'}. Public GET /legal/media/{id} (no
+                    auth) → 200, bytes match exactly, Content-Type=image/png.
+                    Non-image (text/plain) → 400. >10MB → 413.
+
+frontend:
+  - task: "Admin user detail page surfaces T&C agreement pill"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/admin/users/[id].tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Adds a green "Terms agreed · <date>" or amber "Terms not yet agreed"
+            pill below the user's id/joined line (testIDs:
+            admin-user-terms-row, admin-user-terms-accepted,
+            admin-user-terms-missing). Also adds a small green FileCheck2 icon
+            on the users list row when terms_accepted_at is set
+            (testID admin-users-terms-<id>).
+
+  - task: "Admin legal pages CMS UI (index + WYSIWYG editor)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/admin/legal-pages/index.tsx, /app/frontend/app/admin/legal-pages/[slug].tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            New admin sidebar item "Legal pages" routes to /admin/legal-pages.
+            Index lists Support / Privacy / Terms with last-edited info and
+            an Edit pill. The editor at /admin/legal-pages/[slug] has:
+              - Title TextInput
+              - Toolbar that wraps selection with h2/h3/h4/p/strong/em/ul/ol/li/a
+              - Image / Video upload (web → File picker; native → expo-image-picker)
+                that calls POST /api/admin/legal/upload and inserts the resulting
+                <img>/<video> tag at the cursor.
+              - Live preview toggle (uses the same <LegalHtml/> renderer as the
+                public legal pages, so admins see exactly what users will see).
+              - Save calls PUT /api/admin/legal/pages/{slug}; Revert restores
+                the loaded content.
+
+  - task: "Home group cards — stacked avatar preview (Phase J)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/index.tsx"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Each group row now renders the first 4 colorful AvatarRings (lead
+            crown on the lead) overlapping by 10px, plus a "+N" counter when
+            member_count exceeds 4. Pulls from members_preview added in
+            pay_routes.py. testID admin-group-avatars-<id>.
+
+  - task: "GradientButton applied to hot CTAs (Pay, Create Bill, Verify phone)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/group/[id]/pay.tsx, /app/frontend/app/create.tsx"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            "Pay $X" (testID pay-submit-btn), "Verify phone to continue"
+            (pay-start-verify-btn) and "Create Bill" (create-submit-btn) now
+            use the brand violet→indigo GradientButton. Stripe alt button
+            (pay-stripe-btn) intentionally kept on the secondary Button to
+            preserve hierarchy.
+
+metadata:
+  test_sequence: 4
+  last_phase: "phase-J-legal-cms-and-tnc-visibility"
+
+test_plan:
+  current_focus:
+    - "Admin user T&C agreement visibility (admin_users_groups.py)"
+    - "Members preview (lead-first, first 4) on /api/users/{user_id}/groups"
+    - "Admin legal-pages CMS endpoints (legal_routes.py)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase J — Please verify the three backend tasks above. Smoke results
+        (already run locally with admin token, on dev backend):
+          - admin/legal/pages → 3 default rows.
+          - PUT support {title,content_html} → 200 ok=true, public GET reflects.
+          - admin/users list returns terms_accepted_at on every row (None for
+            legacy users).
+          - users/{id}/groups returns members_preview lead-first.
+        Edge cases to confirm:
+          1. admin auth required for /api/admin/legal/* (401 without token).
+          2. PUT with unknown slug → 400.
+          3. POST /admin/legal/upload — reject non-image/video (400) and large
+             (>10MB) files (413). Multipart parsing OK.
+          4. POST /users/{id}/accept-terms idempotent (already retested in
+             previous phase) → terms_accepted_at then surfaces in admin views.
+          5. members_preview correctness when group has 1, 4, or >4 members.
+        Do NOT test the new admin UI screens — frontend will be tested only on
+        explicit user request.
+
+
+    -agent: "testing"
+    -message: |
+        Phase J — Backend test executed end-to-end via /app/backend_test_phase_j.py
+        against http://localhost:8001/api with admin@squadpay.us. 69/69 assertions
+        PASS, 0 FAIL.
+
+        (1) Admin user T&C visibility — PASS
+            • GET /admin/users?limit=50: 50 rows returned, every item includes
+              terms_accepted_at PLUS id, name, phone, verified, is_blocked,
+              blocked_reason, blocked_at, created_at, groups_led, groups_joined,
+              total_billed_as_lead. ✅
+            • GET /admin/users/{user_id}: response includes terms_accepted_at,
+              led_groups [list], joined_groups [list], plus all user_public
+              fields. ✅
+            • Legacy never-accepted user: terms_accepted_at returned as None
+              (key present, value null) — matches spec. ✅
+            • POST /api/users/{id}/accept-terms returns
+              {ok:true, terms_accepted_at:"2026-05-10T03:35:03.154850+00:00"}.
+              The same ts subsequently surfaces (== match) on both
+              /admin/users (list) and /admin/users/{id} (detail). ✅
+            • accept-terms is idempotent — second call returned identical ts. ✅
+
+        (2) members_preview on /api/users/{user_id}/groups — PASS
+            • Verified against 3 size buckets:
+                =1 (lead-only): n=1, preview=['Bless'].
+                2-4: n=3, preview=['Lead-…','Member2-…','Mem4-…'] (first is lead).
+                >=5: n=5, preview=4 entries (truncated), first==lead, all names
+                      non-empty.
+            • For every bucket:
+                - len(members_preview) == min(4, member_count) ✅
+                - members_preview[0].user_id == lead_id ✅
+                - All entries shaped {user_id, name} ✅
+                - member_count is the TOTAL count (not preview length) ✅
+                - All other fields preserved (id, title, total, status,
+                  derived_status, lead_id, created_at, member_count) ✅
+            • Note: dev DB has a few orphan-lead groups (lead_id pointing to a
+              deleted user). Test logic skips those when picking buckets — the
+              pay_routes.get_user_groups code itself handles unknown user_id
+              by returning an empty-string name (not a crash). For known users
+              names always resolve correctly.
+
+        (3) Admin Legal pages CMS — PASS
+            Auth gate:
+                GET /admin/legal/pages without auth → 401 "Admin auth required". ✅
+                PUT /admin/legal/pages/support without auth → 401. ✅
+            Read:
+                GET /admin/legal/pages with admin token → 200, 3 rows
+                (slugs=['privacy','support','terms']); each row has
+                slug/title/content_html/updated_at/is_default. ✅
+            Write:
+                PUT /admin/legal/pages/support {title,content_html} → 200 with
+                ok=true and the updated record echoed. ✅
+                Idempotent — back-to-back PUTs both 200, latest content reflected. ✅
+                PUT /admin/legal/pages/foobar → 400 "Invalid slug". ✅
+                Empty title → 422. ✅
+                content_html >500_000 chars → 422. ✅
+            Public read:
+                GET /api/legal/pages/support (no auth) immediately reflects the
+                latest PUT (title and content_html match). ✅
+                GET /api/legal/pages/foobar → 404. ✅
+            Upload:
+                POST /admin/legal/upload (multipart) with a valid 75-byte PNG
+                → 200 {id, url:'/api/legal/media/{id}', size:75,
+                mime_type:'image/png'}. ✅
+                GET /api/legal/media/{id} (no auth) → 200, exact bytes match,
+                Content-Type:image/png. ✅
+                Non-image (text/plain) → 400 "Only images and videos are
+                allowed". ✅
+                >10MB image → 413 "File too large (max 10 MB)". ✅
+
+        Backend log notes (informational, not blockers):
+            - passlib bcrypt cosmetic warning (no functional impact).
+            - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes; ≥32 recommended).
+            - slowapi 5/min OTP rate limit hit briefly during synthetic group
+              construction in scenario (2); test paces around it. Not a Phase
+              J defect.
+
+        All 3 Phase J acceptance criteria pass. No backend fixes required.

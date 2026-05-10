@@ -272,6 +272,9 @@ export const api = {
         lead_id: string;
         created_at: string;
         member_count: number;
+        // Phase J — first 4 members (lead first) used to render stacked
+        // AvatarRings on the home group cards.
+        members_preview?: { user_id: string; name: string }[];
       }[]
     >(`/users/${user_id}/groups`),
   createGroup: (payload: {

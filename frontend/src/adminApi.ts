@@ -282,6 +282,40 @@ export const adminApi = {
   getAnalytics: (range: '7d' | '30d' | '90d' = '30d') =>
     request<AnalyticsPayload>(`/analytics?range=${range}`),
 
+  // ---- Legal pages (Support / Privacy / Terms) ----
+  listLegalPages: () =>
+    request<{ pages: LegalPage[] }>(`/legal/pages`),
+  updateLegalPage: (slug: 'support' | 'privacy' | 'terms', body: { title: string; content_html: string }) =>
+    request<LegalPage & { ok: boolean }>(`/legal/pages/${slug}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  uploadLegalMedia: async (file: { uri?: string; blob?: Blob; name: string; mime: string }) => {
+    // Multipart upload — must NOT set Content-Type manually (browser/RN sets boundary).
+    const token = await getToken();
+    const fd = new FormData();
+    if (file.blob) {
+      fd.append('file', file.blob, file.name);
+    } else if (file.uri) {
+      // React Native form-data: pass {uri, name, type}
+      // @ts-ignore — RN-only shape
+      fd.append('file', { uri: file.uri, name: file.name, type: file.mime });
+    }
+    const res = await fetch(`${API}/legal/upload`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: fd as any,
+    });
+    const text = await res.text();
+    let body: any = null;
+    try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+    if (!res.ok) {
+      const msg = body?.detail || body?.message || `HTTP ${res.status}`;
+      throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return body as { id: string; url: string; size: number; mime_type: string };
+  },
+
   // ---- Feature toggles ----
   getFeatures: () =>
     request<{ credits_enabled: boolean; invite_friends_enabled: boolean; updated_at?: string; updated_by?: string }>(`/features`),
@@ -301,6 +335,15 @@ export const adminApi = {
     return request<{ items: ReferrerRow[]; total: number; stats: ReferralStats; skip: number; limit: number }>(`/referrals${qs ? `?${qs}` : ''}`);
   },
   getReferrerDetail: (user_id: string) => request<ReferrerDetail>(`/referrals/${user_id}`),
+};
+
+export type LegalPage = {
+  slug: 'support' | 'privacy' | 'terms';
+  title: string;
+  content_html: string;
+  updated_at: string | null;
+  updated_by?: string;
+  is_default?: boolean;
 };
 
 export type ReferralSettings = {
@@ -359,6 +402,8 @@ export type AdminUserRow = {
   groups_led: number;
   groups_joined: number;
   total_billed_as_lead: number;
+  // ISO timestamp the user agreed to T&C; null/undefined if pre-T&C account.
+  terms_accepted_at?: string | null;
 };
 
 export type AdminUserDetail = AdminUserRow & {

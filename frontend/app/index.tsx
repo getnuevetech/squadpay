@@ -23,6 +23,7 @@ import { PressableScale } from '../src/components/PressableScale';
 import { SkeletonGroupRow, Skeleton } from '../src/components/Skeleton';
 import { EmptyState } from '../src/components/EmptyState';
 import { GradientButton } from '../src/components/GradientButton';
+import { AvatarRing } from '../src/components/AvatarRing';
 import { SquadPayHero } from '../src/illustrations/SquadPayHero';
 
 export default function HomeScreen() {
@@ -329,6 +330,37 @@ export default function HomeScreen() {
                     <Text style={styles.groupMeta}>
                       {item.member_count} {item.member_count === 1 ? 'member' : 'members'} · ${Number(item.total || 0).toFixed(2)}
                     </Text>
+                    {/* Phase J — first-4 stacked avatars (lead first) so users
+                        can glance who's in each bill without opening it. */}
+                    {item.members_preview && item.members_preview.length > 0 ? (
+                      <View style={styles.memberStack} testID={`home-group-avatars-${item.id}`}>
+                        {item.members_preview.map((m, idx) => (
+                          <View
+                            key={m.user_id}
+                            style={[
+                              styles.memberStackItem,
+                              { marginLeft: idx === 0 ? 0 : -10, zIndex: 10 - idx },
+                            ]}
+                          >
+                            <AvatarRing
+                              name={m.name || '?'}
+                              seed={m.user_id}
+                              size={26}
+                              showLeadCrown={m.user_id === item.lead_id}
+                            />
+                          </View>
+                        ))}
+                        {item.member_count > item.members_preview.length ? (
+                          <View
+                            style={[styles.memberStackItem, styles.memberStackMore, { marginLeft: -10, zIndex: 0 }]}
+                          >
+                            <Text style={styles.memberStackMoreText}>
+                              +{item.member_count - item.members_preview.length}
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
+                    ) : null}
                   </View>
                   <StatusBadge status={(item as any).derived_status || (item.status === 'closed' ? 'settled' : item.status === 'paid' ? 'repaying' : 'contributing')} testID={`home-status-${item.id}`} />
                   <ChevronRight color={COLORS.subtext} size={18} />
@@ -655,6 +687,28 @@ const styles = StyleSheet.create({
   },
   groupTitle: { color: COLORS.text, fontWeight: FONT.weights.semibold, fontSize: FONT.sizes.md },
   groupMeta: { color: COLORS.subtext, fontSize: FONT.sizes.xs, marginTop: 2 },
+
+  // Phase J — stacked avatar row on home group cards.
+  memberStack: { flexDirection: 'row', alignItems: 'center', marginTop: 6 },
+  memberStackItem: {
+    borderWidth: 2,
+    borderColor: COLORS.surface,
+    borderRadius: 999,
+  },
+  memberStackMore: {
+    minWidth: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: COLORS.primaryLight,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  memberStackMoreText: {
+    color: COLORS.primary,
+    fontSize: 11,
+    fontWeight: FONT.weights.bold,
+  },
 
   // Secondary text-only buttons
   secondaryRow: {

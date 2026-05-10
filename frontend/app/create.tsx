@@ -16,6 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { Camera, Edit3, Trash2, Plus, Zap, Target, Sparkles } from 'lucide-react-native';
 import { Button } from '../src/Button';
+import { GradientButton } from '../src/components/GradientButton';
 import { api } from '../src/api';
 import { loadUser } from '../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../src/theme';
@@ -291,7 +292,7 @@ export default function CreateBillScreen() {
             <Text style={styles.bottomLabel}>Total</Text>
             <Text style={styles.bottomValue}>${computedTotal().toFixed(2)}</Text>
           </View>
-          <Button
+          <GradientButton
             title="Create Bill"
             onPress={create}
             loading={loading}

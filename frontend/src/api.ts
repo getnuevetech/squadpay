@@ -216,9 +216,19 @@ export const api = {
     );
   },
   verifyOtp: (user_id: string, phone: string, code: string, confirm_existing: boolean = false) =>
-    request<User>('/auth/verify-otp', {
+    request<User & { session_id?: string }>('/auth/verify-otp', {
       method: 'POST',
       body: JSON.stringify({ user_id, phone, code, confirm_existing }),
+    }),
+  checkSession: (user_id: string, session_id: string) =>
+    request<{ valid: boolean; reason?: string }>('/auth/check-session', {
+      method: 'POST',
+      body: JSON.stringify({ user_id, session_id }),
+    }),
+  logout: (user_id: string, session_id?: string) =>
+    request<{ ok: boolean; cleared: boolean }>('/auth/logout', {
+      method: 'POST',
+      body: JSON.stringify({ user_id, ...(session_id ? { session_id } : {}) }),
     }),
   getUser: (user_id: string) => request<User>(`/users/${user_id}`),
   getUserCredits: (user_id: string) =>

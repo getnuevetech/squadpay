@@ -6,6 +6,7 @@ import { TouchableOpacity, StyleSheet, View } from 'react-native';
 import { Home } from 'lucide-react-native';
 import { COLORS } from '../src/theme';
 import { ToastHost } from '../src/components/Toast';
+import { SessionGuard } from '../src/components/SessionGuard';
 
 function HeaderHomeButton() {
   const router = useRouter();
@@ -51,6 +52,7 @@ export default function RootLayout() {
           <Stack.Screen name="join/[code]" options={{ title: 'Join Bill' }} />
         </Stack>
         <ToastHost />
+        <SessionGuard />
       </View>
     </SafeAreaProvider>
     </GestureHandlerRootView>

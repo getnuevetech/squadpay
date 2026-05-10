@@ -1,5 +1,7 @@
 """Auth + user fetch routes (extracted from server.py — Batch B)."""
 import logging
+import uuid
+from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
@@ -9,6 +11,36 @@ from core import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Single-session enforcement
+# ─────────────────────────────────────────────────────────────────────────────
+# Each successful login (verify-otp) issues a brand-new session_id. The user's
+# `current_session_id` field is overwritten with it. The client polls
+# /auth/check-session periodically; if its stored session_id no longer matches
+# the user's `current_session_id`, the client is force-logged-out. This achieves
+# "only one device may be signed in at a time" without rebuilding all routes
+# behind a JWT auth wall.
+
+class CheckSessionIn(BaseModel):
+    user_id: str
+    session_id: str
+
+
+class LogoutIn(BaseModel):
+    user_id: str
+    session_id: str | None = None  # if provided, only clear if it matches
+
+
+async def _issue_session_id(db, user_id: str) -> str:
+    """Generate a fresh session_id and persist it on the user record."""
+    sid = uuid.uuid4().hex
+    await db.users.update_one(
+        {"id": user_id},
+        {"$set": {"current_session_id": sid, "session_issued_at": now_iso()}},
+    )
+    return sid
 
 
 async def _migrate_placeholder_into_existing(db, placeholder_id: str, existing_id: str) -> dict:
@@ -290,7 +322,11 @@ def attach_auth_routes(router: APIRouter, db):
             existing["verified"] = True
             existing["phone"] = body.phone
             await _maybe_grant_referral_rewards(db, existing)
-            return UserOut(**existing).model_dump()
+            # Single-session: issue fresh session_id (kicks any prior device).
+            sid = await _issue_session_id(db, existing["id"])
+            payload = UserOut(**existing).model_dump()
+            payload["session_id"] = sid
+            return payload
 
         # ── Path B: Brand-new phone for the placeholder — just verify it ──
         await db.users.update_one(
@@ -303,7 +339,54 @@ def attach_auth_routes(router: APIRouter, db):
             user["referral_code"] = code
         if user:
             await _maybe_grant_referral_rewards(db, user)
-        return UserOut(**user).model_dump()
+        # Single-session: issue fresh session_id.
+        sid = await _issue_session_id(db, user["id"]) if user else None
+        payload = UserOut(**user).model_dump() if user else {}
+        if sid:
+            payload["session_id"] = sid
+        return payload
+
+    @router.post("/auth/check-session")
+    async def check_session(body: CheckSessionIn):
+        """Lightweight polling endpoint. Returns {valid: bool}.
+
+        Frontend calls this every ~30s and on app-foreground. If the user's
+        `current_session_id` differs from the one stored on the device, the
+        device gets force-logged-out.
+        """
+        user = await db.users.find_one(
+            {"id": body.user_id},
+            {"_id": 0, "current_session_id": 1, "id": 1},
+        )
+        if not user:
+            return {"valid": False, "reason": "user_not_found"}
+        current = user.get("current_session_id")
+        if not current:
+            # User has never logged in (placeholder) OR was logged out everywhere.
+            return {"valid": False, "reason": "no_active_session"}
+        if current != body.session_id:
+            return {"valid": False, "reason": "session_superseded"}
+        return {"valid": True}
+
+    @router.post("/auth/logout")
+    async def logout(body: LogoutIn):
+        """Explicitly clear the user's `current_session_id`.
+
+        If `session_id` is supplied, only clears when it matches (prevents a
+        stale device from invalidating a fresher one). If omitted, clears
+        unconditionally (e.g. admin force-logout).
+        """
+        if body.session_id:
+            res = await db.users.update_one(
+                {"id": body.user_id, "current_session_id": body.session_id},
+                {"$set": {"current_session_id": None}},
+            )
+            return {"ok": True, "cleared": res.modified_count > 0}
+        await db.users.update_one(
+            {"id": body.user_id},
+            {"$set": {"current_session_id": None}},
+        )
+        return {"ok": True, "cleared": True}
 
     @router.get("/users/{user_id}", response_model=UserOut)
     async def get_user(user_id: str):

@@ -1308,10 +1308,10 @@ metadata:
 
 test_plan:
   current_focus:
-    - "POST /api/admin/admins/{id}/send-password-reset (super_admin only, alternate_email + return_link, audit)"
-    - "PATCH /api/admin/admins/{id}/role (super_admin only, last-super-admin + self-demotion guards, audit)"
-    - "POST /api/admin/users/{id}/send-otp (any active admin, mock + optional phone override, audit)"
-    - "Existing 37-test backend regression still PASSes"
+    - "POST /api/auth/verify-otp now returns session_id; user record gets current_session_id set"
+    - "POST /api/auth/check-session — valid/invalid session_id behavior"
+    - "POST /api/auth/logout — clears current_session_id (with and without session_id parameter)"
+    - "Single-active-session: second login invalidates first device's session"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -3496,3 +3496,96 @@ agent_communication:
           4. Everything else in the new endpoints + the existing 37-test
              regression subset is GREEN. Once 1 and 2 above are addressed,
              this feature is good to ship.
+
+
+backend:
+  - task: "Single-active-session enforcement (verify-otp returns session_id, /auth/check-session, /auth/logout)"
+    implemented: true
+    working: true
+    file: "backend/routes/auth_routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Single-session enforcement end-to-end tested via /app/backend_test.py
+            against the live preview backend
+            (https://joint-pay-1.preview.emergentagent.com/api).
+            22/22 assertions PASS, no 5xx errors.
+
+            Coverage by scenario (all PASS):
+              Pre-flight: SMS mode = mock confirmed (mocked=true), so OTP "123456"
+                accepted by verify-otp.
+              Setup: POST /auth/register {name:"SessionTester"} → 200 placeholder
+                user (verified=false), captured user_id.
+
+              A) verify-otp issues session_id:
+                 - send-otp on a fresh 10-digit phone → 200, mocked=true.
+                 - verify-otp with code "123456" → 200, payload contains:
+                     id, name='SessionTester', phone, verified=true,
+                     created_at, referral_code, referred_by_user_id, AND session_id.
+                 - session_id is a 32-char lowercase hex string (uuid4().hex). ✅
+
+              B) check-session valid:
+                 - POST /auth/check-session {user_id, session_id_A}
+                   → 200 {"valid": true} (exact match). ✅
+
+              C) Second device login invalidates first:
+                 - send-otp + verify-otp again on same phone → new session_id_B,
+                   != session_id_A (uuid4 collision impossible).
+                 - check-session(session_id_A) → 200
+                   {"valid": false, "reason": "session_superseded"} ✅
+                 - check-session(session_id_B) → 200 {"valid": true} ✅
+
+              D) Logout with matching session_id:
+                 - POST /auth/logout {user_id, session_id_B}
+                   → 200 {"ok": true, "cleared": true} ✅
+                 - check-session(session_id_B) → 200
+                   {"valid": false, "reason": "no_active_session"} ✅
+
+              E) Stale-device logout (loser) does NOT clear:
+                 - re-login → session_id_C, re-login again → session_id_D
+                   (current = D, D != C).
+                 - logout {user_id, session_id_C}
+                   → 200 {"ok": true, "cleared": false} ✅
+                 - check-session(session_id_D) → 200 {"valid": true}
+                   (winner unaffected). ✅
+
+              F) Force-clear logout (no session_id):
+                 - logout {user_id} → 200 {"ok": true, "cleared": true} ✅
+                 - check-session(session_id_D) → 200
+                   {"valid": false, "reason": "no_active_session"} ✅
+
+              G) Invalid user:
+                 - check-session {"user_id":"u_nonexistent_xyz","session_id":"abc"}
+                   → 200 {"valid": false, "reason": "user_not_found"} ✅
+
+              Regression (all PASS):
+                 - GET /auth/lookup-phone for the verified user → exists=true,
+                   name='SessionTester', blocked=false.
+                 - GET /auth/lookup-phone for unknown phone → exists=false.
+                 - GET /users/{user_id} → 200 with original UserOut shape:
+                   id, name, phone, verified, created_at, referral_code,
+                   referred_by_user_id (no extra session_id leakage on this
+                   endpoint, which is correct).
+                 - Re-login after force-clear works; new session valid.
+                 - send-otp shape unchanged: ok/mocked=true/live=false/message/info.
+
+            Backend log notes (informational): passlib bcrypt cosmetic warning;
+            no 5xx, no exceptions in any of the new endpoints.
+
+            Implementation notes (correct):
+              - verify-otp uses `_issue_session_id(db, user_id)` to generate a
+                fresh uuid4().hex and write `current_session_id` +
+                `session_issued_at` on the user doc, on BOTH paths
+                (Path A "phone-already-linked merge" and Path B "fresh phone").
+              - check-session correctly distinguishes user_not_found vs
+                no_active_session (None) vs session_superseded (mismatch).
+              - logout uses an atomic `update_one({id, current_session_id: sid})`
+                so a stale device cannot clear a fresher session
+                (cleared=false when modified_count==0). With no session_id,
+                clears unconditionally.
+
+            All single-session acceptance criteria pass. No backend changes needed.

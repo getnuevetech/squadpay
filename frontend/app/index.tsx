@@ -15,7 +15,7 @@ import { Receipt, Plus, Link2, QrCode, ChevronRight, Sparkles, LogOut, Gift, Wal
 import { LinearGradient } from 'expo-linear-gradient';
 import { Button } from '../src/Button';
 import { api } from '../src/api';
-import { clearUser, loadUser, refreshUser } from '../src/session';
+import { clearUser, loadUser, refreshUser, loadSessionId } from '../src/session';
 import { COLORS, FONT, RADIUS, SPACING, SHADOW } from '../src/theme';
 import { StatusBadge } from '../src/StatusBadge';
 import { PressableScale } from '../src/components/PressableScale';
@@ -198,6 +198,12 @@ export default function HomeScreen() {
           <TouchableOpacity
             testID="home-logout-btn"
             onPress={async () => {
+              try {
+                const sid = await loadSessionId();
+                if (user?.id && sid) {
+                  await api.logout(user.id, sid).catch(() => {});
+                }
+              } catch {}
               await clearUser();
               setUser(null);
               setGroups([]);

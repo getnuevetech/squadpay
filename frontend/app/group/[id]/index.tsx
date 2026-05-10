@@ -141,21 +141,9 @@ export default function GroupLobbyScreen() {
           style={[styles.headerCard, SHADOW.lg]}
         >
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4, gap: 8 }}>
-            <TouchableOpacity
-              onPress={() => router.replace('/')}
-              testID="lobby-home-btn"
-              style={{
-                width: 32, height: 32, borderRadius: 16,
-                backgroundColor: 'rgba(255,255,255,0.18)',
-                alignItems: 'center', justifyContent: 'center',
-              }}
-              activeOpacity={0.7}
-            >
-              <ArrowLeft size={18} color="#fff" />
-            </TouchableOpacity>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
               <Text style={styles.title} testID="lobby-title">{group.title}</Text>
-              {userId === group.lead_id && group.derived_status === 'contributing' && (
+              {userId === group.lead_id && group.status !== 'closed' && (group.contributions?.length || 0) === 0 && (
                 <TouchableOpacity
                   testID="lobby-edit-title"
                   onPress={() => setEditTitleVisible(true)}

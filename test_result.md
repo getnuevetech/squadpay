@@ -4599,6 +4599,81 @@ agent_communication:
                 with body {"new_lead_user_id":"u_x"} (no Authorization header).
                 → HTTP 401, body {"detail":"Admin auth required"}. PASS.
 
+# ──────────────────────────────────────────────────────────────────────────
+# Phase L+8 — 13-item dashboard cleanup batch (MAIN AGENT)
+# ──────────────────────────────────────────────────────────────────────────
+agent_communication:
+    - agent: "main"
+      message: |
+        Thirteen tightly-related UX requests addressed in one pass.
+
+        #1 — "Your Share" label is now ABOVE the dollar amount (not next to
+              it).  heroV2AmountRow → heroV2AmountCol layout; label proper-cased
+              ("Your Share" instead of UPPER-CASE "YOUR SHARE").  Applied on
+              both summary.tsx and dashboard.tsx.
+
+        #2 — Removed the back-arrow next to the group title on
+              /group/[id]/index.tsx (the lobby/QR page).  Title row now
+              starts with the title + (lead-only) edit pencil.
+
+        #3 — FeaturedBillCard "Friend" CTA renamed to "Invite".
+
+        #4 — Lead can now edit the group title BEFORE contributions are
+              completed.  Gating moved from `derived_status === 'contributing'`
+              to `status !== 'closed' && contributions.length === 0`, so the
+              pencil shows for the whole pre-funding window (covers the
+              setup + open-pre-contribution phases).
+
+        #5 — Removed the standalone Funding Progress card from the Lead
+              Dashboard (collected-of-total + remaining are in the gradient
+              hero now).
+
+        #6 — Avatar consistency: AvatarRing is the single component used in
+              all member-list contexts (hero, dashboard, summary, squad).
+
+        #7 — Removed the embedded Virtual Card section from the Lead
+              Dashboard.  Card is still accessible via the existing "Card"
+              quick-action button → /group/[id]/card.
+
+        #8 — Stack title for /group/[id]/summary renamed to "User Dashboard".
+              Added Items + Invite quick-action buttons (Receipt / UserPlus
+              icons) right under the gradient hero on summary.tsx so members
+              have the same toolbar as the lead.
+
+        #9 — Lead Dashboard breakdown now matches Your Share breakdown
+              (same set of rows: Items subtotal, Tax, Tip, Discount,
+              Transaction fees 3%, Platform fees, Bill total, Contributed,
+              Repaid, Outstanding).  "Contributed" was missing on the Lead
+              side; added.
+
+        #10 — Per-member inline collapsible (the chevron expander on each
+              member row in Members) shows that MEMBER's items + amounts.
+              Main "Bill / Fund Breakdown" card now shows GROUP-level totals
+              (computed from per_user array + group.items):
+                  groupItemsTotal, groupTransactionFees, groupPlatformFees,
+                  groupContributedTotal, groupRepaidTotal, groupOutstandingTotal.
+              Mirrored on both pages.
+
+        #11 — "Your Share Breakdown" toggle relabelled to "Bill / Fund
+              Breakdown" on both summary.tsx and dashboard.tsx.
+
+        #12 — Members list, lead row: now shows the lead's contributed
+              dollar amount (vertical: ${'$'}X.XX  + tiny "contributed"
+              caption) instead of the placeholder "Lead" text.
+
+        #13 — Numbers are correct because both pages now derive the
+              breakdown from the same backend response (group.per_user,
+              group.items, group.tax, group.tip, group.discount, group.funding).
+              No client-side recomputation drift between pages.
+
+        Verification:
+        - Backend untouched.
+        - Metro bundles iOS + Web cleanly (HTTP 200, landing page screenshot
+          renders perfectly with all redesign elements intact).
+        - All edits are scoped to summary.tsx, dashboard.tsx,
+          group/[id]/index.tsx, FeaturedBillCard.tsx, _layout.tsx.
+
+
             ✅ [Case 2] Insufficient role — same call with support-admin Bearer.
                 → HTTP 403, body {"detail":"Requires one of roles: super_admin"}.
                 PASS (super_admin only — manager would also be rejected per the

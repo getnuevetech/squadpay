@@ -116,6 +116,26 @@ export default function DashboardScreen() {
     ? Math.min(100, ((group.funding?.total_contributed || 0) / group.total) * 100)
     : 0;
 
+  // ── Group-level totals (used by the Bill/Fund Breakdown card) ─────
+  const groupItemsTotal = (group.items || []).reduce(
+    (s: number, it: any) => s + Number(it.price || 0) * Number(it.quantity || 1),
+    0,
+  );
+  const groupTransactionFees = (group.per_user || []).reduce(
+    (s: number, p: any) => s + Number(p.transaction_fee || 0),
+    0,
+  );
+  const groupPlatformFees = (group.per_user || []).reduce(
+    (s: number, p: any) => s + Number(p.platform_fee || 0),
+    0,
+  );
+  const groupContributedTotal = group.funding?.total_contributed || 0;
+  const groupRepaidTotal = group.funding?.total_repaid || 0;
+  const groupOutstandingTotal = (group.per_user || []).reduce(
+    (s: number, p: any) => s + Number(p.outstanding || 0),
+    0,
+  );
+
   const withdraw = (kind: 'instant' | 'standard') => {
     toast.info(
       kind === 'instant'
@@ -147,13 +167,13 @@ export default function DashboardScreen() {
             <StatusBadge status={group.derived_status} size="sm" testID="dashboard-status-badge" />
           </View>
 
-          <View style={styles.heroV2AmountRow}>
+          <View style={styles.heroV2AmountCol}>
             <Text style={styles.heroV2Label}>Your Share</Text>
             <Text style={styles.heroV2Amount}>${myShare.toFixed(2)}</Text>
+            <Text style={styles.heroV2Total}>
+              of ${Number(group.total || 0).toFixed(2)} bill total
+            </Text>
           </View>
-          <Text style={styles.heroV2Total}>
-            of ${Number(group.total || 0).toFixed(2)} bill total
-          </Text>
 
           <View style={styles.heroV2Avatars}>
             {group.members.slice(0, 4).map((m, i) => (
@@ -259,208 +279,92 @@ export default function DashboardScreen() {
           </TouchableOpacity>
         )}
 
-        {/* ── Lead's personal Your Share breakdown (collapsible) ── */}
-        <View style={styles.shareCard} testID="dashboard-your-share">
+        {/* ── Bill / Fund Breakdown — GROUP totals (collapsible) ── */}
+        <View style={styles.shareCard} testID="dashboard-bill-breakdown">
           <TouchableOpacity
             onPress={() => setBreakdownOpen((v) => !v)}
             activeOpacity={0.7}
             style={styles.shareHeaderRow}
             testID="dashboard-breakdown-toggle"
           >
-            <Text style={styles.shareLabel}>Your share breakdown</Text>
+            <Text style={styles.shareLabel}>Bill / Fund Breakdown</Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <Text style={styles.shareAmount}>${myShare.toFixed(2)}</Text>
+              <Text style={styles.shareAmount}>${Number(group.total || 0).toFixed(2)}</Text>
               <View style={[breakdownOpen && { transform: [{ rotate: '180deg' }] }]}>
                 <ChevronDown size={18} color={COLORS.subtext} />
               </View>
             </View>
           </TouchableOpacity>
-          {breakdownOpen && (
-            <>
+          {breakdownOpen ? (
+            <View>
               <View style={styles.shareDivider} />
-          {myFood > 0 && (
-            <View style={styles.shareRow}>
-              <Text style={styles.shareKey}>Items</Text>
-              <Text style={styles.shareVal}>${myFood.toFixed(2)}</Text>
-            </View>
-          )}
-          {myExtras > 0 && (
-            <View style={styles.shareRow}>
-              <Text style={styles.shareKey}>Tax & tip</Text>
-              <Text style={styles.shareVal}>${myExtras.toFixed(2)}</Text>
-            </View>
-          )}
-          {group.discount && Number(group.discount.amount || 0) > 0 ? (
-            <View style={styles.shareRow}>
-              <Text style={[styles.shareKey, { color: COLORS.success }]}>
-                Discount {group.discount.type === 'percent' ? `(${group.discount.value}%)` : ''}
-              </Text>
-              <Text style={[styles.shareVal, { color: COLORS.success }]}>−${Number(group.discount.amount).toFixed(2)}</Text>
+              <View style={styles.shareRow}>
+                <Text style={styles.shareKey}>Items subtotal</Text>
+                <Text style={styles.shareVal}>${groupItemsTotal.toFixed(2)}</Text>
+              </View>
+              <View style={styles.shareRow}>
+                <Text style={styles.shareKey}>Tax</Text>
+                <Text style={styles.shareVal}>${Number(group.tax || 0).toFixed(2)}</Text>
+              </View>
+              <View style={styles.shareRow}>
+                <Text style={styles.shareKey}>Tip</Text>
+                <Text style={styles.shareVal}>${Number(group.tip || 0).toFixed(2)}</Text>
+              </View>
+              {group.discount && Number(group.discount.amount || 0) > 0 ? (
+                <View style={styles.shareRow}>
+                  <Text style={[styles.shareKey, { color: COLORS.success }]}>
+                    Discount{group.discount.type === 'percent' ? ` (${group.discount.value}%)` : ''}
+                  </Text>
+                  <Text style={[styles.shareVal, { color: COLORS.success }]}>
+                    −${Number(group.discount.amount).toFixed(2)}
+                  </Text>
+                </View>
+              ) : null}
+              <View style={styles.shareRow}>
+                <Text style={styles.shareKey}>Transaction fees (3%)</Text>
+                <Text style={styles.shareVal}>${groupTransactionFees.toFixed(2)}</Text>
+              </View>
+              <View style={styles.shareRow}>
+                <Text style={styles.shareKey}>Platform fees</Text>
+                <Text style={styles.shareVal}>${groupPlatformFees.toFixed(2)}</Text>
+              </View>
+              <View style={styles.shareDivider} />
+              <View style={styles.shareRow}>
+                <Text style={[styles.shareKey, { fontWeight: FONT.weights.bold, color: COLORS.text }]}>
+                  Bill total
+                </Text>
+                <Text style={[styles.shareVal, { color: COLORS.text, fontWeight: FONT.weights.bold }]}>
+                  ${Number(group.total || 0).toFixed(2)}
+                </Text>
+              </View>
+              {groupContributedTotal > 0 ? (
+                <View style={styles.shareRow}>
+                  <Text style={styles.shareKey}>Contributed</Text>
+                  <Text style={[styles.shareVal, { color: COLORS.success }]}>
+                    −${groupContributedTotal.toFixed(2)}
+                  </Text>
+                </View>
+              ) : null}
+              {groupRepaidTotal > 0 ? (
+                <View style={styles.shareRow}>
+                  <Text style={styles.shareKey}>Repaid</Text>
+                  <Text style={[styles.shareVal, { color: COLORS.success }]}>
+                    −${groupRepaidTotal.toFixed(2)}
+                  </Text>
+                </View>
+              ) : null}
+              <View style={[styles.shareRow, styles.shareOutstandingRow]}>
+                <Text style={styles.shareOutstandingKey}>Outstanding</Text>
+                <Text style={styles.shareOutstandingVal}>
+                  ${groupOutstandingTotal.toFixed(2)}
+                </Text>
+              </View>
             </View>
           ) : null}
-          <View style={styles.shareRow}>
-            <Text style={styles.shareKey}>Transaction fee (3%)</Text>
-            <Text style={styles.shareVal}>${myTransactionFee.toFixed(2)}</Text>
-          </View>
-          <View style={styles.shareRow}>
-            <Text style={styles.shareKey}>Platform fee</Text>
-            <Text style={styles.shareVal}>${myPlatformFee.toFixed(2)}</Text>
-          </View>
-          {myContributed > 0 && (
-            <View style={styles.shareRow}>
-              <Text style={styles.shareKey}>Contributed</Text>
-              <Text style={[styles.shareVal, { color: COLORS.success }]}>−${myContributed.toFixed(2)}</Text>
-            </View>
-          )}
-          {myRepaid > 0 && (
-            <View style={styles.shareRow}>
-              <Text style={styles.shareKey}>Repaid</Text>
-              <Text style={[styles.shareVal, { color: COLORS.success }]}>−${myRepaid.toFixed(2)}</Text>
-            </View>
-          )}
-          {myCreditApplied > 0 && (
-            <View style={styles.shareRow}>
-              <Text style={[styles.shareKey, { color: COLORS.success }]}>Credit applied</Text>
-              <Text style={[styles.shareVal, { color: COLORS.success }]}>−${myCreditApplied.toFixed(2)}</Text>
-            </View>
-          )}
-          {(myContributed > 0 || myRepaid > 0) && (
-            <View style={[styles.shareRow, styles.shareOutstandingRow]}>
-              <Text style={styles.shareOutstandingKey}>Outstanding</Text>
-              <Text style={styles.shareOutstandingVal}>${myOutstanding.toFixed(2)}</Text>
-            </View>
-          )}
-            </>
-          )}
         </View>
 
-        {/* ── Funding progress (mirrors Your Share's funding card) ── */}
-        <View style={styles.fundCard} testID="dashboard-funding-progress">
-          <View style={styles.fundHeader}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.fundTitle}>Funding progress</Text>
-              <Text style={styles.fundSubtitle}>
-                ${(group.funding?.total_contributed || 0).toFixed(2)} of ${Number(group.total || 0).toFixed(2)} collected
-              </Text>
-            </View>
-            <Text style={styles.fundPct}>{Math.round(collectedPct)}%</Text>
-          </View>
-          <View style={styles.fundTrack}>
-            <View style={[styles.fundFill, { width: `${Math.min(100, collectedPct)}%` }]} />
-          </View>
-          <Text style={styles.fundFoot}>
-            {Math.max(0, (group.total || 0) - (group.funding?.total_contributed || 0)).toFixed(2)} remaining
-          </Text>
-        </View>
 
-        {/* ── Virtual Card section (lead-only, embedded) ── */}
-        <Text style={styles.sectionTitle}>Virtual Card</Text>
-        {(() => {
-          const vc: any = group.virtual_card || null;
-          const hasCard = !!(vc && vc.stripe_card_id);
-          const isCardActive = hasCard && vc.status === 'active';
-          const isCardDisabled = hasCard && vc.status === 'inactive';
-          const cardCap = Number(vc?.spend_cap || group.total || 0);
-          const cardSpent = Number(vc?.spent || 0);
-          const cardSpendPct = cardCap > 0 ? Math.min(100, (cardSpent / cardCap) * 100) : 0;
-          if (!hasCard) {
-            return (
-              <View style={styles.cardEmpty} testID="dashboard-card-empty">
-                <View style={styles.cardEmptyIcon}>
-                  <CreditCard size={28} color={COLORS.primary} />
-                </View>
-                <Text style={styles.cardEmptyTitle}>No virtual card yet</Text>
-                <Text style={styles.cardEmptyBody}>
-                  A Stripe-issued virtual card will be created automatically once the
-                  bill is fully funded (${totalCollected.toFixed(2)} of ${totalOwed.toFixed(2)} collected).
-                </Text>
-              </View>
-            );
-          }
-          return (
-            <>
-              <LinearGradient
-                colors={isCardDisabled ? ['#475569', '#334155'] : ['#3F1F8C', '#5B2BC8', '#7C3AED']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.cardFace}
-                testID="dashboard-card-face"
-              >
-                <View style={styles.cardChip} />
-                <View style={styles.cardFaceRow}>
-                  <CreditCard size={20} color="rgba(255,255,255,0.95)" />
-                  <View style={{ flex: 1, marginLeft: 10 }}>
-                    <Text style={styles.cardFaceBrand}>{vc.nickname || 'SquadPay'}</Text>
-                    <Text style={styles.cardFaceSub} numberOfLines={1}>{group.title}</Text>
-                  </View>
-                  <View style={[styles.cardStatusPill, isCardActive ? styles.cardPillActive : styles.cardPillOff]}>
-                    <Text style={styles.cardStatusText}>
-                      {isCardDisabled ? 'DISABLED' : isCardActive ? 'ACTIVE' : 'FUNDING'}
-                    </Text>
-                  </View>
-                </View>
-                <Text style={styles.cardNumber}>•••• •••• •••• {vc.last4}</Text>
-                <View style={styles.cardFaceFooter}>
-                  <View>
-                    <Text style={styles.cardTinyLabel}>Spent</Text>
-                    <Text style={styles.cardValue}>${cardSpent.toFixed(2)}</Text>
-                  </View>
-                  <View>
-                    <Text style={styles.cardTinyLabel}>Cap</Text>
-                    <Text style={styles.cardValue}>${cardCap.toFixed(2)}</Text>
-                  </View>
-                  <View>
-                    <Text style={styles.cardTinyLabel}>Exp</Text>
-                    <Text style={styles.cardValue}>
-                      {String(vc.exp_month).padStart(2, '0')}/{String(vc.exp_year).slice(-2)}
-                    </Text>
-                  </View>
-                </View>
-              </LinearGradient>
-              <View style={styles.cardSpendTrackWrap}>
-                <View style={styles.cardSpendTrack}>
-                  <View style={[styles.cardSpendFill, { width: `${cardSpendPct}%` }]} />
-                </View>
-                <Text style={styles.cardSpendFoot}>
-                  {Math.round(cardSpendPct)}% of cap used
-                </Text>
-              </View>
-              {isCardActive && (
-                <View style={styles.cardActions}>
-                  <TouchableOpacity
-                    onPress={() => setRevealOpen(true)}
-                    style={styles.cardActionRow}
-                    activeOpacity={0.7}
-                    testID="dashboard-card-reveal"
-                  >
-                    <View style={[styles.cardActionIcon, { backgroundColor: COLORS.primaryLight }]}>
-                      <Eye size={18} color={COLORS.primary} />
-                    </View>
-                    <Text style={styles.cardActionTitle}>Reveal full card details</Text>
-                  </TouchableOpacity>
-                  <View style={styles.cardActionDiv} />
-                  <TouchableOpacity
-                    onPress={() => router.push(`/group/${group.id}/card`)}
-                    style={styles.cardActionRow}
-                    activeOpacity={0.7}
-                    testID="dashboard-card-fullpage"
-                  >
-                    <View style={[styles.cardActionIcon, { backgroundColor: '#E0F2FE' }]}>
-                      <Smartphone size={18} color="#0284C7" />
-                    </View>
-                    <Text style={styles.cardActionTitle}>Manage card · Apple/Google Pay</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
-              {isCardDisabled && (
-                <View style={styles.cardWarn}>
-                  <Lock size={16} color={COLORS.subtext} />
-                  <Text style={styles.cardWarnText}>This card is disabled. New charges will be declined.</Text>
-                </View>
-              )}
-            </>
-          );
-        })()}
+
 
         {leadFronted ? (
           <>
@@ -592,9 +496,10 @@ export default function DashboardScreen() {
                   {!isLead ? (
                     <Text style={styles.amount}>${owed.toFixed(2)}</Text>
                   ) : (
-                    <Text style={[styles.amount, { color: COLORS.subtext, fontSize: FONT.sizes.xs }]}>
-                      Lead
-                    </Text>
+                    <View style={{ alignItems: 'flex-end' }}>
+                      <Text style={styles.amount}>${contributed.toFixed(2)}</Text>
+                      <Text style={[styles.statusText, { fontSize: 9, marginTop: 2 }]}>contributed</Text>
+                    </View>
                   )}
                   {hasItems && (
                     <View style={[{ marginLeft: 6 }, isOpen && { transform: [{ rotate: '180deg' }] }]}>
@@ -702,6 +607,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   heroV2AmountRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
+  heroV2AmountCol: { marginTop: 8 },
   heroV2Label: {
     color: '#fff',
     fontSize: 13,
@@ -717,7 +623,7 @@ const styles = StyleSheet.create({
     letterSpacing: -1,
     lineHeight: 48,
   },
-  heroV2Total: { color: '#D7C7FB', fontSize: 12, textAlign: 'right', marginTop: 2 },
+  heroV2Total: { color: '#D7C7FB', fontSize: 12, marginTop: 4 },
   heroV2Avatars: { flexDirection: 'row', alignItems: 'center', marginTop: 14 },
   heroV2Avatar: { borderWidth: 2, borderColor: '#fff', borderRadius: 999 },
   heroV2AvatarMore: {

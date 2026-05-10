@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Receipt, CheckCircle2, Clock, LayoutDashboard, Wallet, AlertCircle, Plus, Pencil, ChevronDown, ArrowLeft } from 'lucide-react-native';
+import { Receipt, CheckCircle2, Clock, LayoutDashboard, Wallet, AlertCircle, Plus, Pencil, ChevronDown, ArrowLeft, UserPlus } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Button } from '../../../src/Button';
 import { api, Group } from '../../../src/api';
@@ -79,6 +79,26 @@ export default function SummaryScreen() {
   const myCreditApplied = (group.contributions || [])
     .filter((c: any) => c.user_id === userId)
     .reduce((s: number, c: any) => s + Number(c.credit_applied || 0), 0);
+
+  // ── Group-level totals for the Bill/Fund Breakdown card ──
+  const groupItemsTotal = (group.items || []).reduce(
+    (s: number, it: any) => s + Number(it.price || 0) * Number(it.quantity || 1),
+    0,
+  );
+  const groupTransactionFees = (group.per_user || []).reduce(
+    (s: number, p: any) => s + Number(p.transaction_fee || 0),
+    0,
+  );
+  const groupPlatformFees = (group.per_user || []).reduce(
+    (s: number, p: any) => s + Number(p.platform_fee || 0),
+    0,
+  );
+  const groupContributedTotal = group.funding?.total_contributed || 0;
+  const groupRepaidTotal = group.funding?.total_repaid || 0;
+  const groupOutstandingTotal = (group.per_user || []).reduce(
+    (s: number, p: any) => s + Number(p.outstanding || 0),
+    0,
+  );
   const myShare = myPer?.total || 0;
   const myFood = myPer?.food || 0;
   const myExtras = myPer?.tax_tip || 0;
@@ -174,15 +194,15 @@ export default function SummaryScreen() {
             <StatusBadge status={group.derived_status} size="sm" testID="summary-status-badge" />
           </View>
 
-          <View style={styles.heroV2AmountRow}>
+          <View style={styles.heroV2AmountCol}>
             <Text style={styles.heroV2Label}>Your Share</Text>
             <Text style={styles.heroV2Amount} testID="summary-your-amount">
               ${myShare.toFixed(2)}
             </Text>
+            <Text style={styles.heroV2Total} testID="summary-bill-total">
+              of ${Number(group.total || 0).toFixed(2)} bill total
+            </Text>
           </View>
-          <Text style={styles.heroV2Total} testID="summary-bill-total">
-            of ${Number(group.total || 0).toFixed(2)} bill total
-          </Text>
 
           {/* Avatars stack — same as home page */}
           <View style={styles.heroV2Avatars}>
@@ -226,6 +246,33 @@ export default function SummaryScreen() {
           </View>
         </LinearGradient>
 
+        {/* Quick actions: Items / Invite — same icons as the Lead Dashboard
+            so the user has a consistent way to view items and invite friends. */}
+        <View style={styles.qaRow} testID="summary-quick-actions">
+          <TouchableOpacity
+            style={styles.qaBtn}
+            activeOpacity={0.85}
+            onPress={() => router.push(`/group/${group.id}/items`)}
+            testID="summary-action-items"
+          >
+            <View style={styles.qaIcon}>
+              <Receipt size={18} color={COLORS.primary} />
+            </View>
+            <Text style={styles.qaText}>Items</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.qaBtn}
+            activeOpacity={0.85}
+            onPress={() => router.push(`/group/${group.id}`)}
+            testID="summary-action-invite"
+          >
+            <View style={styles.qaIcon}>
+              <UserPlus size={18} color={COLORS.primary} />
+            </View>
+            <Text style={styles.qaText}>Invite</Text>
+          </TouchableOpacity>
+        </View>
+
         {/* Lead-only quick edit row for tax/tip — placed BEFORE the breakdown
             so leads can edit before reviewing the resulting numbers. */}
         {isLead && group.status === 'open' && (
@@ -250,7 +297,7 @@ export default function SummaryScreen() {
             style={styles.yourCardHeader}
             testID="summary-breakdown-toggle"
           >
-            <Text style={styles.yourLabel}>Your share breakdown</Text>
+            <Text style={styles.yourLabel}>Bill / Fund Breakdown</Text>
             <View style={[breakdownOpen && { transform: [{ rotate: '180deg' }] }]}>
               <ChevronDown size={18} color={COLORS.subtext} />
             </View>
@@ -258,54 +305,53 @@ export default function SummaryScreen() {
           {breakdownOpen && (
             <>
               <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownKey}>Items</Text>
-                <Text style={styles.breakdownVal}>${myFood.toFixed(2)}</Text>
+                <Text style={styles.breakdownKey}>Items subtotal</Text>
+                <Text style={styles.breakdownVal}>${groupItemsTotal.toFixed(2)}</Text>
               </View>
               <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownKey}>Tax & tip</Text>
-                <Text style={styles.breakdownVal}>${myExtras.toFixed(2)}</Text>
+                <Text style={styles.breakdownKey}>Tax</Text>
+                <Text style={styles.breakdownVal}>${Number(group.tax || 0).toFixed(2)}</Text>
+              </View>
+              <View style={styles.breakdownRow}>
+                <Text style={styles.breakdownKey}>Tip</Text>
+                <Text style={styles.breakdownVal}>${Number(group.tip || 0).toFixed(2)}</Text>
               </View>
               {group.discount && Number(group.discount.amount || 0) > 0 ? (
                 <View style={styles.breakdownRow}>
                   <Text style={[styles.breakdownKey, { color: COLORS.success }]}>
-                    Discount {group.discount.type === 'percent' ? `(${group.discount.value}%)` : ''}
-                    {group.discount.note ? ` — ${group.discount.note}` : ''}
+                    Discount{group.discount.type === 'percent' ? ` (${group.discount.value}%)` : ''}
                   </Text>
                   <Text style={[styles.breakdownVal, { color: COLORS.success }]}>−${Number(group.discount.amount).toFixed(2)}</Text>
                 </View>
               ) : null}
               <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownKey}>Transaction fee (3%)</Text>
-                <Text style={styles.breakdownVal}>${myTransactionFee.toFixed(2)}</Text>
+                <Text style={styles.breakdownKey}>Transaction fees (3%)</Text>
+                <Text style={styles.breakdownVal}>${groupTransactionFees.toFixed(2)}</Text>
               </View>
               <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownKey}>Platform fee</Text>
-                <Text style={styles.breakdownVal}>${myPlatformFee.toFixed(2)}</Text>
+                <Text style={styles.breakdownKey}>Platform fees</Text>
+                <Text style={styles.breakdownVal}>${groupPlatformFees.toFixed(2)}</Text>
               </View>
-              {myContributed > 0 && (
+              <View style={[styles.breakdownRow, { borderTopWidth: 1, borderTopColor: COLORS.border, marginTop: 6, paddingTop: 6 }]}>
+                <Text style={[styles.breakdownKey, { fontWeight: FONT.weights.bold, color: COLORS.text }]}>Bill total</Text>
+                <Text style={[styles.breakdownVal, { color: COLORS.text, fontWeight: FONT.weights.bold }]}>${Number(group.total || 0).toFixed(2)}</Text>
+              </View>
+              {groupContributedTotal > 0 ? (
                 <View style={styles.breakdownRow}>
                   <Text style={styles.breakdownKey}>Contributed</Text>
-                  <Text style={[styles.breakdownVal, { color: COLORS.success }]}>−${myContributed.toFixed(2)}</Text>
+                  <Text style={[styles.breakdownVal, { color: COLORS.success }]}>−${groupContributedTotal.toFixed(2)}</Text>
                 </View>
-              )}
-              {myRepaid > 0 && (
+              ) : null}
+              {groupRepaidTotal > 0 ? (
                 <View style={styles.breakdownRow}>
                   <Text style={styles.breakdownKey}>Repaid</Text>
-                  <Text style={[styles.breakdownVal, { color: COLORS.success }]}>−${myRepaid.toFixed(2)}</Text>
+                  <Text style={[styles.breakdownVal, { color: COLORS.success }]}>−${groupRepaidTotal.toFixed(2)}</Text>
                 </View>
-              )}
-              {myCreditApplied > 0 && (
-                <View style={styles.breakdownRow}>
-                  <Text style={[styles.breakdownKey, { color: COLORS.success }]}>Credit applied</Text>
-                  <Text style={[styles.breakdownVal, { color: COLORS.success }]}>−${myCreditApplied.toFixed(2)}</Text>
-                </View>
-              )}
-              {(myContributed > 0 || myRepaid > 0) && (
-                <View style={[styles.breakdownRow, { borderTopWidth: 1, borderTopColor: COLORS.border, marginTop: 6, paddingTop: 6 }]}>
-                  <Text style={[styles.breakdownKey, { fontWeight: FONT.weights.bold, color: COLORS.text }]}>Outstanding</Text>
-                  <Text style={[styles.breakdownVal, { fontSize: FONT.sizes.lg, color: COLORS.primary }]}>${myOutstanding.toFixed(2)}</Text>
-                </View>
-              )}
+              ) : null}
+              <View style={[styles.breakdownRow, { borderTopWidth: 1, borderTopColor: COLORS.border, marginTop: 6, paddingTop: 6 }]}>
+                <Text style={[styles.breakdownKey, { fontWeight: FONT.weights.bold, color: COLORS.text }]}>Outstanding</Text>
+                <Text style={[styles.breakdownVal, { fontSize: FONT.sizes.lg, color: COLORS.primary, fontWeight: FONT.weights.heavy }]}>${groupOutstandingTotal.toFixed(2)}</Text>
+              </View>
             </>
           )}
         </View>
@@ -592,6 +638,7 @@ const styles = StyleSheet.create({
     lineHeight: 28,
   },
   heroV2AmountRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
+  heroV2AmountCol: { marginTop: 8 },
   heroV2Label: {
     color: '#fff',
     fontSize: 13,
@@ -607,12 +654,7 @@ const styles = StyleSheet.create({
     letterSpacing: -1,
     lineHeight: 48,
   },
-  heroV2Total: {
-    color: '#D7C7FB',
-    fontSize: 12,
-    textAlign: 'right',
-    marginTop: 2,
-  },
+  heroV2Total: { color: '#D7C7FB', fontSize: 12, marginTop: 4 },
   heroV2Avatars: { flexDirection: 'row', alignItems: 'center', marginTop: 14 },
   heroV2Avatar: { borderWidth: 2, borderColor: '#fff', borderRadius: 999 },
   heroV2AvatarMore: {
@@ -647,6 +689,28 @@ const styles = StyleSheet.create({
   },
   heroV2RemainingLabel: { color: '#D7C7FB', fontSize: 12, fontWeight: FONT.weights.semibold, textTransform: 'uppercase', letterSpacing: 0.6 },
   heroV2RemainingValue: { color: '#fff', fontSize: 18, fontWeight: FONT.weights.heavy },
+  // Quick action buttons under the hero
+  qaRow: { flexDirection: 'row', gap: 10, marginBottom: SPACING.md },
+  qaBtn: {
+    flex: 1,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: RADIUS.lg,
+    paddingVertical: 14,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    gap: 6,
+  },
+  qaIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: COLORS.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  qaText: { fontSize: FONT.sizes.xs, fontWeight: FONT.weights.bold, color: COLORS.text },
 
   // ── Light "Your share breakdown" card (formerly the violet block) ──
   yourCard: {

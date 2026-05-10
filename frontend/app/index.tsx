@@ -428,7 +428,7 @@ const styles = StyleSheet.create({
   welcomeCtaRow: {
     flexDirection: 'row',
     gap: SPACING.md,
-    marginTop: 'auto',
+    marginTop: SPACING.lg,
     paddingTop: SPACING.md,
   },
   welcomeCtaCard: {

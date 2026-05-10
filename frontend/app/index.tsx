@@ -34,7 +34,6 @@ import {
   Plus,
   ChevronRight,
   ShieldAlert,
-  QrCode,
   Sparkles,
 } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -120,9 +119,9 @@ export default function HomeScreen() {
             <HeroPhoneFrame height={260} />
           </View>
 
-          {/* Brand mark + wordmark */}
+          {/* Brand mark + wordmark — centered, big, like Image 1 */}
           <View style={styles.brandRow}>
-            <SquadPayMark size={48} testID="landing-brand-mark" />
+            <SquadPayMark size={56} testID="landing-brand-mark" />
           </View>
 
           {/* Headline (matches the reference exactly) */}
@@ -134,38 +133,20 @@ export default function HomeScreen() {
             Scan a receipt, share a link, and only pay for what you ordered.
           </Text>
 
-          {/* Footer share-pill CTA */}
+          {/* Footer share-pill CTA — single big white pill exactly like Image 1.
+              Tapping routes to /auth which handles new + returning users. */}
           <Pressable
             onPress={() => router.push('/auth')}
             style={({ pressed }) => [styles.footerPill, pressed && { opacity: 0.94 }]}
             testID="landing-share-pill"
           >
             <View style={styles.footerPillIcon}>
-              <Plus color={COLORS.primary} size={18} strokeWidth={2.6} />
+              <Plus color={COLORS.primary} size={20} strokeWidth={2.6} />
             </View>
             <Text style={styles.footerPillText}>Share a QR or link to split</Text>
           </Pressable>
 
-          {/* Secondary actions */}
-          <Pressable
-            onPress={() => router.push('/auth?intent=join')}
-            style={styles.secondaryRow}
-            testID="landing-join-btn"
-          >
-            <QrCode size={16} color={COLORS.primary} />
-            <Text style={styles.secondaryText}>Join a bill via QR or code</Text>
-          </Pressable>
-
-          <Pressable
-            onPress={() => router.push('/auth?intent=signin')}
-            style={styles.signinRow}
-            testID="landing-signin"
-          >
-            <Text style={styles.signinPrompt}>Already have an account? </Text>
-            <Text style={styles.signinAction}>Sign in</Text>
-          </Pressable>
-
-          {/* Legal footer */}
+          {/* Minimal legal footer — required for compliance, kept small. */}
           <View style={styles.legalRow}>
             <Text testID="home-footer-support" style={styles.legalLink} onPress={() => router.push('/legal/support')}>Support</Text>
             <Text style={styles.legalDot}>·</Text>
@@ -173,7 +154,6 @@ export default function HomeScreen() {
             <Text style={styles.legalDot}>·</Text>
             <Text testID="home-footer-terms" style={styles.legalLink} onPress={() => router.push('/legal/terms')}>Terms</Text>
           </View>
-          <Text style={styles.copyright}>© 2026 — SquadPay by NueveTech</Text>
         </ScrollView>
       </SafeAreaView>
     );
@@ -188,7 +168,6 @@ export default function HomeScreen() {
   };
   const featured = groups.find(isActive) || groups[0];
   const otherGroups = groups.filter((g) => g.id !== featured?.id);
-  const firstName = (user.name || '').split(' ')[0] || 'there';
 
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.bg }} testID="home-auth">
@@ -227,9 +206,8 @@ export default function HomeScreen() {
               </View>
             ) : null}
 
-            {/* Big headline */}
-            <View style={{ paddingHorizontal: SPACING.md, marginTop: SPACING.md }}>
-              <Text style={styles.heroHello}>Hello {firstName},</Text>
+            {/* Big headline matching Image 2 */}
+            <View style={{ paddingHorizontal: SPACING.md, marginTop: SPACING.lg }}>
               <Text style={styles.heroHeadline}>
                 <Text style={styles.heroHeadlineWhite}>Split bills{'\n'}with your </Text>
                 <Text style={styles.heroHeadlineLavender}>squad.</Text>
@@ -239,7 +217,6 @@ export default function HomeScreen() {
               </Text>
             </View>
 
-            {/* Verify-phone nudge */}
             {!user.verified ? (
               <TouchableOpacity
                 onPress={() => router.push(`/auth?mode=verify&user_id=${user.id}`)}

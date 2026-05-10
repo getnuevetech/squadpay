@@ -1,6 +1,6 @@
 /**
- * SquadPay brand mark — purple rounded-square with a centered sparkle, optionally
- * paired with the wordmark. Used in landing hero, home header, and tab bar center.
+ * SquadPay brand mark — purple rounded-square with a centered 4-point sparkle,
+ * optionally paired with the wordmark. Used in landing hero + home header.
  */
 import { View, Text, StyleSheet } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
@@ -15,24 +15,27 @@ type Props = {
 
 export function SquadPayMark({ size = 36, showWordmark = true, variant = 'light', testID }: Props) {
   const wordColor = variant === 'onDark' ? '#fff' : COLORS.primary;
+  const tileSize = size;
+  const wordSize = Math.round(size * 0.7);
+  const sparkleSize = Math.round(tileSize * 0.62);
   return (
     <View style={styles.row} testID={testID}>
       <View
         style={[
           styles.tile,
-          { width: size, height: size, borderRadius: Math.round(size * 0.28) },
+          { width: tileSize, height: tileSize, borderRadius: Math.round(tileSize * 0.28) },
         ]}
       >
-        <Svg width={Math.round(size * 0.55)} height={Math.round(size * 0.55)} viewBox="0 0 24 24" fill="none">
-          {/* 4-point sparkle */}
+        {/* Crisp 4-point sparkle (concave diamond) — matches reference. */}
+        <Svg width={sparkleSize} height={sparkleSize} viewBox="0 0 100 100">
           <Path
-            d="M12 2 L13.6 9.2 L21 11 L13.6 12.8 L12 22 L10.4 12.8 L3 11 L10.4 9.2 Z"
-            fill="#fff"
+            d="M50 6 C52 36 64 48 94 50 C64 52 52 64 50 94 C48 64 36 52 6 50 C36 48 48 36 50 6 Z"
+            fill="#ffffff"
           />
         </Svg>
       </View>
       {showWordmark ? (
-        <Text style={[styles.wordmark, { color: wordColor, fontSize: Math.round(size * 0.78) }]}>
+        <Text style={[styles.wordmark, { color: wordColor, fontSize: wordSize }]}>
           SquadPay
         </Text>
       ) : null}
@@ -41,7 +44,7 @@ export function SquadPayMark({ size = 36, showWordmark = true, variant = 'light'
 }
 
 const styles = StyleSheet.create({
-  row: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   tile: {
     backgroundColor: COLORS.primary,
     alignItems: 'center',
@@ -54,7 +57,7 @@ const styles = StyleSheet.create({
   },
   wordmark: {
     fontWeight: FONT.weights.bold,
-    letterSpacing: -0.5,
+    letterSpacing: -0.8,
   },
 });
 

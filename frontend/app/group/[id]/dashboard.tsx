@@ -529,10 +529,9 @@ export default function DashboardScreen() {
           })}
         </View>
 
-        {/* Per-member items breakdown (collapsible) — visible whenever the
-            bill has assignable items, regardless of phase. */}
         {/* The previous separate "Who's paying for what" collapsible card
             has been removed — items are now inline under each member row. */}
+        {group.repayments && group.repayments.length > 0 && (
           <>
             <Text style={styles.sectionTitle}>Repayment history</Text>
             <View style={styles.listCard}>

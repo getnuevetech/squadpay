@@ -195,7 +195,60 @@ def attach_pay_routes(router: APIRouter, db):
 
         return await _load_group_enriched(db, group_id)
 
-    @router.post("/groups/{group_id}/repay")
+    # ===== Issue Virtual Card on demand (lead-only) =====
+    # Stripe Issuing card creation can fail silently from the contribute path
+    # (network glitch, transient Stripe error, missing config). This endpoint
+    # lets the Lead Dashboard / Card page lazily provision the card once the
+    # bill is fully funded but no card has been minted yet.
+    from pydantic import BaseModel as _BM
+    class _IssueCardIn(_BM):
+        user_id: str
+
+    @router.post("/groups/{group_id}/issue-card")
+    async def issue_card_now(group_id: str, body: _IssueCardIn):
+        group = await db.groups.find_one({"id": group_id}, {"_id": 0})
+        if not group:
+            raise HTTPException(404, "Group not found")
+        if group["lead_id"] != body.user_id:
+            raise HTTPException(403, "Only the lead can issue the virtual card")
+        # Already issued? Just return the current card
+        existing = group.get("virtual_card") or {}
+        if existing.get("stripe_card_id"):
+            return {"ok": True, "already_issued": True, "virtual_card": existing}
+        # Must be fully funded (within $0.01)
+        total_contributed = float((group.get("funding") or {}).get("total_contributed") or 0)
+        if not total_contributed:
+            # try recomputing from contributions
+            total_contributed = sum(
+                float(c.get("amount") or 0) for c in (group.get("contributions") or [])
+            )
+        if total_contributed + 0.01 < float(group.get("total") or group.get("total_amount") or 0):
+            raise HTTPException(
+                400,
+                f"Bill is not fully funded yet (${total_contributed:.2f} of "
+                f"${float(group.get('total') or 0):.2f} collected). Card will be auto-issued "
+                f"the moment funding completes.",
+            )
+        # Mark group as paid+group-funded if not already, then issue
+        if group.get("status") == "open":
+            await db.groups.update_one(
+                {"id": group_id},
+                {"$set": {
+                    "status": "paid",
+                    "funding_mode": group.get("funding_mode") or "group",
+                    "lead_paid_at": now_iso(),
+                    "lead_shortfall": 0.0,
+                }},
+            )
+        # Now issue
+        try:
+            from issuing import issue_group_card
+            refreshed = await db.groups.find_one({"id": group_id}, {"_id": 0})
+            new_vc = await issue_group_card(db, refreshed)
+        except Exception as e:
+            logger.warning(f"[issue-card] failed for {group_id}: {e}")
+            raise HTTPException(502, f"Could not provision virtual card: {e}")
+        return {"ok": True, "virtual_card": new_vc, "group": await _load_group_enriched(db, group_id)}
     async def repay(group_id: str, body: RepayIn):
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:

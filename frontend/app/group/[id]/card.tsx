@@ -55,6 +55,37 @@ export default function GroupCardScreen() {
       if (g.lead_id !== u.id) {
         toast.error('Only the bill lead can view this card.');
         router.replace(`/group/${id}/summary`);
+        return;
+      }
+      // Auto-issue: if the group is fully funded but no card exists yet,
+      // attempt to provision the card immediately (covers cases where the
+      // contribute path failed silently or the bill was funded before the
+      // auto-issue code shipped).
+      const vc: any = g.virtual_card || null;
+      if (!vc?.stripe_card_id) {
+        const collected = (g.funding?.total_contributed || 0);
+        const total = Number(g.total || 0);
+        if (total > 0 && collected + 0.01 >= total) {
+          try {
+            const base = process.env.EXPO_PUBLIC_BACKEND_URL || '';
+            const res = await fetch(`${base}/api/groups/${id}/issue-card`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ user_id: u.id }),
+            });
+            if (res.ok) {
+              const data = await res.json();
+              if (data?.virtual_card) {
+                // Refresh group to pick up the newly minted card
+                const fresh = await api.getGroup(id);
+                setGroup(fresh);
+                if (!data?.already_issued) toast.success('Virtual card provisioned!');
+              }
+            }
+          } catch (e) {
+            // Silent — the empty-state will still show with a Refresh button
+          }
+        }
       }
     } catch (e: any) {
       toast.error(e?.message || 'Could not load card');
@@ -166,7 +197,7 @@ export default function GroupCardScreen() {
               <View style={styles.cardRow}>
                 <CreditCard size={22} color="rgba(255,255,255,0.95)" />
                 <View style={{ flex: 1, marginLeft: 10 }}>
-                  <Text style={styles.cardBrand}>{vc.nickname || 'SquadPay'}</Text>
+                  <Text style={styles.cardBrand}>SquadPay</Text>
                   <Text style={styles.cardGroupName} numberOfLines={1}>
                     {group.title}
                   </Text>

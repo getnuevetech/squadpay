@@ -4668,6 +4668,94 @@ agent_communication:
 
         Verification:
         - Backend untouched.
+
+# ──────────────────────────────────────────────────────────────────────────
+# Phase L+9 — Card auto-issuance + console warning fix (MAIN AGENT)
+# ──────────────────────────────────────────────────────────────────────────
+agent_communication:
+    - agent: "main"
+      message: |
+        Three cleanup items.
+
+        TEXT-STRING console warning: ROOT CAUSE FOUND
+        File: dashboard.tsx
+        - Earlier sed-based deletion of the funding-progress + virtual-card
+          chunk accidentally removed the OPENING line of the conditional
+          wrapping the Repayment History (`{group.repayments.length > 0 && (`)
+          but left the trailing `)}`.  The orphan `<>` fragment + dangling
+          `)}` was being rendered as text, which is why React Native warned
+          "Text strings must be rendered within a `<Text>` component".
+        - Fixed by re-wrapping the Repayment History block in
+          `{group.repayments && group.repayments.length > 0 && ( <> ... </> )}`.
+        - Verified: zero text-string warnings on landing page reload.
+        - Bundles cleanly (HTTP 200).
+
+        VIRTUAL CARD AUTO-ISSUANCE
+        Backend: NEW endpoint POST /api/groups/{group_id}/issue-card
+            File: /app/backend/routes/pay_routes.py
+            Body: { user_id: <lead_user_id> }
+            - Lead-only (403 if not lead)
+            - Returns existing card if already issued (already_issued: true)
+            - 400 if bill is not yet fully funded (with helpful copy showing
+              collected/total)
+            - Auto-promotes status from 'open' → 'paid'/'group' funding mode
+              if needed, then calls issuing.issue_group_card()
+            - Returns { ok, virtual_card, group } so the client can refresh
+              its local view in one round-trip.
+
+        Frontend: card.tsx now lazy-issues
+            - On every mount/refresh, if the group is fully funded but
+              virtual_card is missing, the card page silently POSTs to the
+              new endpoint, then re-fetches the group and shows the freshly-
+              minted card.  A success toast fires (skipped if already_issued).
+            - Failure path is silent so the empty-state with Refresh button
+              still acts as a fallback.
+
+        CARD-FACE BRAND TEXT cleaned up
+        File: card.tsx
+        - The card brand line previously rendered `vc.nickname` which is
+          stored as "<business> - <group title>" in Stripe Issuing — that's
+          why a card created when the group title was "NEW Lead Change
+          Test" displayed that string on the card face.  Replaced with a
+          static "SquadPay" brand label.  The group's current title is
+          still shown as the secondary line below the brand.
+
+        Verification:
+        - curl POST /api/groups/x/issue-card → "Group not found" (endpoint
+          registered + auth-shaped).
+        - Backend logs show no errors after restart.
+        - Metro bundles iOS + Web cleanly with HTTP 200.
+
+backend:
+  - task: "Issue virtual card on demand (lead-only)"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/routes/pay_routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            New endpoint POST /api/groups/{group_id}/issue-card
+            Body: { user_id }
+            Cases to test (no special auth — uses request body):
+              1. Unknown group → 404
+              2. Non-lead user_id → 403
+              3. Bill not fully funded (open status, partial contributions)
+                 → 400 with message containing "not fully funded"
+              4. Already issued (group has virtual_card.stripe_card_id)
+                 → 200 with { already_issued: true, virtual_card }
+              5. Happy path (fully funded, no card yet) → 200 with newly-
+                 issued virtual_card; subsequent GET /api/groups/{id} should
+                 show the same virtual_card.
+
+            Stripe Issuing must be configured (STRIPE_API_KEY env). If the
+            test env doesn't have Stripe Issuing turned on, case 5 may
+            fail with 502 — that's an env issue, not a code bug; mark as
+            ENV-DEP if so.
+
         - Metro bundles iOS + Web cleanly (HTTP 200, landing page screenshot
           renders perfectly with all redesign elements intact).
         - All edits are scoped to summary.tsx, dashboard.tsx,

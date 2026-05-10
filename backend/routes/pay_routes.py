@@ -246,8 +246,6 @@ def attach_pay_routes(router: APIRouter, db):
         for g in groups:
             e = await _recompute_group(g)
             members = g.get("members", []) or []
-            # Lead first, then up to 4 total — used by home screen for stacked
-            # avatar rings ("show first 4 colorful AvatarRings stacked").
             ordered = sorted(
                 members,
                 key=lambda m: (0 if m.get("user_id") == g.get("lead_id") else 1, m.get("joined_at") or ""),
@@ -256,6 +254,13 @@ def attach_pay_routes(router: APIRouter, db):
                 {"user_id": m.get("user_id"), "name": name_map.get(m.get("user_id"), "")}
                 for m in ordered[:4]
             ]
+            # Phase J2 — surface this user's per-group totals so the home
+            # FeaturedBillCard can show their expected contribution alongside
+            # the group total without a second roundtrip.
+            per = next((p for p in (e.get("per_user") or []) if p.get("user_id") == user_id), None)
+            user_share = float(per.get("total")) if per else 0.0
+            user_contributed = float(per.get("contributed")) if per else 0.0
+            user_outstanding = float(per.get("outstanding")) if per else 0.0
             enriched.append({
                 "id": g["id"],
                 "title": g["title"],
@@ -266,5 +271,9 @@ def attach_pay_routes(router: APIRouter, db):
                 "created_at": g["created_at"],
                 "member_count": len(members),
                 "members_preview": preview,
+                # Per-user fields
+                "user_share": round(user_share, 2),
+                "user_contributed": round(user_contributed, 2),
+                "user_outstanding": round(user_outstanding, 2),
             })
         return enriched

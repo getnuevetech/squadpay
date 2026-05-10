@@ -269,12 +269,15 @@ export const api = {
         title: string;
         total: number;
         status: string;
+        derived_status?: string;
         lead_id: string;
         created_at: string;
         member_count: number;
-        // Phase J — first 4 members (lead first) used to render stacked
-        // AvatarRings on the home group cards.
         members_preview?: { user_id: string; name: string }[];
+        // Phase J2 — this user's slice of each group.
+        user_share?: number;
+        user_contributed?: number;
+        user_outstanding?: number;
       }[]
     >(`/users/${user_id}/groups`),
   createGroup: (payload: {

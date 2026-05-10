@@ -258,45 +258,49 @@ export default function HomeScreen() {
               </TouchableOpacity>
             ) : null}
 
-            {/* Featured bill card */}
-            {featured ? (
-              <View style={{ paddingHorizontal: SPACING.md, marginTop: SPACING.lg }}>
+            {/* Featured Bill Card — always rendered. Shows idle state with $0
+                when no active bill, or active state with user-specific data. */}
+            <View style={{ paddingHorizontal: SPACING.md, marginTop: SPACING.lg }}>
+              {featured ? (
                 <FeaturedBillCard
                   testID="home-featured-card"
+                  mode="active"
                   title={featured.title}
-                  total={Number(featured.total || 0)}
+                  userShare={Number((featured as any).user_share || 0)}
+                  groupTotal={Number(featured.total || 0)}
                   paidAmount={Number((featured as any).funding?.contributed_total || 0)}
-                  remainingAmount={Number((featured as any).funding?.remaining_to_collect || 0)}
                   paidCount={Number((featured as any).paid_count || 0)}
                   totalCount={Number(featured.member_count || 0)}
                   leadId={featured.lead_id}
                   members={(featured as any).members_preview || []}
+                  selfId={user.id}
+                  selfName={user.name || ''}
                   onPress={() => router.push(`/group/${featured.id}/dashboard`)}
-                  onPay={() => router.push(`/group/${featured.id}/pay`)}
-                  onShare={() => router.push(`/group/${featured.id}/dashboard?share=1`)}
-                  onAddMember={() => router.push(`/group/${featured.id}/dashboard?invite=1`)}
+                  onPay={() => {
+                    // If user hasn't claimed any items yet → route to items list.
+                    // Otherwise → go straight to pay.
+                    const contributed = Number((featured as any).user_contributed || 0);
+                    const share = Number((featured as any).user_share || 0);
+                    if (share <= 0.005 && contributed <= 0.005) {
+                      router.push(`/group/${featured.id}/items`);
+                    } else {
+                      router.push(`/group/${featured.id}/pay`);
+                    }
+                  }}
+                  onAddFriend={() => router.push(`/group/${featured.id}/dashboard?share=1`)}
+                  onPlusToItems={() => router.push(`/group/${featured.id}/items`)}
+                />
+              ) : (
+                <FeaturedBillCard
+                  testID="home-featured-card-idle"
+                  mode="idle"
+                  selfId={user.id}
+                  selfName={user.name || ''}
                   onSplit={() => router.push('/create')}
                   onJoin={() => router.push('/auth?intent=join')}
                 />
-              </View>
-            ) : (
-              <View style={{ paddingHorizontal: SPACING.md, marginTop: SPACING.lg }}>
-                <Pressable
-                  onPress={() => router.push('/create')}
-                  style={styles.emptyHero}
-                  testID="home-empty-cta"
-                >
-                  <View style={styles.emptyHeroIcon}>
-                    <Sparkles color="#fff" size={20} />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.emptyHeroTitle}>Start your first split</Text>
-                    <Text style={styles.emptyHeroSub}>Tap to scan a receipt or enter an amount.</Text>
-                  </View>
-                  <ChevronRight color="#fff" size={18} />
-                </Pressable>
-              </View>
-            )}
+              )}
+            </View>
 
             <View style={{ height: SPACING.lg }} />
           </SafeAreaView>

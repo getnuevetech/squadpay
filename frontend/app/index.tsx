@@ -35,6 +35,9 @@ import {
   ChevronRight,
   ShieldAlert,
   Sparkles,
+  FileText,
+  RotateCw,
+  PlusSquare,
 } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { api } from '../src/api';
@@ -116,7 +119,7 @@ export default function HomeScreen() {
         >
           {/* Phone-frame illustration with hashtag chips + dots */}
           <View style={styles.heroFrameSlot}>
-            <HeroPhoneFrame height={260} />
+            <HeroPhoneFrame height={340} />
           </View>
 
           {/* Brand mark + wordmark — centered, big, like Image 1 */}
@@ -133,20 +136,53 @@ export default function HomeScreen() {
             Scan a receipt, share a link, and only pay for what you ordered.
           </Text>
 
-          {/* Footer share-pill CTA — single big white pill exactly like Image 1.
-              Tapping routes to /auth which handles new + returning users. */}
-          <Pressable
-            onPress={() => router.push('/auth')}
-            style={({ pressed }) => [styles.footerPill, pressed && { opacity: 0.94 }]}
-            testID="landing-share-pill"
-          >
-            <View style={styles.footerPillIcon}>
-              <Plus color={COLORS.primary} size={20} strokeWidth={2.6} />
+          {/* Three feature cards — exactly like reference */}
+          <View style={styles.featureList}>
+            <View style={styles.featureRow} testID="landing-feature-share">
+              <View style={styles.featureIcon}>
+                <PlusSquare size={22} color={COLORS.primary} strokeWidth={2.2} />
+              </View>
+              <Text style={styles.featureLabel}>Share a QR or link to split</Text>
             </View>
-            <Text style={styles.footerPillText}>Share a QR or link to split</Text>
-          </Pressable>
+            <View style={styles.featureRow} testID="landing-feature-claim">
+              <View style={styles.featureIcon}>
+                <FileText size={22} color={COLORS.primary} strokeWidth={2.2} />
+              </View>
+              <Text style={styles.featureLabel}>Claim only what you ordered</Text>
+            </View>
+            <View style={styles.featureRow} testID="landing-feature-track">
+              <View style={styles.featureIcon}>
+                <RotateCw size={22} color={COLORS.primary} strokeWidth={2.2} />
+              </View>
+              <Text style={styles.featureLabel}>Track repayments automatically</Text>
+            </View>
+          </View>
 
-          {/* Minimal legal footer — required for compliance, kept small. */}
+          {/* Two big CTA cards — Split a Bill (primary violet) + Join a Bill (secondary white) */}
+          <View style={styles.ctaPair}>
+            <Pressable
+              onPress={() => router.push('/auth?intent=split')}
+              style={({ pressed }) => [styles.ctaPrimary, pressed && { opacity: 0.94 }]}
+              testID="landing-split-bill"
+            >
+              <View style={styles.ctaPrimaryIcon}>
+                <Plus size={30} color="#fff" strokeWidth={2.8} />
+              </View>
+              <Text style={styles.ctaPrimaryText}>Split a Bill</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => router.push('/auth?intent=join')}
+              style={({ pressed }) => [styles.ctaSecondary, pressed && { opacity: 0.94 }]}
+              testID="landing-join-bill"
+            >
+              <View style={styles.ctaSecondaryIcon}>
+                <PlusSquare size={26} color={COLORS.primary} strokeWidth={2.4} />
+              </View>
+              <Text style={styles.ctaSecondaryText}>Join a Bill</Text>
+            </Pressable>
+          </View>
+
+          {/* Minimal legal footer */}
           <View style={styles.legalRow}>
             <Text testID="home-footer-support" style={styles.legalLink} onPress={() => router.push('/legal/support')}>Support</Text>
             <Text style={styles.legalDot}>·</Text>
@@ -342,60 +378,108 @@ const styles = StyleSheet.create({
   landingScroll: { padding: SPACING.lg, paddingBottom: SPACING.xl, alignItems: 'stretch' },
   heroFrameSlot: { alignItems: 'center', marginTop: SPACING.md, marginBottom: SPACING.lg },
   brandRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 4, marginBottom: SPACING.md },
-  headline: { textAlign: 'center', fontSize: 36, fontWeight: FONT.weights.bold, lineHeight: 44, letterSpacing: -1 },
+  headline: { textAlign: 'center', fontSize: 38, fontWeight: FONT.weights.bold, lineHeight: 46, letterSpacing: -1.2 },
   headlineDark: { color: '#0E0726' },
   headlineViolet: { color: COLORS.primary },
   subhead: {
     textAlign: 'center',
     fontSize: 15,
-    color: COLORS.subtext,
+    color: '#6B6680',
     marginTop: SPACING.md,
-    paddingHorizontal: SPACING.lg,
+    paddingHorizontal: SPACING.md,
     lineHeight: 22,
+    fontWeight: FONT.weights.medium,
   },
-  footerPill: {
+
+  // Three feature cards (white pills with violet icons)
+  featureList: { gap: 14, marginTop: SPACING.xl },
+  featureRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 14,
+    gap: 16,
     backgroundColor: '#fff',
-    paddingHorizontal: SPACING.md,
-    paddingVertical: 14,
-    borderRadius: 18,
-    marginTop: SPACING.xl,
-    borderWidth: 1,
-    borderColor: '#EFE7FE',
+    borderRadius: 22,
+    paddingHorizontal: 18,
+    paddingVertical: 18,
     shadowColor: '#1F1240',
-    shadowOpacity: 0.06,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 3,
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
   },
-  footerPillIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 12,
+  featureIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
     backgroundColor: '#F1ECFE',
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1.5,
-    borderColor: COLORS.primary,
   },
-  footerPillText: { color: '#0E0726', fontWeight: FONT.weights.bold, fontSize: 15 },
-  secondaryRow: {
+  featureLabel: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: FONT.weights.bold,
+    color: '#0E0726',
+  },
+
+  // Two big CTA cards at bottom
+  ctaPair: {
     flexDirection: 'row',
+    gap: 14,
+    marginTop: SPACING.xl,
+  },
+  ctaPrimary: {
+    flex: 1,
+    backgroundColor: COLORS.primary,
+    borderRadius: 22,
+    paddingVertical: 22,
+    paddingHorizontal: 20,
+    alignItems: 'flex-start',
+    shadowColor: COLORS.primary,
+    shadowOpacity: 0.4,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
+  },
+  ctaPrimaryIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.2)',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    marginTop: SPACING.lg,
+    marginBottom: 18,
   },
-  secondaryText: { color: COLORS.primary, fontWeight: FONT.weights.semibold, fontSize: 14 },
-  signinRow: { flexDirection: 'row', justifyContent: 'center', marginTop: SPACING.md },
-  signinPrompt: { color: COLORS.subtext, fontSize: 14 },
-  signinAction: { color: COLORS.primary, fontWeight: FONT.weights.bold, fontSize: 14 },
+  ctaPrimaryText: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: 20, letterSpacing: -0.3 },
+  ctaSecondary: {
+    flex: 1,
+    backgroundColor: '#fff',
+    borderRadius: 22,
+    paddingVertical: 22,
+    paddingHorizontal: 20,
+    alignItems: 'flex-start',
+    borderWidth: 1,
+    borderColor: '#EFE7FE',
+    shadowColor: '#1F1240',
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+  },
+  ctaSecondaryIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    backgroundColor: '#F1ECFE',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 18,
+  },
+  ctaSecondaryText: { color: COLORS.primary, fontWeight: FONT.weights.bold, fontSize: 20, letterSpacing: -0.3 },
+
   legalRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 10, marginTop: SPACING.lg },
   legalLink: { color: COLORS.subtext, fontSize: 12, fontWeight: FONT.weights.medium },
   legalDot: { color: COLORS.subtext },
-  copyright: { textAlign: 'center', fontSize: 11, color: COLORS.subtext, marginTop: 8 },
 
   // ─── Auth hero ───
   hero: {

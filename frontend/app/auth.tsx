@@ -47,6 +47,9 @@ export default function AuthScreen() {
   // Phase H6.4 — track whether last sent OTP was mocked, so we can hide the
   // "Demo: 123456" hint when SMS is in live mode.
   const [otpMocked, setOtpMocked] = useState<boolean | null>(null);
+  // T&C gate — registration requires explicit acceptance before phone Continue
+  // OR Skip can be tapped. Sign-in mode skips this (existing user re-auth).
+  const [tcsAccepted, setTcsAccepted] = useState(false);
 
   // Phase H6.3 — when starting in verify mode, prefill the existing user's name
   // so it can be shown above the phone input ("Verifying for: Alex").
@@ -131,6 +134,11 @@ export default function AuthScreen() {
     if (cleaned.length < 7) {
       setPhoneError('Enter a valid phone number');
       return;
+    }
+    // Persist T&C acceptance for fresh registration (fire-and-forget — UI is
+    // already gated by `tcsAccepted` so a network failure here is acceptable).
+    if (!signinMode && !verifyMode && tcsAccepted && userId) {
+      api.acceptTerms(userId).catch(() => {});
     }
     setLoading(true);
     try {
@@ -289,6 +297,10 @@ export default function AuthScreen() {
   };
 
   const skipPhone = async () => {
+    // Persist T&C acceptance even when skipping phone (still required to use app).
+    if (!signinMode && !verifyMode && tcsAccepted && userId) {
+      api.acceptTerms(userId).catch(() => {});
+    }
     // Let user proceed with just name; they will be forced to verify before paying
     router.replace('/');
   };
@@ -405,10 +417,50 @@ export default function AuthScreen() {
             {phoneError ? (
               <Text style={styles.inlineError} testID="auth-phone-error">{phoneError}</Text>
             ) : null}
+
+            {/* T&C agreement gate — required for first-time registration only.
+                Cannot proceed (Continue OR Skip) without ticking the box. The
+                actual server-side acceptance happens after verify-otp succeeds. */}
+            {!signinMode && !verifyMode ? (
+              <View style={styles.tcsRow} testID="auth-tcs-row">
+                <TouchableOpacity
+                  testID="auth-tcs-checkbox"
+                  onPress={() => setTcsAccepted((v) => !v)}
+                  activeOpacity={0.7}
+                  style={[
+                    styles.tcsCheckbox,
+                    tcsAccepted ? styles.tcsCheckboxChecked : null,
+                  ]}
+                >
+                  {tcsAccepted ? <Text style={styles.tcsCheckmark}>✓</Text> : null}
+                </TouchableOpacity>
+                <Text style={styles.tcsText}>
+                  I agree to the{' '}
+                  <Text
+                    testID="auth-tcs-terms-link"
+                    style={styles.tcsLink}
+                    onPress={() => router.push('/legal/terms')}
+                  >
+                    Terms & Conditions
+                  </Text>
+                  {' '}and{' '}
+                  <Text
+                    testID="auth-tcs-privacy-link"
+                    style={styles.tcsLink}
+                    onPress={() => router.push('/legal/privacy')}
+                  >
+                    Privacy Policy
+                  </Text>
+                  .
+                </Text>
+              </View>
+            ) : null}
+
             <Button
               title={signinMode ? 'Send code' : 'Send code'}
               onPress={submitPhone}
               loading={loading}
+              disabled={!signinMode && !verifyMode && !tcsAccepted}
               testID="auth-phone-continue-btn"
               style={{ marginTop: SPACING.lg }}
             />
@@ -417,6 +469,7 @@ export default function AuthScreen() {
                 title="Skip for now"
                 onPress={skipPhone}
                 variant="ghost"
+                disabled={!verifyMode && !tcsAccepted}
                 testID="auth-phone-skip-btn"
                 style={{ marginTop: SPACING.sm }}
               />
@@ -515,6 +568,46 @@ const styles = StyleSheet.create({
   },
   inputError: { borderColor: COLORS.danger },
   inlineError: { color: COLORS.danger, fontSize: FONT.sizes.sm, marginTop: SPACING.sm, fontWeight: FONT.weights.semibold },
+
+  // T&C agreement gate
+  tcsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginTop: SPACING.md,
+    gap: SPACING.sm,
+  },
+  tcsCheckbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  tcsCheckboxChecked: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  tcsCheckmark: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '900' as const,
+    lineHeight: 16,
+  },
+  tcsText: {
+    flex: 1,
+    fontSize: FONT.sizes.sm,
+    lineHeight: 20,
+    color: COLORS.text,
+  },
+  tcsLink: {
+    color: COLORS.primary,
+    fontWeight: FONT.weights.semibold,
+    textDecorationLine: 'underline',
+  },
   refToggle: { color: COLORS.primary, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold, marginTop: SPACING.md, textDecorationLine: 'underline' },
   refBox: { marginTop: SPACING.md, padding: SPACING.md, backgroundColor: COLORS.primaryLight, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.primary },
   refLabel: { fontSize: FONT.sizes.xs, color: COLORS.primary, fontWeight: FONT.weights.bold, textTransform: 'uppercase', marginBottom: SPACING.sm },

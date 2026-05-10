@@ -416,6 +416,7 @@ class UserOut(BaseModel):
     created_at: str
     referral_code: Optional[str] = None
     referred_by_user_id: Optional[str] = None
+    terms_accepted_at: Optional[str] = None  # ISO timestamp of T&C acceptance, or None
 
 
 class SendOtpIn(BaseModel):

@@ -394,3 +394,26 @@ def attach_auth_routes(router: APIRouter, db):
         if not user:
             raise HTTPException(404, "User not found")
         return UserOut(**user)
+
+    @router.post("/users/{user_id}/accept-terms")
+    async def accept_terms(user_id: str):
+        """Mark the user as having agreed to Terms & Conditions + Privacy Policy.
+
+        Called when the user ticks the agreement checkbox during onboarding.
+        Sets `terms_accepted_at` to the current ISO timestamp. Idempotent —
+        re-calling does NOT clear or change the timestamp once set, so the
+        original acceptance time is preserved (important for audit/legal).
+        """
+        existing = await db.users.find_one(
+            {"id": user_id}, {"_id": 0, "terms_accepted_at": 1, "id": 1}
+        )
+        if not existing:
+            raise HTTPException(404, "User not found")
+        if existing.get("terms_accepted_at"):
+            return {"ok": True, "terms_accepted_at": existing["terms_accepted_at"]}
+        ts = now_iso()
+        await db.users.update_one(
+            {"id": user_id},
+            {"$set": {"terms_accepted_at": ts}},
+        )
+        return {"ok": True, "terms_accepted_at": ts}

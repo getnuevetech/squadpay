@@ -70,6 +70,14 @@ attach_referrals_credits_routes(api_router, db)
 attach_misc_routes(api_router, db)
 attach_kyc_routes(api_router, db)
 
+# ---------- Admin-managed legal pages (Support / Privacy / Terms) ----------
+try:
+    from routes.legal_routes import attach_legal_routes
+    from admin_routes import get_current_admin_factory_sync
+    attach_legal_routes(api_router, db, get_current_admin_factory_sync(db))
+except Exception as _e:
+    print("[startup] legal routes attach failed:", _e)
+
 # ---------- Refund / overpayment (Phase H7) ----------
 try:
     from routes.refund_routes import make_refund_router

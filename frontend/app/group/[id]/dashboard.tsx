@@ -248,7 +248,7 @@ export default function DashboardScreen() {
             style={[styles.quickAction, group.status !== 'open' && styles.quickActionDisabled]}
             activeOpacity={0.85}
             disabled={group.status !== 'open'}
-            onPress={() => router.push(`/group/${group.id}/pay`)}
+            onPress={() => router.push(`/group/${group.id}/pay?kind=contribute`)}
             testID="dashboard-action-pay"
           >
             <View style={styles.quickActionIcon}>

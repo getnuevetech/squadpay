@@ -136,7 +136,9 @@ export default function ItemsScreen() {
   }
 
   const isLead = group.lead_id === userId;
-  const itemsLocked = (group.contributions?.length || 0) > 0;
+  // Lead can add items as long as the bill is not yet closed/settled.
+  // (Previously locked once any contribution was made — relaxed per UX.)
+  const itemsLocked = group.status === 'closed';
 
   const submitNewItem = async () => {
     if (!newName.trim()) {

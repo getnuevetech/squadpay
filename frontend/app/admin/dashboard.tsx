@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, ActivityIndicator } from 'react-native';
-import { adminApi, AdminMetrics, AuditEntry } from '../../src/adminApi';
+import { View, Text, ScrollView, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { useRouter } from 'expo-router';
+import { adminApi, AdminMetrics, AuditEntry, AdminProfile, getProfile } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
-import { Receipt, Users, ScrollText, Wallet, Activity } from 'lucide-react-native';
+import { Receipt, Users, ScrollText, Wallet, Activity, KeyRound, ChevronRight } from 'lucide-react-native';
 
 function Tile({ icon, label, value, sub, color = COLORS.primary }: any) {
   return (
@@ -18,19 +19,27 @@ function Tile({ icon, label, value, sub, color = COLORS.primary }: any) {
 }
 
 export default function AdminDashboard() {
+  const router = useRouter();
   const [metrics, setMetrics] = useState<AdminMetrics | null>(null);
   const [recent, setRecent] = useState<AuditEntry[]>([]);
   const [busy, setBusy] = useState(true);
+  const [profile, setProfile] = useState<AdminProfile | null>(null);
 
   useEffect(() => {
     (async () => {
       try {
-        const [m, a] = await Promise.all([
+        const [m, a, me] = await Promise.all([
           adminApi.metrics(),
           adminApi.auditLog({ limit: 8 }).catch(() => ({ items: [] as AuditEntry[] })),
+          adminApi.me().catch(() => null),
         ]);
         setMetrics(m);
         setRecent((a as any).items || []);
+        if (me) setProfile(me);
+        else {
+          const cached = await getProfile();
+          if (cached) setProfile(cached);
+        }
       } finally { setBusy(false); }
     })();
   }, []);
@@ -41,6 +50,28 @@ export default function AdminDashboard() {
     <ScrollView contentContainerStyle={{ paddingBottom: 80 }}>
       <Text style={styles.heading} testID="admin-dashboard-heading">Dashboard</Text>
       <Text style={styles.subheading}>Live metrics across the platform</Text>
+
+      {/* P2 — Soft nudge: prompt seeded super-admins to rotate the default password. */}
+      {profile?.must_change_default_password ? (
+        <TouchableOpacity
+          onPress={() => router.push('/admin/change-password')}
+          style={styles.nudgeBanner}
+          activeOpacity={0.85}
+          testID="admin-default-password-banner"
+        >
+          <View style={styles.nudgeIcon}>
+            <KeyRound size={16} color={COLORS.warning} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.nudgeTitle}>Rotate the default password</Text>
+            <Text style={styles.nudgeSub}>
+              You're still using the seeded super-admin password. Change it now to secure the dashboard.
+            </Text>
+          </View>
+          <Text style={styles.nudgeCta} testID="admin-default-password-banner-cta">Change</Text>
+          <ChevronRight size={14} color={COLORS.warning} />
+        </TouchableOpacity>
+      ) : null}
 
       <View style={styles.grid}>
         <Tile icon={<Receipt size={18} color={COLORS.primary} />} label="Total bills" value={metrics?.groups_total ?? '—'} sub={`${metrics?.groups_active ?? 0} active`} />
@@ -76,6 +107,29 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   heading: { fontSize: FONT.sizes.xl, fontWeight: FONT.weights.bold, color: COLORS.text, marginBottom: 4 },
   subheading: { fontSize: FONT.sizes.sm, color: COLORS.subtext, marginBottom: SPACING.lg },
+  // P2 — default-password nudge banner
+  nudgeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
+    padding: SPACING.md,
+    backgroundColor: COLORS.warningLight,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.warning,
+    marginBottom: SPACING.md,
+  },
+  nudgeIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  nudgeTitle: { fontSize: FONT.sizes.sm, fontWeight: FONT.weights.bold, color: COLORS.text },
+  nudgeSub: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
+  nudgeCta: { color: COLORS.warning, fontSize: FONT.sizes.xs, fontWeight: FONT.weights.bold },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.md },
   tile: { flexBasis: 230, flexGrow: 1, flexDirection: 'row', alignItems: 'center', gap: SPACING.sm, padding: SPACING.md, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS.md, minWidth: 220 },
   tileIcon: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },

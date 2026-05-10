@@ -199,6 +199,42 @@ def build_admin_router(db):
     async def me(admin=Depends(_attach_admin)):
         return _strip(admin)
 
+    # ---- Change password (clears must_change_default_password nudge) ----
+    class ChangePasswordIn(BaseModel):
+        current_password: str
+        new_password: str
+
+    @router.post("/auth/change-password")
+    async def change_password(
+        body: ChangePasswordIn,
+        request: Request,
+        admin=Depends(_attach_admin),
+    ):
+        # Soft password policy — keep aligned with AdminCreateIn (>=8 chars).
+        if not body.new_password or len(body.new_password) < 8:
+            raise HTTPException(400, "New password must be at least 8 characters")
+        if body.new_password == body.current_password:
+            raise HTTPException(400, "New password must differ from current password")
+        if not verify_password(body.current_password, admin.get("password_hash", "")):
+            raise HTTPException(401, "Current password is incorrect")
+        await db.admins.update_one(
+            {"id": admin["id"]},
+            {"$set": {
+                "password_hash": hash_password(body.new_password),
+                "password_updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "must_change_default_password": False,
+                "force_password_reset": False,
+            }},
+        )
+        await write_audit(
+            db,
+            admin_id=admin["id"],
+            admin_email=admin["email"],
+            action="admin.change_password",
+            request=request,
+        )
+        return {"ok": True}
+
     @router.post("/auth/logout")
     async def logout(request: Request, admin=Depends(_attach_admin)):
         await write_audit(

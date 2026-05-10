@@ -19,6 +19,8 @@ export type AdminProfile = {
   is_active: boolean;
   last_login_at: string | null;
   created_at: string;
+  // P2 — soft nudge for super-admins still on the env-default password.
+  must_change_default_password?: boolean;
 };
 
 export type AdminMetrics = {
@@ -122,6 +124,11 @@ export const adminApi = {
     return res;
   },
   me: () => request<AdminProfile>('/auth/me'),
+  changePassword: (current_password: string, new_password: string) =>
+    request<{ ok: boolean }>('/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ current_password, new_password }),
+    }),
   logout: async () => {
     try { await request('/auth/logout', { method: 'POST' }); } catch {}
     await clearSession();

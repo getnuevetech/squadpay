@@ -3916,3 +3916,162 @@ agent_communication:
               J defect.
 
         All 3 Phase J acceptance criteria pass. No backend fixes required.
+
+
+# ───────────────────────────────────────────────────────────────────
+# Phase K — Admin password rotation (P2 nudge)
+#   POST /api/admin/auth/change-password + must_change_default_password flag
+# ───────────────────────────────────────────────────────────────────
+
+backend:
+  - task: "Admin change-password endpoint + must_change_default_password seed flag"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/admin_routes.py, /app/backend/admin.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            Adds:
+              - admin.py ensure_seed_admin() now stamps the freshly seeded
+                super-admin with must_change_default_password=True.
+              - AdminOut model now exposes must_change_default_password (bool,
+                default False) so GET /api/admin/auth/me returns it.
+              - POST /api/admin/auth/change-password (auth required) — body
+                {current_password, new_password}; returns 200 {ok:true} on
+                success and clears must_change_default_password +
+                force_password_reset; bumps password_updated_at; writes audit
+                log entry "admin.change_password".
+            Acceptance:
+              1. GET /api/admin/auth/me returns must_change_default_password
+                 (true for seeded admin pre-rotate, false after rotate, false
+                 for newly created managers/support admins).
+              2. POST /api/admin/auth/change-password without auth → 401.
+              3. With auth: wrong current_password → 401 "Current password is
+                 incorrect".
+              4. With auth: new_password length<8 → 400.
+              5. With auth: new_password == current_password → 400.
+              6. With auth + valid body → 200 {ok:true}; subsequent /me shows
+                 must_change_default_password=false. Old password no longer
+                 logs in. New password logs in cleanly.
+              7. Audit log row appears for action=admin.change_password.
+            Smoke (already verified locally):
+              - login → /me → flag=true
+              - change-password (good) → 200, /me → flag=false
+              - change-password (wrong current) → 401
+              - change-password (short) → 400
+              - change-password (same) → 400
+
+frontend:
+  - task: "Admin dashboard — default-password nudge banner + Change password page"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/admin/dashboard.tsx, /app/frontend/app/admin/change-password.tsx, /app/frontend/app/admin/_layout.tsx"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            - Dashboard fetches /admin/auth/me; renders an amber CTA banner
+              (testID admin-default-password-banner) when
+              must_change_default_password=true. Clicking routes to
+              /admin/change-password.
+            - New page /admin/change-password.tsx with current/new/confirm
+              inputs, show-password toggle, validation messaging, and a
+              "Update password" submit (testID admin-cp-submit) calling
+              adminApi.changePassword. On success, redirects to
+              /admin/dashboard so the user sees the banner gone.
+            - Sidebar footer adds a "Change password" link (testID
+              admin-change-password-link) so the page is reachable any time,
+              not just via the nudge.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase K — Please verify the new admin change-password flow only.
+        Use admin creds from /app/memory/test_credentials.md
+        (admin@squadpay.us / Letmein@2007#ForReal). Backend base
+        http://localhost:8001/api.
+
+        Tests:
+          1. Login with admin creds → POST /api/admin/auth/login.
+          2. GET /api/admin/auth/me with bearer → asserts the field
+             must_change_default_password is present and is a boolean.
+          3. POST /api/admin/auth/change-password (no auth header) → 401.
+          4. POST /api/admin/auth/change-password with wrong current
+             {"current_password":"wrong","new_password":"NewLongPass123!"}
+             → 401 with "Current password is incorrect".
+          5. POST /api/admin/auth/change-password with new<8
+             {"current_password":"<actual>","new_password":"abc"} → 400.
+          6. POST /api/admin/auth/change-password with new==current → 400.
+          7. POST /api/admin/auth/change-password with valid pair → 200
+             {"ok":true}. Re-login with NEW password should succeed; with
+             OLD should fail (401).
+          8. /admin/auth/me after success → must_change_default_password
+             must be false.
+          9. GET /admin/audit (paginate) — there should be a recent row
+             with action=admin.change_password attributed to this admin.
+         10. After completion, restore the password (call change-password
+             again to revert to the original "Letmein@2007#ForReal") so
+             other tests keep passing. Report whether you restored it.
+        Do NOT touch the new admin frontend pages — frontend test runs
+        only on explicit user request.
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Phase K — Admin Change-Password flow — TESTING AGENT REPORT
+# ──────────────────────────────────────────────────────────────────────────
+agent_communication:
+    - agent: "testing"
+      message: |
+        Phase K (Admin Change-Password) verified end-to-end via
+        /app/backend_test_phase_k.py against the live preview backend
+        (https://joint-pay-1.preview.emergentagent.com/api). 24/24 checks
+        PASS, 0 FAIL.
+
+        Steps verified (all PASS):
+          1. POST /api/admin/auth/login with admin@squadpay.us / Letmein@2007#ForReal
+             → 200, returns {token, admin}. (Note: response key is "admin",
+             not "profile" as worded in the request — the profile object is
+             present, just under the key `admin`. Same shape contract.)
+          2. GET /api/admin/auth/me with Bearer → 200; response includes
+             field `must_change_default_password` (bool). Verified type is
+             actually bool, not int/None.
+          3. POST /api/admin/auth/change-password without Authorization → 401.
+          4. With Bearer + wrong current_password → 401, detail exactly
+             "Current password is incorrect".
+          5. With Bearer + new_password "abc" → 400, detail exactly
+             "New password must be at least 8 characters".
+          6. With Bearer + new_password == current_password → 400, detail
+             exactly "New password must differ from current password".
+          7. With Bearer + valid pair (current=Letmein@2007#ForReal,
+             new=NewLetmein@2007#ForReal) → 200 body == {"ok": true}.
+          8. POST /admin/auth/login with old "Letmein@2007#ForReal" → 401.
+          9. POST /admin/auth/login with new "NewLetmein@2007#ForReal" →
+             200; fresh token returned (different from pre-rotation token).
+         10. GET /admin/auth/me with new Bearer → must_change_default_password
+             == False (rotation correctly cleared the nudge flag).
+         11. GET /admin/audit-log?action=admin.change_password (the existing
+             audit endpoint mounted at /api/admin/audit-log; there is no
+             /admin/audit endpoint and no /app/backend/admin_audit.py file
+             — audit is implemented in admin.write_audit + admin_routes.py)
+             → 200, returns recent row with action="admin.change_password"
+             and admin_email="admin@squadpay.us". ✅
+         12. RESTORE (CRITICAL): POST /admin/auth/change-password with new
+             Bearer + body {current=NewLetmein@2007#ForReal,
+             new=Letmein@2007#ForReal} → 200. Confirmed by re-login with
+             "Letmein@2007#ForReal" → 200. ✅✅
+             test_credentials.md remains accurate; original password
+             restored.
+
+        Backend log notes (informational, not blockers):
+          - passlib bcrypt cosmetic warning (no functional impact).
+          - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes; ≥32 recommended).
+
+        Acceptance: ALL 12 review steps pass AND password successfully
+        restored to "Letmein@2007#ForReal". No backend action required.

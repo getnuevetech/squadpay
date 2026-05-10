@@ -108,6 +108,10 @@ class AdminOut(BaseModel):
     is_active: bool
     last_login_at: Optional[str] = None
     created_at: str
+    # P2 — soft nudge: True for the seeded super-admin until they change the
+    # default password via /auth/change-password. Frontend renders a banner +
+    # CTA on /admin/dashboard while this is set.
+    must_change_default_password: Optional[bool] = False
 
 
 class AdminAuthResponse(BaseModel):
@@ -248,6 +252,10 @@ async def ensure_seed_admin(db):
         "is_active": True,
         "last_login_at": None,
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        # Mark the freshly-seeded admin so the dashboard nudges them to
+        # rotate the default password from the env. Cleared by
+        # POST /api/admin/auth/change-password.
+        "must_change_default_password": True,
     }
     await db.admins.insert_one(rec)
     return rec

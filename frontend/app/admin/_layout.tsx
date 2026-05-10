@@ -1,7 +1,7 @@
 import { Stack, useRouter, usePathname } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Platform, ActivityIndicator } from 'react-native';
-import { LayoutDashboard, ScrollText, Users, LogOut, Shield, UserCog, Receipt, Gift, Plug, Wallet, RefreshCw, Lock, BarChart3, FileText } from 'lucide-react-native';
+import { LayoutDashboard, ScrollText, Users, LogOut, Shield, UserCog, Receipt, Gift, Plug, Wallet, RefreshCw, Lock, BarChart3, FileText, KeyRound } from 'lucide-react-native';
 import { adminApi, AdminProfile, getProfile, getToken, clearSession } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
 
@@ -51,6 +51,15 @@ function AdminSidebar({ profile, onLogout }: { profile: AdminProfile | null; onL
         <Text style={styles.profileName} numberOfLines={1}>{profile?.name || '—'}</Text>
         <Text style={styles.profileMeta}>{profile?.email}</Text>
         <Text style={styles.profileRole}>{profile?.role}</Text>
+        <TouchableOpacity
+          testID="admin-change-password-link"
+          onPress={() => router.push('/admin/change-password')}
+          style={styles.changePwdBtn}
+          activeOpacity={0.85}
+        >
+          <KeyRound size={14} color={COLORS.primary} />
+          <Text style={styles.changePwdText}>Change password</Text>
+        </TouchableOpacity>
         <TouchableOpacity testID="admin-logout" onPress={onLogout} style={styles.logoutBtn} activeOpacity={0.85}>
           <LogOut size={14} color={COLORS.danger} />
           <Text style={styles.logoutText}>Sign out</Text>
@@ -195,5 +204,7 @@ const styles = StyleSheet.create({
   },
   logoutBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: SPACING.sm },
   logoutText: { color: COLORS.danger, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.medium },
+  changePwdBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: SPACING.sm },
+  changePwdText: { color: COLORS.primary, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.medium },
   content: { flex: 1, padding: SPACING.lg },
 });

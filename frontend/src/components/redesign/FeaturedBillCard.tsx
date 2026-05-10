@@ -385,7 +385,3 @@ const styles = StyleSheet.create({
 });
 
 export default FeaturedBillCard;
-ts.bold, fontSize: 17 },
-});
-
-export default FeaturedBillCard;

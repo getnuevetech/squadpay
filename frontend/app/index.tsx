@@ -582,8 +582,3 @@ const styles = StyleSheet.create({
   },
   memberStackMoreText: { color: COLORS.primary, fontSize: 10, fontWeight: FONT.weights.bold },
 });
-alignItems: 'center',
-    justifyContent: 'center',
-  },
-  memberStackMoreText: { color: COLORS.primary, fontSize: 10, fontWeight: FONT.weights.bold },
-});

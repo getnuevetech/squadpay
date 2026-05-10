@@ -1,0 +1,143 @@
+/**
+ * Floating bottom tab bar matching Image 2 — 5 items with a raised center +
+ * button. Mirrors the 5-tab IA: Home / Activity / + / Squad / Settings.
+ *
+ * Implementation note: this is a *visual* tab bar rendered on the home (and
+ * other top-level) screens — not an expo-router Tabs() container, so it does
+ * NOT touch the existing routing tree (rollback-safe). Each tab simply
+ * router.push()'s the target route.
+ */
+import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
+import { useRouter, usePathname } from 'expo-router';
+import { Home, MessageSquare, Plus, Users, Settings as SettingsIcon } from 'lucide-react-native';
+import { COLORS, FONT } from '../../theme';
+
+export type TabKey = 'home' | 'activity' | 'create' | 'squad' | 'settings';
+
+type Tab = {
+  key: TabKey;
+  label: string;
+  href: string;
+  icon: React.ComponentType<{ size: number; color: string; strokeWidth?: number }>;
+};
+
+const TABS: Tab[] = [
+  { key: 'home', label: 'Home', href: '/', icon: Home },
+  { key: 'activity', label: 'Activity', href: '/activity', icon: MessageSquare },
+  { key: 'create', label: '', href: '/create', icon: Plus },
+  { key: 'squad', label: 'Squad', href: '/squad', icon: Users },
+  { key: 'settings', label: 'Settings', href: '/settings', icon: SettingsIcon },
+];
+
+type Props = {
+  active?: TabKey;
+  testID?: string;
+};
+
+export function BottomTabBar({ active, testID = 'bottom-tab-bar' }: Props) {
+  const router = useRouter();
+  const pathname = usePathname();
+
+  const computedActive: TabKey = active || (
+    pathname?.startsWith('/activity') ? 'activity' :
+    pathname?.startsWith('/squad') ? 'squad' :
+    pathname?.startsWith('/settings') ? 'settings' :
+    pathname?.startsWith('/create') ? 'create' :
+    'home'
+  );
+
+  return (
+    <View style={styles.wrap} testID={testID}>
+      <View style={styles.bar}>
+        {TABS.map((t) => {
+          const isActive = computedActive === t.key;
+          const isCenter = t.key === 'create';
+          const Icon = t.icon;
+          if (isCenter) {
+            return (
+              <TouchableOpacity
+                key={t.key}
+                style={styles.centerWrap}
+                onPress={() => router.push(t.href as any)}
+                activeOpacity={0.85}
+                testID={`tab-${t.key}`}
+              >
+                <View style={styles.centerBtn}>
+                  <Icon size={26} color="#fff" strokeWidth={2.6} />
+                </View>
+              </TouchableOpacity>
+            );
+          }
+          return (
+            <TouchableOpacity
+              key={t.key}
+              style={styles.item}
+              onPress={() => router.push(t.href as any)}
+              activeOpacity={0.7}
+              testID={`tab-${t.key}`}
+            >
+              <Icon
+                size={22}
+                color={isActive ? COLORS.primary : COLORS.subtext}
+                strokeWidth={isActive ? 2.4 : 2}
+              />
+              <Text style={[styles.label, isActive && styles.labelActive]} numberOfLines={1}>
+                {t.label}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  wrap: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 12,
+    paddingBottom: Platform.OS === 'ios' ? 18 : 12,
+    paddingTop: 6,
+    backgroundColor: 'transparent',
+  },
+  bar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 28,
+    paddingHorizontal: 6,
+    paddingVertical: 8,
+    shadowColor: '#1F1240',
+    shadowOpacity: 0.12,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 10,
+    borderWidth: 1,
+    borderColor: '#F1ECFE',
+  },
+  item: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2, paddingVertical: 4 },
+  label: { fontSize: 10, color: COLORS.subtext, fontWeight: FONT.weights.medium },
+  labelActive: { color: COLORS.primary, fontWeight: FONT.weights.bold },
+  centerWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  centerBtn: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: COLORS.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: -22,
+    shadowColor: COLORS.primary,
+    shadowOpacity: 0.4,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 10,
+    borderWidth: 4,
+    borderColor: '#fff',
+  },
+});
+
+export default BottomTabBar;

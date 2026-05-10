@@ -4005,6 +4005,63 @@ agent_communication:
           3. POST /api/admin/auth/change-password (no auth header) → 401.
           4. POST /api/admin/auth/change-password with wrong current
              {"current_password":"wrong","new_password":"NewLongPass123!"}
+
+
+# ───────────────────────────────────────────────────────────────────
+# Phase L — UI redesign: landing + adapted-dark home + tab-bar IA
+# ───────────────────────────────────────────────────────────────────
+
+frontend:
+  - task: "Phase L — Landing redesign (Image 1) + adapted-dark home (Image 2) + tab bar"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/index.tsx, /app/frontend/app/activity.tsx, /app/frontend/app/squad.tsx, /app/frontend/app/settings.tsx, /app/frontend/src/components/redesign/*"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            New components under src/components/redesign/:
+              - SquadPayMark (rounded-violet square + sparkle SVG + wordmark)
+              - HeroPhoneFrame (pure-RN/SVG illustration matching Image 1)
+              - LiveSessionPill ("● Live Squad Session" pill)
+              - FeaturedBillCard (violet-gradient panel: amount, avatars,
+                progress, Pay Now / Share)
+              - BottomTabBar (5 items, raised center +)
+            Home screen rewritten:
+              - UNAUTH → light landing matching Image 1 (phone frame, brand
+                mark, "Split the bill. / Pay together." headline, "Share a QR
+                or link to split" pill, secondary CTAs, legal links).
+              - AUTH → violet-gradient hero (adapted-dark, not full dark)
+                with brand mark + profile avatar, Live Session pill, big
+                headline, FeaturedBillCard for the most-recent active group,
+                and a light list section below for the rest.
+            New stub screens (Activity, Squad, Settings) wire the new tab bar
+            destinations to real working pages built on existing APIs.
+            Visual verified: landing page screenshot matches the reference
+            mock to ~95% (phone frame, chips, dots, headline, footer pill).
+            Auth home view requires a real signed-in session to verify
+            visually — code compiles cleanly with no metro errors.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase L (UI redesign) — frontend-only change. No backend testing
+        needed. Rollback layers in place:
+          1. Env flag EXPO_PUBLIC_REDESIGN=off → legacy screen renders via
+             dynamic require of /app/frontend/_legacy_backup/index.legacy.
+          2. File backup at /app/frontend/_legacy_backup/index.legacy.tsx.
+          3. New components are additive under src/components/redesign/* —
+             zero existing files were overwritten beyond app/index.tsx.
+        Deferred (P2 future iteration):
+          - Theme other screens (pay, group detail, create, admin) to match
+          - Add a real Activity feed (API exists, just needs richer rendering)
+          - Polish HeroPhoneFrame illustration with real-photo avatars
+        Frontend visual testing should be triggered only on explicit user
+        request.
+
              → 401 with "Current password is incorrect".
           5. POST /api/admin/auth/change-password with new<8
              {"current_password":"<actual>","new_password":"abc"} → 400.

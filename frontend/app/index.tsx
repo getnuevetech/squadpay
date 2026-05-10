@@ -273,6 +273,8 @@ export default function HomeScreen() {
                   onPay={() => router.push(`/group/${featured.id}/pay`)}
                   onShare={() => router.push(`/group/${featured.id}/dashboard?share=1`)}
                   onAddMember={() => router.push(`/group/${featured.id}/dashboard?invite=1`)}
+                  onSplit={() => router.push('/create')}
+                  onJoin={() => router.push('/auth?intent=join')}
                 />
               </View>
             ) : (

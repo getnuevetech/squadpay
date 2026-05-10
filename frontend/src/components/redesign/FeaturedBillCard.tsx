@@ -6,7 +6,7 @@
  */
 import { View, Text, StyleSheet, TouchableOpacity, Pressable } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Plus, Link2, CreditCard } from 'lucide-react-native';
+import { Plus, Link2, CreditCard, PlusSquare } from 'lucide-react-native';
 import { COLORS, FONT, RADIUS } from '../../theme';
 import { AvatarRing } from '../AvatarRing';
 
@@ -25,6 +25,8 @@ type Props = {
   onShare?: () => void;
   onPress?: () => void;
   onAddMember?: () => void;
+  onSplit?: () => void;          // new — "Split a Bill" sub-link / fallback CTA
+  onJoin?: () => void;           // new — "Join a Bill" sub-link / fallback CTA
   testID?: string;
 };
 
@@ -41,12 +43,16 @@ export function FeaturedBillCard({
   onShare,
   onPress,
   onAddMember,
+  onSplit,
+  onJoin,
   testID,
 }: Props) {
   const remaining = remainingAmount !== undefined ? remainingAmount : Math.max(0, total - paidAmount);
   const pct = total > 0 ? Math.min(1, paidAmount / total) : 0;
   const dollars = Math.floor(total);
   const cents = Math.round((total - dollars) * 100).toString().padStart(2, '0');
+  // "pay" mode = bill still has unpaid balance. "idle" mode = bill fully paid.
+  const isPayMode = remaining > 0.005;
 
   return (
     <Pressable onPress={onPress} testID={testID} style={({ pressed }) => [{ opacity: pressed ? 0.96 : 1 }]}>
@@ -115,26 +121,52 @@ export function FeaturedBillCard({
           <View style={[styles.progressFill, { width: `${Math.round(pct * 100)}%` }]} />
         </View>
 
-        {/* CTAs */}
+        {/* CTAs — switch labels based on whether bill still has remaining balance.
+            PAY mode: primary=Pay Now, secondary=Share + small "Split a Bill" / "Join a Bill" sub-links.
+            IDLE mode: primary=Split a Bill, secondary=Join a Bill (no sub-links). */}
         <View style={styles.ctaRow}>
-          <TouchableOpacity
-            onPress={onPay}
-            style={styles.payBtn}
-            activeOpacity={0.85}
-            testID={`${testID}-pay-btn`}
-          >
-            <CreditCard size={16} color="#fff" />
-            <Text style={styles.payText}>Pay Now</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={onShare}
-            style={styles.shareBtn}
-            activeOpacity={0.85}
-            testID={`${testID}-share-btn`}
-          >
-            <Link2 size={16} color="#fff" />
-            <Text style={styles.shareText}>Share</Text>
-          </TouchableOpacity>
+          <View style={{ flex: 1.4 }}>
+            <TouchableOpacity
+              onPress={isPayMode ? onPay : onSplit}
+              style={styles.payBtn}
+              activeOpacity={0.85}
+              testID={`${testID}-${isPayMode ? 'pay' : 'split'}-btn`}
+            >
+              {isPayMode ? <CreditCard size={16} color="#fff" /> : <Plus size={16} color="#fff" />}
+              <Text style={styles.payText}>{isPayMode ? 'Pay Now' : 'Split a Bill'}</Text>
+            </TouchableOpacity>
+            {isPayMode ? (
+              <TouchableOpacity
+                onPress={onSplit}
+                activeOpacity={0.7}
+                style={styles.subLinkWrap}
+                testID={`${testID}-split-sublink`}
+              >
+                <Text style={styles.subLinkText}>Split a Bill</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+          <View style={{ flex: 1 }}>
+            <TouchableOpacity
+              onPress={isPayMode ? onShare : onJoin}
+              style={styles.shareBtn}
+              activeOpacity={0.85}
+              testID={`${testID}-${isPayMode ? 'share' : 'join'}-btn`}
+            >
+              {isPayMode ? <Link2 size={16} color="#fff" /> : <PlusSquare size={16} color="#fff" />}
+              <Text style={styles.shareText}>{isPayMode ? 'Share' : 'Join a Bill'}</Text>
+            </TouchableOpacity>
+            {isPayMode ? (
+              <TouchableOpacity
+                onPress={onJoin}
+                activeOpacity={0.7}
+                style={styles.subLinkWrap}
+                testID={`${testID}-join-sublink`}
+              >
+                <Text style={styles.subLinkText}>Join a Bill</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
         </View>
       </LinearGradient>
     </Pressable>
@@ -204,9 +236,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   progressFill: { height: '100%', backgroundColor: '#fff', borderRadius: 999 },
-  ctaRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 18 },
+  ctaRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginTop: 18 },
   payBtn: {
-    flex: 1.4,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -224,7 +255,6 @@ const styles = StyleSheet.create({
   },
   payText: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: 17 },
   shareBtn: {
-    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -236,6 +266,14 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.55)',
   },
   shareText: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: 17 },
+  // Small sub-links rendered under each main CTA when bill is in PAY mode.
+  subLinkWrap: { alignItems: 'center', marginTop: 8 },
+  subLinkText: {
+    color: '#E2D6FB',
+    fontSize: 12,
+    fontWeight: FONT.weights.semibold,
+    textDecorationLine: 'underline',
+  },
 });
 
 export default FeaturedBillCard;

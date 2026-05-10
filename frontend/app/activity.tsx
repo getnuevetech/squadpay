@@ -54,7 +54,7 @@ export default function ActivityScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']} testID="activity-screen">
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} activeOpacity={0.7}>
+        <TouchableOpacity onPress={() => router.replace('/')} style={styles.iconBtn} activeOpacity={0.7} testID="activity-home-btn">
           <ArrowLeft size={20} color={COLORS.text} />
         </TouchableOpacity>
         <SquadPayMark size={28} />

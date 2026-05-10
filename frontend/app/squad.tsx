@@ -61,7 +61,7 @@ export default function SquadScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']} testID="squad-screen">
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} activeOpacity={0.7}>
+        <TouchableOpacity onPress={() => router.replace('/')} style={styles.iconBtn} activeOpacity={0.7} testID="squad-home-btn">
           <ArrowLeft size={20} color={COLORS.text} />
         </TouchableOpacity>
         <SquadPayMark size={28} />

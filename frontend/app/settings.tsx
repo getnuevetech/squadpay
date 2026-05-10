@@ -121,13 +121,6 @@ export default function SettingsScreen() {
       onPress: () => router.push('/legal/terms'),
     },
     {
-      key: 'admin',
-      label: 'Admin dashboard',
-      sub: 'Restricted access.',
-      icon: Lock,
-      onPress: () => router.push('/admin/login'),
-    },
-    {
       key: 'logout',
       label: 'Sign out',
       icon: LogOut,
@@ -139,7 +132,7 @@ export default function SettingsScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']} testID="settings-screen">
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} activeOpacity={0.7}>
+        <TouchableOpacity onPress={() => router.replace('/')} style={styles.iconBtn} activeOpacity={0.7} testID="settings-home-btn">
           <ArrowLeft size={20} color={COLORS.text} />
         </TouchableOpacity>
         <SquadPayMark size={28} />

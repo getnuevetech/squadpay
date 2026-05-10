@@ -111,7 +111,6 @@ export default function InviteScreen() {
           testID="invite-back"
         >
           <ArrowLeft size={18} color={COLORS.text} />
-          <Text style={styles.backText}>Home</Text>
         </TouchableOpacity>
 
         <View style={styles.heroCard} testID="invite-hero">

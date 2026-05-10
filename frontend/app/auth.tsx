@@ -327,7 +327,6 @@ export default function AuthScreen() {
           activeOpacity={0.7}
         >
           <ArrowLeft size={20} color={COLORS.text} />
-          <Text style={styles.backText}>Home</Text>
         </TouchableOpacity>
       </View>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">

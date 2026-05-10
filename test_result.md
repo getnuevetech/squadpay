@@ -4132,3 +4132,50 @@ agent_communication:
 
         Acceptance: ALL 12 review steps pass AND password successfully
         restored to "Letmein@2007#ForReal". No backend action required.
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Phase L+1 — Lead Dashboard restoration + Back-button cleanup (MAIN AGENT)
+# ──────────────────────────────────────────────────────────────────────────
+agent_communication:
+    - agent: "main"
+      message: |
+        Three frontend-only fixes applied. No backend changes required.
+
+        1) /app/frontend/app/group/[id]/dashboard.tsx
+           - Removed leftover duplicate StyleSheet block (orphaned tokens
+             `Content: 'center'` … etc.) that was cruft from a previous edit.
+           - Added bill TITLE inside the violet-gradient hero
+             (`group.name` rendered with new `heroTitle` style and
+             "Lead Dashboard" subtitle above).
+           - Added a 3-up Quick-Actions row right after the hero:
+             • Items   → /group/[id]/items
+             • Invite  → /group/[id]      (QR / share screen)
+             • Pay     → /group/[id]/pay  (auto-disabled when status !== 'open',
+               label flips to "Paid")
+           - New styles: heroTitle, heroLabelInline, quickActionDisabled.
+           - Imports: + Receipt, UserPlus, CreditCard from lucide-react-native.
+
+        2) /app/frontend/app/_layout.tsx
+           - Stack screenOptions now include
+             `headerBackTitle: ''` and
+             `headerBackButtonDisplayMode: 'minimal'`
+             so the iOS back button shows just the chevron — no "Home" label.
+           - Added explicit Stack.Screen entries with `headerShown: false`
+             for `activity`, `squad`, `settings`, so those tab destinations
+             no longer get a *second* native header on top of their own
+             in-page back-arrow + SquadPayMark header.
+
+        3) Back-button label cleanup (icon-only):
+           - /app/frontend/app/auth.tsx       → removed `<Text>Home</Text>`
+           - /app/frontend/app/invite.tsx     → removed `<Text>Home</Text>`
+           (back arrow icon retained; tap behaviour unchanged)
+
+        Verification:
+          - Metro bundles iOS and Web successfully (no syntax errors).
+          - Visual screenshot of /auth confirms back chevron only (no "Home"
+            text).
+          - Activity / Squad / Settings still redirect unauth visitors to
+            landing as designed (BottomTabBar continues to render Home tab).
+
+        No backend testing required — pure frontend layout work.

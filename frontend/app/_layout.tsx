@@ -37,11 +37,16 @@ export default function RootLayout() {
             headerTintColor: COLORS.text,
             contentStyle: { backgroundColor: COLORS.bg },
             headerRight: () => <HeaderHomeButton />,
+            headerBackTitle: '',
+            headerBackButtonDisplayMode: 'minimal',
           }}
         >
           <Stack.Screen name="index" options={{ title: 'Home', headerShown: false }} />
           <Stack.Screen name="auth" options={{ title: 'Sign in', headerShown: false }} />
           <Stack.Screen name="admin" options={{ headerShown: false }} />
+          <Stack.Screen name="activity" options={{ headerShown: false }} />
+          <Stack.Screen name="squad" options={{ headerShown: false }} />
+          <Stack.Screen name="settings" options={{ headerShown: false }} />
           <Stack.Screen name="create" options={{ title: 'Start a Bill' }} />
           <Stack.Screen name="group/[id]/index" options={{ title: 'Group' }} />
           <Stack.Screen name="group/[id]/items" options={{ title: 'Assign Items' }} />

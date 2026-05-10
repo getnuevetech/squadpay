@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { CheckCircle2, Clock, Zap, Landmark, TrendingUp, Plus, ArrowLeft } from 'lucide-react-native';
+import { CheckCircle2, Clock, Zap, Landmark, TrendingUp, Plus, ArrowLeft, Receipt, UserPlus, CreditCard } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
@@ -119,9 +119,15 @@ export default function DashboardScreen() {
             >
               <ArrowLeft size={18} color="#fff" />
             </TouchableOpacity>
-            <Text style={styles.heroLabel}>Collected</Text>
+            <View style={{ flex: 1, alignItems: 'center' }}>
+              <Text style={styles.heroSubLabel}>Lead Dashboard</Text>
+              <Text style={styles.heroTitle} numberOfLines={1} testID="dashboard-bill-title">
+                {group.name}
+              </Text>
+            </View>
             <View style={{ width: 32 }} />
           </View>
+          <Text style={styles.heroLabelInline}>Collected</Text>
           <View style={styles.heroRow}>
             <Text style={styles.heroAmount}>${totalCollected.toFixed(2)}</Text>
             <Text style={styles.heroOf}>/ ${totalOwed.toFixed(2)}</Text>
@@ -135,6 +141,46 @@ export default function DashboardScreen() {
               : `${pendingMembers.length} ${pendingMembers.length === 1 ? 'person' : 'people'} still owe`}
           </Text>
         </LinearGradient>
+
+        {/* Quick actions: Items / Invite / Pay */}
+        <View style={styles.quickActionsRow} testID="dashboard-quick-actions">
+          <TouchableOpacity
+            style={styles.quickAction}
+            activeOpacity={0.85}
+            onPress={() => router.push(`/group/${group.id}/items`)}
+            testID="dashboard-action-items"
+          >
+            <View style={styles.quickActionIcon}>
+              <Receipt size={18} color={COLORS.primary} />
+            </View>
+            <Text style={styles.quickActionText}>Items</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.quickAction}
+            activeOpacity={0.85}
+            onPress={() => router.push(`/group/${group.id}`)}
+            testID="dashboard-action-invite"
+          >
+            <View style={styles.quickActionIcon}>
+              <UserPlus size={18} color={COLORS.primary} />
+            </View>
+            <Text style={styles.quickActionText}>Invite</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.quickAction, group.status !== 'open' && styles.quickActionDisabled]}
+            activeOpacity={0.85}
+            disabled={group.status !== 'open'}
+            onPress={() => router.push(`/group/${group.id}/pay`)}
+            testID="dashboard-action-pay"
+          >
+            <View style={styles.quickActionIcon}>
+              <CreditCard size={18} color={group.status !== 'open' ? COLORS.subtext : COLORS.primary} />
+            </View>
+            <Text style={[styles.quickActionText, group.status !== 'open' && { color: COLORS.subtext }]}>
+              {group.status !== 'open' ? 'Paid' : 'Pay'}
+            </Text>
+          </TouchableOpacity>
+        </View>
 
         <Text style={styles.sectionTitle}>Withdraw</Text>
         {leadFronted ? (
@@ -295,6 +341,22 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     letterSpacing: -0.3,
   },
+  heroTitle: {
+    color: '#fff',
+    fontSize: FONT.sizes.lg,
+    fontWeight: FONT.weights.bold,
+    letterSpacing: -0.3,
+    marginTop: 2,
+    maxWidth: '100%',
+  },
+  heroLabelInline: {
+    color: '#D7C7FB',
+    fontSize: FONT.sizes.xs,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    fontWeight: FONT.weights.semibold,
+    marginTop: SPACING.md,
+  },
   heroSubLabel: {
     color: '#D7C7FB',
     fontSize: FONT.sizes.xs,
@@ -351,6 +413,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     alignItems: 'center',
     gap: 6,
+  },
+  quickActionDisabled: {
+    opacity: 0.55,
   },
   quickActionIcon: {
     width: 40,
@@ -455,39 +520,6 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primaryLight,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: SPACING.sm,
-  },
-  withdrawTitle: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },
-  withdrawSub: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
-  withdrawFee: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 6, fontWeight: FONT.weights.medium },
-  listCard: {
-    backgroundColor: COLORS.surface,
-    borderRadius: RADIUS.md,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    marginBottom: SPACING.md,
-  },
-  memberRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: SPACING.md,
-    gap: SPACING.md,
-  },
-  avatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: COLORS.primaryLight,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarText: { color: COLORS.primary, fontWeight: FONT.weights.bold, fontSize: FONT.sizes.sm },
-  memberName: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, color: COLORS.text },
-  statusRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
-  statusText: { fontSize: FONT.sizes.xs, color: COLORS.subtext, fontWeight: FONT.weights.medium },
-  amount: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },
-});
-Content: 'center',
     marginBottom: SPACING.sm,
   },
   withdrawTitle: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },

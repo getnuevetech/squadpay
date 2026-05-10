@@ -246,14 +246,14 @@ export default function DashboardScreen() {
           </View>
         )}
 
-        <Text style={styles.sectionTitle}>Members</Text>
+        <Text style={styles.sectionTitle}>Members ({group.members.length})</Text>
         <View style={styles.listCard}>
           {group.members.map((m, idx) => {
-            if (m.user_id === group.lead_id) return null;
+            const isLead = m.user_id === group.lead_id;
+            const isMe = m.user_id === userId;
             const per = group.per_user.find((p) => p.user_id === m.user_id);
             const owed = per?.total || 0;
             const contributed = per?.contributed || 0;
-            const paid = repaidByUser(m.user_id);
             const outstanding = per?.outstanding || 0;
             const done = outstanding <= 0.01;
             const settledLabel = contributed >= owed - 0.01 ? 'Contributed' : 'Paid';
@@ -263,13 +263,30 @@ export default function DashboardScreen() {
                 testID={`dashboard-member-${m.user_id}`}
                 style={[styles.memberRow, idx !== 0 && { borderTopWidth: 1, borderTopColor: COLORS.border }]}
               >
-                <View style={styles.avatar}>
-                  <Text style={styles.avatarText}>{(m.name || '?').slice(0, 1).toUpperCase()}</Text>
+                <View style={[styles.avatar, isLead && styles.avatarLead]}>
+                  <Text style={[styles.avatarText, isLead && { color: '#fff' }]}>
+                    {(m.name || '?').slice(0, 1).toUpperCase()}
+                  </Text>
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.memberName}>{m.name}</Text>
+                  <View style={styles.nameRow}>
+                    <Text style={styles.memberName} numberOfLines={1}>
+                      {m.name}{isMe ? ' (You)' : ''}
+                    </Text>
+                    {isLead && (
+                      <View style={styles.leadBadge}>
+                        <Text style={styles.leadBadgeText}>LEAD</Text>
+                      </View>
+                    )}
+                  </View>
                   <View style={styles.statusRow}>
-                    {done ? (
+                    {isLead ? (
+                      <Text style={styles.statusText}>
+                        {group.status === 'open'
+                          ? 'Organising the bill'
+                          : 'Paid the merchant'}
+                      </Text>
+                    ) : done ? (
                       <>
                         <CheckCircle2 size={12} color={COLORS.success} />
                         <Text style={[styles.statusText, { color: COLORS.success }]}>{settledLabel}</Text>
@@ -284,7 +301,13 @@ export default function DashboardScreen() {
                     )}
                   </View>
                 </View>
-                <Text style={styles.amount}>${owed.toFixed(2)}</Text>
+                {!isLead ? (
+                  <Text style={styles.amount}>${owed.toFixed(2)}</Text>
+                ) : (
+                  <Text style={[styles.amount, { color: COLORS.subtext, fontSize: FONT.sizes.xs }]}>
+                    Lead
+                  </Text>
+                )}
               </View>
             );
           })}
@@ -546,8 +569,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  avatarLead: {
+    backgroundColor: COLORS.primary,
+  },
   avatarText: { color: COLORS.primary, fontWeight: FONT.weights.bold, fontSize: FONT.sizes.sm },
-  memberName: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, color: COLORS.text },
+  memberName: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, color: COLORS.text, flexShrink: 1 },
+  nameRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  leadBadge: {
+    backgroundColor: COLORS.primaryLight,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  leadBadgeText: {
+    fontSize: 9,
+    fontWeight: FONT.weights.bold,
+    color: COLORS.primary,
+    letterSpacing: 0.5,
+  },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
   statusText: { fontSize: FONT.sizes.xs, color: COLORS.subtext, fontWeight: FONT.weights.medium },
   amount: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },

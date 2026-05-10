@@ -4178,4 +4178,34 @@ agent_communication:
           - Activity / Squad / Settings still redirect unauth visitors to
             landing as designed (BottomTabBar continues to render Home tab).
 
+
+# ──────────────────────────────────────────────────────────────────────────
+# Phase L+2 — Lead Dashboard now lists ALL members (incl. lead) (MAIN AGENT)
+# ──────────────────────────────────────────────────────────────────────────
+agent_communication:
+    - agent: "main"
+      message: |
+        User reported: "Lead Dashboard not showing all group members, just one
+        group member" — for groups with only lead + 1 friend the previous code
+        was hiding the lead row entirely (`if (m.user_id === group.lead_id)
+        return null;` at the top of the members.map callback), which made it
+        look like a 2-person bill only had 1 member.
+
+        Fix in /app/frontend/app/group/[id]/dashboard.tsx:
+          - Removed the lead-skip filter; the loop now renders ALL members.
+          - Lead row gets:
+              · primary-coloured avatar (full violet, not the light tint)
+              · "LEAD" pill badge next to the name
+              · status text reads "Organising the bill" (group.status==='open')
+                or "Paid the merchant" (status changed)
+              · right-side amount replaced with a small "Lead" caption (no $)
+          - Current user row appends " (You)" to the name for clarity.
+          - Section header now reads "Members ({group.members.length})" so the
+            count is explicit at a glance.
+          - New styles added: avatarLead, nameRow, leadBadge, leadBadgeText.
+          - `flexShrink: 1` added to `memberName` so long names don't push the
+            LEAD pill off-screen.
+
+        No backend changes. Metro bundles iOS + Web cleanly.
+
         No backend testing required — pure frontend layout work.

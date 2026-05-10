@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { CheckCircle2, Clock, Zap, Landmark, TrendingUp, Plus } from 'lucide-react-native';
+import { CheckCircle2, Clock, Zap, Landmark, TrendingUp, Plus, ArrowLeft } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
@@ -103,8 +103,25 @@ export default function DashboardScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />}
         contentContainerStyle={{ padding: SPACING.md, paddingBottom: SPACING.xxl }}
       >
-        <View style={styles.heroCard} testID="dashboard-hero">
-          <Text style={styles.heroLabel}>Collected</Text>
+        <LinearGradient
+          colors={['#3F1F8C', '#5B2BC8', '#7C3AED']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.heroCard}
+          testID="dashboard-hero"
+        >
+          <View style={styles.heroHeader}>
+            <TouchableOpacity
+              onPress={() => router.replace('/')}
+              style={styles.heroHomeBtn}
+              activeOpacity={0.7}
+              testID="dashboard-home-btn"
+            >
+              <ArrowLeft size={18} color="#fff" />
+            </TouchableOpacity>
+            <Text style={styles.heroLabel}>Collected</Text>
+            <View style={{ width: 32 }} />
+          </View>
           <View style={styles.heroRow}>
             <Text style={styles.heroAmount}>${totalCollected.toFixed(2)}</Text>
             <Text style={styles.heroOf}>/ ${totalOwed.toFixed(2)}</Text>
@@ -117,7 +134,7 @@ export default function DashboardScreen() {
               ? 'All repayments received 🎉'
               : `${pendingMembers.length} ${pendingMembers.length === 1 ? 'person' : 'people'} still owe`}
           </Text>
-        </View>
+        </LinearGradient>
 
         <Text style={styles.sectionTitle}>Withdraw</Text>
         {leadFronted ? (
@@ -276,6 +293,22 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 1,
     fontWeight: FONT.weights.semibold,
+    flex: 1,
+    textAlign: 'center',
+  },
+  heroHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  heroHomeBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   heroRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8, marginTop: 4 },
   heroAmount: {

@@ -895,6 +895,15 @@ export default function PayScreen() {
               testID="pay-start-verify-btn"
               icon={<ShieldCheck size={18} color="#fff" />}
             />
+          ) : blockedNoAmount && kind === 'contribute' && (group.items?.length || 0) > 0 ? (
+            // Member with $0 share & there are items to claim → guide them to
+            // the items list instead of showing a useless disabled Pay button.
+            <GradientButton
+              title="Claim your items"
+              onPress={() => router.push(`/group/${group.id}/items`)}
+              testID="pay-claim-items-btn"
+              icon={<Receipt size={18} color="#fff" />}
+            />
           ) : (
             <>
               <GradientButton
@@ -919,10 +928,10 @@ export default function PayScreen() {
             </>
           )}
           <Button
-            title="Cancel"
+            title="Home"
             variant="ghost"
-            onPress={() => router.back()}
-            testID="pay-cancel-btn"
+            onPress={() => router.replace('/')}
+            testID="pay-home-btn"
             style={{ marginTop: SPACING.sm }}
           />
         </View>

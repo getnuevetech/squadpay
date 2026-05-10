@@ -180,7 +180,7 @@ function ActiveCard({
           </Text>
         </View>
         <Text style={styles.amountMeta}>
-          your share · group total ${groupTotal.toFixed(2)}
+          Your Share · Group Total ${groupTotal.toFixed(2)}
         </Text>
 
         {/* Avatars + enabled + (routes to items) */}
@@ -382,6 +382,10 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.55)',
   },
   shareText: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: 17 },
+});
+
+export default FeaturedBillCard;
+ts.bold, fontSize: 17 },
 });
 
 export default FeaturedBillCard;

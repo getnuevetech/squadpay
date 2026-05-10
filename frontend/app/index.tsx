@@ -188,14 +188,11 @@ export default function HomeScreen() {
   // ─────────────────────────────────────────────────────────────
   // AUTH → Adapted-dark hero + light list (Image 2 redesign)
   // ─────────────────────────────────────────────────────────────
-  // Only feature an ACTIVE bill (one with remaining balance). If none, the
-  // user sees the empty-state CTA — never a settled/closed bill featured.
-  const isActive = (g: any) => {
-    const s = (g as any).derived_status || g.status;
-    return s !== 'settled' && s !== 'closed' && s !== 'bill_settled';
-  };
+  // Show ALL groups in the list (lead's bills + bills the user joined). The
+  // featured card above highlights one active bill; this list is the full
+  // ledger so the user can find any bill they're part of.
   const featured = groups.find(isActive) || null;
-  const otherGroups = groups.filter((g) => g.id !== featured?.id);
+  const otherGroups = groups;
 
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.bg }} testID="home-auth">
@@ -287,7 +284,7 @@ export default function HomeScreen() {
                       router.push(`/group/${featured.id}/pay`);
                     }
                   }}
-                  onAddFriend={() => router.push(`/group/${featured.id}/dashboard?share=1`)}
+                  onAddFriend={() => router.push(`/group/${featured.id}`)}
                   onPlusToItems={() => router.push(`/group/${featured.id}/items`)}
                 />
               ) : (
@@ -327,7 +324,12 @@ export default function HomeScreen() {
               scrollEnabled={false}
               renderItem={({ item }) => (
                 <Pressable
-                  onPress={() => router.push(`/group/${item.id}/dashboard`)}
+                  onPress={() => {
+                    // Lead → goes to dashboard (manage / withdraw view).
+                    // Member → goes to items list so they can claim their share.
+                    const isLead = item.lead_id === user.id;
+                    router.push(`/group/${item.id}/${isLead ? 'dashboard' : 'items'}`);
+                  }}
                   style={({ pressed }) => [styles.groupRow, pressed && { opacity: 0.95 }]}
                   testID={`home-group-row-${item.id}`}
                 >
@@ -576,6 +578,11 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primaryLight,
     paddingHorizontal: 6,
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  memberStackMoreText: { color: COLORS.primary, fontSize: 10, fontWeight: FONT.weights.bold },
+});
+alignItems: 'center',
     justifyContent: 'center',
   },
   memberStackMoreText: { color: COLORS.primary, fontSize: 10, fontWeight: FONT.weights.bold },

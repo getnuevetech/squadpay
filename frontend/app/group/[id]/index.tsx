@@ -15,7 +15,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import QRCode from 'react-native-qrcode-svg';
 import * as Clipboard from 'expo-clipboard';
-import { CheckCircle2, Copy, Share2, Crown, Users, CreditCard, Pencil, Eye, Receipt, Smartphone } from 'lucide-react-native';
+import { CheckCircle2, Copy, Share2, Crown, Users, CreditCard, Pencil, Eye, Receipt, Smartphone, ArrowLeft } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Button } from '../../../src/Button';
 import { api, BACKEND_URL, Group } from '../../../src/api';
@@ -140,7 +140,19 @@ export default function GroupLobbyScreen() {
           end={{ x: 1, y: 1 }}
           style={[styles.headerCard, SHADOW.lg]}
         >
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4, gap: 8 }}>
+            <TouchableOpacity
+              onPress={() => router.replace('/')}
+              testID="lobby-home-btn"
+              style={{
+                width: 32, height: 32, borderRadius: 16,
+                backgroundColor: 'rgba(255,255,255,0.18)',
+                alignItems: 'center', justifyContent: 'center',
+              }}
+              activeOpacity={0.7}
+            >
+              <ArrowLeft size={18} color="#fff" />
+            </TouchableOpacity>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
               <Text style={styles.title} testID="lobby-title">{group.title}</Text>
               {userId === group.lead_id && group.derived_status === 'contributing' && (

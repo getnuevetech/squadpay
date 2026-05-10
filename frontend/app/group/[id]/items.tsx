@@ -14,7 +14,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { CheckCircle2, AlertCircle, UserCircle2, Plus, Lock, Trash2, Minus } from 'lucide-react-native';
+import { CheckCircle2, AlertCircle, UserCircle2, Plus, Lock, Trash2, Minus, ArrowLeft } from 'lucide-react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { Button } from '../../../src/Button';
 import { api, Group, Item } from '../../../src/api';
@@ -235,7 +235,15 @@ export default function ItemsScreen() {
         contentContainerStyle={{ padding: SPACING.md, paddingBottom: 140 }}
       >
         <View style={styles.itemsHeader}>
-          <Text style={styles.title}>Who ordered what?</Text>
+          <TouchableOpacity
+            onPress={() => router.replace('/')}
+            style={styles.itemsBackBtn}
+            activeOpacity={0.7}
+            testID="items-home-btn"
+          >
+            <ArrowLeft size={20} color={COLORS.text} />
+          </TouchableOpacity>
+          <Text style={[styles.title, { flex: 1, marginLeft: 8 }]}>Who ordered what?</Text>
           {isLead && group.status !== 'closed' && (
             <TouchableOpacity
               testID="items-header-add-btn"
@@ -520,6 +528,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+  },
+  itemsBackBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   headerPlusBtn: {
     width: 40,

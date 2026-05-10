@@ -97,7 +97,7 @@ export function LegalPageScreen({ slug }: { slug: Slug }) {
 
         {!loading && !error && data && <LegalHtml html={data.content_html} />}
 
-        <Text style={styles.footer}>© SquadPay</Text>
+        <Text style={styles.footer}>© 2026 — SquadPay by NueveTech</Text>
       </ScrollView>
     </View>
   );

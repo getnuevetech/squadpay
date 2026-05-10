@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Platform,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -79,8 +80,13 @@ export default function HomeScreen() {
   if (!user) {
     return (
       <SafeAreaView style={styles.container} testID="home-unauth">
-        <View style={styles.welcomeContent}>
-          {/* Hero illustration — compact so the page fits without scroll */}
+        <ScrollView
+          contentContainerStyle={styles.welcomeContent}
+          showsVerticalScrollIndicator={false}
+          bounces={Platform.OS !== 'web'}
+        >
+          {/* Hero illustration — compact so the page fits without scroll on tall devices,
+              while ScrollView ensures bottom CTAs remain reachable on shorter ones. */}
           <View style={styles.welcomeHeroWrap}>
             <SquadPayHero size={200} />
           </View>
@@ -162,7 +168,7 @@ export default function HomeScreen() {
               <Text style={styles.welcomeSigninLinkAction}>Sign in</Text>
             </View>
           </PressableScale>
-        </View>
+        </ScrollView>
       </SafeAreaView>
     );
   }
@@ -339,9 +345,12 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.bg },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.bg },
 
-  // Welcome (unauth) — fits within a single mobile viewport (no scroll)
+  // Welcome (unauth) — fits within a single mobile viewport on tall devices
+  // (iPhone Pro Max etc.); flexGrow:1 lets ScrollView stretch the content to
+  // fill height, while still scrolling on shorter viewports (iPhone 17, many
+  // Android phones, in-app browsers w/ extra chrome).
   welcomeContent: {
-    flex: 1,
+    flexGrow: 1,
     paddingHorizontal: SPACING.lg,
     paddingTop: SPACING.sm,
     paddingBottom: SPACING.lg,

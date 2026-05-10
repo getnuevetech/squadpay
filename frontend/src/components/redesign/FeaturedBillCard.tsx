@@ -250,7 +250,7 @@ function ActiveCard({
             testID={`${testID}-friend-btn`}
           >
             <UserPlus size={16} color="#fff" />
-            <Text style={styles.shareText}>+ Friend</Text>
+            <Text style={styles.shareText}>Friend</Text>
           </TouchableOpacity>
         </View>
       </LinearGradient>

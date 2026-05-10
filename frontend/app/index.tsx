@@ -276,11 +276,17 @@ export default function HomeScreen() {
                   members={(featured as any).members_preview || []}
                   selfId={user.id}
                   selfName={user.name || ''}
-                  onPress={() => router.push(`/group/${featured.id}/summary`)}
+                  onPress={() => {
+                    // Lead → Lead Dashboard.  Member → Your Share.
+                    const isLead = featured.lead_id === user.id;
+                    router.push(`/group/${featured.id}/${isLead ? 'dashboard' : 'summary'}`);
+                  }}
                   onPay={() => {
-                    // Always route to Your Share page; user can choose to view items
-                    // or pay from there. This makes the flow consistent for lead & member.
-                    router.push(`/group/${featured.id}/summary`);
+                    // Same routing rule as the card body so the user lands
+                    // on the right page for their role; from there they can
+                    // tap Pay/Items as needed.
+                    const isLead = featured.lead_id === user.id;
+                    router.push(`/group/${featured.id}/${isLead ? 'dashboard' : 'summary'}`);
                   }}
                   onAddFriend={() => router.push(`/group/${featured.id}`)}
                   onPlusToItems={() => router.push(`/group/${featured.id}/items`)}
@@ -323,9 +329,9 @@ export default function HomeScreen() {
               renderItem={({ item }) => (
                 <Pressable
                   onPress={() => {
-                    // Always open Your Share page; from there users can navigate
-                    // to items, dashboard (lead), or pay.
-                    router.push(`/group/${item.id}/summary`);
+                    // Lead → Lead Dashboard. Member → Your Share.
+                    const isLead = item.lead_id === user.id;
+                    router.push(`/group/${item.id}/${isLead ? 'dashboard' : 'summary'}`);
                   }}
                   style={({ pressed }) => [styles.groupRow, pressed && { opacity: 0.95 }]}
                   testID={`home-group-row-${item.id}`}

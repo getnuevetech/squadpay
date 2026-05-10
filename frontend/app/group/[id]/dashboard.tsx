@@ -9,7 +9,11 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { CheckCircle2, Clock, Zap, Landmark, TrendingUp, Plus, ArrowLeft, Receipt, UserPlus, CreditCard, ChevronDown, Wallet } from 'lucide-react-native';
+import { CheckCircle2, Clock, Zap, Landmark, TrendingUp, Plus, ArrowLeft, Receipt, UserPlus, CreditCard, ChevronDown, Wallet, Eye, ShieldOff, Smartphone, Lock, Pencil } from 'lucide-react-native';
+import { AvatarRing } from '../../../src/components/AvatarRing';
+import { StatusBadge } from '../../../src/StatusBadge';
+import { RevealCardModal } from '../../../src/RevealCardModal';
+import { EditMetaModal } from '../../../src/EditMetaModal';
 import { LinearGradient } from 'expo-linear-gradient';
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
@@ -25,6 +29,9 @@ export default function DashboardScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [itemsExpanded, setItemsExpanded] = useState(false);
   const [memberItemsOpen, setMemberItemsOpen] = useState<Record<string, boolean>>({});
+  const [breakdownOpen, setBreakdownOpen] = useState(false);
+  const [editTaxTipVisible, setEditTaxTipVisible] = useState(false);
+  const [revealOpen, setRevealOpen] = useState(false);
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -127,39 +134,63 @@ export default function DashboardScreen() {
           colors={['#3F1F8C', '#5B2BC8', '#7C3AED']}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
-          style={styles.heroCard}
+          style={styles.heroV2}
           testID="dashboard-hero"
         >
-          <View style={styles.heroHeader}>
-            <TouchableOpacity
-              onPress={() => router.replace('/')}
-              style={styles.heroHomeBtn}
-              activeOpacity={0.7}
-              testID="dashboard-home-btn"
-            >
-              <ArrowLeft size={18} color="#fff" />
-            </TouchableOpacity>
-            <View style={{ flex: 1, alignItems: 'center' }}>
-              <Text style={styles.heroSubLabel}>Lead Dashboard</Text>
-              <Text style={styles.heroTitle} numberOfLines={1} testID="dashboard-bill-title">
-                {group.name}
+          <View style={styles.heroV2Top}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.heroV2GroupTitle} numberOfLines={2} testID="dashboard-bill-title">
+                {group.title || group.name || 'Bill'}
               </Text>
+              <Text style={styles.heroV2SubLabel}>Lead Dashboard</Text>
             </View>
-            <View style={{ width: 32 }} />
+            <StatusBadge status={group.derived_status} size="sm" testID="dashboard-status-badge" />
           </View>
-          <Text style={styles.heroLabelInline}>Collected</Text>
-          <View style={styles.heroRow}>
-            <Text style={styles.heroAmount}>${totalCollected.toFixed(2)}</Text>
-            <Text style={styles.heroOf}>/ ${totalOwed.toFixed(2)}</Text>
+
+          <View style={styles.heroV2AmountRow}>
+            <Text style={styles.heroV2Label}>Your Share</Text>
+            <Text style={styles.heroV2Amount}>${myShare.toFixed(2)}</Text>
           </View>
-          <View style={styles.progressBar}>
-            <View style={[styles.progressFill, { width: `${Math.min(100, pct)}%` }]} />
-          </View>
-          <Text style={styles.heroFoot}>
-            {pendingMembers.length === 0
-              ? 'All repayments received 🎉'
-              : `${pendingMembers.length} ${pendingMembers.length === 1 ? 'person' : 'people'} still owe`}
+          <Text style={styles.heroV2Total}>
+            of ${Number(group.total || 0).toFixed(2)} bill total
           </Text>
+
+          <View style={styles.heroV2Avatars}>
+            {group.members.slice(0, 4).map((m, i) => (
+              <View
+                key={m.user_id}
+                style={[styles.heroV2Avatar, { marginLeft: i === 0 ? 0 : -10, zIndex: 10 - i }]}
+              >
+                <AvatarRing
+                  name={m.name || '?'}
+                  seed={m.user_id}
+                  size={32}
+                  showLeadCrown={m.user_id === group.lead_id}
+                />
+              </View>
+            ))}
+            {group.members.length > 4 ? (
+              <View style={[styles.heroV2Avatar, styles.heroV2AvatarMore, { marginLeft: -10 }]}>
+                <Text style={styles.heroV2AvatarMoreText}>+{group.members.length - 4}</Text>
+              </View>
+            ) : null}
+          </View>
+
+          <View style={styles.heroV2Meta}>
+            <Text style={styles.heroV2MetaPrimary}>
+              ${totalCollected.toFixed(0)} of ${totalOwed.toFixed(0)} collected
+            </Text>
+            <Text style={styles.heroV2MetaSecondary}>{Math.round(pct)}%</Text>
+          </View>
+          <View style={styles.heroV2Track}>
+            <View style={[styles.heroV2Fill, { width: `${Math.min(100, pct)}%` }]} />
+          </View>
+          <View style={styles.heroV2RemainingRow}>
+            <Text style={styles.heroV2RemainingLabel}>Remaining</Text>
+            <Text style={styles.heroV2RemainingValue}>
+              ${Math.max(0, totalOwed - totalCollected).toFixed(2)}
+            </Text>
+          </View>
         </LinearGradient>
 
         {/* Quick actions: Items / Invite / Pay */}
@@ -213,13 +244,40 @@ export default function DashboardScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* ── Lead's personal Your Share breakdown (merged from Your Share page) ── */}
+        {/* Lead-only quick edit row — placed BEFORE the breakdown card */}
+        {group.status === 'open' && (
+          <TouchableOpacity
+            testID="dashboard-edit-tax-tip"
+            style={styles.editTaxTipBtn}
+            onPress={() => setEditTaxTipVisible(true)}
+            activeOpacity={0.7}
+          >
+            <Pencil size={14} color={COLORS.primary} />
+            <Text style={styles.editTaxTipText}>
+              Edit tax (${(group.tax || 0).toFixed(2)}) & tip (${(group.tip || 0).toFixed(2)})
+            </Text>
+          </TouchableOpacity>
+        )}
+
+        {/* ── Lead's personal Your Share breakdown (collapsible) ── */}
         <View style={styles.shareCard} testID="dashboard-your-share">
-          <View style={styles.shareHeaderRow}>
-            <Text style={styles.shareLabel}>Your share (as lead)</Text>
-            <Text style={styles.shareAmount}>${myShare.toFixed(2)}</Text>
-          </View>
-          <View style={styles.shareDivider} />
+          <TouchableOpacity
+            onPress={() => setBreakdownOpen((v) => !v)}
+            activeOpacity={0.7}
+            style={styles.shareHeaderRow}
+            testID="dashboard-breakdown-toggle"
+          >
+            <Text style={styles.shareLabel}>Your share breakdown</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Text style={styles.shareAmount}>${myShare.toFixed(2)}</Text>
+              <View style={[breakdownOpen && { transform: [{ rotate: '180deg' }] }]}>
+                <ChevronDown size={18} color={COLORS.subtext} />
+              </View>
+            </View>
+          </TouchableOpacity>
+          {breakdownOpen && (
+            <>
+              <View style={styles.shareDivider} />
           {myFood > 0 && (
             <View style={styles.shareRow}>
               <Text style={styles.shareKey}>Items</Text>
@@ -272,6 +330,8 @@ export default function DashboardScreen() {
               <Text style={styles.shareOutstandingVal}>${myOutstanding.toFixed(2)}</Text>
             </View>
           )}
+            </>
+          )}
         </View>
 
         {/* ── Funding progress (mirrors Your Share's funding card) ── */}
@@ -293,7 +353,115 @@ export default function DashboardScreen() {
           </Text>
         </View>
 
-        <Text style={styles.sectionTitle}>Withdraw</Text>
+        {/* ── Virtual Card section (lead-only, embedded) ── */}
+        <Text style={styles.sectionTitle}>Virtual Card</Text>
+        {(() => {
+          const vc: any = group.virtual_card || null;
+          const hasCard = !!(vc && vc.stripe_card_id);
+          const isCardActive = hasCard && vc.status === 'active';
+          const isCardDisabled = hasCard && vc.status === 'inactive';
+          const cardCap = Number(vc?.spend_cap || group.total || 0);
+          const cardSpent = Number(vc?.spent || 0);
+          const cardSpendPct = cardCap > 0 ? Math.min(100, (cardSpent / cardCap) * 100) : 0;
+          if (!hasCard) {
+            return (
+              <View style={styles.cardEmpty} testID="dashboard-card-empty">
+                <View style={styles.cardEmptyIcon}>
+                  <CreditCard size={28} color={COLORS.primary} />
+                </View>
+                <Text style={styles.cardEmptyTitle}>No virtual card yet</Text>
+                <Text style={styles.cardEmptyBody}>
+                  A Stripe-issued virtual card will be created automatically once the
+                  bill is fully funded (${totalCollected.toFixed(2)} of ${totalOwed.toFixed(2)} collected).
+                </Text>
+              </View>
+            );
+          }
+          return (
+            <>
+              <LinearGradient
+                colors={isCardDisabled ? ['#475569', '#334155'] : ['#3F1F8C', '#5B2BC8', '#7C3AED']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.cardFace}
+                testID="dashboard-card-face"
+              >
+                <View style={styles.cardChip} />
+                <View style={styles.cardFaceRow}>
+                  <CreditCard size={20} color="rgba(255,255,255,0.95)" />
+                  <View style={{ flex: 1, marginLeft: 10 }}>
+                    <Text style={styles.cardFaceBrand}>{vc.nickname || 'SquadPay'}</Text>
+                    <Text style={styles.cardFaceSub} numberOfLines={1}>{group.title}</Text>
+                  </View>
+                  <View style={[styles.cardStatusPill, isCardActive ? styles.cardPillActive : styles.cardPillOff]}>
+                    <Text style={styles.cardStatusText}>
+                      {isCardDisabled ? 'DISABLED' : isCardActive ? 'ACTIVE' : 'FUNDING'}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.cardNumber}>•••• •••• •••• {vc.last4}</Text>
+                <View style={styles.cardFaceFooter}>
+                  <View>
+                    <Text style={styles.cardTinyLabel}>Spent</Text>
+                    <Text style={styles.cardValue}>${cardSpent.toFixed(2)}</Text>
+                  </View>
+                  <View>
+                    <Text style={styles.cardTinyLabel}>Cap</Text>
+                    <Text style={styles.cardValue}>${cardCap.toFixed(2)}</Text>
+                  </View>
+                  <View>
+                    <Text style={styles.cardTinyLabel}>Exp</Text>
+                    <Text style={styles.cardValue}>
+                      {String(vc.exp_month).padStart(2, '0')}/{String(vc.exp_year).slice(-2)}
+                    </Text>
+                  </View>
+                </View>
+              </LinearGradient>
+              <View style={styles.cardSpendTrackWrap}>
+                <View style={styles.cardSpendTrack}>
+                  <View style={[styles.cardSpendFill, { width: `${cardSpendPct}%` }]} />
+                </View>
+                <Text style={styles.cardSpendFoot}>
+                  {Math.round(cardSpendPct)}% of cap used
+                </Text>
+              </View>
+              {isCardActive && (
+                <View style={styles.cardActions}>
+                  <TouchableOpacity
+                    onPress={() => setRevealOpen(true)}
+                    style={styles.cardActionRow}
+                    activeOpacity={0.7}
+                    testID="dashboard-card-reveal"
+                  >
+                    <View style={[styles.cardActionIcon, { backgroundColor: COLORS.primaryLight }]}>
+                      <Eye size={18} color={COLORS.primary} />
+                    </View>
+                    <Text style={styles.cardActionTitle}>Reveal full card details</Text>
+                  </TouchableOpacity>
+                  <View style={styles.cardActionDiv} />
+                  <TouchableOpacity
+                    onPress={() => router.push(`/group/${group.id}/card`)}
+                    style={styles.cardActionRow}
+                    activeOpacity={0.7}
+                    testID="dashboard-card-fullpage"
+                  >
+                    <View style={[styles.cardActionIcon, { backgroundColor: '#E0F2FE' }]}>
+                      <Smartphone size={18} color="#0284C7" />
+                    </View>
+                    <Text style={styles.cardActionTitle}>Manage card · Apple/Google Pay</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+              {isCardDisabled && (
+                <View style={styles.cardWarn}>
+                  <Lock size={16} color={COLORS.subtext} />
+                  <Text style={styles.cardWarnText}>This card is disabled. New charges will be declined.</Text>
+                </View>
+              )}
+            </>
+          );
+        })()}
+
         {leadFronted ? (
           <>
             <View style={styles.withdrawHero} testID="dashboard-withdraw-hero">
@@ -485,12 +653,97 @@ export default function DashboardScreen() {
           </>
         )}
       </ScrollView>
+      <RevealCardModal
+        visible={revealOpen}
+        onClose={() => setRevealOpen(false)}
+        groupId={String(group.id)}
+      />
+      <EditMetaModal
+        visible={editTaxTipVisible}
+        group={group}
+        userId={userId}
+        field="tax_tip"
+        onClose={() => setEditTaxTipVisible(false)}
+        onSaved={() => { setEditTaxTipVisible(false); load(); }}
+      />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.bg },
+  // ── New gradient hero (matches Your Share / Home Featured Bill Card) ──
+  heroV2: {
+    borderRadius: 24,
+    paddingHorizontal: 18,
+    paddingTop: 16,
+    paddingBottom: 18,
+    marginBottom: SPACING.md,
+    shadowColor: '#3F1F8C',
+    shadowOpacity: 0.32,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 16 },
+    elevation: 10,
+  },
+  heroV2Top: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 10 },
+  heroV2GroupTitle: {
+    color: '#FFFFFF',
+    fontWeight: FONT.weights.heavy,
+    fontSize: 24,
+    letterSpacing: -0.4,
+    lineHeight: 28,
+  },
+  heroV2SubLabel: {
+    color: '#D7C7FB',
+    fontSize: 11,
+    fontWeight: FONT.weights.semibold,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginTop: 4,
+  },
+  heroV2AmountRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
+  heroV2Label: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: FONT.weights.semibold,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    paddingBottom: 4,
+  },
+  heroV2Amount: {
+    color: '#fff',
+    fontSize: 44,
+    fontWeight: FONT.weights.heavy,
+    letterSpacing: -1,
+    lineHeight: 48,
+  },
+  heroV2Total: { color: '#D7C7FB', fontSize: 12, textAlign: 'right', marginTop: 2 },
+  heroV2Avatars: { flexDirection: 'row', alignItems: 'center', marginTop: 14 },
+  heroV2Avatar: { borderWidth: 2, borderColor: '#fff', borderRadius: 999 },
+  heroV2AvatarMore: {
+    minWidth: 32, height: 32, borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    paddingHorizontal: 8,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  heroV2AvatarMoreText: { color: '#fff', fontSize: 11, fontWeight: FONT.weights.bold },
+  heroV2Meta: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 14 },
+  heroV2MetaPrimary: { color: '#fff', fontWeight: FONT.weights.semibold, fontSize: 12 },
+  heroV2MetaSecondary: { color: '#D7C7FB', fontSize: 12 },
+  heroV2Track: { height: 6, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.18)', marginTop: 8, overflow: 'hidden' },
+  heroV2Fill: { height: '100%', backgroundColor: '#fff', borderRadius: 999 },
+  heroV2RemainingRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.18)',
+  },
+  heroV2RemainingLabel: { color: '#D7C7FB', fontSize: 12, fontWeight: FONT.weights.semibold, textTransform: 'uppercase', letterSpacing: 0.6 },
+  heroV2RemainingValue: { color: '#fff', fontSize: 18, fontWeight: FONT.weights.heavy },
+  // Old hero styles kept for reference
   heroCard: {
     backgroundColor: COLORS.primary, // fallback for non-gradient platforms
     borderRadius: RADIUS.xl,
@@ -750,6 +1003,86 @@ const styles = StyleSheet.create({
   },
   memberItemInlineName: { color: COLORS.subtext, fontSize: FONT.sizes.xs, flex: 1 },
   memberItemInlineAmt: { color: COLORS.text, fontSize: FONT.sizes.xs, fontWeight: FONT.weights.medium },
+  // Edit Tax/Tip CTA (placed above breakdown)
+  editTaxTipBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+    backgroundColor: COLORS.primaryLight,
+    marginBottom: SPACING.sm,
+  },
+  editTaxTipText: { color: COLORS.primary, fontWeight: FONT.weights.semibold, fontSize: FONT.sizes.sm },
+  // Embedded Virtual Card UI
+  cardEmpty: {
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: SPACING.md,
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: SPACING.md,
+  },
+  cardEmptyIcon: {
+    width: 56, height: 56, borderRadius: 28,
+    backgroundColor: COLORS.primaryLight,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  cardEmptyTitle: { color: COLORS.text, fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold },
+  cardEmptyBody: { color: COLORS.subtext, fontSize: FONT.sizes.sm, textAlign: 'center', lineHeight: 18 },
+  cardFace: {
+    borderRadius: 18,
+    padding: 16,
+    minHeight: 180,
+    justifyContent: 'space-between',
+    marginBottom: 0,
+  },
+  cardChip: { width: 28, height: 20, borderRadius: 4, backgroundColor: 'rgba(255,255,255,0.35)' },
+  cardFaceRow: { flexDirection: 'row', alignItems: 'center' },
+  cardFaceBrand: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: FONT.sizes.md },
+  cardFaceSub: { color: 'rgba(255,255,255,0.85)', fontSize: 11, marginTop: 2 },
+  cardStatusPill: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },
+  cardPillActive: { backgroundColor: 'rgba(34,197,94,0.32)' },
+  cardPillOff: { backgroundColor: 'rgba(255,255,255,0.18)' },
+  cardStatusText: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: 9, letterSpacing: 0.6 },
+  cardNumber: { color: '#fff', fontWeight: FONT.weights.bold, letterSpacing: 2.4, fontSize: 18 },
+  cardFaceFooter: { flexDirection: 'row', justifyContent: 'space-between' },
+  cardTinyLabel: { color: 'rgba(255,255,255,0.7)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.6 },
+  cardValue: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: FONT.sizes.sm, marginTop: 2 },
+  cardSpendTrackWrap: { marginTop: 10, marginBottom: SPACING.sm },
+  cardSpendTrack: { height: 6, borderRadius: 999, backgroundColor: COLORS.border, overflow: 'hidden' },
+  cardSpendFill: { height: '100%', backgroundColor: COLORS.primary, borderRadius: 999 },
+  cardSpendFoot: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 4, textAlign: 'right' },
+  cardActions: {
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    overflow: 'hidden',
+    marginBottom: SPACING.md,
+  },
+  cardActionRow: { flexDirection: 'row', alignItems: 'center', padding: SPACING.md, gap: 10 },
+  cardActionIcon: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  cardActionTitle: { color: COLORS.text, fontWeight: FONT.weights.semibold, fontSize: FONT.sizes.sm, flex: 1 },
+  cardActionDiv: { height: 1, backgroundColor: COLORS.border, marginLeft: 52 },
+  cardWarn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: SPACING.md,
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: SPACING.md,
+  },
+  cardWarnText: { color: COLORS.subtext, fontSize: FONT.sizes.sm, flex: 1 },
   // ── Lead's Your Share card (light surface) ──
   shareCard: {
     backgroundColor: COLORS.surface,

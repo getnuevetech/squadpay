@@ -4498,6 +4498,79 @@ backend:
                  → 400 "Lead can only be reassigned to an existing member".
               4. POST without new_lead_user_id → 400 "is required".
               5. POST with manager/support role token → 403.
+
+# ──────────────────────────────────────────────────────────────────────────
+# Phase L+7 — 8-item batch (hero unification + virtual card embed + routing)
+# ──────────────────────────────────────────────────────────────────────────
+agent_communication:
+    - agent: "main"
+      message: |
+        Eight UX cleanup items from the user, all addressed.
+
+        #1 — Group name on Your Share is now 24px / heavy / pure white
+            File: summary.tsx — heroV2GroupTitle (was 12px D7C7FB uppercase
+            tracking, now mixed-case, big and dominant).
+
+        #2 — Virtual Card information + functions embedded on Lead Dashboard
+            File: dashboard.tsx
+            - New "Virtual Card" section right after Funding progress.
+            - Empty-state explains when the card will be issued.
+            - When card exists: gradient card face (greys when disabled),
+              status pill, masked PAN/last4, brand, exp, spent/cap, spend
+              progress bar.
+            - Action card with "Reveal full card details" (opens
+              RevealCardModal in-place) and "Manage card · Apple/Google Pay"
+              (deep-links to the dedicated /card page).
+
+        #3 — Top hero on Lead Dashboard now matches Your Share gradient hero
+            File: dashboard.tsx
+            - Replaced old hero (collected/owed bare-text) with the heroV2
+              layout: bold group name + Lead Dashboard subtitle, status
+              badge, Your Share + bill total, member avatar stack,
+              collected progress bar, Remaining row.
+
+        #4 — Hero data on both pages exactly matches the home Featured Card
+            (group name, your share, bill total, paid count, collected,
+            remaining). Status badge preserved on both.
+
+        #5 — Removed the "+" sign on the Friend CTA in the home featured card
+            File: FeaturedBillCard.tsx — text now reads just "Friend".
+
+        #6 — Bill click routing
+            File: index.tsx
+            - Both the Featured Bill Card body tap and the bills-list rows
+              now route based on lead status:
+                  isLead  → /group/[id]/dashboard   (Lead Dashboard)
+                  member  → /group/[id]/summary     (Your Share)
+            - "Pay Now" CTA on the featured card uses the same rule.
+            - Dashboard now contains everything Your Share has + everything
+              Lead Dashboard had, so leads see one merged page.
+
+        #7 — Your Share Breakdown is now collapsible, Edit Tax/Tip moved above
+            Files: summary.tsx + dashboard.tsx
+            - "Your share breakdown" card title is now a tappable header
+              with a rotating chevron; the rows render inside the
+              `breakdownOpen` toggle (default collapsed).
+            - The "Edit tax & tip" lead-only CTA (with tax/tip values shown)
+              is now rendered ABOVE the breakdown card, not below the
+              progress card.
+
+        #8 — Removed Group Wallet card from Your Share; Remaining moved into hero
+            File: summary.tsx
+            - Deleted the standalone "Group wallet / Repayment progress"
+              card (was duplicating info already shown in the hero).
+            - The hero now ends with a Remaining row showing
+              `$X.XX REMAINING` on a divider above the funding progress so
+              users always see how much is still owed.
+
+        Verification:
+        - Backend untouched.
+        - Metro bundles iOS + Web cleanly (HTTP 200, landing page renders
+          beautifully — visual screenshot OK with all design elements).
+        - Lint clean.
+        - All new modals (RevealCardModal, EditMetaModal) wired with their
+          required props (visible/group/userId/field/onClose/onSaved).
+
               6. POST without token → 401.
               7. POST against unknown group_id → 404.
 

@@ -9,7 +9,8 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Receipt, CheckCircle2, Clock, LayoutDashboard, Wallet, AlertCircle, Plus, Pencil, ChevronDown } from 'lucide-react-native';
+import { Receipt, CheckCircle2, Clock, LayoutDashboard, Wallet, AlertCircle, Plus, Pencil, ChevronDown, ArrowLeft } from 'lucide-react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Button } from '../../../src/Button';
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
@@ -18,6 +19,7 @@ import { StatusBadge } from '../../../src/StatusBadge';
 import { EditMetaModal } from '../../../src/EditMetaModal';
 import { toast } from '../../../src/components/Toast';
 import { Skeleton, SkeletonGroupRow } from '../../../src/components/Skeleton';
+import { AvatarRing } from '../../../src/components/AvatarRing';
 
 export default function SummaryScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -151,18 +153,84 @@ export default function SummaryScreen() {
             </View>
           );
         })()}
-        {/* Your share card */}
-        <View style={styles.yourCard} testID="summary-your-card">
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-            <Text style={styles.yourLabel}>Your share</Text>
+        {/* New hero card — mirrors the home page Featured Bill Card so the
+            user sees Group name • Your Share • Group Total • progress in
+            the same familiar layout. */}
+        <LinearGradient
+          colors={['#3F1F8C', '#5B2BC8', '#7C3AED']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.heroV2}
+          testID="summary-your-card"
+        >
+          <View style={styles.heroV2Top}>
+            <TouchableOpacity
+              onPress={() => router.replace('/')}
+              activeOpacity={0.7}
+              style={styles.heroV2Back}
+              testID="summary-back-home"
+            >
+              <ArrowLeft size={18} color="#fff" />
+            </TouchableOpacity>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.heroV2GroupTitle} numberOfLines={1} testID="summary-group-title">
+                {(group.title || group.name || 'Bill').toUpperCase()}
+              </Text>
+            </View>
             <StatusBadge status={group.derived_status} size="sm" testID="summary-status-badge" />
           </View>
-          <Text style={styles.yourAmount} testID="summary-your-amount">${myShare.toFixed(2)}</Text>
-          <View style={styles.totalChip} testID="summary-group-total-chip">
-            <Receipt size={12} color="#fff" />
-            <Text style={styles.totalChipLabel}>{group.title} · Bill total</Text>
-            <Text style={styles.totalChipAmount}>${Number(group.total || 0).toFixed(2)}</Text>
+
+          <View style={styles.heroV2AmountRow}>
+            <Text style={styles.heroV2Label}>Your Share</Text>
+            <Text style={styles.heroV2Amount} testID="summary-your-amount">
+              ${myShare.toFixed(2)}
+            </Text>
           </View>
+          <Text style={styles.heroV2Total} testID="summary-bill-total">
+            of ${Number(group.total || 0).toFixed(2)} bill total
+          </Text>
+
+          {/* Avatars stack — same as home page */}
+          <View style={styles.heroV2Avatars}>
+            {group.members.slice(0, 4).map((m, i) => (
+              <View
+                key={m.user_id}
+                style={[styles.heroV2Avatar, { marginLeft: i === 0 ? 0 : -10, zIndex: 10 - i }]}
+              >
+                <AvatarRing
+                  name={m.name || '?'}
+                  seed={m.user_id}
+                  size={32}
+                  showLeadCrown={m.user_id === group.lead_id}
+                />
+              </View>
+            ))}
+            {group.members.length > 4 ? (
+              <View style={[styles.heroV2Avatar, styles.heroV2AvatarMore, { marginLeft: -10 }]}>
+                <Text style={styles.heroV2AvatarMoreText}>+{group.members.length - 4}</Text>
+              </View>
+            ) : null}
+          </View>
+
+          {/* Progress: how much of the bill is collected so far */}
+          <View style={styles.heroV2Meta}>
+            <Text style={styles.heroV2MetaPrimary}>
+              ${funding.total_contributed.toFixed(0)} of ${Number(group.total || 0).toFixed(0)} collected
+            </Text>
+            <Text style={styles.heroV2MetaSecondary}>
+              {Math.round(collectedPct)}%
+            </Text>
+          </View>
+          <View style={styles.heroV2Track}>
+            <View
+              style={[styles.heroV2Fill, { width: `${Math.min(100, collectedPct)}%` }]}
+            />
+          </View>
+        </LinearGradient>
+
+        {/* Detailed share breakdown lives below the hero now */}
+        <View style={styles.yourCard}>
+          <Text style={styles.yourLabel}>Your share breakdown</Text>
           <View style={styles.breakdownRow}>
             <Text style={styles.breakdownKey}>Items</Text>
             <Text style={styles.breakdownVal}>${myFood.toFixed(2)}</Text>
@@ -173,11 +241,11 @@ export default function SummaryScreen() {
           </View>
           {group.discount && Number(group.discount.amount || 0) > 0 ? (
             <View style={styles.breakdownRow}>
-              <Text style={[styles.breakdownKey, { color: '#A7F3D0' }]}>
+              <Text style={[styles.breakdownKey, { color: COLORS.success }]}>
                 Discount {group.discount.type === 'percent' ? `(${group.discount.value}%)` : ''}
                 {group.discount.note ? ` — ${group.discount.note}` : ''}
               </Text>
-              <Text style={[styles.breakdownVal, { color: '#A7F3D0' }]}>−${Number(group.discount.amount).toFixed(2)}</Text>
+              <Text style={[styles.breakdownVal, { color: COLORS.success }]}>−${Number(group.discount.amount).toFixed(2)}</Text>
             </View>
           ) : null}
           <View style={styles.breakdownRow}>
@@ -191,25 +259,25 @@ export default function SummaryScreen() {
           {myContributed > 0 && (
             <View style={styles.breakdownRow}>
               <Text style={styles.breakdownKey}>Contributed upfront</Text>
-              <Text style={[styles.breakdownVal, { color: '#A7F3D0' }]}>−${myContributed.toFixed(2)}</Text>
+              <Text style={[styles.breakdownVal, { color: COLORS.success }]}>−${myContributed.toFixed(2)}</Text>
             </View>
           )}
           {myRepaid > 0 && (
             <View style={styles.breakdownRow}>
               <Text style={styles.breakdownKey}>Repaid</Text>
-              <Text style={[styles.breakdownVal, { color: '#A7F3D0' }]}>−${myRepaid.toFixed(2)}</Text>
+              <Text style={[styles.breakdownVal, { color: COLORS.success }]}>−${myRepaid.toFixed(2)}</Text>
             </View>
           )}
           {myCreditApplied > 0 && (
             <View style={styles.breakdownRow}>
-              <Text style={[styles.breakdownKey, { color: '#A7F3D0' }]}>Credit applied</Text>
-              <Text style={[styles.breakdownVal, { color: '#A7F3D0' }]}>−${myCreditApplied.toFixed(2)}</Text>
+              <Text style={[styles.breakdownKey, { color: COLORS.success }]}>Credit applied</Text>
+              <Text style={[styles.breakdownVal, { color: COLORS.success }]}>−${myCreditApplied.toFixed(2)}</Text>
             </View>
           )}
           {(myContributed > 0 || myRepaid > 0) && (
-            <View style={[styles.breakdownRow, { borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.18)', marginTop: 6, paddingTop: 6 }]}>
-              <Text style={[styles.breakdownKey, { fontWeight: FONT.weights.bold, color: '#fff' }]}>Outstanding</Text>
-              <Text style={[styles.breakdownVal, { fontSize: FONT.sizes.lg }]}>${myOutstanding.toFixed(2)}</Text>
+            <View style={[styles.breakdownRow, { borderTopWidth: 1, borderTopColor: COLORS.border, marginTop: 6, paddingTop: 6 }]}>
+              <Text style={[styles.breakdownKey, { fontWeight: FONT.weights.bold, color: COLORS.text }]}>Outstanding</Text>
+              <Text style={[styles.breakdownVal, { fontSize: FONT.sizes.lg, color: COLORS.primary }]}>${myOutstanding.toFixed(2)}</Text>
             </View>
           )}
         </View>
@@ -534,53 +602,133 @@ export default function SummaryScreen() {
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.bg },
-  yourCard: {
-    backgroundColor: COLORS.primary,
-    borderRadius: RADIUS.xl,
-    padding: SPACING.lg,
+  // ── New gradient hero (matches home FeaturedBillCard) ──
+  heroV2: {
+    borderRadius: 24,
+    paddingHorizontal: 18,
+    paddingTop: 16,
+    paddingBottom: 18,
     marginBottom: SPACING.md,
+    shadowColor: '#3F1F8C',
+    shadowOpacity: 0.32,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 16 },
+    elevation: 10,
+  },
+  heroV2Top: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 10,
+  },
+  heroV2Back: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  heroV2GroupTitle: {
+    color: '#D7C7FB',
+    fontWeight: FONT.weights.bold,
+    fontSize: 12,
+    letterSpacing: 1.2,
+  },
+  heroV2AmountRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
+  heroV2Label: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: FONT.weights.semibold,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    paddingBottom: 4,
+  },
+  heroV2Amount: {
+    color: '#fff',
+    fontSize: 44,
+    fontWeight: FONT.weights.heavy,
+    letterSpacing: -1,
+    lineHeight: 48,
+  },
+  heroV2Total: {
+    color: '#D7C7FB',
+    fontSize: 12,
+    textAlign: 'right',
+    marginTop: 2,
+  },
+  heroV2Avatars: { flexDirection: 'row', alignItems: 'center', marginTop: 14 },
+  heroV2Avatar: { borderWidth: 2, borderColor: '#fff', borderRadius: 999 },
+  heroV2AvatarMore: {
+    minWidth: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  heroV2AvatarMoreText: { color: '#fff', fontSize: 11, fontWeight: FONT.weights.bold },
+  heroV2Meta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14 },
+  heroV2MetaPrimary: { color: '#fff', fontWeight: FONT.weights.semibold, fontSize: 12 },
+  heroV2MetaSecondary: { color: '#D7C7FB', fontSize: 12 },
+  heroV2Track: {
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    marginTop: 8,
+    overflow: 'hidden',
+  },
+  heroV2Fill: { height: '100%', backgroundColor: '#fff', borderRadius: 999 },
+
+  // ── Light "Your share breakdown" card (formerly the violet block) ──
+  yourCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.md,
+    padding: SPACING.md,
+    marginBottom: SPACING.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
   yourLabel: {
-    color: '#EDE9FE',
-    fontSize: FONT.sizes.sm,
+    color: COLORS.subtext,
+    fontSize: FONT.sizes.xs,
     textTransform: 'uppercase',
     letterSpacing: 1,
     fontWeight: FONT.weights.semibold,
+    marginBottom: SPACING.sm,
   },
   yourAmount: {
-    color: '#fff',
-    fontSize: 52,
+    color: COLORS.text,
+    fontSize: 28,
     fontWeight: FONT.weights.heavy,
-    letterSpacing: -1,
-    marginTop: 2,
-    marginBottom: SPACING.md,
+    letterSpacing: -0.5,
+    marginBottom: SPACING.sm,
   },
   totalChip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: 'rgba(255,255,255,0.16)',
-    borderColor: 'rgba(255,255,255,0.22)',
-    borderWidth: 1,
+    backgroundColor: COLORS.primaryLight,
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: RADIUS.md,
     marginBottom: SPACING.md,
   },
   totalChipLabel: {
-    color: '#EDE9FE',
+    color: COLORS.primary,
     fontSize: FONT.sizes.xs,
     fontWeight: FONT.weights.semibold,
     flex: 1,
   },
   totalChipAmount: {
-    color: '#fff',
+    color: COLORS.primary,
     fontSize: FONT.sizes.md,
     fontWeight: FONT.weights.bold,
   },
   breakdownRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
-  breakdownKey: { color: '#EDE9FE', fontSize: FONT.sizes.sm },
-  breakdownVal: { color: '#fff', fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold },
+  breakdownKey: { color: COLORS.subtext, fontSize: FONT.sizes.sm },
+  breakdownVal: { color: COLORS.text, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold },
   progressCard: {
     backgroundColor: COLORS.surface,
     padding: SPACING.md,

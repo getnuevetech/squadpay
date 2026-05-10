@@ -4258,6 +4258,57 @@ agent_communication:
 
         Verification:
         - Backend lint passes.
+
+# ──────────────────────────────────────────────────────────────────────────
+# Phase L+4 — Your Share new hero + Lead Dashboard merge (MAIN AGENT)
+# ──────────────────────────────────────────────────────────────────────────
+agent_communication:
+    - agent: "main"
+      message: |
+        Two structural UI updates per user request.
+
+        TASK 2 — Your Share top redesign
+        File: /app/frontend/app/group/[id]/summary.tsx
+        - Replaced the previous solid-violet "Your share" block with a NEW
+          gradient hero card (LinearGradient #3F1F8C → #5B2BC8 → #7C3AED)
+          that mirrors the home page Featured Bill Card style:
+              · uppercase GROUP NAME at the top + back-home chevron + status badge
+              · big YOUR SHARE amount (right-aligned)
+              · "of $X.XX bill total" caption (group total visible like home)
+              · diverse member avatars stack (up to 4 + overflow chip)
+              · "$Y of $Z collected · NN%" line + progress bar
+        - The detailed share breakdown (Items / Tax / Fee / Discount /
+          Contributed / Repaid / Outstanding) was moved INTO a separate light
+          surface card right below the hero, with all colours re-tuned
+          (green = COLORS.success, primary on white, etc.) so it remains
+          legible on the new white background.
+
+        TASK 1 — Lead Dashboard merge with Your Share
+        File: /app/frontend/app/group/[id]/dashboard.tsx
+        - Computed lead's personal share: myShare, myFood, myExtras,
+          myTransactionFee, myPlatformFee, myContributed, myRepaid,
+          myOutstanding, myCreditApplied, collectedPct.
+        - Inserted right after the Items/Invite/Pay quick actions:
+            (1) "Your share (as lead)" breakdown card — same row layout as
+                Your Share, with the lead's own contribution status,
+                discount, fees, contributed/repaid, and Outstanding total.
+            (2) "Funding progress" card — group-level $X of $Y collected
+                with progress bar + remaining amount, mirrors the funding
+                summary on Your Share.
+        - All existing dashboard features preserved: hero (collected/owed),
+          quick actions, withdraw, members list with LEAD badge, items
+          collapsible breakdown, repayment history.
+        - New styles: shareCard, shareHeaderRow, shareLabel, shareAmount,
+          shareDivider, shareRow, shareKey, shareVal, shareOutstandingRow,
+          shareOutstandingKey, shareOutstandingVal, fundCard, fundHeader,
+          fundTitle, fundSubtitle, fundPct, fundTrack, fundFill, fundFoot.
+
+        Verification:
+        - Metro bundles iOS + Web cleanly (HTTP 200, landing page renders
+          perfectly with no console errors).
+        - Lint clean.
+        - No backend changes required.
+
         - Metro bundles iOS + Web with no errors.
         - Curl against /api/users/.../groups returns the new fields with
           accurate values.

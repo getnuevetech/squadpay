@@ -90,6 +90,24 @@ export default function DashboardScreen() {
     (group.lead_shortfall || 0) > 0.01;
   const withdrawable = leadFronted ? group.funding?.total_repaid || 0 : 0;
 
+  // ── Lead's personal share (mirrors the Your Share page so the merged
+  //     dashboard surfaces what the lead themselves owes/contributed). ──
+  const leadPer = group.per_user.find((p) => p.user_id === userId);
+  const myShare = leadPer?.total || 0;
+  const myFood = leadPer?.food || 0;
+  const myExtras = leadPer?.tax_tip || 0;
+  const myTransactionFee = leadPer?.transaction_fee || 0;
+  const myPlatformFee = leadPer?.platform_fee || 0;
+  const myContributed = leadPer?.contributed || 0;
+  const myRepaid = leadPer?.repaid || 0;
+  const myOutstanding = leadPer?.outstanding || 0;
+  const myCreditApplied = (group.contributions || [])
+    .filter((c: any) => c.user_id === userId)
+    .reduce((s: number, c: any) => s + Number(c.credit_applied || 0), 0);
+  const collectedPct = group.total > 0
+    ? Math.min(100, ((group.funding?.total_contributed || 0) / group.total) * 100)
+    : 0;
+
   const withdraw = (kind: 'instant' | 'standard') => {
     toast.info(
       kind === 'instant'
@@ -181,6 +199,86 @@ export default function DashboardScreen() {
               {group.status !== 'open' ? 'Paid' : 'Pay'}
             </Text>
           </TouchableOpacity>
+        </View>
+
+        {/* ── Lead's personal Your Share breakdown (merged from Your Share page) ── */}
+        <View style={styles.shareCard} testID="dashboard-your-share">
+          <View style={styles.shareHeaderRow}>
+            <Text style={styles.shareLabel}>Your share (as lead)</Text>
+            <Text style={styles.shareAmount}>${myShare.toFixed(2)}</Text>
+          </View>
+          <View style={styles.shareDivider} />
+          {myFood > 0 && (
+            <View style={styles.shareRow}>
+              <Text style={styles.shareKey}>Items</Text>
+              <Text style={styles.shareVal}>${myFood.toFixed(2)}</Text>
+            </View>
+          )}
+          {myExtras > 0 && (
+            <View style={styles.shareRow}>
+              <Text style={styles.shareKey}>Tax & tip</Text>
+              <Text style={styles.shareVal}>${myExtras.toFixed(2)}</Text>
+            </View>
+          )}
+          {group.discount && Number(group.discount.amount || 0) > 0 ? (
+            <View style={styles.shareRow}>
+              <Text style={[styles.shareKey, { color: COLORS.success }]}>
+                Discount {group.discount.type === 'percent' ? `(${group.discount.value}%)` : ''}
+              </Text>
+              <Text style={[styles.shareVal, { color: COLORS.success }]}>−${Number(group.discount.amount).toFixed(2)}</Text>
+            </View>
+          ) : null}
+          <View style={styles.shareRow}>
+            <Text style={styles.shareKey}>Transaction fee (3%)</Text>
+            <Text style={styles.shareVal}>${myTransactionFee.toFixed(2)}</Text>
+          </View>
+          <View style={styles.shareRow}>
+            <Text style={styles.shareKey}>Platform fee</Text>
+            <Text style={styles.shareVal}>${myPlatformFee.toFixed(2)}</Text>
+          </View>
+          {myContributed > 0 && (
+            <View style={styles.shareRow}>
+              <Text style={styles.shareKey}>Contributed upfront</Text>
+              <Text style={[styles.shareVal, { color: COLORS.success }]}>−${myContributed.toFixed(2)}</Text>
+            </View>
+          )}
+          {myRepaid > 0 && (
+            <View style={styles.shareRow}>
+              <Text style={styles.shareKey}>Repaid</Text>
+              <Text style={[styles.shareVal, { color: COLORS.success }]}>−${myRepaid.toFixed(2)}</Text>
+            </View>
+          )}
+          {myCreditApplied > 0 && (
+            <View style={styles.shareRow}>
+              <Text style={[styles.shareKey, { color: COLORS.success }]}>Credit applied</Text>
+              <Text style={[styles.shareVal, { color: COLORS.success }]}>−${myCreditApplied.toFixed(2)}</Text>
+            </View>
+          )}
+          {(myContributed > 0 || myRepaid > 0) && (
+            <View style={[styles.shareRow, styles.shareOutstandingRow]}>
+              <Text style={styles.shareOutstandingKey}>Outstanding</Text>
+              <Text style={styles.shareOutstandingVal}>${myOutstanding.toFixed(2)}</Text>
+            </View>
+          )}
+        </View>
+
+        {/* ── Funding progress (mirrors Your Share's funding card) ── */}
+        <View style={styles.fundCard} testID="dashboard-funding-progress">
+          <View style={styles.fundHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.fundTitle}>Funding progress</Text>
+              <Text style={styles.fundSubtitle}>
+                ${(group.funding?.total_contributed || 0).toFixed(2)} of ${Number(group.total || 0).toFixed(2)} collected
+              </Text>
+            </View>
+            <Text style={styles.fundPct}>{Math.round(collectedPct)}%</Text>
+          </View>
+          <View style={styles.fundTrack}>
+            <View style={[styles.fundFill, { width: `${Math.min(100, collectedPct)}%` }]} />
+          </View>
+          <Text style={styles.fundFoot}>
+            {Math.max(0, (group.total || 0) - (group.funding?.total_contributed || 0)).toFixed(2)} remaining
+          </Text>
         </View>
 
         <Text style={styles.sectionTitle}>Withdraw</Text>
@@ -659,6 +757,62 @@ const styles = StyleSheet.create({
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
   statusText: { fontSize: FONT.sizes.xs, color: COLORS.subtext, fontWeight: FONT.weights.medium },
   amount: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },
+  // ── Lead's Your Share card (light surface) ──
+  shareCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.md,
+    padding: SPACING.md,
+    marginTop: SPACING.md,
+    marginBottom: SPACING.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  shareHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  shareLabel: {
+    color: COLORS.subtext,
+    fontSize: FONT.sizes.xs,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    fontWeight: FONT.weights.semibold,
+  },
+  shareAmount: { color: COLORS.text, fontSize: 22, fontWeight: FONT.weights.heavy, letterSpacing: -0.4 },
+  shareDivider: { height: 1, backgroundColor: COLORS.border, marginVertical: SPACING.sm },
+  shareRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
+  shareKey: { color: COLORS.subtext, fontSize: FONT.sizes.sm },
+  shareVal: { color: COLORS.text, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold },
+  shareOutstandingRow: {
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    marginTop: 6,
+    paddingTop: 8,
+  },
+  shareOutstandingKey: { color: COLORS.text, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.bold },
+  shareOutstandingVal: {
+    color: COLORS.primary,
+    fontSize: FONT.sizes.lg,
+    fontWeight: FONT.weights.heavy,
+  },
+  // ── Funding progress card (light surface) ──
+  fundCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.md,
+    padding: SPACING.md,
+    marginBottom: SPACING.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  fundHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  fundTitle: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },
+  fundSubtitle: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
+  fundPct: { fontSize: FONT.sizes.lg, fontWeight: FONT.weights.heavy, color: COLORS.primary },
+  fundTrack: {
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: COLORS.border,
+    overflow: 'hidden',
+  },
+  fundFill: { height: '100%', backgroundColor: COLORS.primary, borderRadius: 999 },
+  fundFoot: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 6, textAlign: 'right' },
   // Items breakdown (collapsible, per-member)
   itemsBreakCard: {
     backgroundColor: COLORS.surface,

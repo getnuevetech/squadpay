@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { ArrowLeft, UserPlus, Users as UsersIcon } from 'lucide-react-native';
+import { ArrowLeft, UserPlus, Users as UsersIcon, ChevronDown } from 'lucide-react-native';
 import { api } from '../src/api';
 import { refreshUser } from '../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../src/theme';
@@ -23,13 +23,14 @@ import { BottomTabBar } from '../src/components/redesign/BottomTabBar';
 import { SquadPayMark } from '../src/components/redesign/SquadPayMark';
 import { EmptyState } from '../src/components/EmptyState';
 
-type Person = { user_id: string; name: string; sharedCount: number };
+type Person = { user_id: string; name: string; groups: { id: string; title: string }[] };
 
 export default function SquadScreen() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [people, setPeople] = useState<Person[]>([]);
   const [me, setMe] = useState<{ id: string; name: string } | null>(null);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     const u = await refreshUser();
@@ -46,11 +47,12 @@ export default function SquadScreen() {
         for (const m of preview) {
           if (!m.user_id || m.user_id === u.id) continue;
           const existing = map.get(m.user_id);
-          if (existing) existing.sharedCount += 1;
-          else map.set(m.user_id, { user_id: m.user_id, name: m.name || 'Member', sharedCount: 1 });
+          const groupRef = { id: g.id, title: g.title || 'Bill' };
+          if (existing) existing.groups.push(groupRef);
+          else map.set(m.user_id, { user_id: m.user_id, name: m.name || 'Member', groups: [groupRef] });
         }
       }
-      const list = Array.from(map.values()).sort((a, b) => b.sharedCount - a.sharedCount);
+      const list = Array.from(map.values()).sort((a, b) => b.groups.length - a.groups.length);
       setPeople(list);
     } catch {}
     setLoading(false);
@@ -101,15 +103,46 @@ export default function SquadScreen() {
           data={people}
           keyExtractor={(p) => p.user_id}
           contentContainerStyle={{ padding: SPACING.md, paddingBottom: 110 }}
-          renderItem={({ item }) => (
-            <View style={styles.row}>
-              <AvatarRing name={item.name} seed={item.user_id} size={42} />
-              <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={styles.rowName}>{item.name}</Text>
-                <Text style={styles.rowMeta}>{item.sharedCount} shared {item.sharedCount === 1 ? 'split' : 'splits'}</Text>
+          renderItem={({ item }) => {
+            const isOpen = !!expanded[item.user_id];
+            return (
+              <View style={styles.row}>
+                <TouchableOpacity
+                  style={styles.rowHeader}
+                  activeOpacity={0.7}
+                  onPress={() => setExpanded((m) => ({ ...m, [item.user_id]: !isOpen }))}
+                  testID={`squad-row-${item.user_id}`}
+                >
+                  <AvatarRing name={item.name} seed={item.user_id} size={42} />
+                  <View style={{ flex: 1, marginLeft: 12 }}>
+                    <Text style={styles.rowName}>{item.name}</Text>
+                    <Text style={styles.rowMeta}>
+                      {item.groups.length} shared {item.groups.length === 1 ? 'split' : 'splits'}
+                      {item.groups.length > 0 ? ` · ${item.groups[0].title}${item.groups.length > 1 ? ` +${item.groups.length - 1}` : ''}` : ''}
+                    </Text>
+                  </View>
+                  <View style={[isOpen && { transform: [{ rotate: '180deg' }] }]}>
+                    <ChevronDown size={18} color={COLORS.subtext} />
+                  </View>
+                </TouchableOpacity>
+                {isOpen && (
+                  <View style={styles.rowGroups}>
+                    {item.groups.map((gr, i) => (
+                      <TouchableOpacity
+                        key={gr.id + i}
+                        style={styles.groupChip}
+                        activeOpacity={0.85}
+                        onPress={() => router.push(`/group/${gr.id}/summary`)}
+                        testID={`squad-group-chip-${gr.id}`}
+                      >
+                        <Text style={styles.groupChipText} numberOfLines={1}>{gr.title}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
               </View>
-            </View>
-          )}
+            );
+          }}
         />
       )}
       <BottomTabBar active="squad" />
@@ -140,14 +173,38 @@ const styles = StyleSheet.create({
   inviteTitle: { fontSize: FONT.sizes.sm, fontWeight: FONT.weights.bold, color: COLORS.primary },
   inviteSub: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
   row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: SPACING.md,
     backgroundColor: COLORS.surface,
     borderRadius: RADIUS.lg,
     borderWidth: 1,
     borderColor: COLORS.border,
     marginBottom: SPACING.sm,
+    overflow: 'hidden',
+  },
+  rowHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: SPACING.md,
+    gap: 4,
+  },
+  rowGroups: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    paddingHorizontal: SPACING.md,
+    paddingBottom: SPACING.md,
+    paddingTop: 0,
+  },
+  groupChip: {
+    backgroundColor: COLORS.primaryLight,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    maxWidth: '100%',
+  },
+  groupChipText: {
+    color: COLORS.primary,
+    fontSize: FONT.sizes.xs,
+    fontWeight: FONT.weights.semibold,
   },
   rowName: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },
   rowMeta: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },

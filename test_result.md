@@ -4318,6 +4318,69 @@ agent_communication:
           - `flexShrink: 1` added to `memberName` so long names don't push the
             LEAD pill off-screen.
 
+
+# ──────────────────────────────────────────────────────────────────────────
+# Phase L+5 — UX cleanup batch (6 items) (MAIN AGENT)
+# ──────────────────────────────────────────────────────────────────────────
+agent_communication:
+    - agent: "main"
+      message: |
+        Six user-reported UX issues addressed.
+
+        #1 — Inline collapsible items per member on Your Share AND Lead Dashboard
+            Files: /app/frontend/app/group/[id]/{summary.tsx, dashboard.tsx}
+            - Removed the previous separate "Who's paying for what" card.
+            - Each member row in the Members list is now a TouchableOpacity
+              that, when the row has any item assignments, toggles an
+              inline list of that member's items + per-item amounts on tap.
+            - A ChevronDown icon at the right of the row rotates 180° when
+              expanded. Rows for members with no claimed items are not
+              tappable (no chevron, no expansion).
+            - New state hooks: memberItemsOpen (Record<string, boolean>).
+            - New styles (summary.tsx): leadPill, leadPillText,
+              memberItemsBody, memberItemRow, memberItemName, memberItemAmt.
+            - New styles (dashboard.tsx): memberItemsInline,
+              memberItemInlineRow, memberItemInlineName, memberItemInlineAmt.
+
+        #2 — Squad page now shows bill/group names per person
+            File: /app/frontend/app/squad.tsx
+            - Person aggregation now collects an array of { id, title } for
+              every group shared with that person (previously just a count).
+            - Row header shows "N shared splits · <FirstBillTitle> +K" and
+              is now tappable; tapping expands a wrapping chip list of every
+              shared bill title. Each chip is itself tappable and routes to
+              that bill's /summary page so the user can jump straight in.
+            - New styles: rowHeader, rowGroups, groupChip, groupChipText.
+
+        #3 — Removed the back arrow from the new Your Share gradient hero
+            File: /app/frontend/app/group/[id]/summary.tsx
+            - The home-style hero no longer shows the "back to home" chevron;
+              users can use the BottomTabBar Home button or the OS back gesture.
+              Group title + status badge remain.
+
+        #4 — Renamed "Contributed upfront" → "Contributed"
+            Files: summary.tsx, dashboard.tsx (lead's share breakdown)
+
+        #5 — Pay page bottom "Home" link replaced with "Cancel" → router.back()
+            File: /app/frontend/app/group/[id]/pay.tsx
+            - The Button at the bottom of the pay screen now reads "Cancel"
+              and on press calls router.back() with a /summary fallback if
+              there is no history. testID renamed to pay-cancel-btn.
+
+        #6 — Lead Dashboard reachable for the lead during open contribution
+            File: /app/frontend/app/group/[id]/summary.tsx
+            - The "View Lead Dashboard" Button was previously gated behind
+              `group.status !== 'open'`, which meant during the (most-common)
+              contribution phase the lead had no way to access their
+              dashboard. Now the button shows for ALL leads regardless of
+              status; during 'open' it renders as `secondary` (less loud)
+              vs `primary` later. This restores access from any phase.
+
+        Verification:
+        - Metro bundles iOS + Web cleanly (HTTP 200, landing page renders
+          perfectly with no console errors).
+        - Backend untouched.
+
         No backend changes. Metro bundles iOS + Web cleanly.
 
         No backend testing required — pure frontend layout work.

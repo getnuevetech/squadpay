@@ -928,10 +928,16 @@ export default function PayScreen() {
             </>
           )}
           <Button
-            title="Home"
+            title="Cancel"
             variant="ghost"
-            onPress={() => router.replace('/')}
-            testID="pay-home-btn"
+            onPress={() => {
+              if (router.canGoBack && router.canGoBack()) {
+                router.back();
+              } else {
+                router.replace(`/group/${id}/summary`);
+              }
+            }}
+            testID="pay-cancel-btn"
             style={{ marginTop: SPACING.sm }}
           />
         </View>

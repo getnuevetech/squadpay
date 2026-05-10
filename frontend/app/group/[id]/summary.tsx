@@ -29,6 +29,7 @@ export default function SummaryScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [editTaxTipVisible, setEditTaxTipVisible] = useState(false);
   const [itemsExpanded, setItemsExpanded] = useState(false);
+  const [memberItemsOpen, setMemberItemsOpen] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -164,14 +165,6 @@ export default function SummaryScreen() {
           testID="summary-your-card"
         >
           <View style={styles.heroV2Top}>
-            <TouchableOpacity
-              onPress={() => router.replace('/')}
-              activeOpacity={0.7}
-              style={styles.heroV2Back}
-              testID="summary-back-home"
-            >
-              <ArrowLeft size={18} color="#fff" />
-            </TouchableOpacity>
             <View style={{ flex: 1 }}>
               <Text style={styles.heroV2GroupTitle} numberOfLines={1} testID="summary-group-title">
                 {(group.title || group.name || 'Bill').toUpperCase()}
@@ -258,7 +251,7 @@ export default function SummaryScreen() {
           </View>
           {myContributed > 0 && (
             <View style={styles.breakdownRow}>
-              <Text style={styles.breakdownKey}>Contributed upfront</Text>
+              <Text style={styles.breakdownKey}>Contributed</Text>
               <Text style={[styles.breakdownVal, { color: COLORS.success }]}>−${myContributed.toFixed(2)}</Text>
             </View>
           )}
@@ -341,9 +334,11 @@ export default function SummaryScreen() {
           )}
         </View>
 
-        {/* Member list */}
+        {/* Member list — each row is tappable; tapping expands to show that
+            member's per-item breakdown inline. Replaces the previous separate
+            "Who's paying for what" card. */}
         <View style={styles.memberCard}>
-          <Text style={styles.sectionTitle}>Members</Text>
+          <Text style={styles.sectionTitle}>Members ({group.members.length})</Text>
           {group.members.map((m, idx) => {
             const per = group.per_user.find((p) => p.user_id === m.user_id);
             const share = per?.total || 0;
@@ -351,6 +346,10 @@ export default function SummaryScreen() {
             const repaid = per?.repaid || 0;
             const outstanding = per?.outstanding || 0;
             const isLeadRow = m.user_id === group.lead_id;
+            // Items this member has claimed
+            const memberClaims = group.assignments.filter((a) => a.user_id === m.user_id);
+            const hasItems = group.split_mode !== 'fast' && memberClaims.length > 0;
+            const isOpen = !!memberItemsOpen[m.user_id];
 
             let status: { icon: any; text: string; color: string };
             const obligationOwed = per?.shortfall_owed || 0;
@@ -358,7 +357,6 @@ export default function SummaryScreen() {
             if (isLeadRow) {
               if (group.status === 'open') {
                 if (obligationOwed > 0.01 && outstanding > 0.01) {
-                  // Lead got a split-shortfall obligation too
                   status = { icon: <AlertCircle size={12} color={COLORS.warning} />, text: `Shortfall +$${obligationOwed.toFixed(2)} due`, color: COLORS.warning };
                 } else {
                   status = { icon: <Clock size={12} color={COLORS.subtext} />, text: 'Shortfall to be decided', color: COLORS.subtext };
@@ -373,7 +371,6 @@ export default function SummaryScreen() {
                 status = { icon: <CheckCircle2 size={12} color={COLORS.success} />, text: 'Paid merchant', color: COLORS.success };
               }
             } else if (obligationOwed > 0.01 && outstanding > 0.01) {
-              // Member has been assigned a shortfall obligation
               status = { icon: <AlertCircle size={12} color={COLORS.warning} />, text: `Shortfall +$${obligationOwed.toFixed(2)} due`, color: COLORS.warning };
             } else if (outstanding <= 0.01 && (contributed > 0 || repaid > 0 || group.status === 'closed')) {
               status = { icon: <CheckCircle2 size={12} color={COLORS.success} />, text: contributed >= share - 0.01 ? 'Contributed' : 'Settled', color: COLORS.success };
@@ -384,90 +381,67 @@ export default function SummaryScreen() {
             }
 
             return (
-              <View key={m.user_id} style={[styles.memberRow, idx !== 0 && { borderTopWidth: 1, borderTopColor: COLORS.border }]} testID={`summary-member-${m.user_id}`}>
-                <View style={styles.avatar}>
-                  <Text style={styles.avatarText}>{(m.name || '?').slice(0, 1).toUpperCase()}</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.memberName}>
-                    {m.name} {m.user_id === userId ? '(You)' : ''} {isLeadRow ? '• Lead' : ''}
-                  </Text>
-                  <View style={styles.statusRow}>
-                    {status.icon}
-                    <Text style={[styles.statusText, { color: status.color }]}>{status.text}</Text>
+              <View key={m.user_id} style={[idx !== 0 && { borderTopWidth: 1, borderTopColor: COLORS.border }]} testID={`summary-member-${m.user_id}`}>
+                <TouchableOpacity
+                  style={styles.memberRow}
+                  activeOpacity={hasItems ? 0.7 : 1}
+                  disabled={!hasItems}
+                  onPress={() => hasItems && setMemberItemsOpen((s) => ({ ...s, [m.user_id]: !isOpen }))}
+                  testID={`summary-member-toggle-${m.user_id}`}
+                >
+                  <View style={[styles.avatar, isLeadRow && { backgroundColor: COLORS.primary }]}>
+                    <Text style={[styles.avatarText, isLeadRow && { color: '#fff' }]}>
+                      {(m.name || '?').slice(0, 1).toUpperCase()}
+                    </Text>
                   </View>
-                </View>
-                <Text style={styles.amount}>${share.toFixed(2)}</Text>
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={styles.memberName} numberOfLines={1}>
+                        {m.name}{m.user_id === userId ? ' (You)' : ''}
+                      </Text>
+                      {isLeadRow && (
+                        <View style={styles.leadPill}>
+                          <Text style={styles.leadPillText}>LEAD</Text>
+                        </View>
+                      )}
+                    </View>
+                    <View style={styles.statusRow}>
+                      {status.icon}
+                      <Text style={[styles.statusText, { color: status.color }]}>{status.text}</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.amount}>${share.toFixed(2)}</Text>
+                  {hasItems && (
+                    <View style={[{ marginLeft: 6 }, isOpen && { transform: [{ rotate: '180deg' }] }]}>
+                      <ChevronDown size={16} color={COLORS.subtext} />
+                    </View>
+                  )}
+                </TouchableOpacity>
+                {hasItems && isOpen && (
+                  <View style={styles.memberItemsBody} testID={`summary-member-items-${m.user_id}`}>
+                    {memberClaims.map((a) => {
+                      const it = group.items.find((i) => i.id === a.item_id);
+                      if (!it) return null;
+                      const cost = (it.price || 0) * (a.quantity || 0);
+                      return (
+                        <View key={`${a.item_id}-${m.user_id}`} style={styles.memberItemRow}>
+                          <Text style={styles.memberItemName}>
+                            {it.name} × {a.quantity}
+                          </Text>
+                          <Text style={styles.memberItemAmt}>${cost.toFixed(2)}</Text>
+                        </View>
+                      );
+                    })}
+                  </View>
+                )}
               </View>
             );
           })}
         </View>
 
-        {/* Item 14 — Collapsible per-member items breakdown.
-            Visible whenever there are items + assignments, regardless of phase,
-            so members can always see "who paid for what" — including during
-            the open contribution phase (read-only). Equal-split bills (fast)
-            don't have item assignments so this card is skipped. */}
-        {group.split_mode !== 'fast' &&
-          group.items.length > 0 &&
-          group.assignments.length > 0 && (
-            <View style={styles.breakdownCard} testID="summary-items-breakdown">
-              <TouchableOpacity
-                onPress={() => setItemsExpanded((v) => !v)}
-                style={styles.breakdownToggle}
-                activeOpacity={0.85}
-                testID="summary-items-breakdown-toggle"
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.breakdownTitle}>Who's paying for what</Text>
-                  <Text style={styles.breakdownSubtitle}>
-                    Tap to {itemsExpanded ? 'collapse' : 'expand'} the per-member item list
-                  </Text>
-                </View>
-                <View style={[styles.chev, itemsExpanded && { transform: [{ rotate: '180deg' }] }]}>
-                  <ChevronDown size={18} color={COLORS.subtext} />
-                </View>
-              </TouchableOpacity>
-              {itemsExpanded && (
-                <View style={styles.breakdownBody}>
-                  {group.members.map((m) => {
-                    // For each member, find their claimed items
-                    const claims = group.assignments.filter((a) => a.user_id === m.user_id);
-                    if (claims.length === 0) {
-                      return (
-                        <View key={m.user_id} style={styles.breakdownMember}>
-                          <Text style={styles.breakdownMemberName}>
-                            {m.name} {m.user_id === userId ? '(You)' : ''}
-                          </Text>
-                          <Text style={styles.breakdownEmpty}>No items claimed yet</Text>
-                        </View>
-                      );
-                    }
-                    return (
-                      <View key={m.user_id} style={styles.breakdownMember}>
-                        <Text style={styles.breakdownMemberName}>
-                          {m.name} {m.user_id === userId ? '(You)' : ''}
-                        </Text>
-                        {claims.map((a) => {
-                          const it = group.items.find((i) => i.id === a.item_id);
-                          if (!it) return null;
-                          const cost = (it.price || 0) * (a.quantity || 0);
-                          return (
-                            <View key={`${a.item_id}-${m.user_id}`} style={styles.breakdownItemRow}>
-                              <Text style={styles.breakdownItemName}>
-                                {it.name} × {a.quantity}
-                              </Text>
-                              <Text style={styles.breakdownItemAmt}>${cost.toFixed(2)}</Text>
-                            </View>
-                          );
-                        })}
-                      </View>
-                    );
-                  })}
-                </View>
-              )}
-            </View>
-          )}
+        {/* The previous separate "Who's paying for what" card has been
+            removed — per-member item lists now appear inline as collapsibles
+            attached to each member row above. */}
 
         {group.unclaimed.length > 0 && group.split_mode !== 'fast' && group.status === 'open' && (
           <View style={styles.warnCard}>
@@ -545,12 +519,13 @@ export default function SummaryScreen() {
             onPress={handleLeadPay}
           />
         )}
-        {isLead && group.status !== 'open' && (
+        {isLead && (
           <Button
             title="View Lead Dashboard"
             testID="summary-dashboard-btn"
             onPress={() => router.push(`/group/${group.id}/dashboard`)}
             leftIcon={<LayoutDashboard size={18} color="#fff" />}
+            variant={group.status === 'open' ? 'secondary' : 'primary'}
           />
         )}
 
@@ -829,7 +804,35 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   avatarText: { color: COLORS.primary, fontWeight: FONT.weights.bold, fontSize: FONT.sizes.sm },
-  memberName: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, color: COLORS.text },
+  memberName: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, color: COLORS.text, flexShrink: 1 },
+  leadPill: {
+    backgroundColor: COLORS.primaryLight,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  leadPillText: {
+    fontSize: 9,
+    fontWeight: FONT.weights.bold,
+    color: COLORS.primary,
+    letterSpacing: 0.5,
+  },
+  memberItemsBody: {
+    backgroundColor: COLORS.bg,
+    borderRadius: RADIUS.sm,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    marginTop: 0,
+    marginBottom: SPACING.sm,
+    marginLeft: 48,
+  },
+  memberItemRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 3,
+  },
+  memberItemName: { color: COLORS.subtext, fontSize: FONT.sizes.xs, flex: 1 },
+  memberItemAmt: { color: COLORS.text, fontSize: FONT.sizes.xs, fontWeight: FONT.weights.medium },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
   statusText: { fontSize: FONT.sizes.xs, fontWeight: FONT.weights.medium },
   amount: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },

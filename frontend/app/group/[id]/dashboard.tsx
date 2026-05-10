@@ -24,6 +24,7 @@ export default function DashboardScreen() {
   const [userId, setUserId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [itemsExpanded, setItemsExpanded] = useState(false);
+  const [memberItemsOpen, setMemberItemsOpen] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -238,7 +239,7 @@ export default function DashboardScreen() {
           </View>
           {myContributed > 0 && (
             <View style={styles.shareRow}>
-              <Text style={styles.shareKey}>Contributed upfront</Text>
+              <Text style={styles.shareKey}>Contributed</Text>
               <Text style={[styles.shareVal, { color: COLORS.success }]}>−${myContributed.toFixed(2)}</Text>
             </View>
           )}
@@ -356,56 +357,88 @@ export default function DashboardScreen() {
             const outstanding = per?.outstanding || 0;
             const done = outstanding <= 0.01;
             const settledLabel = contributed >= owed - 0.01 ? 'Contributed' : 'Paid';
+            const memberClaims = group.assignments.filter((a) => a.user_id === m.user_id);
+            const hasItems = (group as any).split_mode !== 'fast' && memberClaims.length > 0;
+            const isOpen = !!memberItemsOpen[m.user_id];
             return (
               <View
                 key={m.user_id}
-                testID={`dashboard-member-${m.user_id}`}
-                style={[styles.memberRow, idx !== 0 && { borderTopWidth: 1, borderTopColor: COLORS.border }]}
+                style={[idx !== 0 && { borderTopWidth: 1, borderTopColor: COLORS.border }]}
               >
-                <View style={[styles.avatar, isLead && styles.avatarLead]}>
-                  <Text style={[styles.avatarText, isLead && { color: '#fff' }]}>
-                    {(m.name || '?').slice(0, 1).toUpperCase()}
-                  </Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <View style={styles.nameRow}>
-                    <Text style={styles.memberName} numberOfLines={1}>
-                      {m.name}{isMe ? ' (You)' : ''}
+                <TouchableOpacity
+                  testID={`dashboard-member-${m.user_id}`}
+                  style={styles.memberRow}
+                  activeOpacity={hasItems ? 0.7 : 1}
+                  disabled={!hasItems}
+                  onPress={() => hasItems && setMemberItemsOpen((s) => ({ ...s, [m.user_id]: !isOpen }))}
+                >
+                  <View style={[styles.avatar, isLead && styles.avatarLead]}>
+                    <Text style={[styles.avatarText, isLead && { color: '#fff' }]}>
+                      {(m.name || '?').slice(0, 1).toUpperCase()}
                     </Text>
-                    {isLead && (
-                      <View style={styles.leadBadge}>
-                        <Text style={styles.leadBadgeText}>LEAD</Text>
-                      </View>
-                    )}
                   </View>
-                  <View style={styles.statusRow}>
-                    {isLead ? (
-                      <Text style={styles.statusText}>
-                        {group.status === 'open'
-                          ? 'Organising the bill'
-                          : 'Paid the merchant'}
+                  <View style={{ flex: 1 }}>
+                    <View style={styles.nameRow}>
+                      <Text style={styles.memberName} numberOfLines={1}>
+                        {m.name}{isMe ? ' (You)' : ''}
                       </Text>
-                    ) : done ? (
-                      <>
-                        <CheckCircle2 size={12} color={COLORS.success} />
-                        <Text style={[styles.statusText, { color: COLORS.success }]}>{settledLabel}</Text>
-                      </>
-                    ) : (
-                      <>
-                        <Clock size={12} color={COLORS.warning} />
-                        <Text style={[styles.statusText, { color: COLORS.warning }]}>
-                          Owes ${outstanding.toFixed(2)}
+                      {isLead && (
+                        <View style={styles.leadBadge}>
+                          <Text style={styles.leadBadgeText}>LEAD</Text>
+                        </View>
+                      )}
+                    </View>
+                    <View style={styles.statusRow}>
+                      {isLead ? (
+                        <Text style={styles.statusText}>
+                          {group.status === 'open'
+                            ? 'Organising the bill'
+                            : 'Paid the merchant'}
                         </Text>
-                      </>
-                    )}
+                      ) : done ? (
+                        <>
+                          <CheckCircle2 size={12} color={COLORS.success} />
+                          <Text style={[styles.statusText, { color: COLORS.success }]}>{settledLabel}</Text>
+                        </>
+                      ) : (
+                        <>
+                          <Clock size={12} color={COLORS.warning} />
+                          <Text style={[styles.statusText, { color: COLORS.warning }]}>
+                            Owes ${outstanding.toFixed(2)}
+                          </Text>
+                        </>
+                      )}
+                    </View>
                   </View>
-                </View>
-                {!isLead ? (
-                  <Text style={styles.amount}>${owed.toFixed(2)}</Text>
-                ) : (
-                  <Text style={[styles.amount, { color: COLORS.subtext, fontSize: FONT.sizes.xs }]}>
-                    Lead
-                  </Text>
+                  {!isLead ? (
+                    <Text style={styles.amount}>${owed.toFixed(2)}</Text>
+                  ) : (
+                    <Text style={[styles.amount, { color: COLORS.subtext, fontSize: FONT.sizes.xs }]}>
+                      Lead
+                    </Text>
+                  )}
+                  {hasItems && (
+                    <View style={[{ marginLeft: 6 }, isOpen && { transform: [{ rotate: '180deg' }] }]}>
+                      <ChevronDown size={16} color={COLORS.subtext} />
+                    </View>
+                  )}
+                </TouchableOpacity>
+                {hasItems && isOpen && (
+                  <View style={styles.memberItemsInline} testID={`dashboard-member-items-${m.user_id}`}>
+                    {memberClaims.map((a) => {
+                      const it = group.items.find((i) => i.id === a.item_id);
+                      if (!it) return null;
+                      const cost = (it.price || 0) * (a.quantity || 0);
+                      return (
+                        <View key={`${a.item_id}-${m.user_id}`} style={styles.memberItemInlineRow}>
+                          <Text style={styles.memberItemInlineName}>
+                            {it.name} × {a.quantity}
+                          </Text>
+                          <Text style={styles.memberItemInlineAmt}>${cost.toFixed(2)}</Text>
+                        </View>
+                      );
+                    })}
+                  </View>
                 )}
               </View>
             );
@@ -414,73 +447,8 @@ export default function DashboardScreen() {
 
         {/* Per-member items breakdown (collapsible) — visible whenever the
             bill has assignable items, regardless of phase. */}
-        {(group as any).split_mode !== 'fast' &&
-          group.items.length > 0 &&
-          group.assignments.length > 0 && (
-            <View style={styles.itemsBreakCard} testID="dashboard-items-breakdown">
-              <TouchableOpacity
-                onPress={() => setItemsExpanded((v) => !v)}
-                style={styles.itemsBreakToggle}
-                activeOpacity={0.85}
-                testID="dashboard-items-breakdown-toggle"
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.itemsBreakTitle}>Who's paying for what</Text>
-                  <Text style={styles.itemsBreakSub}>
-                    Tap to {itemsExpanded ? 'collapse' : 'expand'} per-member item list
-                  </Text>
-                </View>
-                <View style={[itemsExpanded && { transform: [{ rotate: '180deg' }] }]}>
-                  <ChevronDown size={18} color={COLORS.subtext} />
-                </View>
-              </TouchableOpacity>
-              {itemsExpanded && (
-                <View style={styles.itemsBreakBody}>
-                  {group.members.map((m) => {
-                    const claims = group.assignments.filter((a) => a.user_id === m.user_id);
-                    const isLeadRow = m.user_id === group.lead_id;
-                    if (claims.length === 0) {
-                      return (
-                        <View key={m.user_id} style={styles.itemsBreakMember}>
-                          <Text style={styles.itemsBreakMemberName}>
-                            {m.name}{m.user_id === userId ? ' (You)' : ''}{isLeadRow ? ' • Lead' : ''}
-                          </Text>
-                          <Text style={styles.itemsBreakEmpty}>No items claimed yet</Text>
-                        </View>
-                      );
-                    }
-                    const memberTotal = claims.reduce((s, a) => {
-                      const it = group.items.find((i) => i.id === a.item_id);
-                      return s + ((it?.price || 0) * (a.quantity || 0));
-                    }, 0);
-                    return (
-                      <View key={m.user_id} style={styles.itemsBreakMember}>
-                        <View style={styles.itemsBreakMemberHeader}>
-                          <Text style={styles.itemsBreakMemberName}>
-                            {m.name}{m.user_id === userId ? ' (You)' : ''}{isLeadRow ? ' • Lead' : ''}
-                          </Text>
-                          <Text style={styles.itemsBreakMemberTotal}>${memberTotal.toFixed(2)}</Text>
-                        </View>
-                        {claims.map((a) => {
-                          const it = group.items.find((i) => i.id === a.item_id);
-                          if (!it) return null;
-                          const cost = (it.price || 0) * (a.quantity || 0);
-                          return (
-                            <View key={`${a.item_id}-${m.user_id}`} style={styles.itemsBreakRow}>
-                              <Text style={styles.itemsBreakItemName}>
-                                {it.name} × {a.quantity}
-                              </Text>
-                              <Text style={styles.itemsBreakItemAmt}>${cost.toFixed(2)}</Text>
-                            </View>
-                          );
-                        })}
-                      </View>
-                    );
-                  })}
-                </View>
-              )}
-            </View>
-          )}
+        {/* The previous separate "Who's paying for what" collapsible card
+            has been removed — items are now inline under each member row. */}
           <>
             <Text style={styles.sectionTitle}>Repayment history</Text>
             <View style={styles.listCard}>
@@ -757,6 +725,20 @@ const styles = StyleSheet.create({
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
   statusText: { fontSize: FONT.sizes.xs, color: COLORS.subtext, fontWeight: FONT.weights.medium },
   amount: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },
+  // ── Inline per-member items panel (replaces the "Who's paying for what" card) ──
+  memberItemsInline: {
+    backgroundColor: COLORS.bg,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    paddingLeft: 60,
+  },
+  memberItemInlineRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 3,
+  },
+  memberItemInlineName: { color: COLORS.subtext, fontSize: FONT.sizes.xs, flex: 1 },
+  memberItemInlineAmt: { color: COLORS.text, fontSize: FONT.sizes.xs, fontWeight: FONT.weights.medium },
   // ── Lead's Your Share card (light surface) ──
   shareCard: {
     backgroundColor: COLORS.surface,

@@ -54,6 +54,7 @@ export default function RootLayout() {
           <Stack.Screen name="group/[id]/pay" options={{ title: 'Pay', presentation: 'modal' }} />
           <Stack.Screen name="group/[id]/success" options={{ headerShown: false }} />
           <Stack.Screen name="group/[id]/dashboard" options={{ title: 'Lead Dashboard' }} />
+          <Stack.Screen name="group/[id]/card" options={{ headerShown: false }} />
           <Stack.Screen name="join/[code]" options={{ title: 'Join Bill' }} />
         </Stack>
         <ToastHost />

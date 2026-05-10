@@ -1,238 +1,280 @@
-"""Backend test for single-active-session enforcement endpoints.
-
-Targets:
-  POST /api/auth/verify-otp        (now returns session_id)
-  POST /api/auth/check-session     (NEW)
-  POST /api/auth/logout            (NEW)
-
-Plus regression on:
-  POST /api/auth/register
-  POST /api/auth/send-otp
-  GET  /api/auth/lookup-phone
-  GET  /api/users/{id}
 """
-from __future__ import annotations
-import os
+Backend test for POST /api/admin/groups/{group_id}/reassign-lead
+
+Runs 8 scenarios against the live preview backend and reports PASS/FAIL.
+"""
+
+import json
 import sys
 import time
+import uuid
 import requests
 
-BASE = os.environ.get("BACKEND_URL", "https://joint-pay-1.preview.emergentagent.com").rstrip("/")
-API = f"{BASE}/api"
-
-results: list[tuple[str, bool, str]] = []
-
-
-def record(name: str, ok: bool, detail: str = "") -> None:
-    results.append((name, ok, detail))
-    badge = "PASS" if ok else "FAIL"
-    print(f"[{badge}] {name}  {detail}")
+BASE = "https://joint-pay-1.preview.emergentagent.com/api"
+SUPER_EMAIL = "admin@squadpay.us"
+SUPER_PASSWORD = "Letmein@2007#ForReal"
 
 
-def post(path: str, payload: dict, expected: int | None = None):
-    r = requests.post(f"{API}{path}", json=payload, timeout=30)
+def jprint(label, resp):
     try:
-        body = r.json()
+        body = resp.json()
     except Exception:
-        body = r.text
-    if expected is not None and r.status_code != expected:
-        print(f"  -> POST {path} status={r.status_code} expected={expected} body={body}")
-    return r.status_code, body
+        body = resp.text
+    print(f"  {label}: HTTP {resp.status_code}  body={json.dumps(body, default=str)[:600]}")
+    return body
 
 
-def get(path: str, params: dict | None = None):
-    r = requests.get(f"{API}{path}", params=params or {}, timeout=30)
+def login_super():
+    r = requests.post(
+        f"{BASE}/admin/auth/login",
+        json={"email": SUPER_EMAIL, "password": SUPER_PASSWORD},
+        timeout=30,
+    )
+    assert r.status_code == 200, f"super-admin login failed: {r.status_code} {r.text}"
+    return r.json()["token"]
+
+
+def create_support_admin(super_token):
+    """Create a support-role admin (non super_admin) for the role-guard test."""
+    ts = int(time.time())
+    email = f"support+{ts}@squadpay.us"
+    password = "SupportTest@2026"
+    r = requests.post(
+        f"{BASE}/admin/admins",
+        headers={"Authorization": f"Bearer {super_token}"},
+        json={
+            "email": email,
+            "password": password,
+            "name": f"Support Tester {ts}",
+            "role": "support",
+        },
+        timeout=30,
+    )
+    assert r.status_code == 200, f"create support admin failed: {r.status_code} {r.text}"
+    # Login
+    r = requests.post(
+        f"{BASE}/admin/auth/login",
+        json={"email": email, "password": password},
+        timeout=30,
+    )
+    assert r.status_code == 200, f"support login failed: {r.status_code} {r.text}"
+    return r.json()["token"]
+
+
+def find_group_with_2plus(super_token):
+    """Find a group with member_count >= 2; return (group_id, lead_id, members)."""
+    headers = {"Authorization": f"Bearer {super_token}"}
+    # Pull a few pages to find one with >= 2 members
+    for skip in range(0, 200, 20):
+        r = requests.get(
+            f"{BASE}/admin/groups?limit=20&skip={skip}",
+            headers=headers,
+            timeout=30,
+        )
+        if r.status_code != 200:
+            break
+        data = r.json()
+        items = data.get("items", []) if isinstance(data, dict) else data
+        if not items:
+            break
+        for g in items:
+            mc = g.get("members_count") or g.get("member_count") or len(g.get("members") or [])
+            if mc and mc >= 2:
+                gid = g.get("id")
+                # Get full detail
+                r2 = requests.get(f"{BASE}/admin/groups/{gid}", headers=headers, timeout=30)
+                if r2.status_code != 200:
+                    continue
+                detail = r2.json()
+                members = detail.get("members") or []
+                lead_id = detail.get("lead_id")
+                if lead_id and len(members) >= 2:
+                    return gid, lead_id, members, detail
+    return None, None, None, None
+
+
+def main():
+    results = []  # list of (case_name, pass_bool, info)
+
+    print("=== STEP 1: super-admin login ===")
+    super_token = login_super()
+    print(f"  Got super-admin token (first 20 chars): {super_token[:20]}...")
+    super_headers = {"Authorization": f"Bearer {super_token}"}
+
+    print("\n=== STEP 2: find group with >= 2 members ===")
+    gid, lead_id, members, detail = find_group_with_2plus(super_token)
+    if not gid:
+        print("FATAL: no group with >= 2 members found in /admin/groups. Cannot run tests.")
+        sys.exit(2)
+    print(f"  Group: {gid}")
+    print(f"  Current lead_id: {lead_id}")
+    print(f"  Members ({len(members)}):")
+    for m in members[:10]:
+        print(f"    - user_id={m.get('user_id')!r:40s} name={m.get('name')!r}")
+    non_lead = [m for m in members if m.get("user_id") and m.get("user_id") != lead_id]
+    if not non_lead:
+        print("FATAL: no non-lead member found.")
+        sys.exit(2)
+    new_lead = non_lead[0]["user_id"]
+    print(f"  Will use new_lead user_id={new_lead}")
+
+    print("\n=== STEP 3: create support admin (for role-guard test) ===")
     try:
-        body = r.json()
-    except Exception:
-        body = r.text
-    return r.status_code, body
+        support_token = create_support_admin(super_token)
+        print(f"  support token (first 20): {support_token[:20]}...")
+    except Exception as e:
+        print(f"  FAILED to create support admin: {e}")
+        support_token = None
 
+    print("\n=== TEST CASES ===")
 
-def unique_phone() -> str:
-    n = int(time.time() * 1000) % 10000000
-    return f"555{n:07d}"[:10]
+    # ---- Case 1: No auth ----
+    print("\n[Case 1] No auth")
+    url = f"{BASE}/admin/groups/{gid}/reassign-lead"
+    payload = {"new_lead_user_id": "u_x"}
+    r = requests.post(url, json=payload, timeout=30)
+    body = jprint("response", r)
+    detail_str = (body.get("detail") if isinstance(body, dict) else str(body)) or ""
+    ok = (r.status_code == 401) and ("Admin auth required" in str(detail_str))
+    results.append(("Case 1 — No auth → 401 'Admin auth required'", ok, {
+        "request": {"url": url, "headers": {}, "body": payload},
+        "status": r.status_code, "body": body,
+    }))
+    print(f"  -> {'PASS' if ok else 'FAIL'}")
 
+    # ---- Case 2: Insufficient role ----
+    print("\n[Case 2] Insufficient role (support admin)")
+    if support_token:
+        r = requests.post(
+            url,
+            json=payload,
+            headers={"Authorization": f"Bearer {support_token}"},
+            timeout=30,
+        )
+        body = jprint("response", r)
+        ok = (r.status_code == 403)
+        results.append(("Case 2 — Insufficient role → 403", ok, {
+            "request": {"url": url, "headers": "Bearer <support>", "body": payload},
+            "status": r.status_code, "body": body,
+        }))
+        print(f"  -> {'PASS' if ok else 'FAIL'}")
+    else:
+        results.append(("Case 2 — Insufficient role → 403", False, "support admin creation failed"))
+        print("  -> FAIL (could not create support admin)")
 
-def main() -> int:
-    print(f"\n=== Single-Session Auth Backend Tests ===\nAPI: {API}\n")
+    # ---- Case 3: Unknown group ----
+    print("\n[Case 3] Unknown group")
+    bad_url = f"{BASE}/admin/groups/g_doesnotexist_xxx/reassign-lead"
+    r = requests.post(bad_url, json={"new_lead_user_id": "u_x"}, headers=super_headers, timeout=30)
+    body = jprint("response", r)
+    detail_str = (body.get("detail") if isinstance(body, dict) else str(body)) or ""
+    ok = (r.status_code == 404) and ("Group not found" in str(detail_str))
+    results.append(("Case 3 — Unknown group → 404 'Group not found'", ok, {
+        "request": {"url": bad_url, "body": {"new_lead_user_id": "u_x"}},
+        "status": r.status_code, "body": body,
+    }))
+    print(f"  -> {'PASS' if ok else 'FAIL'}")
 
-    code = "123456"
+    # ---- Case 4: Empty body ----
+    print("\n[Case 4] Empty new_lead_user_id")
+    r = requests.post(url, json={"new_lead_user_id": ""}, headers=super_headers, timeout=30)
+    body = jprint("response", r)
+    detail_str = (body.get("detail") if isinstance(body, dict) else str(body)) or ""
+    ok = (r.status_code == 400) and ("required" in str(detail_str).lower())
+    results.append(("Case 4 — Empty body → 400 'required'", ok, {
+        "request": {"url": url, "body": {"new_lead_user_id": ""}},
+        "status": r.status_code, "body": body,
+    }))
+    print(f"  -> {'PASS' if ok else 'FAIL'}")
 
-    # ---- Pre-flight: confirm SMS mode is mock ----
-    s, b = post("/auth/register", {"name": "PreflightProbe"})
-    if s != 200:
-        record("preflight.register", False, f"status={s} body={b}")
-        return 1
-    pre_uid = b["id"]
-    s, b = post("/auth/send-otp", {"user_id": pre_uid, "phone": unique_phone()})
-    if s != 200:
-        record("preflight.send_otp", False, f"status={s} body={b}")
-        return 1
-    is_mock = bool(b.get("mocked"))
-    record("preflight.sms_mode_mock", is_mock,
-           f"mocked={b.get('mocked')} live={b.get('live')}")
-    if not is_mock:
-        print("\nSMS mode is LIVE — cannot proceed without real OTP.")
-        return 1
+    # ---- Case 5: Stranger as new lead ----
+    print("\n[Case 5] Stranger as new lead")
+    r = requests.post(url, json={"new_lead_user_id": "u_strangertest9999"}, headers=super_headers, timeout=30)
+    body = jprint("response", r)
+    detail_str = (body.get("detail") if isinstance(body, dict) else str(body)) or ""
+    ok = (r.status_code == 400) and ("existing member" in str(detail_str).lower())
+    results.append(("Case 5 — Stranger → 400 'existing member of this group'", ok, {
+        "request": {"url": url, "body": {"new_lead_user_id": "u_strangertest9999"}},
+        "status": r.status_code, "body": body,
+    }))
+    print(f"  -> {'PASS' if ok else 'FAIL'}")
 
-    # =========================================================
-    # Setup — register the actual session test user
-    # =========================================================
-    s, body = post("/auth/register", {"name": "SessionTester"})
-    record("setup.register_user",
-           s == 200 and body.get("verified") is False,
-           f"status={s} id={body.get('id')}")
-    if s != 200:
-        return 1
-    user_id = body["id"]
-    phone = unique_phone()
-
-    def login() -> str:
-        s, b = post("/auth/send-otp", {"user_id": user_id, "phone": phone})
-        assert s == 200, f"send-otp failed: {s} {b}"
-        s, b = post("/auth/verify-otp",
-                    {"user_id": user_id, "phone": phone, "code": code})
-        assert s == 200, f"verify-otp failed: {s} {b}"
-        sid = b.get("session_id")
-        assert sid, f"verify-otp response missing session_id: {b}"
-        return sid
-
-    # =========================================================
-    # Scenario A — Verify-OTP issues session_id
-    # =========================================================
-    s, b = post("/auth/send-otp", {"user_id": user_id, "phone": phone})
-    record("A.send_otp", s == 200, f"status={s}")
-
-    s, b = post("/auth/verify-otp",
-                {"user_id": user_id, "phone": phone, "code": code})
+    # ---- Case 6: Idempotent same user ----
+    print("\n[Case 6] Idempotent same user (current lead)")
+    r = requests.post(url, json={"new_lead_user_id": lead_id}, headers=super_headers, timeout=30)
+    body = jprint("response", r)
     ok = (
-        s == 200
-        and isinstance(b, dict)
-        and b.get("id") == user_id
-        and b.get("name") == "SessionTester"
-        and b.get("phone") == phone
-        and b.get("verified") is True
-        and isinstance(b.get("session_id"), str)
+        r.status_code == 200
+        and isinstance(body, dict)
+        and body.get("ok") is True
+        and body.get("lead_id") == lead_id
+        and body.get("no_change") is True
     )
-    sid = b.get("session_id") if isinstance(b, dict) else None
-    record("A.verify_otp_returns_session_id", ok,
-           f"status={s} sid={sid!r}")
+    results.append(("Case 6 — Idempotent same user → 200 ok+no_change=true", ok, {
+        "request": {"url": url, "body": {"new_lead_user_id": lead_id}},
+        "status": r.status_code, "body": body,
+    }))
+    print(f"  -> {'PASS' if ok else 'FAIL'}")
 
-    sid_format_ok = bool(sid) and len(sid) == 32 and all(c in "0123456789abcdef" for c in sid)
-    record("A.session_id_is_32_hex", sid_format_ok,
-           f"len={len(sid) if sid else None}")
-    session_id_A = sid
+    # ---- Case 7: Happy path ----
+    print(f"\n[Case 7] Happy path — assign to non-lead user_id={new_lead}")
+    r = requests.post(url, json={"new_lead_user_id": new_lead}, headers=super_headers, timeout=30)
+    body = jprint("response", r)
+    ok_post = (
+        r.status_code == 200
+        and isinstance(body, dict)
+        and body.get("ok") is True
+        and body.get("lead_id") == new_lead
+    )
+    # Verify persistence + lead_reassigned_at
+    r2 = requests.get(f"{BASE}/admin/groups/{gid}", headers=super_headers, timeout=30)
+    detail2 = r2.json() if r2.status_code == 200 else {}
+    persisted_lead = detail2.get("lead_id")
+    reassigned_at = detail2.get("lead_reassigned_at")
+    print(f"  re-GET lead_id={persisted_lead!r}  lead_reassigned_at={reassigned_at!r}")
+    ok_persist = (persisted_lead == new_lead) and bool(reassigned_at)
+    ok7 = ok_post and ok_persist
+    results.append(("Case 7 — Happy path → 200 + persisted lead_id + lead_reassigned_at set", ok7, {
+        "request": {"url": url, "body": {"new_lead_user_id": new_lead}},
+        "status": r.status_code, "body": body,
+        "persisted_lead": persisted_lead, "lead_reassigned_at": reassigned_at,
+    }))
+    print(f"  -> {'PASS' if ok7 else 'FAIL'}")
 
-    # =========================================================
-    # Scenario B — check-session valid
-    # =========================================================
-    s, b = post("/auth/check-session", {"user_id": user_id, "session_id": session_id_A})
-    record("B.check_valid", s == 200 and b == {"valid": True}, f"status={s} body={b}")
-
-    # =========================================================
-    # Scenario C — Second device login invalidates first
-    # =========================================================
-    session_id_B = login()
-    record("C.second_login_new_session", session_id_B != session_id_A,
-           f"A={session_id_A[:8]}... B={session_id_B[:8]}...")
-
-    s, b = post("/auth/check-session", {"user_id": user_id, "session_id": session_id_A})
-    ok = s == 200 and b == {"valid": False, "reason": "session_superseded"}
-    record("C.old_session_superseded", ok, f"status={s} body={b}")
-
-    s, b = post("/auth/check-session", {"user_id": user_id, "session_id": session_id_B})
-    record("C.new_session_valid", s == 200 and b == {"valid": True},
-           f"status={s} body={b}")
-
-    # =========================================================
-    # Scenario D — Logout with matching session_id
-    # =========================================================
-    s, b = post("/auth/logout", {"user_id": user_id, "session_id": session_id_B})
-    record("D.logout_match", s == 200 and b == {"ok": True, "cleared": True},
-           f"status={s} body={b}")
-
-    s, b = post("/auth/check-session", {"user_id": user_id, "session_id": session_id_B})
-    ok = s == 200 and b == {"valid": False, "reason": "no_active_session"}
-    record("D.after_logout_no_active", ok, f"status={s} body={b}")
-
-    # =========================================================
-    # Scenario E — Logout with stale session_id (loser device)
-    # =========================================================
-    session_id_C = login()
-    session_id_D = login()
-    record("E.precondition_C_neq_D", session_id_C != session_id_D,
-           f"C={session_id_C[:8]}... D={session_id_D[:8]}...")
-
-    s, b = post("/auth/logout", {"user_id": user_id, "session_id": session_id_C})
-    record("E.stale_logout_no_clear",
-           s == 200 and b == {"ok": True, "cleared": False},
-           f"status={s} body={b}")
-
-    s, b = post("/auth/check-session", {"user_id": user_id, "session_id": session_id_D})
-    record("E.D_still_valid", s == 200 and b == {"valid": True}, f"status={s} body={b}")
-
-    # =========================================================
-    # Scenario F — Logout without session_id (force-clear)
-    # =========================================================
-    s, b = post("/auth/logout", {"user_id": user_id})
-    record("F.logout_no_sid", s == 200 and b == {"ok": True, "cleared": True},
-           f"status={s} body={b}")
-
-    s, b = post("/auth/check-session", {"user_id": user_id, "session_id": session_id_D})
-    ok = s == 200 and b == {"valid": False, "reason": "no_active_session"}
-    record("F.after_force_clear_no_active", ok, f"status={s} body={b}")
-
-    # =========================================================
-    # Scenario G — Invalid user
-    # =========================================================
-    s, b = post("/auth/check-session", {"user_id": "u_nonexistent_xyz", "session_id": "abc"})
-    ok = s == 200 and b == {"valid": False, "reason": "user_not_found"}
-    record("G.user_not_found", ok, f"status={s} body={b}")
-
-    # =========================================================
-    # Regression
-    # =========================================================
-    s, b = get("/auth/lookup-phone", {"phone": phone})
-    ok = s == 200 and b.get("exists") is True and b.get("name") == "SessionTester"
-    record("R.lookup_phone_existing", ok, f"status={s} body={b}")
-
-    s, b = get("/auth/lookup-phone", {"phone": "9999999999"})
-    record("R.lookup_phone_unknown", s == 200 and b == {"exists": False},
-           f"status={s} body={b}")
-
-    s, b = get(f"/users/{user_id}")
+    # ---- Case 8: Cleanup — reassign back ----
+    print(f"\n[Case 8] Cleanup — restore original lead {lead_id}")
+    r = requests.post(url, json={"new_lead_user_id": lead_id}, headers=super_headers, timeout=30)
+    body = jprint("response", r)
     ok = (
-        s == 200
-        and b.get("id") == user_id
-        and b.get("name") == "SessionTester"
-        and b.get("phone") == phone
-        and b.get("verified") is True
-        and "referral_code" in b
+        r.status_code == 200
+        and isinstance(body, dict)
+        and body.get("ok") is True
+        and body.get("lead_id") == lead_id
     )
-    record("R.get_user_shape", ok,
-           f"status={s} keys={list(b.keys()) if isinstance(b, dict) else b}")
+    r3 = requests.get(f"{BASE}/admin/groups/{gid}", headers=super_headers, timeout=30)
+    if r3.status_code == 200:
+        post_lead = r3.json().get("lead_id")
+        print(f"  re-GET lead_id post-cleanup={post_lead!r}")
+        ok = ok and (post_lead == lead_id)
+    results.append(("Case 8 — Cleanup → restored to original lead", ok, {
+        "request": {"url": url, "body": {"new_lead_user_id": lead_id}},
+        "status": r.status_code, "body": body,
+    }))
+    print(f"  -> {'PASS' if ok else 'FAIL'}")
 
-    session_id_E = login()
-    s, b = post("/auth/check-session", {"user_id": user_id, "session_id": session_id_E})
-    record("R.relogin_after_force_clear", s == 200 and b == {"valid": True},
-           f"status={s} body={b}")
-
-    s, b = post("/auth/send-otp", {"user_id": user_id, "phone": phone})
-    ok = s == 200 and b.get("mocked") is True and b.get("live") is False and "message" in b
-    record("R.send_otp_shape", ok, f"status={s} body={b}")
-
-    post("/auth/logout", {"user_id": user_id})
-
+    # ---- Tally ----
     passed = sum(1 for _, ok, _ in results if ok)
-    failed = [name for name, ok, _ in results if not ok]
-    print(f"\n=== Summary: {passed}/{len(results)} passed ===")
-    if failed:
-        print("Failures:")
-        for f in failed:
-            print(f"  - {f}")
-        return 1
-    return 0
+    total = len(results)
+    print("\n" + "=" * 70)
+    print("FINAL RESULTS:")
+    print("=" * 70)
+    for name, ok, info in results:
+        status = "PASS" if ok else "FAIL"
+        print(f"  [{status}] {name}")
+        if not ok:
+            print(f"         info: {json.dumps(info, default=str)[:800]}")
+    print(f"\n{passed} of {total} PASS")
+    return 0 if passed == total else 1
 
 
 if __name__ == "__main__":

@@ -469,6 +469,61 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
         )
         return {"ok": True, "virtual_card": vc}
 
+    # ===== Reassign group lead (super-admin only) =====
+    # Allows the platform super-admin to transfer leadership of a group from
+    # the existing lead to one of the group's current members. Member must
+    # already be in the group; lead-rotation is logged in the audit trail.
+    class ReassignLeadIn(BaseModel):
+        new_lead_user_id: str
+
+    @router.post("/groups/{group_id}/reassign-lead")
+    async def admin_reassign_group_lead(
+        group_id: str,
+        body: ReassignLeadIn,
+        request: Request,
+        admin=Depends(attach_admin),
+        _check=Depends(require_role("super_admin")),
+    ):
+        group = await db.groups.find_one({"id": group_id})
+        if not group:
+            raise HTTPException(404, "Group not found")
+        new_lead_id = (body.new_lead_user_id or "").strip()
+        if not new_lead_id:
+            raise HTTPException(400, "new_lead_user_id is required")
+        members = group.get("members") or []
+        member_ids = {m.get("user_id") for m in members}
+        if new_lead_id not in member_ids:
+            raise HTTPException(
+                400,
+                "Lead can only be reassigned to an existing member of this group.",
+            )
+        old_lead_id = group.get("lead_id")
+        if old_lead_id == new_lead_id:
+            return {"ok": True, "lead_id": new_lead_id, "no_change": True}
+        await db.groups.update_one(
+            {"id": group_id},
+            {"$set": {"lead_id": new_lead_id, "lead_reassigned_at": _now()}},
+        )
+        # Audit
+        new_lead_member = next((m for m in members if m.get("user_id") == new_lead_id), {})
+        old_lead_member = next((m for m in members if m.get("user_id") == old_lead_id), {})
+        await write_audit(
+            db,
+            admin_id=admin["id"],
+            admin_email=admin["email"],
+            action="admin.reassign_group_lead",
+            target_type="group",
+            target_id=group_id,
+            payload={
+                "old_lead_id": old_lead_id,
+                "old_lead_name": old_lead_member.get("name"),
+                "new_lead_id": new_lead_id,
+                "new_lead_name": new_lead_member.get("name"),
+            },
+            request=request,
+        )
+        return {"ok": True, "lead_id": new_lead_id}
+
     # ===== FEATURE TOGGLES (app-wide on/off flags) =====
     @router.get("/features")
     async def admin_get_features(admin=Depends(attach_admin)):

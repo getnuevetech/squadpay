@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { CheckCircle2, Clock, Zap, Landmark, TrendingUp, Plus, ArrowLeft, Receipt, UserPlus, CreditCard, ChevronDown } from 'lucide-react-native';
+import { CheckCircle2, Clock, Zap, Landmark, TrendingUp, Plus, ArrowLeft, Receipt, UserPlus, CreditCard, ChevronDown, Wallet } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
@@ -199,6 +199,17 @@ export default function DashboardScreen() {
             <Text style={[styles.quickActionText, group.status !== 'open' && { color: COLORS.subtext }]}>
               {group.status !== 'open' ? 'Paid' : 'Pay'}
             </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.quickAction}
+            activeOpacity={0.85}
+            onPress={() => router.push(`/group/${group.id}/card`)}
+            testID="dashboard-action-card"
+          >
+            <View style={styles.quickActionIcon}>
+              <Wallet size={18} color={COLORS.primary} />
+            </View>
+            <Text style={styles.quickActionText}>Card</Text>
           </TouchableOpacity>
         </View>
 

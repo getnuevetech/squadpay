@@ -206,6 +206,12 @@ export const adminApi = {
   getGroup: (id: string) => request<AdminGroupDetail>(`/groups/${id}`),
   blockGroup: (id: string, is_blocked: boolean, reason?: string) =>
     request<AdminGroupRow>(`/groups/${id}/block`, { method: 'POST', body: JSON.stringify({ is_blocked, reason }) }),
+  // Super-admin only: transfer leadership of a group to one of its existing members.
+  reassignGroupLead: (id: string, new_lead_user_id: string) =>
+    request<{ ok: boolean; lead_id: string; no_change?: boolean }>(
+      `/groups/${id}/reassign-lead`,
+      { method: 'POST', body: JSON.stringify({ new_lead_user_id }) },
+    ),
 
   // ---- Phase C2: Credits & Discounts ----
   getUserCredits: (id: string) => request<UserCreditWallet>(`/users/${id}/credits`),

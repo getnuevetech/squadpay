@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Platform, TextInput } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ArrowLeft, Ban, ShieldCheck, Crown, Users as UsersIcon, ListChecks, Wallet, Percent, DollarSign, X as XIcon, Tag } from 'lucide-react-native';
-import { adminApi, AdminGroupDetail } from '../../../src/adminApi';
+import { ArrowLeft, Ban, ShieldCheck, Crown, Users as UsersIcon, ListChecks, Wallet, Percent, DollarSign, X as XIcon, Tag, RefreshCw } from 'lucide-react-native';
+import { adminApi, AdminGroupDetail, getProfile, AdminProfile } from '../../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 
 function confirm(title: string, message: string, onYes: () => void) {
@@ -22,10 +22,14 @@ export default function AdminGroupDetailPage() {
   const [group, setGroup] = useState<AdminGroupDetail | null>(null);
   const [busy, setBusy] = useState(true);
   const [reason, setReason] = useState('');
+  const [profile, setProfile] = useState<AdminProfile | null>(null);
+  const [reassignOpen, setReassignOpen] = useState(false);
   // C2: discount form
   const [dType, setDType] = useState<'flat' | 'percent'>('percent');
   const [dValue, setDValue] = useState('');
   const [dNote, setDNote] = useState('');
+
+  useEffect(() => { (async () => { setProfile(await getProfile()); })(); }, []);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -235,7 +239,75 @@ export default function AdminGroupDetailPage() {
       </View>
 
       <View style={styles.section}>
-        <View style={styles.sectionHeader}><UsersIcon size={14} color={COLORS.text} /><Text style={styles.sectionTitle}>Members ({group.members.length})</Text></View>
+        <View style={styles.sectionHeader}>
+          <UsersIcon size={14} color={COLORS.text} />
+          <Text style={styles.sectionTitle}>Members ({group.members.length})</Text>
+          {profile?.role === 'super_admin' && (
+            <TouchableOpacity
+              onPress={() => setReassignOpen((v) => !v)}
+              style={[styles.smallBtn, { backgroundColor: COLORS.primary, marginLeft: 'auto' }]}
+              activeOpacity={0.85}
+              testID="admin-group-reassign-toggle"
+            >
+              <RefreshCw size={12} color="#fff" />
+              <Text style={styles.smallBtnText}>{reassignOpen ? 'Cancel' : 'Reassign Lead'}</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {profile?.role === 'super_admin' && reassignOpen && (
+          <View style={styles.reassignPanel} testID="admin-group-reassign-panel">
+            <Text style={styles.reassignTitle}>Pick a new lead</Text>
+            <Text style={styles.metaSmall}>
+              The new lead must already be a member of this group. Once reassigned, the new
+              lead gets full access to dashboard, items, virtual card and member management.
+            </Text>
+            {group.members.map((m) => {
+              const isCurrentLead = m.user_id === group.lead_id;
+              return (
+                <TouchableOpacity
+                  key={`reassign-${m.user_id}`}
+                  disabled={isCurrentLead}
+                  onPress={() => {
+                    confirm(
+                      'Reassign lead?',
+                      `Transfer leadership of "${group.title}" to ${m.name || m.user_id}? This change is logged.`,
+                      async () => {
+                        try {
+                          await adminApi.reassignGroupLead(group.id, m.user_id);
+                          setReassignOpen(false);
+                          await load();
+                        } catch (e: any) {
+                          Alert.alert('Error', e?.message || 'Failed to reassign lead');
+                        }
+                      },
+                    );
+                  }}
+                  style={[styles.reassignRow, isCurrentLead && { opacity: 0.5 }]}
+                  activeOpacity={0.7}
+                  testID={`admin-group-reassign-pick-${m.user_id}`}
+                >
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={styles.memberName}>{m.name || m.user_id}</Text>
+                      {isCurrentLead ? (
+                        <View style={[styles.smallBtn, { backgroundColor: COLORS.warning, paddingHorizontal: 6, paddingVertical: 2 }]}>
+                          <Crown size={10} color="#fff" />
+                          <Text style={styles.smallBtnText}>CURRENT</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    <Text style={styles.metaSmall}>{m.phone || 'no phone'}</Text>
+                  </View>
+                  {!isCurrentLead && (
+                    <Text style={[styles.smallBtnText, { color: COLORS.primary }]}>Make Lead →</Text>
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        )}
+
         {group.members.map((m) => (
           <TouchableOpacity
             key={m.user_id}
@@ -327,4 +399,24 @@ const styles = StyleSheet.create({
   toggleText: { fontSize: FONT.sizes.xs, fontWeight: FONT.weights.semibold, color: COLORS.text },
   discountActive: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: SPACING.sm, backgroundColor: COLORS.successLight, borderRadius: RADIUS.sm, borderWidth: 1, borderColor: COLORS.success },
   discountValueText: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.success },
+  reassignPanel: {
+    marginTop: SPACING.sm,
+    backgroundColor: COLORS.primaryLight,
+    borderRadius: RADIUS.md,
+    padding: SPACING.md,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+  },
+  reassignTitle: { fontSize: FONT.sizes.sm, fontWeight: FONT.weights.bold, color: COLORS.primary },
+  reassignRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.surface,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: 10,
+    borderRadius: RADIUS.sm,
+    marginTop: 6,
+    gap: 8,
+  },
 });

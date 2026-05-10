@@ -188,11 +188,13 @@ export default function HomeScreen() {
   // ─────────────────────────────────────────────────────────────
   // AUTH → Adapted-dark hero + light list (Image 2 redesign)
   // ─────────────────────────────────────────────────────────────
+  // Only feature an ACTIVE bill (one with remaining balance). If none, the
+  // user sees the empty-state CTA — never a settled/closed bill featured.
   const isActive = (g: any) => {
     const s = (g as any).derived_status || g.status;
     return s !== 'settled' && s !== 'closed' && s !== 'bill_settled';
   };
-  const featured = groups.find(isActive) || groups[0];
+  const featured = groups.find(isActive) || null;
   const otherGroups = groups.filter((g) => g.id !== featured?.id);
 
   return (

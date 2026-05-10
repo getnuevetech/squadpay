@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CheckCircle2, Clock, Zap, Landmark, TrendingUp, Plus } from 'lucide-react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
@@ -259,13 +260,18 @@ export default function DashboardScreen() {
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.bg },
   heroCard: {
-    backgroundColor: COLORS.text,
+    backgroundColor: COLORS.primary, // fallback for non-gradient platforms
     borderRadius: RADIUS.xl,
     padding: SPACING.lg,
     marginBottom: SPACING.lg,
+    shadowColor: '#3F1F8C',
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 8,
   },
   heroLabel: {
-    color: '#9CA3AF',
+    color: '#D7C7FB',
     fontSize: FONT.sizes.xs,
     textTransform: 'uppercase',
     letterSpacing: 1,
@@ -278,16 +284,16 @@ const styles = StyleSheet.create({
     fontWeight: FONT.weights.heavy,
     letterSpacing: -1,
   },
-  heroOf: { color: '#9CA3AF', fontSize: FONT.sizes.lg, fontWeight: FONT.weights.medium },
+  heroOf: { color: '#D7C7FB', fontSize: FONT.sizes.lg, fontWeight: FONT.weights.medium },
   progressBar: {
     height: 8,
-    backgroundColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: 'rgba(255,255,255,0.18)',
     borderRadius: RADIUS.pill,
     overflow: 'hidden',
     marginTop: SPACING.md,
   },
-  progressFill: { height: '100%', backgroundColor: COLORS.success, borderRadius: RADIUS.pill },
-  heroFoot: { color: '#9CA3AF', fontSize: FONT.sizes.sm, marginTop: SPACING.sm },
+  progressFill: { height: '100%', backgroundColor: '#fff', borderRadius: RADIUS.pill },
+  heroFoot: { color: '#D7C7FB', fontSize: FONT.sizes.sm, marginTop: SPACING.sm },
   sectionTitle: {
     fontSize: FONT.sizes.md,
     fontWeight: FONT.weights.bold,
@@ -408,5 +414,8 @@ const styles = StyleSheet.create({
   memberName: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, color: COLORS.text },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
   statusText: { fontSize: FONT.sizes.xs, color: COLORS.subtext, fontWeight: FONT.weights.medium },
+  amount: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },
+});
+eights.medium },
   amount: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },
 });

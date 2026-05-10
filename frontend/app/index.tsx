@@ -168,6 +168,35 @@ export default function HomeScreen() {
               <Text style={styles.welcomeSigninLinkAction}>Sign in</Text>
             </View>
           </PressableScale>
+
+          {/* Footer links — Support / Privacy / Terms.
+              Doubles as bottom padding so mobile browser chrome (Safari URL bar
+              overlay, Android navigation bar) never covers the Sign in CTA. */}
+          <View style={styles.welcomeFooterRow}>
+            <Text
+              testID="home-footer-support"
+              style={styles.welcomeFooterLink}
+              onPress={() => router.push('/legal/support')}
+            >
+              Support
+            </Text>
+            <Text style={styles.welcomeFooterDot}>·</Text>
+            <Text
+              testID="home-footer-privacy"
+              style={styles.welcomeFooterLink}
+              onPress={() => router.push('/legal/privacy')}
+            >
+              Privacy
+            </Text>
+            <Text style={styles.welcomeFooterDot}>·</Text>
+            <Text
+              testID="home-footer-terms"
+              style={styles.welcomeFooterLink}
+              onPress={() => router.push('/legal/terms')}
+            >
+              Terms
+            </Text>
+          </View>
         </ScrollView>
       </SafeAreaView>
     );
@@ -478,6 +507,30 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
     fontWeight: FONT.weights.bold,
   },
+
+  // Footer links — Support / Privacy / Terms (also acts as breathing room
+  // beneath the Sign in CTA so mobile browser chrome can never overlap it).
+  welcomeFooterRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: SPACING.md,
+    paddingBottom: SPACING.lg,
+  },
+  welcomeFooterLink: {
+    fontSize: FONT.sizes.xs,
+    color: COLORS.subtext,
+    fontWeight: FONT.weights.medium,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+  },
+  welcomeFooterDot: {
+    color: COLORS.subtext,
+    fontSize: FONT.sizes.xs,
+    opacity: 0.6,
+  },
+
   // Legacy (kept for back-compat) — unused below.
   welcomeCtaCol: { marginTop: SPACING.xl, gap: SPACING.md },
   welcomeJoinLinkBtn: { alignItems: 'center', paddingVertical: SPACING.sm },

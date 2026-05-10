@@ -162,6 +162,16 @@ export default function HomeScreen() {
             </Pressable>
           </View>
 
+          {/* Sign-in link for returning users (restored from previous design). */}
+          <Pressable
+            onPress={() => router.push('/auth?intent=signin')}
+            style={styles.signinRow}
+            testID="landing-signin"
+          >
+            <Text style={styles.signinPrompt}>Already have an account? </Text>
+            <Text style={styles.signinAction}>Sign in</Text>
+          </Pressable>
+
           {/* Minimal legal footer */}
           <View style={styles.legalRow}>
             <Text testID="home-footer-support" style={styles.legalLink} onPress={() => router.push('/legal/support')}>Support</Text>
@@ -456,6 +466,10 @@ const styles = StyleSheet.create({
     marginBottom: 18,
   },
   ctaSecondaryText: { color: COLORS.primary, fontWeight: FONT.weights.bold, fontSize: 20, letterSpacing: -0.3 },
+
+  signinRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: SPACING.lg },
+  signinPrompt: { color: COLORS.subtext, fontSize: 14 },
+  signinAction: { color: COLORS.primary, fontWeight: FONT.weights.bold, fontSize: 14 },
 
   legalRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 10, marginTop: SPACING.lg },
   legalLink: { color: COLORS.subtext, fontSize: 12, fontWeight: FONT.weights.medium },

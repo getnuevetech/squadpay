@@ -13,9 +13,9 @@ type Props = {
   height?: number;
 };
 
-const AVATAR_LEFT = 'https://images.unsplash.com/photo-1594318223885-20dc4b889f9e?crop=entropy&cs=srgb&fm=jpg&w=160&q=80';
-const AVATAR_RIGHT_MAN = 'https://images.unsplash.com/photo-1563630423918-b58f07336ac9?crop=entropy&cs=srgb&fm=jpg&w=160&q=80';
-const AVATAR_RIGHT_WOMAN = 'https://images.unsplash.com/photo-1713606425111-13c546282729?crop=entropy&cs=srgb&fm=jpg&w=160&q=80';
+const AVATAR_LEFT = 'https://images.unsplash.com/photo-1618298363483-e31a31f1a1e2?crop=entropy&cs=srgb&fm=jpg&w=160&q=80';
+const AVATAR_RIGHT_MAN = 'https://images.unsplash.com/photo-1762709412730-321a0d81b517?crop=entropy&cs=srgb&fm=jpg&w=160&q=80';
+const AVATAR_RIGHT_WOMAN = 'https://images.unsplash.com/photo-1764216069652-fbff0e0337f6?crop=entropy&cs=srgb&fm=jpg&w=160&q=80';
 
 function PhotoAvatar({ uri, size = 64 }: { uri: string; size?: number }) {
   return (

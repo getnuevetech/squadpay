@@ -41,6 +41,12 @@ export default function SummaryScreen() {
     setUserId(u.id);
     try {
       const g = await api.getGroup(id);
+      // Strict role guard: the lead always sees the Lead Dashboard.
+      // Members stay on the User Dashboard (this screen).
+      if (g.lead_id === u.id) {
+        router.replace(`/group/${id}/dashboard`);
+        return;
+      }
       setGroup(g);
     } catch (e: any) {
       toast.error(e?.message || 'Could not load summary');

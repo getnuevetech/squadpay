@@ -42,6 +42,12 @@ export default function DashboardScreen() {
     setUserId(u.id);
     try {
       const g = await api.getGroup(id);
+      // Strict role guard: only the lead may view the Lead Dashboard.
+      // Members are redirected to their User Dashboard.
+      if (g.lead_id !== u.id) {
+        router.replace(`/group/${id}/summary`);
+        return;
+      }
       setGroup(g);
     } catch (e: any) {
       toast.error(e?.message || 'Could not load dashboard');

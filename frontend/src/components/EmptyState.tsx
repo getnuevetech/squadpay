@@ -7,19 +7,24 @@ import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { COLORS, FONT, RADIUS, SPACING } from '../theme';
 
 type Props = {
-  Icon: React.ComponentType<{ color?: string; size?: number; strokeWidth?: number }>;
+  Icon?: React.ComponentType<{ color?: string; size?: number; strokeWidth?: number }>;
+  icon?: React.ReactNode;
   title: string;
   subtitle?: string;
   cta?: { label: string; onPress: () => void; testID?: string };
   testID?: string;
 };
 
-export function EmptyState({ Icon, title, subtitle, cta, testID }: Props) {
+export function EmptyState({ Icon, icon, title, subtitle, cta, testID }: Props) {
   return (
     <View style={styles.wrap} testID={testID}>
       <View style={styles.iconHalo}>
         <View style={styles.iconCircle}>
-          <Icon color={COLORS.primary} size={28} strokeWidth={1.8} />
+          {Icon ? (
+            <Icon color={COLORS.primary} size={28} strokeWidth={1.8} />
+          ) : (
+            icon ?? null
+          )}
         </View>
       </View>
       <Text style={styles.title}>{title}</Text>

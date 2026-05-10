@@ -341,6 +341,9 @@ export default function GroupCardScreen() {
           visible={revealOpen}
           onClose={() => setRevealOpen(false)}
           groupId={String(id)}
+          userId={userId}
+          cardLast4={vc?.last4}
+          cardNickname={vc?.nickname || group.title}
         />
       )}
     </SafeAreaView>

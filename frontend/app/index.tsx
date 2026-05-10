@@ -191,6 +191,10 @@ export default function HomeScreen() {
   // Show ALL groups in the list (lead's bills + bills the user joined). The
   // featured card above highlights one active bill; this list is the full
   // ledger so the user can find any bill they're part of.
+  const isActive = (g: any) => {
+    const s = (g as any).derived_status || g.status;
+    return s !== 'settled' && s !== 'closed' && s !== 'bill_settled';
+  };
   const featured = groups.find(isActive) || null;
   const otherGroups = groups;
 

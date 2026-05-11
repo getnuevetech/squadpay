@@ -39,8 +39,8 @@ export function NewBillSheet({ visible, onClose, onStart, onJoin, testID = 'new-
             activeOpacity={0.85}
             testID={`${testID}-start`}
           >
-            <View style={[styles.icon, { backgroundColor: COLORS.primaryLight }]}>
-              <Plus size={20} color={COLORS.primary} />
+            <View style={styles.iconOnPurple}>
+              <Plus size={20} color="#fff" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.rowTitle}>Start a new bill</Text>
@@ -57,8 +57,8 @@ export function NewBillSheet({ visible, onClose, onStart, onJoin, testID = 'new-
             activeOpacity={0.85}
             testID={`${testID}-join`}
           >
-            <View style={[styles.icon, { backgroundColor: '#E0F2FE' }]}>
-              <QrCode size={20} color="#0284C7" />
+            <View style={styles.iconOnPurple}>
+              <QrCode size={20} color="#fff" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.rowTitle}>Join a bill</Text>
@@ -109,10 +109,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 14,
     padding: SPACING.md,
-    backgroundColor: COLORS.bg,
+    backgroundColor: COLORS.primary,
     borderRadius: RADIUS.lg,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    ...SHADOW.primary,
   },
   icon: {
     width: 44,
@@ -121,14 +120,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  iconOnPurple: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.22)',
+  },
   rowTitle: {
     fontSize: FONT.sizes.md,
     fontWeight: FONT.weights.bold,
-    color: COLORS.text,
+    color: '#FFFFFF',
   },
   rowSub: {
     fontSize: FONT.sizes.xs,
-    color: COLORS.subtext,
+    color: 'rgba(255,255,255,0.85)',
     marginTop: 2,
   },
 });

@@ -50,13 +50,14 @@ export default function AdminPlatformFees() {
   };
 
   const save = async () => {
-    // Basic validation
+    // Lightweight validation: a fee must have a name. The "value" can be
+    // 0 — backend ignores zero-value fees, so we don't block the save.
+    // Otherwise an enabled toggle with the default value=0 would silently
+    // fail validation and never persist, making it look like the toggle
+    // "doesn't stick".
     for (const f of fees) {
-      if (f.enabled && (!f.name || f.value <= 0)) {
-        Alert.alert(
-          'Invalid fee',
-          `"${f.name || f.id}" is enabled but missing a name or has a non-positive value.`,
-        );
+      if (!f.name?.trim()) {
+        Alert.alert('Invalid fee', `"${f.id}" needs a name.`);
         return;
       }
     }

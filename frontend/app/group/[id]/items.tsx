@@ -4,7 +4,9 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
+  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -14,7 +16,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { CheckCircle2, AlertCircle, UserCircle2, Plus, Lock, Trash2, Minus, ArrowLeft } from 'lucide-react-native';
+import { CheckCircle2, AlertCircle, UserCircle2, Plus, Lock, Trash2, Minus, ArrowLeft, X } from 'lucide-react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { Button } from '../../../src/Button';
 import { api, Group, Item } from '../../../src/api';
@@ -29,6 +31,11 @@ export default function ItemsScreen() {
   const [group, setGroup] = useState<Group | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
+  // Item currently being assigned via the lead's "Assign to a member" picker.
+  // Null while the modal is closed. Native Alert.alert can only render two
+  // buttons on web, so the legacy Alert-driven picker silently broke for
+  // groups with > 2 members. The Modal below works on every platform.
+  const [assignTarget, setAssignTarget] = useState<Item | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
   // Lead-only "add item" form
@@ -98,27 +105,23 @@ export default function ItemsScreen() {
       toast.info('Item already fully claimed');
       return;
     }
-    Alert.alert(
-      `Assign 1× ${item.name} to…`,
-      'Pick who ordered this item',
-      [
-        ...group.members.map((m) => ({
-          text: m.name + (m.user_id === userId ? ' (Me)' : ''),
-          onPress: async () => {
-            try {
-              const existing = group.assignments
-                .filter((a) => a.user_id === m.user_id && a.item_id === item.id)
-                .reduce((s, a) => s + a.quantity, 0);
-              const g = await api.assign(group.id, m.user_id, item.id, existing + 1);
-              setGroup(g);
-            } catch (e: any) {
-              Alert.alert('Failed to assign', e?.message || 'Please try again', [{ text: 'OK' }]);
-            }
-          },
-        })),
-        { text: 'Cancel', style: 'cancel' as const },
-      ],
-    );
+    setAssignTarget(item);
+  };
+
+  const doAssignToUser = async (uid: string) => {
+    if (!group || !assignTarget) return;
+    const item = assignTarget;
+    setAssignTarget(null);
+    try {
+      const existing = group.assignments
+        .filter((a) => a.user_id === uid && a.item_id === item.id)
+        .reduce((s, a) => s + a.quantity, 0);
+      const g = await api.assign(group.id, uid, item.id, existing + 1);
+      setGroup(g);
+      toast.success('Assigned');
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to assign');
+    }
   };
 
   if (!group || !userId) {
@@ -473,6 +476,52 @@ export default function ItemsScreen() {
           onPress={() => router.push(`/group/${group.id}/summary`)}
         />
       </View>
+
+      {/* Member picker — opens when the lead taps "Assign N unclaimed to a member".
+          Replaces the legacy Alert.alert flow that silently failed on web. */}
+      <Modal
+        visible={!!assignTarget}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAssignTarget(null)}
+      >
+        <Pressable style={styles.assignBackdrop} onPress={() => setAssignTarget(null)}>
+          <Pressable style={styles.assignSheet} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.assignHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.assignTitle}>
+                  Assign 1× {assignTarget?.name || 'item'} to…
+                </Text>
+                <Text style={styles.assignSub}>Pick who ordered this</Text>
+              </View>
+              <TouchableOpacity onPress={() => setAssignTarget(null)} hitSlop={10}>
+                <X size={20} color={COLORS.text} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={{ maxHeight: 360 }}>
+              {group.members.map((m) => (
+                <TouchableOpacity
+                  key={m.user_id}
+                  style={styles.assignRow}
+                  onPress={() => doAssignToUser(m.user_id)}
+                  activeOpacity={0.7}
+                  testID={`items-assign-pick-${m.user_id}`}
+                >
+                  <View style={styles.assignAvatar}>
+                    <Text style={styles.assignAvatarText}>
+                      {(m.name || '?').slice(0, 1).toUpperCase()}
+                    </Text>
+                  </View>
+                  <Text style={styles.assignName}>
+                    {m.name}{m.user_id === userId ? ' (You)' : ''}
+                    {m.user_id === group.lead_id ? '  · LEAD' : ''}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -668,4 +717,46 @@ const styles = StyleSheet.create({
   },
   bottomLabel: { fontSize: FONT.sizes.xs, color: COLORS.subtext, textTransform: 'uppercase', letterSpacing: 1 },
   bottomValue: { fontSize: FONT.sizes.xxl, fontWeight: FONT.weights.bold, color: COLORS.text },
+  // Assign-to-member picker modal (replaces the legacy Alert.alert flow).
+  assignBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15,23,42,0.55)',
+    justifyContent: 'flex-end',
+  },
+  assignSheet: {
+    backgroundColor: COLORS.surface,
+    borderTopLeftRadius: RADIUS.xl,
+    borderTopRightRadius: RADIUS.xl,
+    paddingHorizontal: SPACING.lg,
+    paddingTop: SPACING.lg,
+    paddingBottom: SPACING.xl,
+    gap: SPACING.sm,
+  },
+  assignHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    marginBottom: SPACING.sm,
+  },
+  assignTitle: { fontSize: FONT.sizes.lg, fontWeight: FONT.weights.heavy, color: COLORS.text },
+  assignSub: { fontSize: FONT.sizes.sm, color: COLORS.subtext, marginTop: 2 },
+  assignRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  assignAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: COLORS.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  assignAvatarText: { color: COLORS.primary, fontWeight: FONT.weights.bold, fontSize: FONT.sizes.sm },
+  assignName: { color: COLORS.text, fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, flex: 1 },
 });

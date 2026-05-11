@@ -26,6 +26,14 @@ def attach_pay_routes(router: APIRouter, db):
             raise HTTPException(400, "Bill already paid")
         if group.get("is_blocked"):
             raise HTTPException(403, "This group has been blocked by an administrator.")
+        # A group is by definition multi-person — the lead can't settle the
+        # merchant until at least one other member has joined. This blocks
+        # using the app as a solo wallet.
+        if len(group.get("members") or []) < 2:
+            raise HTTPException(
+                400,
+                "A group needs at least 2 members before the bill can be paid. Invite someone first.",
+            )
         user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
         if not user or not user.get("verified"):
             raise HTTPException(403, "Lead must verify phone before paying")

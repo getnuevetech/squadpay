@@ -160,6 +160,12 @@ export default function DashboardScreen() {
   };
 
   const leadShareCovered = myContributed >= myShare - 0.01;
+  // A group needs ≥2 members to settle — the backend enforces this on the
+  // /contribute and /pay endpoints. We mirror it in the UI so the lead
+  // sees a clear "invite first" prompt instead of clicking a button that
+  // would 400 from the server.
+  const memberCount = (group.members || []).length;
+  const needsMoreMembers = memberCount < 2;
 
   return (
     <SafeAreaView edges={['bottom']} style={{ flex: 1, backgroundColor: COLORS.bg }}>
@@ -480,7 +486,16 @@ export default function DashboardScreen() {
           </View>
         )}
 
-        {group.status === 'open' && !leadShareCovered && (
+        {group.status === 'open' && needsMoreMembers && (
+          <View style={styles.warnCard} testID="dashboard-need-members-banner">
+            <UserPlus size={18} color={COLORS.warning} />
+            <Text style={styles.warnText}>
+              A group needs at least 2 members. Invite someone to start collecting contributions.
+            </Text>
+          </View>
+        )}
+
+        {group.status === 'open' && !leadShareCovered && !needsMoreMembers && (
           <View style={styles.warnCard} testID="dashboard-lead-share-banner">
             <AlertCircle size={18} color={COLORS.warning} />
             <Text style={styles.warnText}>
@@ -520,15 +535,25 @@ export default function DashboardScreen() {
       </ScrollView>
 
       <View style={styles.bottomBar}>
+        {/* When the group has only the lead, no contribute/pay flow is
+            possible — surface a clear "Invite a member" CTA instead so
+            the lead never hits a backend 400. */}
+        {group.status === 'open' && needsMoreMembers && (
+          <Button
+            title="Invite a member to start"
+            testID="dashboard-invite-btn"
+            onPress={() => router.push(`/group/${group.id}`)}
+          />
+        )}
         {/* Lead must contribute their own share BEFORE paying the merchant */}
-        {group.status === 'open' && !leadShareCovered && (
+        {group.status === 'open' && !needsMoreMembers && !leadShareCovered && (
           <Button
             title={`Step 1 — Contribute your share $${myShare.toFixed(2)}`}
             testID="dashboard-contribute-btn"
             onPress={handleContribute}
           />
         )}
-        {group.status === 'open' && leadShareCovered && (
+        {group.status === 'open' && !needsMoreMembers && leadShareCovered && (
           <Button
             title={
               remaining <= 0.01

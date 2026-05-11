@@ -34,6 +34,14 @@ def attach_contribute_routes(router: APIRouter, db):
             raise HTTPException(403, "Phone verification required before contributing")
         if not any(m["user_id"] == body.user_id for m in group.get("members", [])):
             raise HTTPException(403, "Not a member of this group")
+        # A group is by definition multi-person — a single member cannot
+        # contribute toward a "group" bill until at least one other person
+        # joins. This prevents the app being used as a solo wallet.
+        if len(group.get("members") or []) < 2:
+            raise HTTPException(
+                400,
+                "A group needs at least 2 members before anyone can contribute. Invite someone first.",
+            )
 
         enriched = await _recompute_group(group)
         per = next((p for p in enriched["per_user"] if p["user_id"] == body.user_id), None)

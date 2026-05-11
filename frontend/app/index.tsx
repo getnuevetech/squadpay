@@ -290,6 +290,15 @@ export default function HomeScreen() {
                     const isLead = featured.lead_id === user.id;
                     const status = (featured as any).status || 'open';
                     const userOutstanding = Number((featured as any).user_outstanding || 0);
+                    // A group needs ≥2 members before any payment can land.
+                    // Send the user straight to the group lobby (which has
+                    // the invite QR / share link) instead of a doomed Pay
+                    // screen.
+                    const memberCount = Number(featured.member_count || 0);
+                    if (memberCount < 2) {
+                      router.push(`/group/${featured.id}`);
+                      return;
+                    }
                     let kind: 'contribute' | 'repay' | 'lead' = 'contribute';
                     if (status !== 'open') {
                       kind = isLead ? 'lead' : (userOutstanding > 0.01 ? 'repay' : 'contribute');

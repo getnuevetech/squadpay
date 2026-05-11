@@ -107,13 +107,11 @@ export default function DashboardScreen() {
   // Grand total — sum of every breakdown row above so the math always adds
   // up on screen. We compute this from the same numbers we render rather
   // than relying on the backend's `group.total` (which historically counted
-  // only items+tax+tip+discount and dropped the SquadPay fees).
-  const discountAmount = Number(group.discount?.amount || 0);
+  // only items+tax+tip and dropped the SquadPay fees).
   const grandTotal = (
     groupItemsTotal
     + Number(group.tax || 0)
     + Number(group.tip || 0)
-    - discountAmount
     + groupTransactionFees
     + groupPlatformFees
   );
@@ -321,14 +319,6 @@ export default function DashboardScreen() {
                 <Text style={styles.breakdownKey}>Tip</Text>
                 <Text style={styles.breakdownVal}>${Number(group.tip || 0).toFixed(2)}</Text>
               </View>
-              {group.discount && Number(group.discount.amount || 0) > 0 ? (
-                <View style={styles.breakdownRow}>
-                  <Text style={[styles.breakdownKey, { color: COLORS.success }]}>
-                    Discount{group.discount.type === 'percent' ? ` (${group.discount.value}%)` : ''}
-                  </Text>
-                  <Text style={[styles.breakdownVal, { color: COLORS.success }]}>−${Number(group.discount.amount).toFixed(2)}</Text>
-                </View>
-              ) : null}
               <View style={styles.breakdownRow}>
                 <Text style={styles.breakdownKey}>Transaction fees (3%)</Text>
                 <Text style={styles.breakdownVal}>${groupTransactionFees.toFixed(2)}</Text>

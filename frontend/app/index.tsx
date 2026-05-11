@@ -51,6 +51,7 @@ import { HeroPhoneFrame } from '../src/components/redesign/HeroPhoneFrame';
 import { LiveSessionPill } from '../src/components/redesign/LiveSessionPill';
 import { FeaturedBillCard } from '../src/components/redesign/FeaturedBillCard';
 import { BottomTabBar } from '../src/components/redesign/BottomTabBar';
+import { NewBillSheet } from '../src/components/NewBillSheet';
 
 // Feature flag — flip to "off" in .env to render legacy screen via the backup file.
 const REDESIGN_ON = (process.env.EXPO_PUBLIC_REDESIGN || 'on').toLowerCase() !== 'off';
@@ -61,6 +62,7 @@ export default function HomeScreen() {
   const [groups, setGroups] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [newBillOpen, setNewBillOpen] = useState(false);
 
   const load = useCallback(async () => {
     const u = await refreshUser();
@@ -297,7 +299,7 @@ export default function HomeScreen() {
                     router.push(`/group/${featured.id}/pay?kind=${kind}`);
                   }}
                   onAddFriend={() => router.push(`/group/${featured.id}`)}
-                  onPlusToItems={() => router.push(`/group/${featured.id}/items`)}
+                  onPlusToItems={() => setNewBillOpen(true)}
                 />
               ) : (
                 <FeaturedBillCard
@@ -379,6 +381,12 @@ export default function HomeScreen() {
         </View>
       </ScrollView>
       <BottomTabBar active="home" />
+      <NewBillSheet
+        visible={newBillOpen}
+        onClose={() => setNewBillOpen(false)}
+        onStart={() => router.push('/create')}
+        onJoin={() => router.push('/join/code')}
+      />
     </View>
   );
 }

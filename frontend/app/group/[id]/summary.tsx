@@ -203,6 +203,7 @@ export default function SummaryScreen() {
               <Text style={styles.heroV2GroupTitle} numberOfLines={2} testID="summary-group-title">
                 {group.title || group.name || 'Bill'}
               </Text>
+              <Text style={styles.heroV2SubLabel}>User Dashboard</Text>
             </View>
             <StatusBadge status={group.derived_status} size="sm" testID="summary-status-badge" />
           </View>
@@ -649,6 +650,14 @@ const styles = StyleSheet.create({
     fontSize: 18,
     letterSpacing: -0.3,
     lineHeight: 22,
+  },
+  heroV2SubLabel: {
+    color: '#D7C7FB',
+    fontSize: 11,
+    fontWeight: FONT.weights.semibold,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginTop: 4,
   },
   heroV2AmountRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
   heroV2AmountCol: { marginTop: 8, alignItems: 'flex-end' },

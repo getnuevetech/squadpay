@@ -20,6 +20,7 @@ import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 import { toast } from '../../../src/components/Toast';
 import { Skeleton, SkeletonGroupRow } from '../../../src/components/Skeleton';
+import { Button } from '../../../src/Button';
 
 export default function DashboardScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -157,6 +158,19 @@ export default function DashboardScreen() {
     0,
   );
 
+  // ── Lead CTA helpers (mirrors User Dashboard bottom bar logic) ──
+  // The lead must first contribute their personal share, then settle the
+  // merchant. These flags drive the dynamic Button label in the footer.
+  const funding = group.funding;
+  const remaining = Number(funding?.remaining_to_collect ?? 0);
+  const leadShareCovered = myContributed >= myShare - 0.01;
+  const handleContribute = () => {
+    router.push(`/group/${group.id}/pay?kind=contribute`);
+  };
+  const handleLeadPay = () => {
+    router.push(`/group/${group.id}/pay?kind=lead`);
+  };
+
   const withdraw = (kind: 'instant' | 'standard') => {
     toast.info(
       kind === 'instant'
@@ -169,7 +183,7 @@ export default function DashboardScreen() {
     <SafeAreaView edges={['bottom']} style={{ flex: 1, backgroundColor: COLORS.bg }}>
       <ScrollView
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />}
-        contentContainerStyle={{ padding: SPACING.md, paddingBottom: SPACING.xxl }}
+        contentContainerStyle={{ padding: SPACING.md, paddingBottom: 140 }}
       >
         <LinearGradient
           colors={['#3F1F8C', '#5B2BC8', '#7C3AED']}
@@ -185,15 +199,17 @@ export default function DashboardScreen() {
               </Text>
               <Text style={styles.heroV2SubLabel}>Lead Dashboard</Text>
             </View>
-            <View style={styles.heroV2AmountColRight}>
-              <Text style={styles.heroV2Amount}>${myShare.toFixed(2)}</Text>
-              <Text style={styles.heroV2Total}>
-                Your share · of ${Number(group.total || 0).toFixed(2)}
-              </Text>
-            </View>
-          </View>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
             <StatusBadge status={group.derived_status} size="sm" testID="dashboard-status-badge" />
+          </View>
+
+          <View style={styles.heroV2AmountCol}>
+            <Text style={styles.heroV2Label}>Your Share</Text>
+            <Text style={styles.heroV2Amount} testID="dashboard-your-amount">
+              ${myShare.toFixed(2)}
+            </Text>
+            <Text style={styles.heroV2Total} testID="dashboard-bill-total">
+              of ${Number(group.total || 0).toFixed(2)} bill total
+            </Text>
           </View>
 
           <View style={styles.heroV2Avatars}>
@@ -234,7 +250,23 @@ export default function DashboardScreen() {
           </View>
         </LinearGradient>
 
-        {/* Quick actions: Items / Invite / Pay */}
+        {/* Lead-only Edit Tax & Tips — placed immediately after the top bar so
+            the lead can adjust before reviewing quick actions / breakdown. */}
+        {group.status === 'open' && (
+          <TouchableOpacity
+            testID="dashboard-edit-tax-tip"
+            style={styles.editTaxTipBtn}
+            onPress={() => setEditTaxTipVisible(true)}
+            activeOpacity={0.7}
+          >
+            <Pencil size={14} color={COLORS.primary} />
+            <Text style={styles.editTaxTipText}>
+              Edit tax (${(group.tax || 0).toFixed(2)}) & tip (${(group.tip || 0).toFixed(2)})
+            </Text>
+          </TouchableOpacity>
+        )}
+
+        {/* Quick actions: Items / Invite / Card (Pay moved to bottom CTA) */}
         <View style={styles.quickActionsRow} testID="dashboard-quick-actions">
           <TouchableOpacity
             style={styles.quickAction}
@@ -259,20 +291,6 @@ export default function DashboardScreen() {
             <Text style={styles.quickActionText}>Invite</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.quickAction, group.status !== 'open' && styles.quickActionDisabled]}
-            activeOpacity={0.85}
-            disabled={group.status !== 'open'}
-            onPress={() => router.push(`/group/${group.id}/pay?kind=contribute`)}
-            testID="dashboard-action-pay"
-          >
-            <View style={styles.quickActionIcon}>
-              <CreditCard size={18} color={group.status !== 'open' ? COLORS.subtext : COLORS.primary} />
-            </View>
-            <Text style={[styles.quickActionText, group.status !== 'open' && { color: COLORS.subtext }]}>
-              {group.status !== 'open' ? 'Paid' : 'Pay'}
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
             style={styles.quickAction}
             activeOpacity={0.85}
             onPress={() => router.push(`/group/${group.id}/card`)}
@@ -284,21 +302,6 @@ export default function DashboardScreen() {
             <Text style={styles.quickActionText}>Card</Text>
           </TouchableOpacity>
         </View>
-
-        {/* Lead-only quick edit row — placed BEFORE the breakdown card */}
-        {group.status === 'open' && (
-          <TouchableOpacity
-            testID="dashboard-edit-tax-tip"
-            style={styles.editTaxTipBtn}
-            onPress={() => setEditTaxTipVisible(true)}
-            activeOpacity={0.7}
-          >
-            <Pencil size={14} color={COLORS.primary} />
-            <Text style={styles.editTaxTipText}>
-              Edit tax (${(group.tax || 0).toFixed(2)}) & tip (${(group.tip || 0).toFixed(2)})
-            </Text>
-          </TouchableOpacity>
-        )}
 
         {/* ── Bill / Fund Breakdown — GROUP totals (collapsible) ── */}
         <View style={styles.shareCard} testID="dashboard-bill-breakdown">
@@ -562,6 +565,33 @@ export default function DashboardScreen() {
           </>
         )}
       </ScrollView>
+
+      {/* Bottom CTA — mirrors the User Dashboard's lead branch so the
+          lead has one prominent action: Step 1 → Contribute their share,
+          then Step 2 → settle the merchant. */}
+      {group.status === 'open' && (
+        <View style={styles.bottomBar}>
+          {!leadShareCovered ? (
+            <Button
+              title={`Step 1 — Contribute your share $${myShare.toFixed(2)}`}
+              testID="dashboard-contribute-btn"
+              onPress={handleContribute}
+            />
+          ) : (
+            <Button
+              title={
+                remaining <= 0.01
+                  ? `Settle bill — fully funded`
+                  : (funding?.total_contributed || 0) > 0
+                  ? `Pay $${remaining.toFixed(2)} (cover shortfall)`
+                  : `Pay $${Number(group.total || 0).toFixed(2)} for group`
+              }
+              testID="dashboard-pay-btn"
+              onPress={handleLeadPay}
+            />
+          )}
+        </View>
+      )}
       <RevealCardModal
         visible={revealOpen}
         onClose={() => setRevealOpen(false)}
@@ -1083,4 +1113,17 @@ const styles = StyleSheet.create({
   itemsBreakRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3, paddingLeft: 8 },
   itemsBreakItemName: { color: COLORS.subtext, fontSize: FONT.sizes.xs, flex: 1 },
   itemsBreakItemAmt: { color: COLORS.text, fontSize: FONT.sizes.xs, fontWeight: FONT.weights.medium },
+  // Bottom CTA bar — mirrors the User Dashboard so the Lead Dashboard's
+  // primary action (Contribute / Pay merchant) is always anchored at the
+  // bottom of the screen, even when the page scrolls.
+  bottomBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    padding: SPACING.md,
+    backgroundColor: COLORS.surface,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
 });

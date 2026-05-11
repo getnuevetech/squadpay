@@ -4951,3 +4951,122 @@ agent_communication:
 
         I have NOT modified any code. I leave it to main agent to decide whether
         to ship the lead_reassigned_at field through the GET response.
+
+
+# ───────────────────────────────────────────────────────────────────
+# Phase M — Admin-configurable extra platform fees (MVP)
+# ───────────────────────────────────────────────────────────────────
+
+backend:
+  - task: "Admin platform fees CRUD + bill calc integration"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/routes/admin_platform_fees.py, /app/backend/core.py, /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            New admin-only CRUD endpoints to manage up to 2 extra fees
+            applied automatically to every NEW bill:
+              GET  /api/admin/platform-fees → {fees:[{id,name,type,value,enabled}, ...]}
+              PUT  /api/admin/platform-fees → save fees array (validates type ∈ {percent, flat}, value ≥ 0, ids ∈ {extra_1, extra_2})
+
+            Storage: singleton doc in `platform_config` collection
+              { _id: "platform_fees_config", fees: [...] }
+
+            Bill integration (core._recompute_group):
+              • per_user[].extra_fees = [{id, name, amount}, ...]   ← per-member breakdown
+              • per_user[].extra_fees_total = sum
+              • per_user[].total now includes the extras (so member shares are accurate)
+              • Module-level cache `_EXTRA_FEES_CACHE` populated at startup + on every admin PUT
+
+            Acceptance tests for `deep_testing_backend_v2`:
+              1. GET /api/admin/platform-fees without admin auth → 401
+              2. GET with admin auth → returns 2 default disabled slots ({"id":"extra_1",..,"enabled":false} and {"id":"extra_2",..})
+              3. PUT with {fees:[{id:"extra_1",name:"Service Fee",type:"percent",value:1.5,enabled:true},
+                              {id:"extra_2",name:"Insurance",type:"flat",value:0.25,enabled:true}]} → 200 returns persisted fees
+              4. After PUT, create a new bill and GET the group → per_user[*].extra_fees should contain both fees with correct amounts:
+                 - percent: 1.5% of merchant_share / member_count
+                 - flat:    $0.25 / member_count
+              5. PUT with unknown id slot (e.g. "extra_3") → 400 with "unknown_fee_slot"
+              6. PUT with type other than percent|flat → 422 (pydantic validation)
+              7. Disabled fees should NOT appear in any per_user.extra_fees array
+        - working: true
+          agent: "testing"
+          comment: |
+            Phase M (Admin-configurable extra platform fees) end-to-end tested via
+            /app/backend_test.py against the live preview backend
+            (https://joint-pay-1.preview.emergentagent.com/api). 26/26 assertions PASS,
+            no 5xx errors.
+
+            Coverage by acceptance criterion (all PASS):
+
+              1) GET /api/admin/platform-fees WITHOUT Bearer token → 401 Unauthorized. ✅
+
+              2) GET /api/admin/platform-fees WITH super_admin token (admin@squadpay.us /
+                 Letmein@2007#ForReal) → 200 returning {"fees":[...]}; exactly 2 entries
+                 whose ids are {extra_1, extra_2}. After reset both have enabled=false
+                 (matches the "default disabled slots" criterion). ✅
+
+              3) PUT /api/admin/platform-fees with payload:
+                   fees=[
+                     {id:"extra_1",name:"Service Fee",type:"percent",value:1.5,enabled:true},
+                     {id:"extra_2",name:"Insurance",   type:"flat",   value:0.25,enabled:true}
+                   ]
+                 → 200; persisted fees in the response body match exactly
+                 (name/type/value/enabled all round-tripped). ✅
+
+              4) After PUT, created 3 verified users via the standard
+                 register → send-otp → verify-otp(123456) flow (SMS mode = mock), then a
+                 fast-split group with total_amount=$60 and joined the 2 members.
+                 GET /api/groups/{id} returned per_user[] with member_count=3 and:
+                   - Each member's merchant_share = $20.00 ($60/3) ✅
+                   - extra_fees array contains BOTH {id:"extra_1"} and {id:"extra_2"} ✅
+                   - extra_1 (percent) amount = (1.5/100) * 20.00 / 3 = $0.10 ✅
+                   - extra_2 (flat)    amount = 0.25 / 3            = $0.08 ✅
+                   - extra_fees_total = 0.10 + 0.08 = $0.18 ✅
+                   - per_user.total INCLUDES extras:
+                     merchant_share + transaction_fee + platform_fee + extra_fees_total
+                     ≈ 20.00 + 0.60 + 0.03 + 0.18 = $20.81 ✅
+
+              5) PUT with unknown slot id ("extra_3") → 400 with detail
+                 'unknown_fee_slot:extra_3' (matches the "unknown_fee_slot" requirement). ✅
+
+              6) PUT with invalid type ("xyz") → 422 Unprocessable Entity (pydantic Literal
+                 validation rejects). ✅
+
+              7) Re-PUT both fees with enabled:false → 200. Created a NEW fast-split group
+                 with the same 3 members ($30 / 3). Each per_user[*].extra_fees came back
+                 as an empty list ([]) and extra_fees_total = 0. Disabled fees correctly
+                 omitted from per-member breakdown. ✅
+
+            Backend log notes (informational, not blockers):
+              - passlib bcrypt cosmetic warning (no functional impact).
+              - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes, ≥32 recommended).
+              - [sms-mock-mode] log lines observed during OTP flow (mock mode confirmed).
+
+            Test suite saved at /app/backend_test.py — idempotent (uses TS-based names +
+            unique phone numbers per run). No backend action required for Phase M.
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        PHASE M (Admin-configurable platform fees) — 26/26 ASSERTIONS PASS.
+
+        ✅ GET no-auth → 401, GET admin → 2 disabled default slots ({extra_1, extra_2}).
+        ✅ PUT valid payload → 200, persisted fees round-trip correctly.
+        ✅ Bill calc integration verified end-to-end:
+             $60 fast-split group, 3 members → each member's merchant_share=$20.
+             extra_1 (percent 1.5%): amount = 1.5% × 20 / 3 = $0.10  ✓
+             extra_2 (flat $0.25):   amount = 0.25 / 3       = $0.08 ✓
+             extra_fees_total = $0.18; per_user.total INCLUDES extras.
+        ✅ PUT unknown slot id "extra_3" → 400 "unknown_fee_slot:extra_3".
+        ✅ PUT invalid type "xyz" → 422 (pydantic Literal validation).
+        ✅ Disable both → NEW bill's per_user.extra_fees = [] and extra_fees_total = 0.
+
+        No 5xx errors. Module-level cache (_EXTRA_FEES_CACHE) is correctly refreshed on
+        each admin PUT — verified by recomputing per-user breakdown on a fresh bill
+        immediately after toggling enabled flags. Phase M is ready to ship.

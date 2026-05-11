@@ -26,6 +26,51 @@ logger = logging.getLogger(__name__)
 TRANSACTION_FEE_RATE = 0.03  # 3% per-member surcharge
 PLATFORM_FEE = 0.03          # 3 cents flat per member
 
+# Admin-configurable extra fees (populated at startup / on admin PUT).
+# Each entry: {id, name, type ("percent"|"flat"), value, enabled}.
+# Kept as a module-level cache so the sync-ish _recompute_group can read it
+# without needing a DB handle.
+_EXTRA_FEES_CACHE: List[Dict[str, Any]] = []
+
+
+def set_extra_fees_cache(fees: List[Dict[str, Any]]) -> None:
+    """Called by the admin route + startup hook to refresh the cache."""
+    global _EXTRA_FEES_CACHE
+    _EXTRA_FEES_CACHE = list(fees or [])
+
+
+def get_extra_fees_cache() -> List[Dict[str, Any]]:
+    return list(_EXTRA_FEES_CACHE)
+
+
+def _compute_extra_fees_per_member(merchant_subtotal: float, member_count: int) -> List[Dict[str, Any]]:
+    """Return a list of {id,name,amount} per-member for each enabled extra
+    fee, computed from the cache. `merchant_subtotal` is the items+tax+tip
+    pre-fee amount; `member_count` is used to split flat fees evenly.
+
+    • type=percent: amount = (value/100) * merchant_subtotal / member_count
+    • type=flat:    amount = value / member_count (split equally)
+    """
+    out: List[Dict[str, Any]] = []
+    if member_count <= 0:
+        return out
+    for f in _EXTRA_FEES_CACHE:
+        if not f.get("enabled"):
+            continue
+        val = float(f.get("value") or 0)
+        if val <= 0:
+            continue
+        if f.get("type") == "percent":
+            amt = (val / 100.0) * merchant_subtotal / member_count
+        else:
+            amt = val / member_count
+        out.append({
+            "id": str(f.get("id") or ""),
+            "name": str(f.get("name") or "Extra fee"),
+            "amount": round(amt, 2),
+        })
+    return out
+
 # C1: referral code helpers — 6-char uppercase, drop confusing chars (0/O/1/I)
 _REFERRAL_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -282,7 +327,15 @@ async def _recompute_group(group: dict) -> dict:
         p["merchant_share"] = merchant_share
         p["transaction_fee"] = round(merchant_share * TRANSACTION_FEE_RATE, 2)
         p["platform_fee"] = round(PLATFORM_FEE, 2)
-        p["total"] = round(merchant_share + p["transaction_fee"] + p["platform_fee"], 2)
+        # Admin-configurable extra fees (split equally across members).
+        extra_fees = _compute_extra_fees_per_member(merchant_share, len(per_user))
+        p["extra_fees"] = extra_fees
+        extras_sum = round(sum(ef["amount"] for ef in extra_fees), 2)
+        p["extra_fees_total"] = extras_sum
+        p["total"] = round(
+            merchant_share + p["transaction_fee"] + p["platform_fee"] + extras_sum,
+            2,
+        )
 
     contributions = group.get("contributions", [])
     repayments = group.get("repayments", [])

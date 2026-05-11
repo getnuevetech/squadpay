@@ -348,6 +348,22 @@ export const adminApi = {
     return request<{ items: ReferrerRow[]; total: number; stats: ReferralStats; skip: number; limit: number }>(`/referrals${qs ? `?${qs}` : ''}`);
   },
   getReferrerDetail: (user_id: string) => request<ReferrerDetail>(`/referrals/${user_id}`),
+
+  // -------- Platform fees (admin-configurable extra fees) --------
+  getPlatformFees: () => request<{ fees: AdminPlatformFee[] }>('/platform-fees'),
+  updatePlatformFees: (fees: AdminPlatformFee[]) =>
+    request<{ fees: AdminPlatformFee[] }>('/platform-fees', {
+      method: 'PUT',
+      body: JSON.stringify({ fees }),
+    }),
+};
+
+export type AdminPlatformFee = {
+  id: string;
+  name: string;
+  type: 'percent' | 'flat';
+  value: number;
+  enabled: boolean;
 };
 
 export type LegalPage = {

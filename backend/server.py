@@ -90,6 +90,21 @@ except Exception as _e:
 from admin_routes import build_admin_router  # noqa: E402
 api_router.include_router(build_admin_router(db))
 
+# ---------- Admin: configurable platform fees ----------
+try:
+    from routes.admin_platform_fees import attach_platform_fees_routes
+    from admin_routes import get_current_admin_factory_sync as _adm_factory
+    _refresh_platform_fees = attach_platform_fees_routes(api_router, db, _adm_factory(db))
+
+    @app.on_event("startup")
+    async def _load_platform_fees_cache():
+        try:
+            await _refresh_platform_fees()
+        except Exception as _e:
+            print("[startup] platform fees initial load failed:", _e)
+except Exception as _e:
+    print("[startup] admin platform fees attach failed:", _e)
+
 
 # ---------- Stripe payment routes (Phase E) ----------
 try:

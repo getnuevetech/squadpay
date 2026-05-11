@@ -80,6 +80,22 @@ export default function AdminDashboard() {
         <Tile icon={<Wallet size={18} color={'#8B5CF6'} />} color="#8B5CF6" label="Total billed" value={`$${(metrics?.total_billed || 0).toFixed(2)}`} sub={`$${(metrics?.total_contributed || 0).toFixed(2)} contributed`} />
       </View>
 
+      <TouchableOpacity
+        style={styles.quickLink}
+        activeOpacity={0.85}
+        onPress={() => router.push('/admin/platform-fees')}
+        testID="admin-link-platform-fees"
+      >
+        <View style={[styles.tileIcon, { backgroundColor: COLORS.primary + '22' }]}>
+          <Wallet size={18} color={COLORS.primary} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.tileLabel}>Platform Fees</Text>
+          <Text style={styles.tileSub}>Configure up to 2 extra fees applied to every new bill</Text>
+        </View>
+        <ChevronRight size={16} color={COLORS.subtext} />
+      </TouchableOpacity>
+
       <View style={styles.section}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: SPACING.sm }}>
           <ScrollText size={16} color={COLORS.text} />
@@ -132,6 +148,7 @@ const styles = StyleSheet.create({
   nudgeCta: { color: COLORS.warning, fontSize: FONT.sizes.xs, fontWeight: FONT.weights.bold },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.md },
   tile: { flexBasis: 230, flexGrow: 1, flexDirection: 'row', alignItems: 'center', gap: SPACING.sm, padding: SPACING.md, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS.md, minWidth: 220 },
+  quickLink: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm, padding: SPACING.md, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS.md, marginTop: SPACING.md },
   tileIcon: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   tileLabel: { fontSize: FONT.sizes.xs, color: COLORS.subtext, textTransform: 'uppercase', fontWeight: FONT.weights.medium },
   tileValue: { fontSize: FONT.sizes.xl, fontWeight: FONT.weights.bold, color: COLORS.text, marginTop: 2 },

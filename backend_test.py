@@ -1,280 +1,349 @@
 """
-Backend test for POST /api/admin/groups/{group_id}/reassign-lead
+Phase M backend test — Admin-configurable platform fees.
 
-Runs 8 scenarios against the live preview backend and reports PASS/FAIL.
+Covers:
+  1. GET /api/admin/platform-fees without admin auth → 401
+  2. GET /api/admin/platform-fees with admin token → 2 default disabled slots
+  3. PUT /api/admin/platform-fees with valid payload → 200 returns persisted fees
+  4. Create a new bill with multiple members, verify per_user.extra_fees correctness
+  5. PUT with unknown slot id → 400 "unknown_fee_slot"
+  6. PUT with invalid type → 422
+  7. Disable both fees → NEW bill has no extra_fees
 """
-
-import json
+import os
 import sys
 import time
-import uuid
+import json
+from typing import Any, Dict, List, Optional
+
 import requests
 
-BASE = "https://joint-pay-1.preview.emergentagent.com/api"
-SUPER_EMAIL = "admin@squadpay.us"
-SUPER_PASSWORD = "Letmein@2007#ForReal"
+BACKEND_URL = os.environ.get(
+    "BACKEND_URL",
+    "https://joint-pay-1.preview.emergentagent.com",
+).rstrip("/")
+API = f"{BACKEND_URL}/api"
+
+ADMIN_EMAIL = "admin@squadpay.us"
+ADMIN_PASSWORD = "Letmein@2007#ForReal"
+
+TS = int(time.time())
+RESULTS: List[Dict[str, Any]] = []
 
 
-def jprint(label, resp):
-    try:
-        body = resp.json()
-    except Exception:
-        body = resp.text
-    print(f"  {label}: HTTP {resp.status_code}  body={json.dumps(body, default=str)[:600]}")
-    return body
+def record(name: str, ok: bool, info: str = ""):
+    RESULTS.append({"name": name, "ok": ok, "info": info})
+    flag = "PASS" if ok else "FAIL"
+    print(f"[{flag}] {name}" + (f"  -- {info}" if info else ""))
 
 
-def login_super():
-    r = requests.post(
-        f"{BASE}/admin/auth/login",
-        json={"email": SUPER_EMAIL, "password": SUPER_PASSWORD},
-        timeout=30,
-    )
-    assert r.status_code == 200, f"super-admin login failed: {r.status_code} {r.text}"
-    return r.json()["token"]
-
-
-def create_support_admin(super_token):
-    """Create a support-role admin (non super_admin) for the role-guard test."""
-    ts = int(time.time())
-    email = f"support+{ts}@squadpay.us"
-    password = "SupportTest@2026"
-    r = requests.post(
-        f"{BASE}/admin/admins",
-        headers={"Authorization": f"Bearer {super_token}"},
-        json={
-            "email": email,
-            "password": password,
-            "name": f"Support Tester {ts}",
-            "role": "support",
-        },
-        timeout=30,
-    )
-    assert r.status_code == 200, f"create support admin failed: {r.status_code} {r.text}"
-    # Login
-    r = requests.post(
-        f"{BASE}/admin/auth/login",
-        json={"email": email, "password": password},
-        timeout=30,
-    )
-    assert r.status_code == 200, f"support login failed: {r.status_code} {r.text}"
-    return r.json()["token"]
-
-
-def find_group_with_2plus(super_token):
-    """Find a group with member_count >= 2; return (group_id, lead_id, members)."""
-    headers = {"Authorization": f"Bearer {super_token}"}
-    # Pull a few pages to find one with >= 2 members
-    for skip in range(0, 200, 20):
-        r = requests.get(
-            f"{BASE}/admin/groups?limit=20&skip={skip}",
-            headers=headers,
-            timeout=30,
-        )
-        if r.status_code != 200:
-            break
-        data = r.json()
-        items = data.get("items", []) if isinstance(data, dict) else data
-        if not items:
-            break
-        for g in items:
-            mc = g.get("members_count") or g.get("member_count") or len(g.get("members") or [])
-            if mc and mc >= 2:
-                gid = g.get("id")
-                # Get full detail
-                r2 = requests.get(f"{BASE}/admin/groups/{gid}", headers=headers, timeout=30)
-                if r2.status_code != 200:
-                    continue
-                detail = r2.json()
-                members = detail.get("members") or []
-                lead_id = detail.get("lead_id")
-                if lead_id and len(members) >= 2:
-                    return gid, lead_id, members, detail
-    return None, None, None, None
-
-
-def main():
-    results = []  # list of (case_name, pass_bool, info)
-
-    print("=== STEP 1: super-admin login ===")
-    super_token = login_super()
-    print(f"  Got super-admin token (first 20 chars): {super_token[:20]}...")
-    super_headers = {"Authorization": f"Bearer {super_token}"}
-
-    print("\n=== STEP 2: find group with >= 2 members ===")
-    gid, lead_id, members, detail = find_group_with_2plus(super_token)
-    if not gid:
-        print("FATAL: no group with >= 2 members found in /admin/groups. Cannot run tests.")
-        sys.exit(2)
-    print(f"  Group: {gid}")
-    print(f"  Current lead_id: {lead_id}")
-    print(f"  Members ({len(members)}):")
-    for m in members[:10]:
-        print(f"    - user_id={m.get('user_id')!r:40s} name={m.get('name')!r}")
-    non_lead = [m for m in members if m.get("user_id") and m.get("user_id") != lead_id]
-    if not non_lead:
-        print("FATAL: no non-lead member found.")
-        sys.exit(2)
-    new_lead = non_lead[0]["user_id"]
-    print(f"  Will use new_lead user_id={new_lead}")
-
-    print("\n=== STEP 3: create support admin (for role-guard test) ===")
-    try:
-        support_token = create_support_admin(super_token)
-        print(f"  support token (first 20): {support_token[:20]}...")
-    except Exception as e:
-        print(f"  FAILED to create support admin: {e}")
-        support_token = None
-
-    print("\n=== TEST CASES ===")
-
-    # ---- Case 1: No auth ----
-    print("\n[Case 1] No auth")
-    url = f"{BASE}/admin/groups/{gid}/reassign-lead"
-    payload = {"new_lead_user_id": "u_x"}
-    r = requests.post(url, json=payload, timeout=30)
-    body = jprint("response", r)
-    detail_str = (body.get("detail") if isinstance(body, dict) else str(body)) or ""
-    ok = (r.status_code == 401) and ("Admin auth required" in str(detail_str))
-    results.append(("Case 1 — No auth → 401 'Admin auth required'", ok, {
-        "request": {"url": url, "headers": {}, "body": payload},
-        "status": r.status_code, "body": body,
-    }))
-    print(f"  -> {'PASS' if ok else 'FAIL'}")
-
-    # ---- Case 2: Insufficient role ----
-    print("\n[Case 2] Insufficient role (support admin)")
-    if support_token:
-        r = requests.post(
-            url,
-            json=payload,
-            headers={"Authorization": f"Bearer {support_token}"},
-            timeout=30,
-        )
-        body = jprint("response", r)
-        ok = (r.status_code == 403)
-        results.append(("Case 2 — Insufficient role → 403", ok, {
-            "request": {"url": url, "headers": "Bearer <support>", "body": payload},
-            "status": r.status_code, "body": body,
-        }))
-        print(f"  -> {'PASS' if ok else 'FAIL'}")
+def assert_eq(name: str, actual, expected, tol: float = 0.0):
+    if isinstance(expected, float) or isinstance(actual, float):
+        ok = abs(float(actual) - float(expected)) <= tol
     else:
-        results.append(("Case 2 — Insufficient role → 403", False, "support admin creation failed"))
-        print("  -> FAIL (could not create support admin)")
+        ok = actual == expected
+    record(name, ok, "" if ok else f"expected={expected!r} actual={actual!r}")
 
-    # ---- Case 3: Unknown group ----
-    print("\n[Case 3] Unknown group")
-    bad_url = f"{BASE}/admin/groups/g_doesnotexist_xxx/reassign-lead"
-    r = requests.post(bad_url, json={"new_lead_user_id": "u_x"}, headers=super_headers, timeout=30)
-    body = jprint("response", r)
-    detail_str = (body.get("detail") if isinstance(body, dict) else str(body)) or ""
-    ok = (r.status_code == 404) and ("Group not found" in str(detail_str))
-    results.append(("Case 3 — Unknown group → 404 'Group not found'", ok, {
-        "request": {"url": bad_url, "body": {"new_lead_user_id": "u_x"}},
-        "status": r.status_code, "body": body,
-    }))
-    print(f"  -> {'PASS' if ok else 'FAIL'}")
 
-    # ---- Case 4: Empty body ----
-    print("\n[Case 4] Empty new_lead_user_id")
-    r = requests.post(url, json={"new_lead_user_id": ""}, headers=super_headers, timeout=30)
-    body = jprint("response", r)
-    detail_str = (body.get("detail") if isinstance(body, dict) else str(body)) or ""
-    ok = (r.status_code == 400) and ("required" in str(detail_str).lower())
-    results.append(("Case 4 — Empty body → 400 'required'", ok, {
-        "request": {"url": url, "body": {"new_lead_user_id": ""}},
-        "status": r.status_code, "body": body,
-    }))
-    print(f"  -> {'PASS' if ok else 'FAIL'}")
-
-    # ---- Case 5: Stranger as new lead ----
-    print("\n[Case 5] Stranger as new lead")
-    r = requests.post(url, json={"new_lead_user_id": "u_strangertest9999"}, headers=super_headers, timeout=30)
-    body = jprint("response", r)
-    detail_str = (body.get("detail") if isinstance(body, dict) else str(body)) or ""
-    ok = (r.status_code == 400) and ("existing member" in str(detail_str).lower())
-    results.append(("Case 5 — Stranger → 400 'existing member of this group'", ok, {
-        "request": {"url": url, "body": {"new_lead_user_id": "u_strangertest9999"}},
-        "status": r.status_code, "body": body,
-    }))
-    print(f"  -> {'PASS' if ok else 'FAIL'}")
-
-    # ---- Case 6: Idempotent same user ----
-    print("\n[Case 6] Idempotent same user (current lead)")
-    r = requests.post(url, json={"new_lead_user_id": lead_id}, headers=super_headers, timeout=30)
-    body = jprint("response", r)
-    ok = (
-        r.status_code == 200
-        and isinstance(body, dict)
-        and body.get("ok") is True
-        and body.get("lead_id") == lead_id
-        and body.get("no_change") is True
+def admin_login() -> str:
+    r = requests.post(
+        f"{API}/admin/auth/login",
+        json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+        timeout=20,
     )
-    results.append(("Case 6 — Idempotent same user → 200 ok+no_change=true", ok, {
-        "request": {"url": url, "body": {"new_lead_user_id": lead_id}},
-        "status": r.status_code, "body": body,
-    }))
-    print(f"  -> {'PASS' if ok else 'FAIL'}")
+    if r.status_code != 200:
+        raise RuntimeError(f"admin login failed: {r.status_code} {r.text}")
+    body = r.json()
+    tok = body.get("access_token") or body.get("token")
+    if not tok:
+        raise RuntimeError(f"no token in login response: {body}")
+    return tok
 
-    # ---- Case 7: Happy path ----
-    print(f"\n[Case 7] Happy path — assign to non-lead user_id={new_lead}")
-    r = requests.post(url, json={"new_lead_user_id": new_lead}, headers=super_headers, timeout=30)
-    body = jprint("response", r)
-    ok_post = (
-        r.status_code == 200
-        and isinstance(body, dict)
-        and body.get("ok") is True
-        and body.get("lead_id") == new_lead
+
+def auth_headers(tok: str) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {tok}"}
+
+
+def register_user(name: str) -> str:
+    r = requests.post(f"{API}/auth/register", json={"name": name}, timeout=15)
+    r.raise_for_status()
+    return r.json()["id"]
+
+
+def send_otp(user_id: str, phone: str) -> Dict[str, Any]:
+    r = requests.post(
+        f"{API}/auth/send-otp",
+        json={"user_id": user_id, "phone": phone},
+        timeout=20,
     )
-    # Verify persistence + lead_reassigned_at
-    r2 = requests.get(f"{BASE}/admin/groups/{gid}", headers=super_headers, timeout=30)
-    detail2 = r2.json() if r2.status_code == 200 else {}
-    persisted_lead = detail2.get("lead_id")
-    reassigned_at = detail2.get("lead_reassigned_at")
-    print(f"  re-GET lead_id={persisted_lead!r}  lead_reassigned_at={reassigned_at!r}")
-    ok_persist = (persisted_lead == new_lead) and bool(reassigned_at)
-    ok7 = ok_post and ok_persist
-    results.append(("Case 7 — Happy path → 200 + persisted lead_id + lead_reassigned_at set", ok7, {
-        "request": {"url": url, "body": {"new_lead_user_id": new_lead}},
-        "status": r.status_code, "body": body,
-        "persisted_lead": persisted_lead, "lead_reassigned_at": reassigned_at,
-    }))
-    print(f"  -> {'PASS' if ok7 else 'FAIL'}")
+    r.raise_for_status()
+    return r.json()
 
-    # ---- Case 8: Cleanup — reassign back ----
-    print(f"\n[Case 8] Cleanup — restore original lead {lead_id}")
-    r = requests.post(url, json={"new_lead_user_id": lead_id}, headers=super_headers, timeout=30)
-    body = jprint("response", r)
-    ok = (
-        r.status_code == 200
-        and isinstance(body, dict)
-        and body.get("ok") is True
-        and body.get("lead_id") == lead_id
+
+def verify_otp(user_id: str, phone: str, code: str = "123456") -> Dict[str, Any]:
+    r = requests.post(
+        f"{API}/auth/verify-otp",
+        json={"user_id": user_id, "phone": phone, "code": code},
+        timeout=20,
     )
-    r3 = requests.get(f"{BASE}/admin/groups/{gid}", headers=super_headers, timeout=30)
-    if r3.status_code == 200:
-        post_lead = r3.json().get("lead_id")
-        print(f"  re-GET lead_id post-cleanup={post_lead!r}")
-        ok = ok and (post_lead == lead_id)
-    results.append(("Case 8 — Cleanup → restored to original lead", ok, {
-        "request": {"url": url, "body": {"new_lead_user_id": lead_id}},
-        "status": r.status_code, "body": body,
-    }))
-    print(f"  -> {'PASS' if ok else 'FAIL'}")
+    if r.status_code != 200:
+        raise RuntimeError(f"verify-otp failed: {r.status_code} {r.text}")
+    return r.json()
 
-    # ---- Tally ----
-    passed = sum(1 for _, ok, _ in results if ok)
-    total = len(results)
-    print("\n" + "=" * 70)
-    print("FINAL RESULTS:")
-    print("=" * 70)
-    for name, ok, info in results:
-        status = "PASS" if ok else "FAIL"
-        print(f"  [{status}] {name}")
-        if not ok:
-            print(f"         info: {json.dumps(info, default=str)[:800]}")
-    print(f"\n{passed} of {total} PASS")
-    return 0 if passed == total else 1
+
+def create_verified_user(name: str, phone_suffix: int) -> str:
+    """Register + OTP + verify a user. Returns user_id (possibly merged)."""
+    uid = register_user(name)
+    # Build a unique 10-digit US phone: area=832, mid=<TS last 4>, last=<3-digit suffix>
+    last4 = f"{TS % 10000:04d}"
+    suffix = f"{phone_suffix:03d}"
+    phone = f"+1832{last4}{suffix}"  # +1 + 10 digits = 12 chars
+    send_otp(uid, phone)
+    resp = verify_otp(uid, phone, "123456")
+    # The verify endpoint may return the merged user; prefer that id if present
+    return resp.get("user", {}).get("id") or resp.get("id") or uid
+
+
+def create_fast_group(lead_id: str, title: str, total: float) -> str:
+    body = {
+        "lead_id": lead_id,
+        "title": title,
+        "total_amount": total,
+        "split_mode": "fast",
+        "tax": 0.0,
+        "tip": 0.0,
+        "items": [],
+    }
+    r = requests.post(f"{API}/groups", json=body, timeout=20)
+    if r.status_code != 200:
+        raise RuntimeError(f"create group failed: {r.status_code} {r.text}")
+    return r.json()["id"]
+
+
+def join_group(gid: str, uid: str):
+    r = requests.post(f"{API}/groups/{gid}/join", json={"user_id": uid}, timeout=20)
+    if r.status_code != 200:
+        raise RuntimeError(f"join failed: {r.status_code} {r.text}")
+
+
+def get_group(gid: str) -> Dict[str, Any]:
+    r = requests.get(f"{API}/groups/{gid}", timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def main() -> int:
+    print(f"=== Phase M Test against {API} ===")
+
+    # ---------- 1. GET without admin token → 401 ----------
+    r = requests.get(f"{API}/admin/platform-fees", timeout=15)
+    assert_eq("1. GET /admin/platform-fees no-auth → 401", r.status_code, 401)
+
+    # ---------- admin login ----------
+    try:
+        tok = admin_login()
+        record("admin login", True)
+    except Exception as e:
+        record("admin login", False, str(e))
+        print("Cannot continue without admin token.")
+        return 1
+
+    H = auth_headers(tok)
+
+    # ---------- 2. GET with admin → 2 default disabled slots ----------
+    r = requests.get(f"{API}/admin/platform-fees", headers=H, timeout=15)
+    assert_eq("2a. GET /admin/platform-fees status", r.status_code, 200)
+    if r.status_code == 200:
+        payload = r.json()
+        fees = payload.get("fees", [])
+        assert_eq("2b. fees length == 2", len(fees), 2)
+        ids = {f.get("id") for f in fees}
+        assert_eq("2c. fees contain extra_1 + extra_2", ids, {"extra_1", "extra_2"})
+        # Reset the slots to a known disabled state first to make test idempotent.
+        reset_payload = {
+            "fees": [
+                {"id": "extra_1", "name": "Extra Fee 1", "type": "flat", "value": 0.0, "enabled": False},
+                {"id": "extra_2", "name": "Extra Fee 2", "type": "flat", "value": 0.0, "enabled": False},
+            ]
+        }
+        rr = requests.put(f"{API}/admin/platform-fees", headers=H, json=reset_payload, timeout=15)
+        if rr.status_code == 200:
+            rr2 = requests.get(f"{API}/admin/platform-fees", headers=H, timeout=15)
+            fees2 = rr2.json().get("fees", [])
+            disabled_ok = all(f.get("enabled") is False for f in fees2)
+            record("2d. After reset, both slots enabled=false", disabled_ok,
+                   "" if disabled_ok else f"fees={fees2}")
+        else:
+            record("2d. reset to defaults", False, f"{rr.status_code} {rr.text}")
+
+    # ---------- 3. PUT valid payload ----------
+    valid_payload = {
+        "fees": [
+            {"id": "extra_1", "name": "Service Fee", "type": "percent", "value": 1.5, "enabled": True},
+            {"id": "extra_2", "name": "Insurance", "type": "flat", "value": 0.25, "enabled": True},
+        ]
+    }
+    r = requests.put(f"{API}/admin/platform-fees", headers=H, json=valid_payload, timeout=15)
+    assert_eq("3a. PUT valid payload status", r.status_code, 200)
+    if r.status_code == 200:
+        persisted = r.json().get("fees", [])
+        by_id = {f["id"]: f for f in persisted}
+        e1 = by_id.get("extra_1") or {}
+        e2 = by_id.get("extra_2") or {}
+        assert_eq("3b. extra_1.name", e1.get("name"), "Service Fee")
+        assert_eq("3c. extra_1.type", e1.get("type"), "percent")
+        assert_eq("3d. extra_1.value", float(e1.get("value", 0)), 1.5, tol=1e-6)
+        assert_eq("3e. extra_1.enabled", e1.get("enabled"), True)
+        assert_eq("3f. extra_2.name", e2.get("name"), "Insurance")
+        assert_eq("3g. extra_2.type", e2.get("type"), "flat")
+        assert_eq("3h. extra_2.value", float(e2.get("value", 0)), 0.25, tol=1e-6)
+        assert_eq("3i. extra_2.enabled", e2.get("enabled"), True)
+
+    # ---------- 4. Create new bill with multiple members, verify extras ----------
+    # Build 3 verified users (lead + 2 members) so member_count == 3
+    try:
+        lead_id = create_verified_user(f"Lead M{TS}", 0)
+        m1_id = create_verified_user(f"Mem1 M{TS}", 1)
+        m2_id = create_verified_user(f"Mem2 M{TS}", 2)
+        record("4a. created 3 verified users", True,
+               f"lead={lead_id} m1={m1_id} m2={m2_id}")
+    except Exception as e:
+        record("4a. created 3 verified users", False, str(e))
+        lead_id = m1_id = m2_id = None
+
+    total_amount = 60.0  # convenient for math
+    if lead_id and m1_id and m2_id:
+        try:
+            gid = create_fast_group(lead_id, "Phase M Test Bill", total_amount)
+            join_group(gid, m1_id)
+            join_group(gid, m2_id)
+            grp = get_group(gid)
+            record("4b. created group with 3 members", True, f"gid={gid}")
+            per_user = grp.get("per_user", [])
+            member_count = len(per_user)
+            assert_eq("4c. per_user member count", member_count, 3)
+
+            # In fast split with $60 / 3 = $20 merchant_share each
+            expected_merchant_share = round(total_amount / member_count, 2)
+            # percent fee per member: 1.5% of merchant_share / member_count
+            #   = (1.5/100) * 20 / 3 = 0.10
+            expected_pct = round((1.5 / 100.0) * expected_merchant_share / member_count, 2)
+            # flat per member: 0.25 / 3 = 0.0833 → rounds to 0.08
+            expected_flat = round(0.25 / member_count, 2)
+            expected_extras_total = round(expected_pct + expected_flat, 2)
+
+            print(f"  expected merchant_share={expected_merchant_share}, "
+                  f"pct={expected_pct}, flat={expected_flat}, "
+                  f"extras_total={expected_extras_total}")
+
+            all_ok_extras = True
+            all_ok_totals = True
+            for p in per_user:
+                ef = p.get("extra_fees") or []
+                ids = {e.get("id") for e in ef}
+                if ids != {"extra_1", "extra_2"}:
+                    all_ok_extras = False
+                    record(f"4d. user {p['user_id']} extra_fees ids",
+                           False, f"got {ids}")
+                    continue
+                by_id = {e["id"]: e for e in ef}
+                pct_amt = round(float(by_id["extra_1"]["amount"]), 2)
+                flat_amt = round(float(by_id["extra_2"]["amount"]), 2)
+                if pct_amt != expected_pct or flat_amt != expected_flat:
+                    all_ok_extras = False
+                    record(f"4d. user {p['user_id']} extra amts",
+                           False, f"pct={pct_amt} flat={flat_amt}")
+                tot_extras = round(float(p.get("extra_fees_total", 0)), 2)
+                if tot_extras != expected_extras_total:
+                    all_ok_extras = False
+                    record(f"4e. user {p['user_id']} extra_fees_total",
+                           False, f"got {tot_extras} exp {expected_extras_total}")
+                # total should include extras
+                merchant_share = float(p.get("merchant_share", 0))
+                txn_fee = float(p.get("transaction_fee", 0))
+                plat_fee = float(p.get("platform_fee", 0))
+                expected_total = round(merchant_share + txn_fee + plat_fee + tot_extras, 2)
+                got_total = round(float(p.get("total", 0)), 2)
+                if abs(got_total - expected_total) > 0.02:
+                    all_ok_totals = False
+                    record(f"4g. user {p['user_id']} total includes extras",
+                           False, f"got {got_total} exp {expected_total}")
+            record("4d. each member has both extra_fees with correct amounts",
+                   all_ok_extras)
+            record("4f. extra_fees_total = sum of extras", all_ok_extras)
+            record("4g. per_user.total now INCLUDES extras", all_ok_totals)
+        except Exception as e:
+            record("4b. created group with 3 members", False, str(e))
+
+    # ---------- 5. PUT with unknown slot id → 400 unknown_fee_slot ----------
+    bad_id_payload = {
+        "fees": [
+            {"id": "extra_3", "name": "Bogus", "type": "flat", "value": 1.0, "enabled": True},
+        ]
+    }
+    r = requests.put(f"{API}/admin/platform-fees", headers=H, json=bad_id_payload, timeout=15)
+    assert_eq("5a. PUT unknown slot id status", r.status_code, 400)
+    detail = ""
+    try:
+        detail = (r.json().get("detail") or "")
+    except Exception:
+        detail = r.text
+    record("5b. detail contains 'unknown_fee_slot'",
+           "unknown_fee_slot" in str(detail),
+           f"detail={detail!r}")
+
+    # ---------- 6. PUT with invalid type → 422 ----------
+    bad_type_payload = {
+        "fees": [
+            {"id": "extra_1", "name": "Bad", "type": "xyz", "value": 1.0, "enabled": True},
+        ]
+    }
+    r = requests.put(f"{API}/admin/platform-fees", headers=H, json=bad_type_payload, timeout=15)
+    assert_eq("6. PUT invalid type → 422", r.status_code, 422)
+
+    # ---------- 7. Disable both fees → NEW bill has empty/missing extra_fees ----------
+    disable_payload = {
+        "fees": [
+            {"id": "extra_1", "name": "Service Fee", "type": "percent", "value": 1.5, "enabled": False},
+            {"id": "extra_2", "name": "Insurance", "type": "flat", "value": 0.25, "enabled": False},
+        ]
+    }
+    r = requests.put(f"{API}/admin/platform-fees", headers=H, json=disable_payload, timeout=15)
+    assert_eq("7a. PUT disable both status", r.status_code, 200)
+    if r.status_code == 200 and lead_id and m1_id and m2_id:
+        try:
+            gid2 = create_fast_group(lead_id, "Phase M Disabled Bill", 30.0)
+            join_group(gid2, m1_id)
+            join_group(gid2, m2_id)
+            grp2 = get_group(gid2)
+            per_user2 = grp2.get("per_user", [])
+            all_empty = True
+            details = []
+            for p in per_user2:
+                ef = p.get("extra_fees")
+                if ef:  # non-empty list
+                    all_empty = False
+                    details.append(f"{p['user_id']}: {ef}")
+                if float(p.get("extra_fees_total", 0)) != 0:
+                    all_empty = False
+                    details.append(f"{p['user_id']} extra_fees_total={p.get('extra_fees_total')}")
+            record("7b. new bill has empty/missing extra_fees", all_empty,
+                   "; ".join(details) if details else "")
+        except Exception as e:
+            record("7b. new bill has empty/missing extra_fees", False, str(e))
+
+    # ---------- summary ----------
+    print()
+    print("=" * 60)
+    passed = sum(1 for x in RESULTS if x["ok"])
+    failed = sum(1 for x in RESULTS if not x["ok"])
+    print(f"TOTAL: {passed} pass / {failed} fail")
+    if failed:
+        print("\nFailures:")
+        for x in RESULTS:
+            if not x["ok"]:
+                print(f"  - {x['name']}  {x['info']}")
+    return 0 if failed == 0 else 1
 
 
 if __name__ == "__main__":

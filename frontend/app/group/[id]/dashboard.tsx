@@ -104,6 +104,17 @@ export default function DashboardScreen() {
   );
   const groupContributedTotal = group.funding?.total_contributed || 0;
   const groupRepaidTotal = group.funding?.total_repaid || 0;
+  // Aggregate admin-configurable extra fees across members (per_user.extra_fees
+  // is an array of {id,name,amount} — each fee may appear once per member).
+  const extraFeesAgg: { id: string; name: string; amount: number }[] = [];
+  for (const p of (group.per_user || []) as any[]) {
+    for (const ef of (p.extra_fees || []) as any[]) {
+      const found = extraFeesAgg.find((x) => x.id === ef.id);
+      if (found) found.amount += Number(ef.amount || 0);
+      else extraFeesAgg.push({ id: ef.id, name: ef.name || 'Extra fee', amount: Number(ef.amount || 0) });
+    }
+  }
+  const groupExtraFeesTotal = extraFeesAgg.reduce((s, f) => s + f.amount, 0);
   // Grand total — sum of every breakdown row above so the math always adds
   // up on screen. We compute this from the same numbers we render rather
   // than relying on the backend's `group.total` (which historically counted
@@ -114,6 +125,7 @@ export default function DashboardScreen() {
     + Number(group.tip || 0)
     + groupTransactionFees
     + groupPlatformFees
+    + groupExtraFeesTotal
   );
   // Outstanding mirrors the "Remaining" pill in the hero so members never
   // see two different numbers for the same concept.
@@ -327,6 +339,12 @@ export default function DashboardScreen() {
                 <Text style={styles.breakdownKey}>Platform fees</Text>
                 <Text style={styles.breakdownVal}>${groupPlatformFees.toFixed(2)}</Text>
               </View>
+              {extraFeesAgg.map((ef) => (
+                <View key={ef.id} style={styles.breakdownRow}>
+                  <Text style={styles.breakdownKey}>{ef.name}</Text>
+                  <Text style={styles.breakdownVal}>${ef.amount.toFixed(2)}</Text>
+                </View>
+              ))}
               <View style={[styles.breakdownRow, { borderTopWidth: 1, borderTopColor: COLORS.border, marginTop: 6, paddingTop: 6 }]}>
                 <Text style={[styles.breakdownKey, { fontWeight: FONT.weights.bold, color: COLORS.text }]}>Bill total</Text>
                 <Text style={[styles.breakdownVal, { color: COLORS.text, fontWeight: FONT.weights.bold }]}>${grandTotal.toFixed(2)}</Text>

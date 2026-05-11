@@ -137,8 +137,17 @@ def attach_misc_routes(router: APIRouter, db):
             "You are a receipt parser. Extract line items and totals from restaurant receipts. "
             "Return STRICT JSON only, no prose. Schema: "
             '{"items":[{"name":string,"price":number,"quantity":number}],"tax":number,"tip":number,"total":number}. '
-            "All amounts are unit price in dollars (not total of line). If unsure, set quantity=1. "
-            "If tax/tip not visible, set 0."
+            "Rules:\n"
+            "1. price = UNIT price in dollars (not the line total). If the receipt shows '2 Maker's Mark $17.50', "
+            "return {name:'Maker's Mark', price:8.75, quantity:2}.\n"
+            "2. Skip free modifier/option lines that show $0.00 (e.g. 'Sweet & Sour', 'Splash', 'Neat', 'Lemon Wedge'). "
+            "Only return actual purchasable items.\n"
+            "3. tax = SUM of EVERY tax line on the receipt — Sales Tax + Alcohol Tax + State Tax + any other tax. "
+            "Combine them into a single number.\n"
+            "4. tip = explicit tip line value, or 0 if not present (ignore suggested-tip helpers like 'A 20% tip would be...').\n"
+            "5. total = the final amount charged at the bottom of the receipt (the 'Total' / 'Amount Due' / card-charged value).\n"
+            "6. The numbers must reconcile: sum(items[i].price * items[i].quantity) + tax + tip must equal total. "
+            "If they don't, double-check that you captured ALL tax lines."
         )
         chat = LlmChat(api_key=api_key, session_id=new_id("ocr_"), system_message=system_msg).with_model("openai", "gpt-4o")
         b64 = body.image_base64
@@ -171,11 +180,40 @@ def attach_misc_routes(router: APIRouter, db):
                 })
             except Exception:
                 continue
+        tax = float(data.get("tax", 0) or 0)
+        tip = float(data.get("tip", 0) or 0)
+        total = float(data.get("total", 0) or 0)
+
+        # ── Reconciliation ──────────────────────────────────────────────
+        # OCR models occasionally miss a tax line (e.g. an "Alcohol Tax" row
+        # on top of "Sales Tax"). Whenever the printed receipt total is
+        # available, force the math to add up by absorbing any leftover
+        # into the tax field. This guarantees the bill the user creates
+        # exactly matches what they actually paid the merchant.
+        items_subtotal = round(sum(it["price"] * it["quantity"] for it in items), 2)
+        if total > 0:
+            implied = round(items_subtotal + tax + tip, 2)
+            diff = round(total - implied, 2)
+            if abs(diff) >= 0.01:
+                # Anything we can't account for via items+tip we treat as
+                # under-captured tax. Never let tax go negative — if `tip`
+                # was over-reported, prefer trimming it back.
+                if diff > 0:
+                    tax = round(tax + diff, 2)
+                else:
+                    # Implied > printed total: shrink tip first (over-tip
+                    # is more common than over-tax), then tax.
+                    take_from_tip = min(tip, -diff)
+                    tip = round(tip - take_from_tip, 2)
+                    remaining = round(-diff - take_from_tip, 2)
+                    if remaining > 0:
+                        tax = round(max(0.0, tax - remaining), 2)
+
         return {
             "items": items,
-            "tax": float(data.get("tax", 0) or 0),
-            "tip": float(data.get("tip", 0) or 0),
-            "total": float(data.get("total", 0) or 0),
+            "tax": tax,
+            "tip": tip,
+            "total": total or round(items_subtotal + tax + tip, 2),
         }
 
     @router.get("/")

@@ -7,10 +7,12 @@
  * NOT touch the existing routing tree (rollback-safe). Each tab simply
  * router.push()'s the target route.
  */
+import { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { Home, MessageSquare, Plus, Users, Settings as SettingsIcon } from 'lucide-react-native';
 import { COLORS, FONT } from '../../theme';
+import { NewBillSheet } from '../NewBillSheet';
 
 export type TabKey = 'home' | 'activity' | 'create' | 'squad' | 'settings';
 
@@ -44,6 +46,9 @@ type Props = {
 export function BottomTabBar({ active, testID = 'bottom-tab-bar', onCenterPress }: Props) {
   const router = useRouter();
   const pathname = usePathname();
+  // Sheet visibility — the BIG "+" opens a "Start / Join a bill" action
+  // sheet by default. Hosts can pass `onCenterPress` to override entirely.
+  const [sheetOpen, setSheetOpen] = useState(false);
 
   const computedActive: TabKey = active || (
     pathname?.startsWith('/activity') ? 'activity' :
@@ -67,7 +72,7 @@ export function BottomTabBar({ active, testID = 'bottom-tab-bar', onCenterPress 
                 style={styles.centerWrap}
                 onPress={() => {
                   if (onCenterPress) onCenterPress();
-                  else router.push(t.href as any);
+                  else setSheetOpen(true);
                 }}
                 activeOpacity={0.85}
                 testID={`tab-${t.key}`}
@@ -98,6 +103,12 @@ export function BottomTabBar({ active, testID = 'bottom-tab-bar', onCenterPress 
           );
         })}
       </View>
+      <NewBillSheet
+        visible={sheetOpen}
+        onClose={() => setSheetOpen(false)}
+        onStart={() => router.push('/create')}
+        onJoin={() => router.push('/join/code')}
+      />
     </View>
   );
 }

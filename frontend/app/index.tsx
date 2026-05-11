@@ -282,9 +282,19 @@ export default function HomeScreen() {
                     router.push(`/group/${featured.id}/${isLead ? 'dashboard' : 'summary'}`);
                   }}
                   onPay={() => {
-                    // Always route to the Pay screen — user can pay their share
-                    // immediately without an extra hop.
-                    router.push(`/group/${featured.id}/pay`);
+                    // Smart routing: while the group is still collecting
+                    // funds, use the contribute flow (works for both lead
+                    // and members — the lead's `outstanding` is force-zeroed
+                    // in backend). After the lead has paid the merchant,
+                    // route members through the repay flow instead.
+                    const isLead = featured.lead_id === user.id;
+                    const status = (featured as any).status || 'open';
+                    const userOutstanding = Number((featured as any).user_outstanding || 0);
+                    let kind: 'contribute' | 'repay' | 'lead' = 'contribute';
+                    if (status !== 'open') {
+                      kind = isLead ? 'lead' : (userOutstanding > 0.01 ? 'repay' : 'contribute');
+                    }
+                    router.push(`/group/${featured.id}/pay?kind=${kind}`);
                   }}
                   onAddFriend={() => router.push(`/group/${featured.id}`)}
                   onPlusToItems={() => router.push(`/group/${featured.id}/items`)}

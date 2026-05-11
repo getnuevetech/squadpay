@@ -704,3 +704,12 @@ credentials.json
 
 # Private, download-only documentation (contains code snippets + sample payloads)
 DOCUMENTATION_FULL.md
+-e 
+# Environment and credential files
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials

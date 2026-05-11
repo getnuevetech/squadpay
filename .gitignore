@@ -700,3 +700,7 @@ credentials.json
 *.pem
 *.key
 .credentials
+
+
+# Private, download-only documentation (contains code snippets + sample payloads)
+DOCUMENTATION_FULL.md

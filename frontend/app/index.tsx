@@ -306,7 +306,7 @@ export default function HomeScreen() {
                   selfId={user.id}
                   selfName={user.name || ''}
                   onSplit={() => router.push('/create')}
-                  onJoin={() => router.push('/auth?intent=join')}
+                  onJoin={() => router.push('/join/code')}
                 />
               )}
             </View>

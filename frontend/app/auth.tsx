@@ -32,6 +32,15 @@ export default function AuthScreen() {
   // - Hides "Skip for now" since the user explicitly wants to sign in.
   // - On verify, silently merges into the existing account (no name-replacement popup).
   const signinMode = params.intent === 'signin' && !verifyMode;
+  // After auth completes (signup / signin / skip-phone), continue based on
+  // the user's original intent so picking "Split a Bill" or "Join a Bill"
+  // from the landing screen lands them on the right destination instead of
+  // dumping them on home.
+  const intentNextRoute: '/create' | '/join/code' | '/' = (
+    params.intent === 'split' ? '/create' :
+    params.intent === 'join' ? '/join/code' :
+    '/'
+  );
   const [step, setStep] = useState<Step>(verifyMode || signinMode ? 'phone' : 'name');
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -209,7 +218,7 @@ export default function AuthScreen() {
         try {
           const verified = await api.verifyOtp(userId, phone.trim(), otp, true);
           await saveUser(verified);
-          router.replace('/');
+          router.replace(intentNextRoute);
           return;
         } catch (e: any) {
           // If the placeholder didn't match an existing account (e.g. lookup
@@ -219,7 +228,7 @@ export default function AuthScreen() {
           if (msg.includes('phone_already_registered') || msg.includes('already registered')) {
             const verified = await api.verifyOtp(userId, phone.trim(), otp, true);
             await saveUser(verified);
-            router.replace('/');
+            router.replace(intentNextRoute);
             return;
           }
           throw e;
@@ -263,7 +272,7 @@ export default function AuthScreen() {
       try {
         const verified = await api.verifyOtp(userId, phone.trim(), otp, confirmExisting);
         await saveUser(verified);
-        router.replace('/');
+        router.replace(intentNextRoute);
       } catch (e: any) {
         // Server fallback: if lookup didn't run (e.g. offline) and the server
         // returned 409 phone_already_registered, surface the same prompt here.
@@ -283,7 +292,7 @@ export default function AuthScreen() {
           if (proceed) {
             const verified = await api.verifyOtp(userId, phone.trim(), otp, true);
             await saveUser(verified);
-            router.replace('/');
+            router.replace(intentNextRoute);
           }
         } else {
           throw e;
@@ -301,8 +310,11 @@ export default function AuthScreen() {
     if (!signinMode && !verifyMode && tcsAccepted && userId) {
       api.acceptTerms(userId).catch(() => {});
     }
-    // Let user proceed with just name; they will be forced to verify before paying
-    router.replace('/');
+    // Let user proceed with just name; they will be forced to verify before paying.
+    // Continue to the intent-aware destination so picking "Split a Bill" /
+    // "Join a Bill" on the landing screen still flows correctly even when
+    // the user skipped phone verification.
+    router.replace(intentNextRoute);
   };
 
   return (

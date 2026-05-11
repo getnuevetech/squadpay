@@ -19,6 +19,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Swipeable } from 'react-native-gesture-handler';
 import { Receipt, CheckCircle2, Clock, Wallet, AlertCircle, Plus, Pencil, ChevronDown, UserPlus, Trash2 } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Button } from '../../../src/Button';
@@ -454,52 +455,69 @@ export default function DashboardScreen() {
 
             return (
               <View key={m.user_id} style={[idx !== 0 && { borderTopWidth: 1, borderTopColor: COLORS.border }]} testID={`dashboard-member-${m.user_id}`}>
-                <TouchableOpacity
-                  style={styles.memberRow}
-                  activeOpacity={hasItems ? 0.7 : 1}
-                  disabled={!hasItems}
-                  onPress={() => hasItems && setMemberItemsOpen((s) => ({ ...s, [m.user_id]: !isOpen }))}
-                  testID={`dashboard-member-toggle-${m.user_id}`}
-                >
-                  <View style={[styles.avatar, isLeadRow && { backgroundColor: COLORS.primary }]}>
-                    <Text style={[styles.avatarText, isLeadRow && { color: '#fff' }]}>
-                      {(m.name || '?').slice(0, 1).toUpperCase()}
-                    </Text>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                      <Text style={styles.memberName} numberOfLines={1}>
-                        {m.name}{m.user_id === userId ? ' (You)' : ''}
-                      </Text>
-                      {isLeadRow && (
-                        <View style={styles.leadPill}>
-                          <Text style={styles.leadPillText}>LEAD</Text>
+                {(() => {
+                  // Build the "swipe-revealed" delete action. We only attach
+                  // the Swipeable wrapper when the row is actually removable —
+                  // otherwise users could swipe a lead row or a contributing
+                  // member and get a useless red panel.
+                  const rowContent = (
+                    <TouchableOpacity
+                      style={styles.memberRow}
+                      activeOpacity={hasItems ? 0.7 : 1}
+                      disabled={!hasItems}
+                      onPress={() => hasItems && setMemberItemsOpen((s) => ({ ...s, [m.user_id]: !isOpen }))}
+                      testID={`dashboard-member-toggle-${m.user_id}`}
+                    >
+                      <View style={[styles.avatar, isLeadRow && { backgroundColor: COLORS.primary }]}>
+                        <Text style={[styles.avatarText, isLeadRow && { color: '#fff' }]}>
+                          {(m.name || '?').slice(0, 1).toUpperCase()}
+                        </Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text style={styles.memberName} numberOfLines={1}>
+                            {m.name}{m.user_id === userId ? ' (You)' : ''}
+                          </Text>
+                          {isLeadRow && (
+                            <View style={styles.leadPill}>
+                              <Text style={styles.leadPillText}>LEAD</Text>
+                            </View>
+                          )}
+                        </View>
+                        <View style={styles.statusRow}>
+                          {status.icon}
+                          <Text style={[styles.statusText, { color: status.color }]}>{status.text}</Text>
+                        </View>
+                      </View>
+                      <Text style={styles.amount}>${share.toFixed(2)}</Text>
+                      {hasItems && (
+                        <View style={[{ marginLeft: 6 }, isOpen && { transform: [{ rotate: '180deg' }] }]}>
+                          <ChevronDown size={16} color={COLORS.subtext} />
                         </View>
                       )}
-                    </View>
-                    <View style={styles.statusRow}>
-                      {status.icon}
-                      <Text style={[styles.statusText, { color: status.color }]}>{status.text}</Text>
-                    </View>
-                  </View>
-                  <Text style={styles.amount}>${share.toFixed(2)}</Text>
-                  {hasItems && (
-                    <View style={[{ marginLeft: 6 }, isOpen && { transform: [{ rotate: '180deg' }] }]}>
-                      <ChevronDown size={16} color={COLORS.subtext} />
-                    </View>
-                  )}
-                  {canRemove && (
-                    <TouchableOpacity
-                      onPress={() => handleRemoveMember(m.user_id, m.name || 'this member')}
-                      hitSlop={10}
-                      style={{ marginLeft: 6, padding: 4 }}
-                      testID={`dashboard-remove-${m.user_id}`}
-                      accessibilityLabel={`Remove ${m.name || 'member'} from bill`}
-                    >
-                      <Trash2 size={16} color={COLORS.danger} />
                     </TouchableOpacity>
-                  )}
-                </TouchableOpacity>
+                  );
+                  if (!canRemove) return rowContent;
+                  return (
+                    <Swipeable
+                      renderRightActions={() => (
+                        <TouchableOpacity
+                          style={styles.swipeDeleteBtn}
+                          onPress={() => handleRemoveMember(m.user_id, m.name || 'this member')}
+                          activeOpacity={0.85}
+                          testID={`dashboard-remove-${m.user_id}`}
+                        >
+                          <Trash2 size={18} color="#fff" />
+                          <Text style={styles.swipeDeleteText}>Remove</Text>
+                        </TouchableOpacity>
+                      )}
+                      overshootRight={false}
+                      friction={2}
+                    >
+                      {rowContent}
+                    </Swipeable>
+                  );
+                })()}
                 {hasItems && isOpen && (
                   <View style={styles.memberItemsBody} testID={`dashboard-member-items-${m.user_id}`}>
                     {memberClaims.map((a) => {
@@ -893,5 +911,19 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
+  },
+  // Swipe-revealed "Remove" panel behind a removable member row.
+  swipeDeleteBtn: {
+    backgroundColor: COLORS.danger,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 22,
+    gap: 4,
+  },
+  swipeDeleteText: {
+    color: '#fff',
+    fontSize: FONT.sizes.xs,
+    fontWeight: FONT.weights.bold,
+    letterSpacing: 0.4,
   },
 });

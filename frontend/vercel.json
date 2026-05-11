@@ -3,6 +3,25 @@
   "trailingSlash": false,
   "rewrites": [
     { "source": "/api/:path*", "destination": "https://joint-pay-1.emergent.host/api/:path*" },
-    { "source": "/(.*)", "destination": "/" }
+    {
+      "source": "/((?!\\.well-known).*)",
+      "destination": "/"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/.well-known/apple-app-site-association",
+      "headers": [
+        { "key": "Content-Type", "value": "application/json" },
+        { "key": "Cache-Control", "value": "public, max-age=3600" }
+      ]
+    },
+    {
+      "source": "/.well-known/assetlinks.json",
+      "headers": [
+        { "key": "Content-Type", "value": "application/json" },
+        { "key": "Cache-Control", "value": "public, max-age=3600" }
+      ]
+    }
   ]
 }

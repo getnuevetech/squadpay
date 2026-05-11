@@ -13,6 +13,10 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.squadpay.app",
       "buildNumber": "1",
+      "associatedDomains": [
+        "applinks:squadpay.us",
+        "applinks:www.squadpay.us"
+      ],
       "infoPlist": {
         "NSCameraUsageDescription": "Scan receipts to split bills with friends",
         "NSPhotoLibraryUsageDescription": "Pick a receipt photo to split a bill",
@@ -32,6 +36,19 @@
         "READ_EXTERNAL_STORAGE",
         "READ_MEDIA_IMAGES",
         "INTERNET"
+      ],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            { "scheme": "https", "host": "squadpay.us", "pathPrefix": "/join/" },
+            { "scheme": "https", "host": "squadpay.us", "pathPrefix": "/group/" },
+            { "scheme": "https", "host": "www.squadpay.us", "pathPrefix": "/join/" },
+            { "scheme": "https", "host": "www.squadpay.us", "pathPrefix": "/group/" }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
       ]
     },
     "web": {

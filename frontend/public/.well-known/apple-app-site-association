@@ -1,0 +1,20 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appIDs": ["4JXHW2G4T7.com.squadpay.app"],
+        "components": [
+          {
+            "/": "/join/*",
+            "comment": "Join links (with 8-char code or QR scan) open the app"
+          },
+          {
+            "/": "/group/*",
+            "comment": "Group detail / dashboard links open the app"
+          }
+        ]
+      }
+    ]
+  }
+}

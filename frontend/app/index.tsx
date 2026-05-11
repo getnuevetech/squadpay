@@ -271,7 +271,7 @@ export default function HomeScreen() {
                   groupTotal={Number(featured.total || 0)}
                   paidAmount={Number((featured as any).funding?.contributed_total || (featured as any).funding?.total_contributed || 0)}
                   paidCount={Number((featured as any).paid_count || 0)}
-                  totalCount={Number((featured as any).member_count_non_lead || Math.max(0, (Number(featured.member_count || 1) - 1)))}
+                  totalCount={Number(featured.member_count || 0)}
                   leadId={featured.lead_id}
                   members={(featured as any).members_preview || []}
                   selfId={user.id}

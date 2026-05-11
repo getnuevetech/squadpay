@@ -82,11 +82,19 @@ export default function DashboardScreen() {
 
   const repaidByUser = (uid: string) =>
     group.repayments.filter((r) => r.user_id === uid).reduce((s, r) => s + r.amount, 0);
-  // Reflects both upfront contributions and post-payment repayments via per_user.outstanding.
-  const totalCollected = (group.funding?.total_contributed || 0) + (group.funding?.total_repaid || 0);
-  const totalOwed = group.per_user
-    .filter((p) => p.user_id !== group.lead_id)
-    .reduce((s, p) => s + p.total, 0);
+  // Collected = how much of the non-lead members' debt has actually been
+  // settled. Compute per-member as min(contributed+repaid, share) so a single
+  // overpayment can never inflate the number past totalOwed. This avoids the
+  // "$105 of $58 collected" bug when the lead pre-funded the whole bill.
+  const nonLeadPer = group.per_user.filter((p) => p.user_id !== group.lead_id);
+  const totalOwed = nonLeadPer.reduce((s, p) => s + (p.total || 0), 0);
+  const totalCollected = nonLeadPer.reduce(
+    (s, p) => s + Math.min(
+      (Number(p.contributed) || 0) + (Number(p.repaid) || 0),
+      Number(p.total) || 0,
+    ),
+    0,
+  );
   const pct = totalOwed > 0 ? Math.min(100, (totalCollected / totalOwed) * 100) : 100;
   // Cap displayed % at 99 if anyone still has outstanding — collection
   // can't be "100%" while a member is unpaid.
@@ -177,15 +185,15 @@ export default function DashboardScreen() {
               </Text>
               <Text style={styles.heroV2SubLabel}>Lead Dashboard</Text>
             </View>
-            <StatusBadge status={group.derived_status} size="sm" testID="dashboard-status-badge" />
+            <View style={styles.heroV2AmountColRight}>
+              <Text style={styles.heroV2Amount}>${myShare.toFixed(2)}</Text>
+              <Text style={styles.heroV2Total}>
+                Your share · of ${Number(group.total || 0).toFixed(2)}
+              </Text>
+            </View>
           </View>
-
-          <View style={styles.heroV2AmountCol}>
-            <Text style={styles.heroV2Label}>Your Share</Text>
-            <Text style={styles.heroV2Amount}>${myShare.toFixed(2)}</Text>
-            <Text style={styles.heroV2Total}>
-              of ${Number(group.total || 0).toFixed(2)} bill total
-            </Text>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
+            <StatusBadge status={group.derived_status} size="sm" testID="dashboard-status-badge" />
           </View>
 
           <View style={styles.heroV2Avatars}>
@@ -604,6 +612,7 @@ const styles = StyleSheet.create({
   },
   heroV2AmountRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
   heroV2AmountCol: { marginTop: 8 },
+  heroV2AmountColRight: { alignItems: 'flex-end', marginLeft: 12 },
   heroV2Label: {
     color: '#fff',
     fontSize: 13,
@@ -614,12 +623,12 @@ const styles = StyleSheet.create({
   },
   heroV2Amount: {
     color: '#fff',
-    fontSize: 44,
+    fontSize: 36,
     fontWeight: FONT.weights.heavy,
     letterSpacing: -1,
-    lineHeight: 48,
+    lineHeight: 40,
   },
-  heroV2Total: { color: '#D7C7FB', fontSize: 12, marginTop: 4 },
+  heroV2Total: { color: '#D7C7FB', fontSize: 11, marginTop: 2, textAlign: 'right' },
   heroV2Avatars: { flexDirection: 'row', alignItems: 'center', marginTop: 14 },
   heroV2Avatar: { borderWidth: 2, borderColor: '#fff', borderRadius: 999 },
   heroV2AvatarMore: {

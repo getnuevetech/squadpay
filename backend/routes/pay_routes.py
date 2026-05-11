@@ -320,13 +320,14 @@ def attach_pay_routes(router: APIRouter, db):
             # card "X of N paid · $A of $B" line is real, not mock.
             per_users = e.get("per_user") or []
             non_lead = [p for p in per_users if p.get("user_id") != g.get("lead_id")]
-            # Count ALL members (including the lead) whose share is fully
-            # settled — this is what users intuitively expect on the home
-            # FeaturedBillCard ("2 of 3 paid" in a 3-member group, including
-            # the lead).
+            # Count members who have actually put money toward the bill —
+            # any contribution or repayment > 0 counts as "paid". Before
+            # anyone contributes the count is 0, so a brand-new bill with
+            # $0 collected will correctly show "0 of N paid".
             paid_count = sum(
                 1 for p in per_users
-                if float(p.get("outstanding") or 0) <= 0.01
+                if float(p.get("contributed") or 0) > 0.01
+                or float(p.get("repaid") or 0) > 0.01
             )
             funding = e.get("funding") or {}
             contributed_total_raw = float(

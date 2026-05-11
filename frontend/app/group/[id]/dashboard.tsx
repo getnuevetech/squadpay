@@ -104,27 +104,37 @@ export default function DashboardScreen() {
   );
   const groupContributedTotal = group.funding?.total_contributed || 0;
   const groupRepaidTotal = group.funding?.total_repaid || 0;
-  // Outstanding mirrors the "Remaining" pill in the hero: it's the bill
-  // total minus everything that's been contributed. Same formula across the
-  // app so members never see two different numbers for the same concept.
-  const groupOutstandingTotal = Math.max(
-    0,
-    Number(group.total || 0) - groupContributedTotal,
+  // Grand total — sum of every breakdown row above so the math always adds
+  // up on screen. We compute this from the same numbers we render rather
+  // than relying on the backend's `group.total` (which historically counted
+  // only items+tax+tip+discount and dropped the SquadPay fees).
+  const discountAmount = Number(group.discount?.amount || 0);
+  const grandTotal = (
+    groupItemsTotal
+    + Number(group.tax || 0)
+    + Number(group.tip || 0)
+    - discountAmount
+    + groupTransactionFees
+    + groupPlatformFees
   );
+  // Outstanding mirrors the "Remaining" pill in the hero so members never
+  // see two different numbers for the same concept.
+  const groupOutstandingTotal = Math.max(0, grandTotal - groupContributedTotal);
   const myShare = myPer?.total || 0;
   const myContributed = myPer?.contributed || 0;
   const myOutstanding = myPer?.outstanding || 0;
 
   const funding = group.funding;
-  const collectedPct = group.total > 0 ? Math.min(100, (funding.total_contributed / group.total) * 100) : 0;
+  const collectedPct = grandTotal > 0 ? Math.min(100, (funding.total_contributed / grandTotal) * 100) : 0;
   const _outstandingTotal = (group.per_user || []).reduce(
     (s: number, p: any) => s + Number(p.outstanding || 0),
     0,
   );
   const displayedPct = _outstandingTotal > 0.01 ? Math.min(99, collectedPct) : collectedPct;
-  // Remaining = bill total − what's been contributed so far. Simple, fair,
-  // and impossible to invert when the wallet is over-funded.
-  const remaining = Math.max(0, Number(group.total || 0) - (funding.total_contributed || 0));
+  // Remaining = grand total − what's been contributed. Identical to the
+  // Outstanding row in the breakdown so members never see two different
+  // numbers for the same concept.
+  const remaining = Math.max(0, grandTotal - (funding.total_contributed || 0));
 
   const memberName = (uid?: string) => {
     if (!uid) return '';
@@ -188,7 +198,7 @@ export default function DashboardScreen() {
               ${myShare.toFixed(2)}
             </Text>
             <Text style={styles.heroV2Total} testID="dashboard-bill-total">
-              of ${Number(group.total || 0).toFixed(2)} bill total
+              of ${grandTotal.toFixed(2)} bill total
             </Text>
           </View>
 
@@ -215,7 +225,7 @@ export default function DashboardScreen() {
 
           <View style={styles.heroV2Meta}>
             <Text style={styles.heroV2MetaPrimary}>
-              ${funding.total_contributed.toFixed(0)} of ${Number(group.total || 0).toFixed(0)} collected
+              ${funding.total_contributed.toFixed(2)} of ${grandTotal.toFixed(2)} collected
             </Text>
             <Text style={styles.heroV2MetaSecondary}>
               {Math.round(displayedPct)}%
@@ -329,7 +339,7 @@ export default function DashboardScreen() {
               </View>
               <View style={[styles.breakdownRow, { borderTopWidth: 1, borderTopColor: COLORS.border, marginTop: 6, paddingTop: 6 }]}>
                 <Text style={[styles.breakdownKey, { fontWeight: FONT.weights.bold, color: COLORS.text }]}>Bill total</Text>
-                <Text style={[styles.breakdownVal, { color: COLORS.text, fontWeight: FONT.weights.bold }]}>${Number(group.total || 0).toFixed(2)}</Text>
+                <Text style={[styles.breakdownVal, { color: COLORS.text, fontWeight: FONT.weights.bold }]}>${grandTotal.toFixed(2)}</Text>
               </View>
               {groupContributedTotal > 0 ? (
                 <View style={styles.breakdownRow}>

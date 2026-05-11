@@ -224,7 +224,7 @@ function ActiveCard({
             {paidCount} of {totalCount} paid
           </Text>
           <Text style={styles.metaSecondary}>
-            ${paidAmount.toFixed(0)} of ${groupTotal.toFixed(0)}
+            {Math.round(pct * 100)}% contributed
           </Text>
         </View>
 

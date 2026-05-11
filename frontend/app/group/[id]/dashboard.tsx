@@ -21,16 +21,16 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Swipeable } from 'react-native-gesture-handler';
 import { Receipt, CheckCircle2, Clock, Wallet, AlertCircle, Plus, Pencil, ChevronDown, UserPlus, Trash2 } from 'lucide-react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Button } from '../../../src/Button';
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
-import { StatusBadge } from '../../../src/StatusBadge';
 import { EditMetaModal } from '../../../src/EditMetaModal';
 import { toast } from '../../../src/components/Toast';
 import { Skeleton, SkeletonGroupRow } from '../../../src/components/Skeleton';
-import { AvatarRing } from '../../../src/components/AvatarRing';
+import { HeroCard } from '../../../src/components/redesign/HeroCard';
+import { BillBreakdown } from '../../../src/components/redesign/BillBreakdown';
+import { useBillMath } from '../../../src/hooks/useBillMath';
 
 export default function DashboardScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -40,7 +40,6 @@ export default function DashboardScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [editTaxTipVisible, setEditTaxTipVisible] = useState(false);
   const [memberItemsOpen, setMemberItemsOpen] = useState<Record<string, boolean>>({});
-  const [breakdownOpen, setBreakdownOpen] = useState(false);
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -74,6 +73,24 @@ export default function DashboardScreen() {
     setRefreshing(false);
   };
 
+  // Compute math BEFORE any early return so hooks order stays stable across renders.
+  // The hook returns zero-filled defaults when `group` is still null (loading).
+  const {
+    myShare,
+    myContributed,
+    groupItemsTotal,
+    groupTransactionFees,
+    groupPlatformFees,
+    extraFeesAgg,
+    groupContributedTotal,
+    groupRepaidTotal,
+    grandTotal,
+    groupOutstandingTotal,
+    displayedPct,
+    remaining,
+    needsMoreMembers,
+  } = useBillMath(group, userId);
+
   if (!group || !userId) {
     return (
       <SafeAreaView style={styles.center} testID="dashboard-loading">
@@ -89,64 +106,8 @@ export default function DashboardScreen() {
   }
 
   const isLead = group.lead_id === userId; // always true on this screen
-  const myPer = group.per_user.find((p) => p.user_id === userId);
-
-  // ── Group-level totals for the Bill/Fund Breakdown card ──
-  const groupItemsTotal = (group.items || []).reduce(
-    (s: number, it: any) => s + Number(it.price || 0) * Number(it.quantity || 1),
-    0,
-  );
-  const groupTransactionFees = (group.per_user || []).reduce(
-    (s: number, p: any) => s + Number(p.transaction_fee || 0),
-    0,
-  );
-  const groupPlatformFees = (group.per_user || []).reduce(
-    (s: number, p: any) => s + Number(p.platform_fee || 0),
-    0,
-  );
-  const groupContributedTotal = group.funding?.total_contributed || 0;
-  const groupRepaidTotal = group.funding?.total_repaid || 0;
-  // Aggregate admin-configurable extra fees across members (per_user.extra_fees
-  // is an array of {id,name,amount} — each fee may appear once per member).
-  const extraFeesAgg: { id: string; name: string; amount: number }[] = [];
-  for (const p of (group.per_user || []) as any[]) {
-    for (const ef of (p.extra_fees || []) as any[]) {
-      const found = extraFeesAgg.find((x) => x.id === ef.id);
-      if (found) found.amount += Number(ef.amount || 0);
-      else extraFeesAgg.push({ id: ef.id, name: ef.name || 'Extra fee', amount: Number(ef.amount || 0) });
-    }
-  }
-  const groupExtraFeesTotal = extraFeesAgg.reduce((s, f) => s + f.amount, 0);
-  // Grand total — sum of every breakdown row above so the math always adds
-  // up on screen. We compute this from the same numbers we render rather
-  // than relying on the backend's `group.total` (which historically counted
-  // only items+tax+tip and dropped the SquadPay fees).
-  const grandTotal = (
-    groupItemsTotal
-    + Number(group.tax || 0)
-    + Number(group.tip || 0)
-    + groupTransactionFees
-    + groupPlatformFees
-    + groupExtraFeesTotal
-  );
-  // Outstanding mirrors the "Remaining" pill in the hero so members never
-  // see two different numbers for the same concept.
-  const groupOutstandingTotal = Math.max(0, grandTotal - groupContributedTotal);
-  const myShare = myPer?.total || 0;
-  const myContributed = myPer?.contributed || 0;
-  const myOutstanding = myPer?.outstanding || 0;
 
   const funding = group.funding;
-  const collectedPct = grandTotal > 0 ? Math.min(100, (funding.total_contributed / grandTotal) * 100) : 0;
-  const _outstandingTotal = (group.per_user || []).reduce(
-    (s: number, p: any) => s + Number(p.outstanding || 0),
-    0,
-  );
-  const displayedPct = _outstandingTotal > 0.01 ? Math.min(99, collectedPct) : collectedPct;
-  // Remaining = grand total − what's been contributed. Identical to the
-  // Outstanding row in the breakdown so members never see two different
-  // numbers for the same concept.
-  const remaining = Math.max(0, grandTotal - (funding.total_contributed || 0));
 
   const memberName = (uid?: string) => {
     if (!uid) return '';
@@ -186,12 +147,6 @@ export default function DashboardScreen() {
   };
 
   const leadShareCovered = myContributed >= myShare - 0.01;
-  // A group needs ≥2 members to settle — the backend enforces this on the
-  // /contribute and /pay endpoints. We mirror it in the UI so the lead
-  // sees a clear "invite first" prompt instead of clicking a button that
-  // would 400 from the server.
-  const memberCount = (group.members || []).length;
-  const needsMoreMembers = memberCount < 2;
 
   return (
     <SafeAreaView edges={['bottom']} style={{ flex: 1, backgroundColor: COLORS.bg }}>

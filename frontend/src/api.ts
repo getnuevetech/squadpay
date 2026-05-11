@@ -300,6 +300,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ user_id }),
     }),
+  removeMember: (id: string, user_id: string, target_id: string) =>
+    request<Group>(`/groups/${id}/remove-member`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id, target_id }),
+    }),
   updateItems: (id: string, items: { name: string; price: number; quantity: number }[]) =>
     request<Group>(`/groups/${id}/items`, {
       method: 'PUT',

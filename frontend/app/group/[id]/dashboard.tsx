@@ -10,6 +10,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import {
+  Alert,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -18,7 +19,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Receipt, CheckCircle2, Clock, Wallet, AlertCircle, Plus, Pencil, ChevronDown, UserPlus } from 'lucide-react-native';
+import { Receipt, CheckCircle2, Clock, Wallet, AlertCircle, Plus, Pencil, ChevronDown, UserPlus, Trash2 } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Button } from '../../../src/Button';
 import { api, Group } from '../../../src/api';
@@ -157,6 +158,30 @@ export default function DashboardScreen() {
   };
   const handleLeadPay = () => {
     router.push(`/group/${group.id}/pay?kind=lead`);
+  };
+
+  const handleRemoveMember = (targetId: string, name: string) => {
+    Alert.alert(
+      'Remove member?',
+      `${name} will be removed from this bill. Their item claims will be released and everyone on the bill will be notified.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const updated = await api.removeMember(String(group.id), String(userId), targetId);
+              setGroup(updated);
+              toast.success(`${name} removed`);
+            } catch (e: any) {
+              const msg = e?.message || 'Could not remove member';
+              Alert.alert('Cannot remove', msg);
+            }
+          },
+        },
+      ],
+    );
   };
 
   const leadShareCovered = myContributed >= myShare - 0.01;
@@ -388,6 +413,15 @@ export default function DashboardScreen() {
             const memberClaims = group.assignments.filter((a) => a.user_id === m.user_id);
             const hasItems = group.split_mode !== 'fast' && memberClaims.length > 0;
             const isOpen = !!memberItemsOpen[m.user_id];
+            // A non-lead member with zero contribution+repayment can be
+            // removed by the lead while the bill is still open. This mirrors
+            // the backend guard on /remove-member.
+            const canRemove = (
+              !isLeadRow
+              && group.status === 'open'
+              && (Number(per?.contributed) || 0) <= 0.01
+              && (Number(per?.repaid) || 0) <= 0.01
+            );
 
             let status: { icon: any; text: string; color: string };
             const obligationOwed = per?.shortfall_owed || 0;
@@ -453,6 +487,17 @@ export default function DashboardScreen() {
                     <View style={[{ marginLeft: 6 }, isOpen && { transform: [{ rotate: '180deg' }] }]}>
                       <ChevronDown size={16} color={COLORS.subtext} />
                     </View>
+                  )}
+                  {canRemove && (
+                    <TouchableOpacity
+                      onPress={() => handleRemoveMember(m.user_id, m.name || 'this member')}
+                      hitSlop={10}
+                      style={{ marginLeft: 6, padding: 4 }}
+                      testID={`dashboard-remove-${m.user_id}`}
+                      accessibilityLabel={`Remove ${m.name || 'member'} from bill`}
+                    >
+                      <Trash2 size={16} color={COLORS.danger} />
+                    </TouchableOpacity>
                   )}
                 </TouchableOpacity>
                 {hasItems && isOpen && (

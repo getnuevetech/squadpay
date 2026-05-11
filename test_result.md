@@ -5070,3 +5070,157 @@ agent_communication:
         No 5xx errors. Module-level cache (_EXTRA_FEES_CACHE) is correctly refreshed on
         each admin PUT — verified by recomputing per-user breakdown on a fresh bill
         immediately after toggling enabled flags. Phase M is ready to ship.
+
+# ───────────────────────────────────────────────────────────────────
+# Phase N — Lead removes a non-contributing member
+# ───────────────────────────────────────────────────────────────────
+
+backend:
+  - task: "POST /api/groups/{id}/remove-member"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/groups_routes.py, /app/backend/core.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+            New endpoint lets the lead remove a non-contributing member from
+            an OPEN bill. All members (incl. the removed user) get a
+            notification entry.
+
+            Strict guards (all 400/403/404):
+              • Only the lead may call (403 if not lead_id)
+              • Bill must be status="open" (400 once contributions are complete)
+              • Target cannot be the lead themselves (400)
+              • Target must be a current member (404 otherwise)
+              • Target must have ZERO contribution AND ZERO repayment (400 otherwise)
+
+            Side effects on success:
+              • members[] loses the target
+              • assignments[] loses any rows for that target (item claims released to unclaimed)
+              • notifications[] gets one entry per ORIGINAL member with kind="member_removed"
+              • _load_group_enriched is re-run and returned
+
+            Acceptance tests for deep_testing_backend_v2:
+              1. Non-lead caller → 403 "Only the lead can remove"
+              2. Status=paid or closed → 400 "Members can no longer be removed"
+              3. Target = lead → 400 "lead cannot be removed"
+              4. Target not a member → 404
+              5. Target with contribution > 0 → 400 "already contributed"
+              6. Happy path: 200, member gone from response.members, their
+                 assignments removed, response.notifications grew by N entries
+                 (one per original member), recompute math correct.
+              7. Body input model = RemoveMemberIn with user_id + target_id
+
+
+        - working: true
+          agent: "testing"
+          comment: |
+            Phase N (Lead removes a non-contributing member) end-to-end tested via
+            /app/backend_test.py against the live preview backend
+            (https://joint-pay-1.preview.emergentagent.com/api). 30/30 assertions PASS,
+            no 5xx errors anywhere.
+
+            Coverage by acceptance criterion (all PASS):
+
+              1) Non-lead caller → 403:
+                 - Fresh fast-split $60 group with lead + 2 members (m1, m2).
+                 - POST /groups/{gid}/remove-member with user_id=m1 (non-lead),
+                   target_id=m2 → 403; detail = "Only the lead can remove members"
+                   (substring "lead can remove" matched). ✅
+
+              2) Bill status != "open" → 400 "Members can no longer be removed":
+                 - Drove the bill to status=paid via credit-only contributions (admin
+                   granted enough credit to lead + m1; both contributed full remaining
+                   share → auto-finalize flipped status='paid').
+                 - POST remove-member as lead with target_id=m1 → 400; detail =
+                   "Members can no longer be removed — contributions are complete." ✅
+
+              3) Target = lead → 400 "lead cannot be removed":
+                 - POST remove-member with target_id == lead_id → 400; detail =
+                   "The lead cannot be removed from their own bill" (substring
+                   "lead cannot be removed" matched). ✅
+
+              4) Target not in group → 404 "not part of this group":
+                 - Created an extra verified user "outsider" (never joined gid).
+                 - POST remove-member with target_id=outsider_id → 404; detail =
+                   "Member is not part of this group". ✅
+
+              5) Target has contributed → 400 "already contributed":
+                 - Admin granted $4.16 credit to m1; m1 contributed $4.16 via
+                   credit-only path (response.checkout_required=false, credit_only=true,
+                   contribution row {amount:4.16, cash_paid:0, credit_applied:4.16}).
+                 - POST remove-member with target_id=m1 → 400; detail =
+                   "This member has already contributed to the bill. Refund their
+                   contribution first before removing them." (substring
+                   "already contributed" matched). ✅
+
+              6) Happy path — lead removes the untouched member (m2):
+                 - Pre-state: members=3 (lead + m1 + m2), notifications=0.
+                 - POST remove-member user_id=lead, target_id=m2 → 200. ✅
+                 - response.members no longer contains m2 (only lead + m1). ✅
+                 - response.assignments contains zero rows for m2. ✅
+                 - response.notifications grew by exactly 3 entries (== original
+                   member count). ✅
+                 - All 3 new notifications have kind="member_removed", with user_id
+                   set to {lead, m1, m2} respectively — i.e. the removed user also
+                   gets notified. ✅
+                 - response.per_user now has exactly 2 rows (lead + m1) — recompute
+                   ran cleanly with no error. ✅
+                 - group.total_amount unchanged at $60.00. ✅
+
+              7) Post-removal contribute & pay still works:
+                 - After removing m2, remaining shares: m1=$27.11, lead=$31.27
+                   (m1 had already contributed $4.16; lead = full $20.81 + redistributed
+                   shortfall). Note: per_user.total is recomputed across the 2
+                   remaining members, so the lead's outstanding rose to absorb m2's
+                   share — this is the expected/correct fast-split behavior, not a bug.
+                 - Admin granted credits to cover; m1 contribute → 200 credit_only;
+                   lead contribute → 200 credit_only; group.status flipped to "paid"
+                   (derived_status="contributed"). ✅
+
+            Edge case verified additionally: posting remove-member on the now-paid
+            group (scenario 2 above) correctly returns 400 with the same
+            "Members can no longer be removed" message — proving the status-gate is
+            enforced AFTER the auto-finalize transition fired.
+
+            Backend log notes (informational, not blockers):
+              - passlib bcrypt cosmetic warning (no functional impact).
+              - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes; ≥32 recommended).
+              - Stripe Issuing card auto-issued for the paid group (expected side
+                effect of contribute auto-finalize).
+
+            Test suite saved at /app/backend_test.py — idempotent (uses TS-based
+            names + unique phone numbers per run). Phase N is ready to ship.
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        PHASE N (Lead removes a non-contributing member) — 30/30 ASSERTIONS PASS.
+
+        All 7 acceptance criteria verified end-to-end on the live preview backend
+        (https://joint-pay-1.preview.emergentagent.com/api):
+
+          ✅ 1) Non-lead caller → 403 "Only the lead can remove members".
+          ✅ 2) Bill status=paid → 400 "Members can no longer be removed".
+          ✅ 3) Target = lead → 400 "The lead cannot be removed from their own bill".
+          ✅ 4) Target not in group → 404 "Member is not part of this group".
+          ✅ 5) Target with prior contribution → 400 "...already contributed...".
+          ✅ 6) Happy path:
+                 - response.members loses target.
+                 - response.assignments contains zero rows for removed user.
+                 - response.notifications grew by exactly N=3 entries (one per
+                   ORIGINAL member, INCLUDING the removed user), all with
+                   kind='member_removed'.
+                 - Recompute math runs cleanly (per_user now 2 rows, total unchanged).
+          ✅ 7) After removal, remaining members can still contribute via credit-only
+                 and the bill auto-flips to status='paid'.
+
+        No 5xx errors anywhere on the remove-member endpoint. The status-gate
+        correctly transitions: removable while open → blocked once auto-finalize
+        moves the bill to paid.
+
+        Phase N is ready to ship. No backend action required.

@@ -506,6 +506,14 @@ class JoinGroupIn(BaseModel):
     user_id: str
 
 
+class RemoveMemberIn(BaseModel):
+    """Lead removes a member from the group. Pre-conditions enforced by the
+    route: bill must still be open, target must not be the lead, and the
+    target must have made no contribution or repayment."""
+    user_id: str       # the lead performing the action
+    target_id: str     # the member to remove
+
+
 class UpdateItemsIn(BaseModel):
     items: List[ItemIn]
 

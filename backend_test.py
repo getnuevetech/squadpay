@@ -1,19 +1,21 @@
 """
-Phase M backend test — Admin-configurable platform fees.
+Phase N backend test — Lead removes a non-contributing member.
 
-Covers:
-  1. GET /api/admin/platform-fees without admin auth → 401
-  2. GET /api/admin/platform-fees with admin token → 2 default disabled slots
-  3. PUT /api/admin/platform-fees with valid payload → 200 returns persisted fees
-  4. Create a new bill with multiple members, verify per_user.extra_fees correctness
-  5. PUT with unknown slot id → 400 "unknown_fee_slot"
-  6. PUT with invalid type → 422
-  7. Disable both fees → NEW bill has no extra_fees
+Endpoint: POST /api/groups/{group_id}/remove-member
+Body:     { "user_id": "<lead_id>", "target_id": "<member_to_remove_id>" }
+
+Acceptance:
+  1. Non-lead caller → 403 "lead can remove"
+  2. Bill status != "open" → 400 "Members can no longer be removed"
+  3. Target = lead → 400 "lead cannot be removed"
+  4. Target not in group → 404 "not part of this group"
+  5. Target has contributed → 400 "already contributed"
+  6. Happy path: 200; member gone; assignments scrubbed; notifications +N (N=orig members)
+  7. After removal, contributing member can still contribute and pay normally
 """
 import os
 import sys
 import time
-import json
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -44,6 +46,13 @@ def assert_eq(name: str, actual, expected, tol: float = 0.0):
         ok = actual == expected
     record(name, ok, "" if ok else f"expected={expected!r} actual={actual!r}")
 
+
+def assert_contains(name: str, haystack: str, needle: str):
+    ok = needle.lower() in (haystack or "").lower()
+    record(name, ok, "" if ok else f"expected substring {needle!r} in {haystack!r}")
+
+
+# ───────────────────────── admin & user helpers ─────────────────────────
 
 def admin_login() -> str:
     r = requests.post(
@@ -91,16 +100,18 @@ def verify_otp(user_id: str, phone: str, code: str = "123456") -> Dict[str, Any]
     return r.json()
 
 
-def create_verified_user(name: str, phone_suffix: int) -> str:
-    """Register + OTP + verify a user. Returns user_id (possibly merged)."""
+def _phone_for(suffix: int, salt: int = 0) -> str:
+    """Build a deterministic but per-run unique +1XXXXXXXXXX phone."""
+    last4 = f"{(TS + salt) % 10000:04d}"
+    sfx = f"{suffix:03d}"
+    return f"+1832{last4}{sfx}"
+
+
+def create_verified_user(name: str, suffix: int, salt: int = 0) -> str:
     uid = register_user(name)
-    # Build a unique 10-digit US phone: area=832, mid=<TS last 4>, last=<3-digit suffix>
-    last4 = f"{TS % 10000:04d}"
-    suffix = f"{phone_suffix:03d}"
-    phone = f"+1832{last4}{suffix}"  # +1 + 10 digits = 12 chars
+    phone = _phone_for(suffix, salt)
     send_otp(uid, phone)
     resp = verify_otp(uid, phone, "123456")
-    # The verify endpoint may return the merged user; prefer that id if present
     return resp.get("user", {}).get("id") or resp.get("id") or uid
 
 
@@ -132,207 +143,281 @@ def get_group(gid: str) -> Dict[str, Any]:
     return r.json()
 
 
+def remove_member(gid: str, lead_id: str, target_id: str) -> requests.Response:
+    return requests.post(
+        f"{API}/groups/{gid}/remove-member",
+        json={"user_id": lead_id, "target_id": target_id},
+        timeout=20,
+    )
+
+
+def grant_credit(admin_tok: str, user_id: str, amount: float, note: str = "Phase N test") -> Dict[str, Any]:
+    r = requests.post(
+        f"{API}/admin/users/{user_id}/credits/grant",
+        headers=auth_headers(admin_tok),
+        json={"amount": amount, "note": note},
+        timeout=20,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"grant credit failed: {r.status_code} {r.text}")
+    return r.json()
+
+
+def contribute_full_credit(gid: str, uid: str) -> Dict[str, Any]:
+    """Contribute the user's full remaining share via credit (no Stripe)."""
+    r = requests.post(
+        f"{API}/groups/{gid}/contribute",
+        json={"user_id": uid, "notify_on_settled": False},
+        timeout=20,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"contribute failed: {r.status_code} {r.text}")
+    return r.json()
+
+
+def user_total_in_group(group_doc: Dict[str, Any], uid: str) -> float:
+    for p in group_doc.get("per_user") or []:
+        if p.get("user_id") == uid:
+            return float(p.get("total") or 0.0)
+    return 0.0
+
+
+# ───────────────────────────── main test ────────────────────────────────
+
 def main() -> int:
-    print(f"=== Phase M Test against {API} ===")
+    print(f"=== Phase N Test against {API} ===")
 
-    # ---------- 1. GET without admin token → 401 ----------
-    r = requests.get(f"{API}/admin/platform-fees", timeout=15)
-    assert_eq("1. GET /admin/platform-fees no-auth → 401", r.status_code, 401)
-
-    # ---------- admin login ----------
+    # --- admin login (only needed for grant credit + driving paid state) ---
     try:
         tok = admin_login()
         record("admin login", True)
     except Exception as e:
         record("admin login", False, str(e))
-        print("Cannot continue without admin token.")
         return 1
 
-    H = auth_headers(tok)
-
-    # ---------- 2. GET with admin → 2 default disabled slots ----------
-    r = requests.get(f"{API}/admin/platform-fees", headers=H, timeout=15)
-    assert_eq("2a. GET /admin/platform-fees status", r.status_code, 200)
-    if r.status_code == 200:
-        payload = r.json()
-        fees = payload.get("fees", [])
-        assert_eq("2b. fees length == 2", len(fees), 2)
-        ids = {f.get("id") for f in fees}
-        assert_eq("2c. fees contain extra_1 + extra_2", ids, {"extra_1", "extra_2"})
-        # Reset the slots to a known disabled state first to make test idempotent.
-        reset_payload = {
-            "fees": [
-                {"id": "extra_1", "name": "Extra Fee 1", "type": "flat", "value": 0.0, "enabled": False},
-                {"id": "extra_2", "name": "Extra Fee 2", "type": "flat", "value": 0.0, "enabled": False},
-            ]
-        }
-        rr = requests.put(f"{API}/admin/platform-fees", headers=H, json=reset_payload, timeout=15)
-        if rr.status_code == 200:
-            rr2 = requests.get(f"{API}/admin/platform-fees", headers=H, timeout=15)
-            fees2 = rr2.json().get("fees", [])
-            disabled_ok = all(f.get("enabled") is False for f in fees2)
-            record("2d. After reset, both slots enabled=false", disabled_ok,
-                   "" if disabled_ok else f"fees={fees2}")
-        else:
-            record("2d. reset to defaults", False, f"{rr.status_code} {rr.text}")
-
-    # ---------- 3. PUT valid payload ----------
-    valid_payload = {
-        "fees": [
-            {"id": "extra_1", "name": "Service Fee", "type": "percent", "value": 1.5, "enabled": True},
-            {"id": "extra_2", "name": "Insurance", "type": "flat", "value": 0.25, "enabled": True},
-        ]
-    }
-    r = requests.put(f"{API}/admin/platform-fees", headers=H, json=valid_payload, timeout=15)
-    assert_eq("3a. PUT valid payload status", r.status_code, 200)
-    if r.status_code == 200:
-        persisted = r.json().get("fees", [])
-        by_id = {f["id"]: f for f in persisted}
-        e1 = by_id.get("extra_1") or {}
-        e2 = by_id.get("extra_2") or {}
-        assert_eq("3b. extra_1.name", e1.get("name"), "Service Fee")
-        assert_eq("3c. extra_1.type", e1.get("type"), "percent")
-        assert_eq("3d. extra_1.value", float(e1.get("value", 0)), 1.5, tol=1e-6)
-        assert_eq("3e. extra_1.enabled", e1.get("enabled"), True)
-        assert_eq("3f. extra_2.name", e2.get("name"), "Insurance")
-        assert_eq("3g. extra_2.type", e2.get("type"), "flat")
-        assert_eq("3h. extra_2.value", float(e2.get("value", 0)), 0.25, tol=1e-6)
-        assert_eq("3i. extra_2.enabled", e2.get("enabled"), True)
-
-    # ---------- 4. Create new bill with multiple members, verify extras ----------
-    # Build 3 verified users (lead + 2 members) so member_count == 3
+    # ============================================================
+    # Setup A: lead + 2 members in a fresh fast-split group.
+    # Used for scenarios 1, 3, 4, 5, 6, 7.
+    # ============================================================
     try:
-        lead_id = create_verified_user(f"Lead M{TS}", 0)
-        m1_id = create_verified_user(f"Mem1 M{TS}", 1)
-        m2_id = create_verified_user(f"Mem2 M{TS}", 2)
-        record("4a. created 3 verified users", True,
-               f"lead={lead_id} m1={m1_id} m2={m2_id}")
+        lead_id = create_verified_user(f"Lead N{TS}", 100)
+        m1_id = create_verified_user(f"Alice N{TS}", 101)
+        m2_id = create_verified_user(f"Bob N{TS}", 102)
+        outsider_id = create_verified_user(f"Carl N{TS}", 103)
+        record("setupA. created lead + 2 members + outsider", True,
+               f"lead={lead_id} m1={m1_id} m2={m2_id} outsider={outsider_id}")
     except Exception as e:
-        record("4a. created 3 verified users", False, str(e))
-        lead_id = m1_id = m2_id = None
+        record("setupA. created lead + 2 members + outsider", False, str(e))
+        return 1
 
-    total_amount = 60.0  # convenient for math
-    if lead_id and m1_id and m2_id:
-        try:
-            gid = create_fast_group(lead_id, "Phase M Test Bill", total_amount)
-            join_group(gid, m1_id)
-            join_group(gid, m2_id)
-            grp = get_group(gid)
-            record("4b. created group with 3 members", True, f"gid={gid}")
-            per_user = grp.get("per_user", [])
-            member_count = len(per_user)
-            assert_eq("4c. per_user member count", member_count, 3)
-
-            # In fast split with $60 / 3 = $20 merchant_share each
-            expected_merchant_share = round(total_amount / member_count, 2)
-            # percent fee per member: 1.5% of merchant_share / member_count
-            #   = (1.5/100) * 20 / 3 = 0.10
-            expected_pct = round((1.5 / 100.0) * expected_merchant_share / member_count, 2)
-            # flat per member: 0.25 / 3 = 0.0833 → rounds to 0.08
-            expected_flat = round(0.25 / member_count, 2)
-            expected_extras_total = round(expected_pct + expected_flat, 2)
-
-            print(f"  expected merchant_share={expected_merchant_share}, "
-                  f"pct={expected_pct}, flat={expected_flat}, "
-                  f"extras_total={expected_extras_total}")
-
-            all_ok_extras = True
-            all_ok_totals = True
-            for p in per_user:
-                ef = p.get("extra_fees") or []
-                ids = {e.get("id") for e in ef}
-                if ids != {"extra_1", "extra_2"}:
-                    all_ok_extras = False
-                    record(f"4d. user {p['user_id']} extra_fees ids",
-                           False, f"got {ids}")
-                    continue
-                by_id = {e["id"]: e for e in ef}
-                pct_amt = round(float(by_id["extra_1"]["amount"]), 2)
-                flat_amt = round(float(by_id["extra_2"]["amount"]), 2)
-                if pct_amt != expected_pct or flat_amt != expected_flat:
-                    all_ok_extras = False
-                    record(f"4d. user {p['user_id']} extra amts",
-                           False, f"pct={pct_amt} flat={flat_amt}")
-                tot_extras = round(float(p.get("extra_fees_total", 0)), 2)
-                if tot_extras != expected_extras_total:
-                    all_ok_extras = False
-                    record(f"4e. user {p['user_id']} extra_fees_total",
-                           False, f"got {tot_extras} exp {expected_extras_total}")
-                # total should include extras
-                merchant_share = float(p.get("merchant_share", 0))
-                txn_fee = float(p.get("transaction_fee", 0))
-                plat_fee = float(p.get("platform_fee", 0))
-                expected_total = round(merchant_share + txn_fee + plat_fee + tot_extras, 2)
-                got_total = round(float(p.get("total", 0)), 2)
-                if abs(got_total - expected_total) > 0.02:
-                    all_ok_totals = False
-                    record(f"4g. user {p['user_id']} total includes extras",
-                           False, f"got {got_total} exp {expected_total}")
-            record("4d. each member has both extra_fees with correct amounts",
-                   all_ok_extras)
-            record("4f. extra_fees_total = sum of extras", all_ok_extras)
-            record("4g. per_user.total now INCLUDES extras", all_ok_totals)
-        except Exception as e:
-            record("4b. created group with 3 members", False, str(e))
-
-    # ---------- 5. PUT with unknown slot id → 400 unknown_fee_slot ----------
-    bad_id_payload = {
-        "fees": [
-            {"id": "extra_3", "name": "Bogus", "type": "flat", "value": 1.0, "enabled": True},
-        ]
-    }
-    r = requests.put(f"{API}/admin/platform-fees", headers=H, json=bad_id_payload, timeout=15)
-    assert_eq("5a. PUT unknown slot id status", r.status_code, 400)
-    detail = ""
+    # Create the main test group ($60 fast-split → ~$20 each + fees)
     try:
-        detail = (r.json().get("detail") or "")
+        gid = create_fast_group(lead_id, f"Phase N Main Bill {TS}", 60.0)
+        join_group(gid, m1_id)
+        join_group(gid, m2_id)
+        record("setupA. created $60 fast-split group + joined m1, m2", True, f"gid={gid}")
+    except Exception as e:
+        record("setupA. created $60 fast-split group + joined m1, m2", False, str(e))
+        return 1
+
+    # ------------------------------------------------------------
+    # Scenario 1 — Non-lead caller → 403 "lead can remove"
+    # ------------------------------------------------------------
+    r = remove_member(gid, lead_id=m1_id, target_id=m2_id)
+    assert_eq("1a. non-lead caller status", r.status_code, 403)
+    try:
+        d = r.json().get("detail") or ""
     except Exception:
-        detail = r.text
-    record("5b. detail contains 'unknown_fee_slot'",
-           "unknown_fee_slot" in str(detail),
-           f"detail={detail!r}")
+        d = r.text
+    assert_contains("1b. detail mentions 'lead can remove'", d, "lead can remove")
 
-    # ---------- 6. PUT with invalid type → 422 ----------
-    bad_type_payload = {
-        "fees": [
-            {"id": "extra_1", "name": "Bad", "type": "xyz", "value": 1.0, "enabled": True},
-        ]
-    }
-    r = requests.put(f"{API}/admin/platform-fees", headers=H, json=bad_type_payload, timeout=15)
-    assert_eq("6. PUT invalid type → 422", r.status_code, 422)
+    # ------------------------------------------------------------
+    # Scenario 3 — Target = lead → 400 "lead cannot be removed"
+    # ------------------------------------------------------------
+    r = remove_member(gid, lead_id=lead_id, target_id=lead_id)
+    assert_eq("3a. target=lead status", r.status_code, 400)
+    try:
+        d = r.json().get("detail") or ""
+    except Exception:
+        d = r.text
+    assert_contains("3b. detail mentions 'lead cannot be removed'", d, "lead cannot be removed")
 
-    # ---------- 7. Disable both fees → NEW bill has empty/missing extra_fees ----------
-    disable_payload = {
-        "fees": [
-            {"id": "extra_1", "name": "Service Fee", "type": "percent", "value": 1.5, "enabled": False},
-            {"id": "extra_2", "name": "Insurance", "type": "flat", "value": 0.25, "enabled": False},
-        ]
-    }
-    r = requests.put(f"{API}/admin/platform-fees", headers=H, json=disable_payload, timeout=15)
-    assert_eq("7a. PUT disable both status", r.status_code, 200)
-    if r.status_code == 200 and lead_id and m1_id and m2_id:
-        try:
-            gid2 = create_fast_group(lead_id, "Phase M Disabled Bill", 30.0)
-            join_group(gid2, m1_id)
-            join_group(gid2, m2_id)
-            grp2 = get_group(gid2)
-            per_user2 = grp2.get("per_user", [])
-            all_empty = True
-            details = []
-            for p in per_user2:
-                ef = p.get("extra_fees")
-                if ef:  # non-empty list
-                    all_empty = False
-                    details.append(f"{p['user_id']}: {ef}")
-                if float(p.get("extra_fees_total", 0)) != 0:
-                    all_empty = False
-                    details.append(f"{p['user_id']} extra_fees_total={p.get('extra_fees_total')}")
-            record("7b. new bill has empty/missing extra_fees", all_empty,
-                   "; ".join(details) if details else "")
-        except Exception as e:
-            record("7b. new bill has empty/missing extra_fees", False, str(e))
+    # ------------------------------------------------------------
+    # Scenario 4 — Target not in group → 404 "not part of this group"
+    # ------------------------------------------------------------
+    r = remove_member(gid, lead_id=lead_id, target_id=outsider_id)
+    assert_eq("4a. target-not-member status", r.status_code, 404)
+    try:
+        d = r.json().get("detail") or ""
+    except Exception:
+        d = r.text
+    assert_contains("4b. detail mentions 'not part of this group'", d, "not part of this group")
 
-    # ---------- summary ----------
+    # ------------------------------------------------------------
+    # Scenario 5 — Target has contributed → 400 "already contributed"
+    # First find m1's share, grant exact credit, contribute partial.
+    # ------------------------------------------------------------
+    grp_now = get_group(gid)
+    m1_share = user_total_in_group(grp_now, m1_id)
+    print(f"  m1 share (with fees) = ${m1_share:.2f}")
+    # Grant a small partial credit so m1 makes a tiny but non-zero contribution.
+    try:
+        partial = round(min(5.0, max(0.5, m1_share / 5.0)), 2)
+        grant_credit(tok, m1_id, partial, note="Phase N partial contribute")
+        c_resp = requests.post(
+            f"{API}/groups/{gid}/contribute",
+            json={"user_id": m1_id, "amount": partial, "notify_on_settled": False},
+            timeout=20,
+        )
+        record("5a. m1 partial credit-only contribute returns 200",
+               c_resp.status_code == 200,
+               f"{c_resp.status_code} {c_resp.text[:200]}")
+        if c_resp.status_code == 200:
+            body = c_resp.json()
+            record("5b. credit_only path taken (checkout_required=False)",
+                   body.get("checkout_required") is False and body.get("credit_only") is True,
+                   f"resp={body}")
+    except Exception as e:
+        record("5a. m1 partial credit-only contribute returns 200", False, str(e))
+
+    r = remove_member(gid, lead_id=lead_id, target_id=m1_id)
+    assert_eq("5c. target contributed status", r.status_code, 400)
+    try:
+        d = r.json().get("detail") or ""
+    except Exception:
+        d = r.text
+    assert_contains("5d. detail mentions 'already contributed'", d, "already contributed")
+
+    # ------------------------------------------------------------
+    # Scenario 6 — Happy path: remove m2 (no contribution).
+    # ------------------------------------------------------------
+    grp_before = get_group(gid)
+    original_member_count = len(grp_before.get("members") or [])
+    notif_before = len(grp_before.get("notifications") or [])
+    record("6.pre. orig member count == 3", original_member_count == 3,
+           f"got {original_member_count}")
+    print(f"  notifications before = {notif_before}, member_count = {original_member_count}")
+
+    r = remove_member(gid, lead_id=lead_id, target_id=m2_id)
+    assert_eq("6a. happy path status", r.status_code, 200)
+    if r.status_code == 200:
+        body = r.json()
+        members_after = body.get("members") or []
+        member_ids_after = {m.get("user_id") for m in members_after}
+        record("6b. m2 no longer in response.members",
+               m2_id not in member_ids_after,
+               f"members={member_ids_after}")
+        record("6c. lead + m1 still in response.members",
+               lead_id in member_ids_after and m1_id in member_ids_after,
+               f"members={member_ids_after}")
+        assignments_after = body.get("assignments") or []
+        rows_for_m2 = [a for a in assignments_after if a.get("user_id") == m2_id]
+        record("6d. no assignment rows for removed user",
+               len(rows_for_m2) == 0,
+               f"got {rows_for_m2}")
+        notifs_after = body.get("notifications") or []
+        gain = len(notifs_after) - notif_before
+        assert_eq("6e. notifications grew by exactly N (orig member count)",
+                  gain, original_member_count)
+        # Inspect the *new* notifications (last N entries)
+        new_notifs = notifs_after[-original_member_count:] if original_member_count > 0 else []
+        kinds_ok = all(n.get("kind") == "member_removed" for n in new_notifs)
+        record("6f. all new notifications have kind='member_removed'",
+               kinds_ok and len(new_notifs) == original_member_count,
+               f"new_kinds={[n.get('kind') for n in new_notifs]}")
+        target_user_ids = {n.get("user_id") for n in new_notifs}
+        expected_recipients = {lead_id, m1_id, m2_id}
+        record("6g. one notification per ORIGINAL member (incl. removed)",
+               target_user_ids == expected_recipients,
+               f"got={target_user_ids} expected={expected_recipients}")
+        # Recompute math: per_user must only have 2 entries (lead + m1).
+        per_user = body.get("per_user") or []
+        record("6h. per_user has 2 rows after removal",
+               len(per_user) == 2,
+               f"per_user_ids={[p.get('user_id') for p in per_user]}")
+        # No 5xx anywhere → recompute math executed without error.
+        total_after = float(body.get("total_amount") or 0.0)
+        record("6i. group total_amount unchanged ($60)",
+               abs(total_after - 60.0) < 0.5,
+               f"total_after={total_after}")
+
+    # ------------------------------------------------------------
+    # Scenario 7 — After removal, contributing member can still
+    # contribute and pay normally (bill settles).
+    # ------------------------------------------------------------
+    grp_after = get_group(gid)
+    m1_remaining = 0.0
+    for p in grp_after.get("per_user") or []:
+        if p.get("user_id") == m1_id:
+            m1_remaining = max(0.0, float(p.get("total") or 0.0) - float(p.get("contributed") or 0.0))
+    lead_remaining = 0.0
+    for p in grp_after.get("per_user") or []:
+        if p.get("user_id") == lead_id:
+            lead_remaining = max(0.0, float(p.get("total") or 0.0) - float(p.get("contributed") or 0.0))
+    print(f"  m1 remaining = ${m1_remaining:.2f}, lead remaining = ${lead_remaining:.2f}")
+
+    # Grant credits to m1 and lead so we can settle the bill purely via credits
+    # (no Stripe Checkout needed). Slightly over to avoid rounding misses.
+    try:
+        grant_credit(tok, m1_id, round(m1_remaining + 1.0, 2), note="Phase N final m1")
+        grant_credit(tok, lead_id, round(lead_remaining + 1.0, 2), note="Phase N final lead")
+        record("7a. granted credits for m1 + lead", True)
+    except Exception as e:
+        record("7a. granted credits for m1 + lead", False, str(e))
+
+    # m1 contributes full remaining via credit_only
+    try:
+        c1 = requests.post(
+            f"{API}/groups/{gid}/contribute",
+            json={"user_id": m1_id, "notify_on_settled": False},
+            timeout=20,
+        )
+        record("7b. m1 contribute (post-removal) returns 200",
+               c1.status_code == 200,
+               f"{c1.status_code} {c1.text[:160]}")
+        if c1.status_code == 200:
+            b1 = c1.json()
+            record("7c. m1 contribute used credit_only path",
+                   b1.get("checkout_required") is False,
+                   f"resp_keys={list(b1.keys())}")
+    except Exception as e:
+        record("7b. m1 contribute (post-removal) returns 200", False, str(e))
+
+    # lead contributes full remaining via credit_only → should auto-flip to paid
+    try:
+        c2 = requests.post(
+            f"{API}/groups/{gid}/contribute",
+            json={"user_id": lead_id, "notify_on_settled": False},
+            timeout=20,
+        )
+        record("7d. lead contribute (post-removal) returns 200",
+               c2.status_code == 200,
+               f"{c2.status_code} {c2.text[:160]}")
+    except Exception as e:
+        record("7d. lead contribute (post-removal) returns 200", False, str(e))
+
+    # Verify bill auto-flipped to paid
+    final_grp = get_group(gid)
+    record("7e. group.status flipped to 'paid' (or beyond)",
+           final_grp.get("status") in ("paid", "closed"),
+           f"status={final_grp.get('status')}, derived={final_grp.get('derived_status')}")
+
+    # ------------------------------------------------------------
+    # Scenario 2 — Bill status != "open" → 400 "Members can no longer be removed"
+    # Reuse the now-paid group; try to remove m1 (should fail with 400).
+    # ------------------------------------------------------------
+    r = remove_member(gid, lead_id=lead_id, target_id=m1_id)
+    assert_eq("2a. paid bill, remove blocked status", r.status_code, 400)
+    try:
+        d = r.json().get("detail") or ""
+    except Exception:
+        d = r.text
+    assert_contains("2b. detail mentions 'Members can no longer be removed'",
+                    d, "members can no longer be removed")
+
+    # ============================================================
+    # SUMMARY
+    # ============================================================
     print()
     print("=" * 60)
     passed = sum(1 for x in RESULTS if x["ok"])

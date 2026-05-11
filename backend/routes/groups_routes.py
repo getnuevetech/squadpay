@@ -4,7 +4,7 @@ import os
 from fastapi import APIRouter, HTTPException
 
 from core import (
-    CreateGroupIn, JoinGroupIn, UpdateItemsIn, AppendItemsIn,
+    CreateGroupIn, JoinGroupIn, RemoveMemberIn, UpdateItemsIn, AppendItemsIn,
     UpdateGroupMetaIn, ItemPatchIn, AssignIn,
     new_id, new_short_code, now_iso,
     _apply_group_discount, _load_group_enriched, _recompute_group,
@@ -96,6 +96,92 @@ def attach_groups_routes(router: APIRouter, db):
         if not any(m["user_id"] == body.user_id for m in members):
             members.append({"user_id": body.user_id, "role": "member", "joined_at": now_iso()})
             await db.groups.update_one({"id": group_id}, {"$set": {"members": members}})
+        return await _load_group_enriched(db, group_id)
+
+    @router.post("/groups/{group_id}/remove-member")
+    async def remove_member(group_id: str, body: RemoveMemberIn):
+        """Lead removes a non-contributing member from the bill.
+
+        Strict rules (per product spec):
+          • Only the lead can remove.
+          • Bill must still be `open` (no removal once contributions are complete).
+          • Target cannot be the lead.
+          • Target must have ZERO contribution AND ZERO repayment.
+          • Target's item assignments are released back to unclaimed.
+          • All members get an in-bill notification of the removal.
+        """
+        group = await db.groups.find_one({"id": group_id}, {"_id": 0})
+        if not group:
+            raise HTTPException(404, "Group not found")
+        if group.get("is_blocked"):
+            raise HTTPException(403, "This group has been blocked by an administrator.")
+        if group.get("lead_id") != body.user_id:
+            raise HTTPException(403, "Only the lead can remove members")
+        if group.get("status") != "open":
+            raise HTTPException(400, "Members can no longer be removed — contributions are complete.")
+        if body.target_id == group.get("lead_id"):
+            raise HTTPException(400, "The lead cannot be removed from their own bill")
+
+        members = group.get("members", []) or []
+        target = next((m for m in members if m.get("user_id") == body.target_id), None)
+        if not target:
+            raise HTTPException(404, "Member is not part of this group")
+
+        # Block if the target has put any money in (contribution or repayment).
+        contributions_total = sum(
+            float(c.get("amount") or 0)
+            for c in (group.get("contributions") or [])
+            if c.get("user_id") == body.target_id
+        )
+        repayments_total = sum(
+            float(r.get("amount") or 0)
+            for r in (group.get("repayments") or [])
+            if r.get("user_id") == body.target_id
+        )
+        if contributions_total > 0.01 or repayments_total > 0.01:
+            raise HTTPException(
+                400,
+                "This member has already contributed to the bill. Refund their contribution first before removing them.",
+            )
+
+        # Fetch the target's display name for the notification copy. Falls
+        # back to "a member" if the users collection lookup misses.
+        target_user = await db.users.find_one({"id": body.target_id}, {"_id": 0, "name": 1})
+        target_name = (target_user or {}).get("name") or "a member"
+        lead_user = await db.users.find_one({"id": body.user_id}, {"_id": 0, "name": 1})
+        lead_name = (lead_user or {}).get("name") or "the lead"
+
+        # Drop them from members, release their item claims, leave any
+        # historical fields (contributions/repayments arrays) untouched
+        # because the guards above already confirmed they're empty.
+        new_members = [m for m in members if m.get("user_id") != body.target_id]
+        new_assignments = [
+            a for a in (group.get("assignments") or [])
+            if a.get("user_id") != body.target_id
+        ]
+
+        # Build a per-user notification so EVERYONE on the bill sees the
+        # removal in their notification panel (including the removed user
+        # so they understand why they lost access).
+        notif_msg = f"{lead_name} removed {target_name} from the bill."
+        new_notifications = list(group.get("notifications") or [])
+        for m in members:  # iterate over ORIGINAL members so target gets notified too
+            new_notifications.append({
+                "id": f"notif_{group_id[-6:]}_{m['user_id'][-4:]}_{int(__import__('time').time() * 1000)}",
+                "user_id": m["user_id"],
+                "message": notif_msg,
+                "created_at": now_iso(),
+                "kind": "member_removed",
+            })
+
+        await db.groups.update_one(
+            {"id": group_id},
+            {"$set": {
+                "members": new_members,
+                "assignments": new_assignments,
+                "notifications": new_notifications,
+            }},
+        )
         return await _load_group_enriched(db, group_id)
 
     @router.patch("/groups/{group_id}")

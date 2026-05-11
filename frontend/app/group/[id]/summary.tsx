@@ -101,9 +101,11 @@ export default function SummaryScreen() {
   );
   const groupContributedTotal = group.funding?.total_contributed || 0;
   const groupRepaidTotal = group.funding?.total_repaid || 0;
-  const groupOutstandingTotal = (group.per_user || []).reduce(
-    (s: number, p: any) => s + Number(p.outstanding || 0),
+  // Outstanding mirrors the "Remaining" pill in the hero so members never
+  // see two different numbers for the same concept.
+  const groupOutstandingTotal = Math.max(
     0,
+    Number(group.total || 0) - groupContributedTotal,
   );
   const myShare = myPer?.total || 0;
   const myFood = myPer?.food || 0;

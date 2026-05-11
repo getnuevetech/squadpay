@@ -1,7 +1,7 @@
 import { Stack, useRouter, usePathname } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Platform, ActivityIndicator } from 'react-native';
-import { LayoutDashboard, ScrollText, Users, LogOut, Shield, UserCog, Receipt, Gift, Plug, Wallet, RefreshCw, Lock, BarChart3, FileText, KeyRound } from 'lucide-react-native';
+import { LayoutDashboard, ScrollText, Users, LogOut, Shield, UserCog, Receipt, Gift, Plug, Wallet, RefreshCw, Lock, BarChart3, FileText, KeyRound, Percent } from 'lucide-react-native';
 import { adminApi, AdminProfile, getProfile, getToken, clearSession } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
 
@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { href: '/admin/groups', label: 'Groups', icon: Receipt },
   { href: '/admin/referrals', label: 'Referrals', icon: Gift },
   { href: '/admin/integrations', label: 'Integrations', icon: Plug },
+  { href: '/admin/platform-fees', label: 'Platform Fees', icon: Percent, requireRole: ['super_admin'] as const },
   { href: '/admin/reconciliations', label: 'Reconciliations', icon: RefreshCw },
   { href: '/admin/master-account', label: 'Master Account', icon: Wallet },
   { href: '/admin/security', label: 'Security', icon: Lock, requireRole: ['super_admin'] as const },

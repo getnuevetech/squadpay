@@ -171,73 +171,17 @@ export default function DashboardScreen() {
           );
         })()}
 
-        {/* Hero card — mirrors the User Dashboard exactly */}
-        <LinearGradient
-          colors={['#3F1F8C', '#5B2BC8', '#7C3AED']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.heroV2}
-          testID="dashboard-your-card"
-        >
-          <View style={styles.heroV2Top}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.heroV2GroupTitle} numberOfLines={2} testID="dashboard-group-title">
-                {group.title || group.name || 'Bill'}
-              </Text>
-              <Text style={styles.heroV2SubLabel}>Lead Dashboard</Text>
-            </View>
-            <StatusBadge status={group.derived_status} size="sm" testID="dashboard-status-badge" />
-          </View>
-
-          <View style={styles.heroV2AmountCol}>
-            <Text style={styles.heroV2Label}>Your Share</Text>
-            <Text style={styles.heroV2Amount} testID="dashboard-your-amount">
-              ${myShare.toFixed(2)}
-            </Text>
-            <Text style={styles.heroV2Total} testID="dashboard-bill-total">
-              of ${grandTotal.toFixed(2)} bill total
-            </Text>
-          </View>
-
-          <View style={styles.heroV2Avatars}>
-            {group.members.slice(0, 4).map((m, i) => (
-              <View
-                key={m.user_id}
-                style={[styles.heroV2Avatar, { marginLeft: i === 0 ? 0 : -10, zIndex: 10 - i }]}
-              >
-                <AvatarRing
-                  name={m.name || '?'}
-                  seed={m.user_id}
-                  size={32}
-                  showLeadCrown={m.user_id === group.lead_id}
-                />
-              </View>
-            ))}
-            {group.members.length > 4 ? (
-              <View style={[styles.heroV2Avatar, styles.heroV2AvatarMore, { marginLeft: -10 }]}>
-                <Text style={styles.heroV2AvatarMoreText}>+{group.members.length - 4}</Text>
-              </View>
-            ) : null}
-          </View>
-
-          <View style={styles.heroV2Meta}>
-            <Text style={styles.heroV2MetaPrimary}>
-              ${funding.total_contributed.toFixed(2)} of ${grandTotal.toFixed(2)} collected
-            </Text>
-            <Text style={styles.heroV2MetaSecondary}>
-              {Math.round(displayedPct)}%
-            </Text>
-          </View>
-          <View style={styles.heroV2Track}>
-            <View
-              style={[styles.heroV2Fill, { width: `${Math.min(100, displayedPct)}%` }]}
-            />
-          </View>
-          <View style={styles.heroV2RemainingRow}>
-            <Text style={styles.heroV2RemainingLabel}>Remaining</Text>
-            <Text style={styles.heroV2RemainingValue}>${remaining.toFixed(2)}</Text>
-          </View>
-        </LinearGradient>
+        {/* Hero card — shared with User Dashboard so the two stay identical */}
+        <HeroCard
+          group={group}
+          subLabel="Lead Dashboard"
+          myShare={myShare}
+          grandTotal={grandTotal}
+          collectedAmount={funding.total_contributed}
+          displayedPct={displayedPct}
+          remaining={remaining}
+          testIDPrefix="dashboard"
+        />
 
         {/* Edit Tax & Tips — right after the top bar, before the quick actions */}
         {group.status === 'open' && (
@@ -291,70 +235,19 @@ export default function DashboardScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Bill/Fund Breakdown — collapsible, same as User Dashboard */}
-        <View style={styles.yourCard}>
-          <TouchableOpacity
-            onPress={() => setBreakdownOpen((v) => !v)}
-            activeOpacity={0.7}
-            style={styles.yourCardHeader}
-            testID="dashboard-breakdown-toggle"
-          >
-            <Text style={styles.yourLabel}>Bill / Fund Breakdown</Text>
-            <View style={[breakdownOpen && { transform: [{ rotate: '180deg' }] }]}>
-              <ChevronDown size={18} color={COLORS.subtext} />
-            </View>
-          </TouchableOpacity>
-          {breakdownOpen && (
-            <>
-              <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownKey}>Items subtotal</Text>
-                <Text style={styles.breakdownVal}>${groupItemsTotal.toFixed(2)}</Text>
-              </View>
-              <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownKey}>Tax</Text>
-                <Text style={styles.breakdownVal}>${Number(group.tax || 0).toFixed(2)}</Text>
-              </View>
-              <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownKey}>Tip</Text>
-                <Text style={styles.breakdownVal}>${Number(group.tip || 0).toFixed(2)}</Text>
-              </View>
-              <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownKey}>Transaction fees (3%)</Text>
-                <Text style={styles.breakdownVal}>${groupTransactionFees.toFixed(2)}</Text>
-              </View>
-              <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownKey}>Platform fees</Text>
-                <Text style={styles.breakdownVal}>${groupPlatformFees.toFixed(2)}</Text>
-              </View>
-              {extraFeesAgg.map((ef) => (
-                <View key={ef.id} style={styles.breakdownRow}>
-                  <Text style={styles.breakdownKey}>{ef.name}</Text>
-                  <Text style={styles.breakdownVal}>${ef.amount.toFixed(2)}</Text>
-                </View>
-              ))}
-              <View style={[styles.breakdownRow, { borderTopWidth: 1, borderTopColor: COLORS.border, marginTop: 6, paddingTop: 6 }]}>
-                <Text style={[styles.breakdownKey, { fontWeight: FONT.weights.bold, color: COLORS.text }]}>Bill total</Text>
-                <Text style={[styles.breakdownVal, { color: COLORS.text, fontWeight: FONT.weights.bold }]}>${grandTotal.toFixed(2)}</Text>
-              </View>
-              {groupContributedTotal > 0 ? (
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownKey}>Contributed</Text>
-                  <Text style={[styles.breakdownVal, { color: COLORS.success }]}>−${groupContributedTotal.toFixed(2)}</Text>
-                </View>
-              ) : null}
-              {groupRepaidTotal > 0 ? (
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownKey}>Repaid</Text>
-                  <Text style={[styles.breakdownVal, { color: COLORS.success }]}>−${groupRepaidTotal.toFixed(2)}</Text>
-                </View>
-              ) : null}
-              <View style={[styles.breakdownRow, { borderTopWidth: 1, borderTopColor: COLORS.border, marginTop: 6, paddingTop: 6 }]}>
-                <Text style={[styles.breakdownKey, { fontWeight: FONT.weights.bold, color: COLORS.text }]}>Outstanding</Text>
-                <Text style={[styles.breakdownVal, { fontSize: FONT.sizes.lg, color: COLORS.primary, fontWeight: FONT.weights.heavy }]}>${groupOutstandingTotal.toFixed(2)}</Text>
-              </View>
-            </>
-          )}
-        </View>
+        {/* Bill/Fund Breakdown — shared component, kept in sync across screens */}
+        <BillBreakdown
+          group={group}
+          groupItemsTotal={groupItemsTotal}
+          groupTransactionFees={groupTransactionFees}
+          groupPlatformFees={groupPlatformFees}
+          extraFeesAgg={extraFeesAgg}
+          grandTotal={grandTotal}
+          groupContributedTotal={groupContributedTotal}
+          groupRepaidTotal={groupRepaidTotal}
+          groupOutstandingTotal={groupOutstandingTotal}
+          testIDPrefix="dashboard"
+        />
 
         {/* Member list — same as User Dashboard, tappable rows that expand */}
         <View style={styles.memberCard}>
@@ -611,90 +504,6 @@ export default function DashboardScreen() {
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.bg },
-  heroV2: {
-    borderRadius: 24,
-    paddingHorizontal: 18,
-    paddingTop: 16,
-    paddingBottom: 18,
-    marginBottom: SPACING.md,
-    shadowColor: '#3F1F8C',
-    shadowOpacity: 0.32,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 16 },
-    elevation: 10,
-  },
-  heroV2Top: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginBottom: 10,
-  },
-  heroV2GroupTitle: {
-    color: '#FFFFFF',
-    fontWeight: FONT.weights.heavy,
-    fontSize: 18,
-    letterSpacing: -0.3,
-    lineHeight: 22,
-  },
-  heroV2SubLabel: {
-    color: '#D7C7FB',
-    fontSize: 11,
-    fontWeight: FONT.weights.semibold,
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    marginTop: 4,
-  },
-  heroV2AmountCol: { marginTop: 8, alignItems: 'flex-end' },
-  heroV2Label: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: FONT.weights.semibold,
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
-    paddingBottom: 4,
-  },
-  heroV2Amount: {
-    color: '#fff',
-    fontSize: 44,
-    fontWeight: FONT.weights.heavy,
-    letterSpacing: -1,
-    lineHeight: 48,
-  },
-  heroV2Total: { color: '#D7C7FB', fontSize: 12, marginTop: 4 },
-  heroV2Avatars: { flexDirection: 'row', alignItems: 'center', marginTop: 14 },
-  heroV2Avatar: { borderWidth: 2, borderColor: '#fff', borderRadius: 999 },
-  heroV2AvatarMore: {
-    minWidth: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.18)',
-    paddingHorizontal: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  heroV2AvatarMoreText: { color: '#fff', fontSize: 11, fontWeight: FONT.weights.bold },
-  heroV2Meta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14 },
-  heroV2MetaPrimary: { color: '#fff', fontWeight: FONT.weights.semibold, fontSize: 12 },
-  heroV2MetaSecondary: { color: '#D7C7FB', fontSize: 12 },
-  heroV2Track: {
-    height: 6,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.18)',
-    marginTop: 8,
-    overflow: 'hidden',
-  },
-  heroV2Fill: { height: '100%', backgroundColor: '#fff', borderRadius: 999 },
-  heroV2RemainingRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 10,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.18)',
-  },
-  heroV2RemainingLabel: { color: '#D7C7FB', fontSize: 12, fontWeight: FONT.weights.semibold, textTransform: 'uppercase', letterSpacing: 0.6 },
-  heroV2RemainingValue: { color: '#fff', fontSize: 18, fontWeight: FONT.weights.heavy },
   qaRow: { flexDirection: 'row', gap: 10, marginBottom: SPACING.md },
   qaBtn: {
     flex: 1,
@@ -716,30 +525,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   qaText: { fontSize: FONT.sizes.xs, fontWeight: FONT.weights.bold, color: COLORS.text },
-  yourCard: {
-    backgroundColor: COLORS.surface,
-    borderRadius: RADIUS.md,
-    padding: SPACING.md,
-    marginBottom: SPACING.md,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  yourCardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  yourLabel: {
-    color: COLORS.subtext,
-    fontSize: FONT.sizes.xs,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    fontWeight: FONT.weights.semibold,
-    marginBottom: SPACING.sm,
-  },
-  breakdownRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
-  breakdownKey: { color: COLORS.subtext, fontSize: FONT.sizes.sm },
-  breakdownVal: { color: COLORS.text, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold },
   sectionTitle: {
     fontSize: FONT.sizes.md,
     fontWeight: FONT.weights.bold,

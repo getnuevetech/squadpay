@@ -103,17 +103,33 @@ export default function GroupCardScreen() {
   };
 
   const onAddToWallet = async () => {
+    if (!userId) return;
     setBusy(true);
-    const provider = Platform.OS === 'ios' ? 'apple' : 'google';
+    const platform: 'apple' | 'google' = Platform.OS === 'ios' ? 'apple' : 'google';
     try {
       const base = process.env.EXPO_PUBLIC_BACKEND_URL || '';
-      const res = await fetch(`${base}/api/groups/${id}/wallet/${provider}/start`, {
+      // New scaffolded endpoint — currently returns `pending_psp_approval`
+      // until the Card Network/PNO/PSP approvals are in place. The status
+      // codes are documented in /app/backend/routes/wallet_routes.py.
+      const res = await fetch(`${base}/api/cards/${id}/provision`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: userId, platform }),
       });
       const data = await res.json();
-      if (data?.status === 'enrolled') toast.success('Card added to wallet');
-      else if (data?.status === 'pending') toast.info('Wallet enrolment pending verification');
-      else toast.error(data?.message || 'Wallet provisioning failed');
+      if (data?.status === 'ready') {
+        toast.success('Card added to wallet');
+      } else if (data?.status === 'pending_psp_approval') {
+        toast.info(
+          'Apple/Google Wallet support is coming soon — pending bank-network approval.',
+        );
+      } else if (data?.status === 'card_not_issued') {
+        toast.error('Fully fund the bill first to issue the card.');
+      } else if (data?.status === 'not_lead') {
+        toast.error('Only the bill lead can add the card to a wallet.');
+      } else {
+        toast.error(data?.message || 'Wallet provisioning unavailable');
+      }
     } catch (e: any) {
       toast.error(e?.message || 'Could not enrol wallet');
     } finally {

@@ -10,16 +10,16 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Receipt, CheckCircle2, Clock, LayoutDashboard, Wallet, AlertCircle, Plus, Pencil, ChevronDown, ArrowLeft, UserPlus } from 'lucide-react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Button } from '../../../src/Button';
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
-import { StatusBadge } from '../../../src/StatusBadge';
 import { EditMetaModal } from '../../../src/EditMetaModal';
 import { toast } from '../../../src/components/Toast';
 import { Skeleton, SkeletonGroupRow } from '../../../src/components/Skeleton';
-import { AvatarRing } from '../../../src/components/AvatarRing';
+import { HeroCard } from '../../../src/components/redesign/HeroCard';
+import { BillBreakdown } from '../../../src/components/redesign/BillBreakdown';
+import { useBillMath } from '../../../src/hooks/useBillMath';
 
 export default function SummaryScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -30,7 +30,6 @@ export default function SummaryScreen() {
   const [editTaxTipVisible, setEditTaxTipVisible] = useState(false);
   const [itemsExpanded, setItemsExpanded] = useState(false);
   const [memberItemsOpen, setMemberItemsOpen] = useState<Record<string, boolean>>({});
-  const [breakdownOpen, setBreakdownOpen] = useState(false);
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -65,6 +64,26 @@ export default function SummaryScreen() {
     setRefreshing(false);
   };
 
+  // Compute math BEFORE any early return so hooks order stays stable.
+  // The hook returns zero-filled defaults while group is still loading.
+  const {
+    myShare,
+    myContributed,
+    myRepaid,
+    myOutstanding,
+    groupItemsTotal,
+    groupTransactionFees,
+    groupPlatformFees,
+    extraFeesAgg,
+    groupContributedTotal,
+    groupRepaidTotal,
+    grandTotal,
+    groupOutstandingTotal,
+    displayedPct,
+    remaining,
+    myPer,
+  } = useBillMath(group, userId);
+
   if (!group || !userId) {
     return (
       <SafeAreaView style={styles.center} testID="summary-loading">
@@ -80,72 +99,18 @@ export default function SummaryScreen() {
   }
 
   const isLead = group.lead_id === userId;
-  const myPer = group.per_user.find((p) => p.user_id === userId);
   // C2: aggregate credit_applied for this user across their contributions on this bill
   const myCreditApplied = (group.contributions || [])
     .filter((c: any) => c.user_id === userId)
     .reduce((s: number, c: any) => s + Number(c.credit_applied || 0), 0);
 
-  // ── Group-level totals for the Bill/Fund Breakdown card ──
-  const groupItemsTotal = (group.items || []).reduce(
-    (s: number, it: any) => s + Number(it.price || 0) * Number(it.quantity || 1),
-    0,
-  );
-  const groupTransactionFees = (group.per_user || []).reduce(
-    (s: number, p: any) => s + Number(p.transaction_fee || 0),
-    0,
-  );
-  const groupPlatformFees = (group.per_user || []).reduce(
-    (s: number, p: any) => s + Number(p.platform_fee || 0),
-    0,
-  );
-  const groupContributedTotal = group.funding?.total_contributed || 0;
-  const groupRepaidTotal = group.funding?.total_repaid || 0;
-  // Aggregate admin-configurable extra fees across members.
-  const extraFeesAgg: { id: string; name: string; amount: number }[] = [];
-  for (const p of (group.per_user || []) as any[]) {
-    for (const ef of (p.extra_fees || []) as any[]) {
-      const found = extraFeesAgg.find((x) => x.id === ef.id);
-      if (found) found.amount += Number(ef.amount || 0);
-      else extraFeesAgg.push({ id: ef.id, name: ef.name || 'Extra fee', amount: Number(ef.amount || 0) });
-    }
-  }
-  const groupExtraFeesTotal = extraFeesAgg.reduce((s, f) => s + f.amount, 0);
-  // Grand total — sum of every breakdown row above so the math always adds
-  // up on screen. Computed from the rendered numbers (not the backend's
-  // legacy `group.total`, which historically excluded the SquadPay fees).
-  const grandTotal = (
-    groupItemsTotal
-    + Number(group.tax || 0)
-    + Number(group.tip || 0)
-    + groupTransactionFees
-    + groupPlatformFees
-    + groupExtraFeesTotal
-  );
-  // Outstanding mirrors the "Remaining" pill in the hero so members never
-  // see two different numbers for the same concept.
-  const groupOutstandingTotal = Math.max(0, grandTotal - groupContributedTotal);
-  const myShare = myPer?.total || 0;
+  // Per-user line-item helpers — kept here since they're only used by this screen.
   const myFood = myPer?.food || 0;
   const myExtras = myPer?.tax_tip || 0;
   const myTransactionFee = myPer?.transaction_fee || 0;
   const myPlatformFee = myPer?.platform_fee || 0;
-  const myContributed = myPer?.contributed || 0;
-  const myRepaid = myPer?.repaid || 0;
-  const myOutstanding = myPer?.outstanding || 0;
 
   const funding = group.funding;
-  const collectedPct = grandTotal > 0 ? Math.min(100, (funding.total_contributed / grandTotal) * 100) : 0;
-  // If anyone still has outstanding, cap displayed % at 99 — collection
-  // is only "100%" once every share is paid.
-  const _outstandingTotal = (group.per_user || []).reduce(
-    (s: number, p: any) => s + Number(p.outstanding || 0),
-    0,
-  );
-  const displayedPct = _outstandingTotal > 0.01 ? Math.min(99, collectedPct) : collectedPct;
-  // Remaining = bill total − what's been contributed so far. Keeps the math
-  // intuitive and impossible to invert when the wallet is over-funded.
-  const remaining = Math.max(0, grandTotal - (funding.total_contributed || 0));
 
   const memberName = (uid?: string) => {
     if (!uid) return '';
@@ -210,77 +175,17 @@ export default function SummaryScreen() {
             </View>
           );
         })()}
-        {/* New hero card — mirrors the home page Featured Bill Card so the
-            user sees Group name • Your Share • Group Total • progress in
-            the same familiar layout. */}
-        <LinearGradient
-          colors={['#3F1F8C', '#5B2BC8', '#7C3AED']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.heroV2}
-          testID="summary-your-card"
-        >
-          <View style={styles.heroV2Top}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.heroV2GroupTitle} numberOfLines={2} testID="summary-group-title">
-                {group.title || group.name || 'Bill'}
-              </Text>
-              <Text style={styles.heroV2SubLabel}>User Dashboard</Text>
-            </View>
-            <StatusBadge status={group.derived_status} size="sm" testID="summary-status-badge" />
-          </View>
-
-          <View style={styles.heroV2AmountCol}>
-            <Text style={styles.heroV2Label}>Your Share</Text>
-            <Text style={styles.heroV2Amount} testID="summary-your-amount">
-              ${myShare.toFixed(2)}
-            </Text>
-            <Text style={styles.heroV2Total} testID="summary-bill-total">
-              of ${grandTotal.toFixed(2)} bill total
-            </Text>
-          </View>
-
-          {/* Avatars stack — same as home page */}
-          <View style={styles.heroV2Avatars}>
-            {group.members.slice(0, 4).map((m, i) => (
-              <View
-                key={m.user_id}
-                style={[styles.heroV2Avatar, { marginLeft: i === 0 ? 0 : -10, zIndex: 10 - i }]}
-              >
-                <AvatarRing
-                  name={m.name || '?'}
-                  seed={m.user_id}
-                  size={32}
-                  showLeadCrown={m.user_id === group.lead_id}
-                />
-              </View>
-            ))}
-            {group.members.length > 4 ? (
-              <View style={[styles.heroV2Avatar, styles.heroV2AvatarMore, { marginLeft: -10 }]}>
-                <Text style={styles.heroV2AvatarMoreText}>+{group.members.length - 4}</Text>
-              </View>
-            ) : null}
-          </View>
-
-          {/* Progress: how much collected + how much still remaining */}
-          <View style={styles.heroV2Meta}>
-            <Text style={styles.heroV2MetaPrimary}>
-              ${funding.total_contributed.toFixed(2)} of ${grandTotal.toFixed(2)} collected
-            </Text>
-            <Text style={styles.heroV2MetaSecondary}>
-              {Math.round(displayedPct)}%
-            </Text>
-          </View>
-          <View style={styles.heroV2Track}>
-            <View
-              style={[styles.heroV2Fill, { width: `${Math.min(100, displayedPct)}%` }]}
-            />
-          </View>
-          <View style={styles.heroV2RemainingRow}>
-            <Text style={styles.heroV2RemainingLabel}>Remaining</Text>
-            <Text style={styles.heroV2RemainingValue}>${remaining.toFixed(2)}</Text>
-          </View>
-        </LinearGradient>
+        {/* Hero card — shared with Lead Dashboard so the two stay identical */}
+        <HeroCard
+          group={group}
+          subLabel="User Dashboard"
+          myShare={myShare}
+          grandTotal={grandTotal}
+          collectedAmount={funding.total_contributed}
+          displayedPct={displayedPct}
+          remaining={remaining}
+          testIDPrefix="summary"
+        />
 
         {/* Quick actions: Items / Invite — same icons as the Lead Dashboard
             so the user has a consistent way to view items and invite friends. */}
@@ -325,70 +230,19 @@ export default function SummaryScreen() {
           </TouchableOpacity>
         )}
 
-        {/* Detailed share breakdown — collapsible toggle */}
-        <View style={styles.yourCard}>
-          <TouchableOpacity
-            onPress={() => setBreakdownOpen((v) => !v)}
-            activeOpacity={0.7}
-            style={styles.yourCardHeader}
-            testID="summary-breakdown-toggle"
-          >
-            <Text style={styles.yourLabel}>Bill / Fund Breakdown</Text>
-            <View style={[breakdownOpen && { transform: [{ rotate: '180deg' }] }]}>
-              <ChevronDown size={18} color={COLORS.subtext} />
-            </View>
-          </TouchableOpacity>
-          {breakdownOpen && (
-            <>
-              <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownKey}>Items subtotal</Text>
-                <Text style={styles.breakdownVal}>${groupItemsTotal.toFixed(2)}</Text>
-              </View>
-              <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownKey}>Tax</Text>
-                <Text style={styles.breakdownVal}>${Number(group.tax || 0).toFixed(2)}</Text>
-              </View>
-              <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownKey}>Tip</Text>
-                <Text style={styles.breakdownVal}>${Number(group.tip || 0).toFixed(2)}</Text>
-              </View>
-              <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownKey}>Transaction fees (3%)</Text>
-                <Text style={styles.breakdownVal}>${groupTransactionFees.toFixed(2)}</Text>
-              </View>
-              <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownKey}>Platform fees</Text>
-                <Text style={styles.breakdownVal}>${groupPlatformFees.toFixed(2)}</Text>
-              </View>
-              {extraFeesAgg.map((ef) => (
-                <View key={ef.id} style={styles.breakdownRow}>
-                  <Text style={styles.breakdownKey}>{ef.name}</Text>
-                  <Text style={styles.breakdownVal}>${ef.amount.toFixed(2)}</Text>
-                </View>
-              ))}
-              <View style={[styles.breakdownRow, { borderTopWidth: 1, borderTopColor: COLORS.border, marginTop: 6, paddingTop: 6 }]}>
-                <Text style={[styles.breakdownKey, { fontWeight: FONT.weights.bold, color: COLORS.text }]}>Bill total</Text>
-                <Text style={[styles.breakdownVal, { color: COLORS.text, fontWeight: FONT.weights.bold }]}>${grandTotal.toFixed(2)}</Text>
-              </View>
-              {groupContributedTotal > 0 ? (
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownKey}>Contributed</Text>
-                  <Text style={[styles.breakdownVal, { color: COLORS.success }]}>−${groupContributedTotal.toFixed(2)}</Text>
-                </View>
-              ) : null}
-              {groupRepaidTotal > 0 ? (
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownKey}>Repaid</Text>
-                  <Text style={[styles.breakdownVal, { color: COLORS.success }]}>−${groupRepaidTotal.toFixed(2)}</Text>
-                </View>
-              ) : null}
-              <View style={[styles.breakdownRow, { borderTopWidth: 1, borderTopColor: COLORS.border, marginTop: 6, paddingTop: 6 }]}>
-                <Text style={[styles.breakdownKey, { fontWeight: FONT.weights.bold, color: COLORS.text }]}>Outstanding</Text>
-                <Text style={[styles.breakdownVal, { fontSize: FONT.sizes.lg, color: COLORS.primary, fontWeight: FONT.weights.heavy }]}>${groupOutstandingTotal.toFixed(2)}</Text>
-              </View>
-            </>
-          )}
-        </View>
+        {/* Bill/Fund Breakdown — shared component, kept in sync across screens */}
+        <BillBreakdown
+          group={group}
+          groupItemsTotal={groupItemsTotal}
+          groupTransactionFees={groupTransactionFees}
+          groupPlatformFees={groupPlatformFees}
+          extraFeesAgg={extraFeesAgg}
+          grandTotal={grandTotal}
+          groupContributedTotal={groupContributedTotal}
+          groupRepaidTotal={groupRepaidTotal}
+          groupOutstandingTotal={groupOutstandingTotal}
+          testIDPrefix="summary"
+        />
 
         {/* Removed: separate "Group wallet / Repayment progress" card. The
             collected total + remaining are now visible directly inside the
@@ -645,100 +499,6 @@ export default function SummaryScreen() {
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.bg },
-  // ── New gradient hero (matches home FeaturedBillCard) ──
-  heroV2: {
-    borderRadius: 24,
-    paddingHorizontal: 18,
-    paddingTop: 16,
-    paddingBottom: 18,
-    marginBottom: SPACING.md,
-    shadowColor: '#3F1F8C',
-    shadowOpacity: 0.32,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 16 },
-    elevation: 10,
-  },
-  heroV2Top: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginBottom: 10,
-  },
-  heroV2Back: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.18)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  heroV2GroupTitle: {
-    color: '#FFFFFF',
-    fontWeight: FONT.weights.heavy,
-    fontSize: 18,
-    letterSpacing: -0.3,
-    lineHeight: 22,
-  },
-  heroV2SubLabel: {
-    color: '#D7C7FB',
-    fontSize: 11,
-    fontWeight: FONT.weights.semibold,
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    marginTop: 4,
-  },
-  heroV2AmountRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
-  heroV2AmountCol: { marginTop: 8, alignItems: 'flex-end' },
-  heroV2Label: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: FONT.weights.semibold,
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
-    paddingBottom: 4,
-  },
-  heroV2Amount: {
-    color: '#fff',
-    fontSize: 44,
-    fontWeight: FONT.weights.heavy,
-    letterSpacing: -1,
-    lineHeight: 48,
-  },
-  heroV2Total: { color: '#D7C7FB', fontSize: 12, marginTop: 4 },
-  heroV2Avatars: { flexDirection: 'row', alignItems: 'center', marginTop: 14 },
-  heroV2Avatar: { borderWidth: 2, borderColor: '#fff', borderRadius: 999 },
-  heroV2AvatarMore: {
-    minWidth: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.18)',
-    paddingHorizontal: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  heroV2AvatarMoreText: { color: '#fff', fontSize: 11, fontWeight: FONT.weights.bold },
-  heroV2Meta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14 },
-  heroV2MetaPrimary: { color: '#fff', fontWeight: FONT.weights.semibold, fontSize: 12 },
-  heroV2MetaSecondary: { color: '#D7C7FB', fontSize: 12 },
-  heroV2Track: {
-    height: 6,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.18)',
-    marginTop: 8,
-    overflow: 'hidden',
-  },
-  heroV2Fill: { height: '100%', backgroundColor: '#fff', borderRadius: 999 },
-  heroV2RemainingRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 10,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.18)',
-  },
-  heroV2RemainingLabel: { color: '#D7C7FB', fontSize: 12, fontWeight: FONT.weights.semibold, textTransform: 'uppercase', letterSpacing: 0.6 },
-  heroV2RemainingValue: { color: '#fff', fontSize: 18, fontWeight: FONT.weights.heavy },
   // Quick action buttons under the hero
   qaRow: { flexDirection: 'row', gap: 10, marginBottom: SPACING.md },
   qaBtn: {
@@ -762,59 +522,6 @@ const styles = StyleSheet.create({
   },
   qaText: { fontSize: FONT.sizes.xs, fontWeight: FONT.weights.bold, color: COLORS.text },
 
-  // ── Light "Your share breakdown" card (formerly the violet block) ──
-  yourCard: {
-    backgroundColor: COLORS.surface,
-    borderRadius: RADIUS.md,
-    padding: SPACING.md,
-    marginBottom: SPACING.md,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  yourCardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  yourLabel: {
-    color: COLORS.subtext,
-    fontSize: FONT.sizes.xs,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    fontWeight: FONT.weights.semibold,
-    marginBottom: SPACING.sm,
-  },
-  yourAmount: {
-    color: COLORS.text,
-    fontSize: 28,
-    fontWeight: FONT.weights.heavy,
-    letterSpacing: -0.5,
-    marginBottom: SPACING.sm,
-  },
-  totalChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: COLORS.primaryLight,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: RADIUS.md,
-    marginBottom: SPACING.md,
-  },
-  totalChipLabel: {
-    color: COLORS.primary,
-    fontSize: FONT.sizes.xs,
-    fontWeight: FONT.weights.semibold,
-    flex: 1,
-  },
-  totalChipAmount: {
-    color: COLORS.primary,
-    fontSize: FONT.sizes.md,
-    fontWeight: FONT.weights.bold,
-  },
-  breakdownRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
-  breakdownKey: { color: COLORS.subtext, fontSize: FONT.sizes.sm },
-  breakdownVal: { color: COLORS.text, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold },
   progressCard: {
     backgroundColor: COLORS.surface,
     padding: SPACING.md,

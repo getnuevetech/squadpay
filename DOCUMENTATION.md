@@ -699,7 +699,10 @@ Password: Letmein@2007#ForReal
 
 ### Near-term (next milestones)
 - Apple Pay / Google Pay **push provisioning** of the SquadPay virtual card into the Lead's native wallet (pending PNO/PSP approvals).
-- **Refactor**: extract `HeroCard` and `BillBreakdown` into shared components — currently duplicated across `dashboard.tsx` and `summary.tsx` (~900 LoC of duplication).
+  - ✅ Backend stub endpoint `POST /api/cards/{group_id}/provision` is live and returns `pending_psp_approval` until approvals land.
+  - ✅ Frontend "Add to Apple/Google Pay" button gracefully surfaces the "coming soon — pending bank approval" status.
+  - When approvals land: replace the stub in `routes/wallet_routes.py` with the real Stripe Issuing push-provisioning call, no frontend changes needed.
+- ✅ **Refactor** complete: `HeroCard`, `BillBreakdown`, and `useBillMath` extracted into `/src/components/redesign/` and `/src/hooks/` so Lead and User dashboards share a single source of truth.
 - **Multi-receipt** scanning: stitch two receipts into a single bill (split-tab dinners).
 
 ### Future

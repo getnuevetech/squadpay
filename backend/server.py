@@ -122,6 +122,17 @@ except Exception as _e:
     print("[startup] reveal routes attach failed:", _e)
 
 
+# ---------- Apple/Google Wallet push provisioning (scaffold) ----------
+# Endpoint returns 202 with `pending_psp_approval` until PNO/PSP approvals
+# land. The frontend uses it to render a graceful "Coming Soon" CTA.
+try:
+    from routes.wallet_routes import router as _wallet_router
+    # mount at app level since wallet_routes already declares prefix="/api"
+    app.include_router(_wallet_router)
+except Exception as _e:
+    print("[startup] wallet routes attach failed:", _e)
+
+
 # ---------- Mount + middleware ----------
 app.include_router(api_router)
 

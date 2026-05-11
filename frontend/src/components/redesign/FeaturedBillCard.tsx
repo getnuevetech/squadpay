@@ -213,7 +213,7 @@ function ActiveCard({
             style={styles.addBtn}
             activeOpacity={0.7}
             testID={`${testID}-add-items`}
-            accessibilityLabel="Start or join another bill"
+            accessibilityLabel="View bill items"
           >
             <Plus size={18} color="#fff" />
           </TouchableOpacity>

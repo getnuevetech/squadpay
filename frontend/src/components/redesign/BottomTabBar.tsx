@@ -32,9 +32,16 @@ const TABS: Tab[] = [
 type Props = {
   active?: TabKey;
   testID?: string;
+  /**
+   * Optional override for the raised center "+" button. When provided,
+   * the host screen can intercept the tap (e.g. to open a "Start a new
+   * bill / Join a bill" action sheet) instead of routing straight to
+   * /create. When omitted, the default `/create` push behavior is kept.
+   */
+  onCenterPress?: () => void;
 };
 
-export function BottomTabBar({ active, testID = 'bottom-tab-bar' }: Props) {
+export function BottomTabBar({ active, testID = 'bottom-tab-bar', onCenterPress }: Props) {
   const router = useRouter();
   const pathname = usePathname();
 
@@ -58,7 +65,10 @@ export function BottomTabBar({ active, testID = 'bottom-tab-bar' }: Props) {
               <TouchableOpacity
                 key={t.key}
                 style={styles.centerWrap}
-                onPress={() => router.push(t.href as any)}
+                onPress={() => {
+                  if (onCenterPress) onCenterPress();
+                  else router.push(t.href as any);
+                }}
                 activeOpacity={0.85}
                 testID={`tab-${t.key}`}
               >

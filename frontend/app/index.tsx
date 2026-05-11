@@ -299,7 +299,7 @@ export default function HomeScreen() {
                     router.push(`/group/${featured.id}/pay?kind=${kind}`);
                   }}
                   onAddFriend={() => router.push(`/group/${featured.id}`)}
-                  onPlusToItems={() => setNewBillOpen(true)}
+                  onPlusToItems={() => router.push(`/group/${featured.id}/items`)}
                 />
               ) : (
                 <FeaturedBillCard
@@ -380,7 +380,7 @@ export default function HomeScreen() {
           )}
         </View>
       </ScrollView>
-      <BottomTabBar active="home" />
+      <BottomTabBar active="home" onCenterPress={() => setNewBillOpen(true)} />
       <NewBillSheet
         visible={newBillOpen}
         onClose={() => setNewBillOpen(false)}

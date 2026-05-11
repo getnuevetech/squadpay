@@ -698,10 +698,11 @@ Password: Letmein@2007#ForReal
 ## Roadmap / Backlog
 
 ### Near-term (next milestones)
-- Apple Pay / Google Pay **push provisioning** of the SquadPay virtual card into the Lead's native wallet (pending PNO/PSP approvals).
+- Apple Pay / Google Pay **push provisioning** of the SquadPay virtual card into the Lead's native wallet — pending approvals from our **PSP** (Payment Service Provider — Stripe) and the **PNO** (Payment Network Operator — Visa via VDEP / Mastercard via MDES).
   - ✅ Backend stub endpoint `POST /api/cards/{group_id}/provision` is live and returns `pending_psp_approval` until approvals land.
   - ✅ Frontend "Add to Apple/Google Pay" button gracefully surfaces the "coming soon — pending bank approval" status.
-  - When approvals land: replace the stub in `routes/wallet_routes.py` with the real Stripe Issuing push-provisioning call, no frontend changes needed.
+  - Email draft to Stripe support: see `/app/STRIPE_PUSH_PROVISIONING_REQUEST.md`.
+  - When approvals land: replace the stub in `routes/wallet_routes.py` with the real Stripe Issuing push-provisioning call (`stripe.issuing.Card.create_push_provisioning_data(...)`), then request the Apple `payment-pass-provisioning` and Google `PUSH_PROVISIONING_PRIVILEGED` entitlements. No frontend changes needed.
 - ✅ **Refactor** complete: `HeroCard`, `BillBreakdown`, and `useBillMath` extracted into `/src/components/redesign/` and `/src/hooks/` so Lead and User dashboards share a single source of truth.
 - **Multi-receipt** scanning: stitch two receipts into a single bill (split-tab dinners).
 
@@ -811,6 +812,11 @@ KMS_MASTER_KEY=...                       # for encrypting sensitive admin creds
 | **AASA** | Apple App Site Association (iOS Universal Links manifest) |
 | **Asset Links** | Android equivalent of AASA |
 | **EAS** | Expo Application Services — managed mobile build pipeline |
+| **SAQ-A** | PCI Self-Assessment Questionnaire A (lowest scope, outsourced payments) |
+| **PSP** | **Payment Service Provider** — the regulated company that actually processes card transactions and issues virtual cards on our behalf. *In SquadPay this is Stripe.* (Alternatives: Adyen, Marqeta, Lithic, Galileo.) |
+| **PNO** | **Payment Network Operator** — the card-network rails the card runs on. They set the rules for digital-wallet provisioning and approve which programs may push cards into Apple/Google Wallet. *In SquadPay these are Visa (via VDEP — Visa Digital Enablement Program) and Mastercard (via MDES — Mastercard Digital Enablement Service).* |
+| **Push Provisioning** | The flow that lets a user tap "Add to Apple/Google Wallet" inside the app and have the card appear on their phone instantly. Requires PSP + PNO + Apple/Google sign-off. |
+| **Tokenisation** | Replacing the real card number with a one-time, device-bound reference (the "DPAN"). What actually sits in Apple Wallet — never the real PAN. |
 
 ---
 

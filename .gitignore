@@ -704,6 +704,9 @@ credentials.json
 
 # Private, download-only documentation (contains code snippets + sample payloads)
 DOCUMENTATION_FULL.md
+
+# Stripe enablement email draft (contains personal contact details)
+STRIPE_PUSH_PROVISIONING_REQUEST.md
 -e 
 # Environment and credential files
 .env

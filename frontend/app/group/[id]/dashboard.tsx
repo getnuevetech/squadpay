@@ -431,8 +431,17 @@ export default function DashboardScreen() {
               if (group.status === 'open') {
                 if (obligationOwed > 0.01 && outstanding > 0.01) {
                   status = { icon: <AlertCircle size={12} color={COLORS.warning} />, text: `Shortfall +$${obligationOwed.toFixed(2)} due`, color: COLORS.warning };
+                } else if (contributed >= share - 0.01) {
+                  status = { icon: <CheckCircle2 size={12} color={COLORS.success} />, text: 'Contributed', color: COLORS.success };
                 } else {
-                  status = { icon: <Clock size={12} color={COLORS.subtext} />, text: 'Shortfall to be decided', color: COLORS.subtext };
+                  // Mirror the member-row copy so users see consistent
+                  // labels — "Not yet paid" if zero, "Partial ($X)" if
+                  // some money in but below their share.
+                  status = {
+                    icon: <Clock size={12} color={COLORS.warning} />,
+                    text: contributed > 0 ? `Partial ($${contributed.toFixed(2)})` : 'Not yet paid',
+                    color: COLORS.warning,
+                  };
                 }
               } else if (settlement && settlement.amount > 0.01 && settlement.mode === 'lead') {
                 status = { icon: <CheckCircle2 size={12} color={COLORS.primary} />, text: `Covered $${settlement.amount.toFixed(2)} shortfall${settlement.is_loan ? '' : ' (gift)'}`, color: COLORS.primary };

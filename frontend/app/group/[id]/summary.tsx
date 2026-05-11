@@ -123,7 +123,9 @@ export default function SummaryScreen() {
     0,
   );
   const displayedPct = _outstandingTotal > 0.01 ? Math.min(99, collectedPct) : collectedPct;
-  const remaining = funding.remaining_to_collect;
+  // Remaining = bill total − what's been contributed so far. Keeps the math
+  // intuitive and impossible to invert when the wallet is over-funded.
+  const remaining = Math.max(0, Number(group.total || 0) - (funding.total_contributed || 0));
 
   const memberName = (uid?: string) => {
     if (!uid) return '';

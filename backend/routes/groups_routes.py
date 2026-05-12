@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 
 from core import (
     CreateGroupIn, JoinGroupIn, RemoveMemberIn, UpdateItemsIn, AppendItemsIn,
-    UpdateGroupMetaIn, ItemPatchIn, AssignIn,
+    UpdateGroupMetaIn, ItemPatchIn, AssignIn, SetSplitModeIn,
     new_id, new_short_code, now_iso,
     _apply_group_discount, _load_group_enriched, _recompute_group,
 )
@@ -107,6 +107,56 @@ def attach_groups_routes(router: APIRouter, db):
                 "joined_via": joined_via,
             })
             await db.groups.update_one({"id": group_id}, {"$set": {"members": members}})
+        return await _load_group_enriched(db, group_id)
+
+    @router.post("/groups/{group_id}/split-mode")
+    async def set_split_mode(group_id: str, body: SetSplitModeIn):
+        """Lead changes the bill's split mode mid-flight.
+
+        Allowed modes: "fast" (equal split across members) and "itemized"
+        (per-item claims). When the mode changes:
+          • All item claims may be released if switching to "fast" (the
+            core recompute treats fast bills as having no claims).
+          • Per-user shares are recomputed immediately.
+
+        The frontend warns the lead before calling this — but the backend
+        also enforces:
+          • Only the lead can change the mode.
+          • Mode cannot change once contributions have already started
+            (would invert what some members already paid).
+          • Must be one of the two valid modes.
+        """
+        mode = (body.split_mode or "").strip().lower()
+        if mode not in {"fast", "itemized"}:
+            raise HTTPException(400, "split_mode must be 'fast' or 'itemized'")
+
+        group = await db.groups.find_one({"id": group_id}, {"_id": 0})
+        if not group:
+            raise HTTPException(404, "Group not found")
+        if group.get("is_blocked"):
+            raise HTTPException(403, "This group has been blocked by an administrator.")
+        if group.get("lead_id") != body.user_id:
+            raise HTTPException(403, "Only the lead can change the split mode")
+        if group.get("status") != "open":
+            raise HTTPException(400, "Split mode is locked — bill is no longer open.")
+        # Block once anyone has contributed/repaid — switching would invert
+        # what they already paid for.
+        contributed = float((group.get("funding") or {}).get("total_contributed") or 0)
+        repaid = float((group.get("funding") or {}).get("total_repaid") or 0)
+        if contributed > 0.01 or repaid > 0.01:
+            raise HTTPException(
+                400,
+                "Split mode cannot change after contributions have started. "
+                "Refund all contributions first if you need to switch.",
+            )
+
+        if group.get("split_mode") == mode:
+            return await _load_group_enriched(db, group_id)
+
+        await db.groups.update_one(
+            {"id": group_id},
+            {"$set": {"split_mode": mode}},
+        )
         return await _load_group_enriched(db, group_id)
 
     @router.post("/groups/{group_id}/remove-member")

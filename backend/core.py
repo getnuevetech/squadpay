@@ -543,6 +543,14 @@ class JoinGroupIn(BaseModel):
     joined_via: Optional[str] = None
 
 
+class SetSplitModeIn(BaseModel):
+    """Lead changes the bill's split mode mid-flight. See
+    `set_split_mode` in routes/groups_routes.py for the validation rules.
+    """
+    user_id: str
+    split_mode: str  # "fast" or "itemized"
+
+
 class RemoveMemberIn(BaseModel):
     """Lead removes a member from the group. Pre-conditions enforced by the
     route: bill must still be open, target must not be the lead, and the

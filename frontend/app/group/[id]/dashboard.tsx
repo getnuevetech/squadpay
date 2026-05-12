@@ -312,7 +312,7 @@ export default function DashboardScreen() {
 
         {/* Member list — same as User Dashboard, tappable rows that expand */}
         <View style={styles.memberCard}>
-          <Text style={styles.sectionTitle}>Members ({group.members.length})</Text>
+          <Text style={styles.sectionTitle}>Squad ({group.members.length})</Text>
           {group.members.map((m, idx) => {
             const per = group.per_user.find((p) => p.user_id === m.user_id);
             const share = per?.total || 0;
@@ -475,7 +475,7 @@ export default function DashboardScreen() {
           <View style={styles.warnCard} testID="dashboard-need-members-banner">
             <UserPlus size={18} color={COLORS.warning} />
             <Text style={styles.warnText}>
-              A group needs at least 2 members. Invite someone to start collecting contributions.
+              A Squad needs at least 2 members. Invite someone to start collecting contributions.
             </Text>
           </View>
         )}

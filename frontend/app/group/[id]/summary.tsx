@@ -129,7 +129,7 @@ export default function SummaryScreen() {
         return { text: `Shortfall covered by ${memberName(settlement.funder_id)}`, color: COLORS.warning, bg: COLORS.warningLight };
       }
       if (settlement.mode === 'split_equal') {
-        return { text: 'Shortfall split among all members', color: COLORS.warning, bg: COLORS.warningLight };
+        return { text: 'Shortfall split among all Squad members', color: COLORS.warning, bg: COLORS.warningLight };
       }
     }
     if (group.funding_mode === 'group') return { text: 'Group-funded', color: COLORS.success, bg: COLORS.successLight };
@@ -252,7 +252,7 @@ export default function SummaryScreen() {
             member's per-item breakdown inline. Replaces the previous separate
             "Who's paying for what" card. */}
         <View style={styles.memberCard}>
-          <Text style={styles.sectionTitle}>Members ({group.members.length})</Text>
+          <Text style={styles.sectionTitle}>Squad ({group.members.length})</Text>
           {group.members.map((m, idx) => {
             const per = group.per_user.find((p) => p.user_id === m.user_id);
             const share = per?.total || 0;

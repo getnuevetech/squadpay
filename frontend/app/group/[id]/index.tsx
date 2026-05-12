@@ -168,7 +168,7 @@ export default function GroupLobbyScreen() {
               </Text>
             </View>
             <Text style={styles.headerCount}>
-              {group.members.length} {group.members.length === 1 ? 'member' : 'members'}
+              {group.members.length} Squad {group.members.length === 1 ? 'member' : 'members'}
             </Text>
           </View>
         </LinearGradient>
@@ -383,7 +383,7 @@ export default function GroupLobbyScreen() {
           <View style={styles.membersHeader}>
             <Users size={18} color={COLORS.text} />
             <Text style={styles.membersTitle}>
-              {group.members.length} {group.members.length === 1 ? 'member' : 'members'}
+              {group.members.length} Squad {group.members.length === 1 ? 'member' : 'members'}
             </Text>
           </View>
           {group.members.map((m) => (

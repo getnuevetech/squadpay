@@ -16,6 +16,7 @@ import { api } from '../../src/api';
 import { loadUser } from '../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
 import { toast } from '../../src/components/Toast';
+import { friendlyError } from '../../src/errors';
 import { Skeleton } from '../../src/components/Skeleton';
 import { QRScannerModal } from '../../src/QRScannerModal';
 
@@ -51,9 +52,13 @@ export default function JoinScreen() {
       const group = await api.getGroupByCode(joinCode);
       // Pass `source` so the backend logs how the member joined (Item 6).
       await api.joinGroup(group.id, u.id, source);
-      router.replace(`/group/${group.id}`);
+      // June 2025 — after a successful join, send the user STRAIGHT to their
+      // squad dashboard (User Dashboard) instead of the invite/lobby page.
+      // If the joiner happens to be the lead (rare — they'd already be in
+      // the squad), the dashboard route auto-redirects to the Lead Dashboard.
+      router.replace(`/group/${group.id}/summary`);
     } catch (e: any) {
-      toast.error(e?.message || 'Join failed');
+      toast.error(friendlyError(e, "We couldn't add you to that Squad. Check the code and try again."));
       setLoading(false);
     } finally {
       setJoining(false);

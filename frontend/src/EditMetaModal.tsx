@@ -92,7 +92,7 @@ export function EditMetaModal({ visible, onClose, onSaved, group, userId, field 
                 placeholderTextColor={COLORS.disabledText}
                 autoFocus
               />
-              <Text style={styles.hint}>You can rename until all members finish contributing.</Text>
+              <Text style={styles.hint}>You can rename until all Squad members finish contributing.</Text>
             </>
           ) : (
             <>

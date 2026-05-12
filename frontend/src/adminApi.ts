@@ -144,6 +144,36 @@ export const adminApi = {
     return request<{ items: AuditEntry[]; skip: number; limit: number }>(`/audit-log${qs ? `?${qs}` : ''}`);
   },
   listAdmins: () => request<AdminProfile[]>('/admins'),
+  // June 2025 — Notification Center
+  broadcastNotification: (body: {
+    message: string;
+    image_url?: string | null;
+    link_url?: string | null;
+    audience: { type: 'all' | 'leads' | 'members' | 'groups'; group_ids?: string[] };
+    channels: { in_app: boolean; sms: boolean };
+  }) =>
+    request<{
+      id: string;
+      recipient_count: number;
+      in_app_delivered: number;
+      sms_sent: number;
+      sms_failed: number;
+    }>('/notifications/broadcast', { method: 'POST', body: JSON.stringify(body) }),
+  listBroadcasts: () =>
+    request<{
+      items: Array<{
+        id: string;
+        message: string;
+        image_url: string | null;
+        link_url: string | null;
+        audience: { type: string; group_ids?: string[] };
+        channels: { in_app: boolean; sms: boolean };
+        sent_at: string;
+        recipient_count: number;
+        sms_sent: number;
+        sms_failed: number;
+      }>;
+    }>('/notifications/broadcasts'),
   createAdmin: (body: { email: string; password: string; name: string; role: AdminRole }) =>
     request<AdminProfile>('/admins', { method: 'POST', body: JSON.stringify(body) }),
   toggleAdmin: (id: string, is_active: boolean) =>

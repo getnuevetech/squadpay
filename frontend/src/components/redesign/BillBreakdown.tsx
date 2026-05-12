@@ -156,11 +156,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   yourLabel: {
-    color: COLORS.subtext,
-    fontSize: FONT.sizes.xs,
+    // June 2025 — boldface this label per UX request. Was subtext-color
+    // semibold; now uses the main text color with the heaviest weight to
+    // make the breakdown section feel like a primary heading.
+    color: COLORS.text,
+    fontSize: FONT.sizes.sm,
     textTransform: 'uppercase',
     letterSpacing: 1,
-    fontWeight: FONT.weights.semibold,
+    fontWeight: FONT.weights.heavy,
     marginBottom: SPACING.sm,
   },
   breakdownRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },

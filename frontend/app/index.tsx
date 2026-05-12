@@ -38,6 +38,7 @@ import {
   FileText,
   RotateCw,
   PlusSquare,
+  Bell,
 } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { api } from '../src/api';
@@ -61,6 +62,8 @@ export default function HomeScreen() {
   const [groups, setGroups] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  // June 2025 — Inbox unread count, surfaced as a small dot on the bell.
+  const [unread, setUnread] = useState(0);
 
   const load = useCallback(async () => {
     const u = await refreshUser();
@@ -70,8 +73,14 @@ export default function HomeScreen() {
         const gs = await api.getUserGroups(u.id);
         setGroups(gs);
       } catch (e) { console.log('Failed to load groups', e); }
+      // Best-effort inbox load — failure should not break the home screen.
+      try {
+        const r = await api.getInbox(u.id);
+        setUnread(r.unread || 0);
+      } catch {}
     } else {
       setGroups([]);
+      setUnread(0);
     }
     setLoading(false);
   }, []);
@@ -214,18 +223,35 @@ export default function HomeScreen() {
           <SafeAreaView edges={['top']}>
             <View style={styles.heroHeader}>
               <SquadPayMark size={32} variant="onDark" testID="home-brand-mark" />
-              <TouchableOpacity
-                onPress={() => router.push('/settings')}
-                activeOpacity={0.85}
-                style={styles.profileBtn}
-                testID="home-profile-btn"
-              >
-                <AvatarRing
-                  name={user.name || '?'}
-                  seed={user.id || 'me'}
-                  size={36}
-                />
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <TouchableOpacity
+                  onPress={() => router.push('/notifications' as any)}
+                  activeOpacity={0.85}
+                  style={styles.bellBtn}
+                  testID="home-notifications-btn"
+                >
+                  <Bell size={20} color="#fff" />
+                  {unread > 0 ? (
+                    <View style={styles.bellDot}>
+                      <Text style={styles.bellDotText}>
+                        {unread > 9 ? '9+' : unread}
+                      </Text>
+                    </View>
+                  ) : null}
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => router.push('/settings')}
+                  activeOpacity={0.85}
+                  style={styles.profileBtn}
+                  testID="home-profile-btn"
+                >
+                  <AvatarRing
+                    name={user.name || '?'}
+                    seed={user.id || 'me'}
+                    size={36}
+                  />
+                </TouchableOpacity>
+              </View>
             </View>
 
             {/* Live session pill */}
@@ -359,7 +385,7 @@ export default function HomeScreen() {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.groupTitle} numberOfLines={1}>{item.title}</Text>
                     <Text style={styles.groupMeta}>
-                      {item.member_count} members · ${Number(item.total || 0).toFixed(2)}
+                      {item.member_count} Squad members · ${Number(item.total || 0).toFixed(2)}
                     </Text>
                     {item.members_preview && item.members_preview.length > 0 ? (
                       <View style={styles.memberStack}>
@@ -519,6 +545,31 @@ const styles = StyleSheet.create({
     paddingTop: SPACING.sm,
   },
   profileBtn: { padding: 2, borderRadius: 999 },
+  // Bell + unread dot for the notification inbox shortcut (June 2025).
+  bellBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  bellDot: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    paddingHorizontal: 4,
+    backgroundColor: '#EF4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: '#6D28D9',
+  },
+  bellDotText: { color: '#fff', fontSize: 10, fontWeight: '800' },
   heroHello: { color: '#D7C7FB', fontSize: 14, fontWeight: FONT.weights.semibold, letterSpacing: 0.3 },
   heroHeadline: { fontSize: 36, fontWeight: FONT.weights.bold, lineHeight: 42, letterSpacing: -1, marginTop: 4 },
   heroHeadlineWhite: { color: '#fff' },

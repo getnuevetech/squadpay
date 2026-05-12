@@ -141,6 +141,14 @@ except Exception as _e:
     print("[startup] admin master-account attach failed:", _e)
 
 
+# ---------- Admin: Notification Center (Batch June 2025) ----------
+try:
+    from routes.admin_notifications import attach_admin_notifications_routes
+    attach_admin_notifications_routes(api_router, db, _adm_factory(db))
+except Exception as _e:
+    print("[startup] admin notifications attach failed:", _e)
+
+
 # ---------- Stripe payment routes (Phase E) ----------
 try:
     from payments import attach_payment_routes

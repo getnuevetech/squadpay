@@ -727,7 +727,7 @@ export default function PayScreen() {
                 ${group.funding.remaining_to_collect.toFixed(2)}
               </Text>
               <Text style={styles.settlementSub}>
-                Some members haven't contributed yet. Pick how to settle the gap:
+                Some Squad members haven't contributed yet. Pick how to settle the gap:
               </Text>
 
               {(
@@ -777,7 +777,7 @@ export default function PayScreen() {
                   {group.members
                     .filter((mm) => mm.user_id !== group.lead_id).length === 0 ? (
                     <Text style={styles.emptyFunders}>
-                      No other members have joined yet. Choose another option.
+                      No other Squad members have joined yet. Choose another option.
                     </Text>
                   ) : (
                     group.members
@@ -855,7 +855,7 @@ export default function PayScreen() {
 
               {shortfallMode === 'split_equal' && (
                 <Text style={styles.splitNote}>
-                  💡 The shortfall will be split equally across all members (including you, the lead). Each person gets an SMS and sees their share as an additional bill.
+                  💡 The shortfall will be split equally across all Squad members (including you, the lead). Each person gets an SMS and sees their share as an additional bill.
                 </Text>
               )}
             </View>

@@ -1,354 +1,563 @@
-"""Focused backend test for POST /api/groups/{group_id}/split-mode.
-
-Covers all 8 validation/happy-path scenarios from the review request.
 """
+Backend test suite for the NEW Admin Notification Center endpoints.
+
+Covers all 18 cases listed in the review request:
+  POST /api/admin/notifications/broadcast (admin auth required)
+  GET  /api/admin/notifications/broadcasts (admin auth required)
+  GET  /api/users/{user_id}/inbox
+  POST /api/users/{user_id}/inbox/{msg_id}/read
+  POST /api/users/{user_id}/inbox/read-all
+
+Uses the live preview backend via EXPO_PUBLIC_BACKEND_URL.
+"""
+
+from __future__ import annotations
+
 import os
-import sys
 import time
 import json
 import requests
+from typing import Dict, Any, List, Tuple
 
-BASE = "https://joint-pay-1.preview.emergentagent.com/api"
+# ---------- Config ----------
+BACKEND_BASE = os.environ.get(
+    "EXPO_PUBLIC_BACKEND_URL",
+    "https://joint-pay-1.preview.emergentagent.com",
+).rstrip("/")
+API = f"{BACKEND_BASE}/api"
+
 ADMIN_EMAIL = "admin@squadpay.us"
-ADMIN_PASS = "Letmein@2007#ForReal"
+ADMIN_PASSWORD = "Letmein@2007#ForReal"
 
-PASS = "[PASS]"
-FAIL = "[FAIL]"
-results = []
+TS = int(time.time())
 
 
-def record(label, ok, detail=""):
-    tag = PASS if ok else FAIL
-    print(f"{tag} {label} :: {detail}")
-    results.append((label, ok, detail))
-
-
-def admin_login():
-    r = requests.post(f"{BASE}/admin/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASS}, timeout=20)
-    r.raise_for_status()
-    return r.json()["token"]
-
-
-def set_sms_mock(admin_token):
-    r = requests.post(
-        f"{BASE}/admin/integrations/sms-mode",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={"mode": "mock"},
-        timeout=20,
-    )
-    r.raise_for_status()
-
-
-def make_user(name: str, phone: str) -> dict:
-    r = requests.post(f"{BASE}/auth/register", json={"name": name}, timeout=20)
-    r.raise_for_status()
-    user = r.json()
-    uid = user["id"]
-    r = requests.post(f"{BASE}/auth/send-otp", json={"user_id": uid, "phone": phone}, timeout=20)
-    r.raise_for_status()
-    r = requests.post(
-        f"{BASE}/auth/verify-otp",
-        json={"user_id": uid, "phone": phone, "code": "123456", "confirm_existing": True},
-        timeout=20,
-    )
-    r.raise_for_status()
-    return r.json()
-
-
-def create_group(lead_id: str, title: str, split_mode: str = "itemized", items=None, total=None) -> dict:
-    items = items or [
-        {"name": "Burger", "price": 12.0, "quantity": 1},
-        {"name": "Fries", "price": 4.0, "quantity": 1},
-        {"name": "Soda", "price": 2.0, "quantity": 1},
-    ]
-    if total is None:
-        total = sum(i["price"] * i["quantity"] for i in items)
-    payload = {
-        "lead_id": lead_id,
-        "title": title,
-        "total_amount": total,
-        "split_mode": split_mode,
-        "tax": 0.0,
-        "tip": 0.0,
-        "items": items,
-    }
-    r = requests.post(f"{BASE}/groups", json=payload, timeout=20)
-    r.raise_for_status()
-    return r.json()
-
-
-def join_group(gid: str, user_id: str):
-    r = requests.post(f"{BASE}/groups/{gid}/join", json={"user_id": user_id, "joined_via": "code"}, timeout=20)
-    r.raise_for_status()
-    return r.json()
-
-
-def set_split_mode(gid: str, user_id: str, mode):
-    return requests.post(
-        f"{BASE}/groups/{gid}/split-mode",
-        json={"user_id": user_id, "split_mode": mode},
-        timeout=20,
-    )
-
-
-def get_group(gid: str) -> dict:
-    r = requests.get(f"{BASE}/groups/{gid}", timeout=20)
-    r.raise_for_status()
-    return r.json()
-
-
-def main():
-    ts = int(time.time())
-    print(f"== split-mode endpoint test, ts={ts} ==")
-
-    admin_token = admin_login()
-    set_sms_mock(admin_token)
-    print("admin login + sms mock ok")
-
-    suffix = f"{ts % 10000000:07d}"
-    alice = make_user(f"Alice{ts}", f"+1500{suffix}")
-    bob = make_user(f"Bob{ts}", f"+1501{suffix}")
-    carol = make_user(f"Carol{ts}", f"+1502{suffix}")
-    print(f"users: alice={alice['id']} bob={bob['id']} carol={carol['id']}")
-
-    group = create_group(alice["id"], f"DinnerA{ts}", split_mode="itemized")
-    gid = group["id"]
-    join_group(gid, bob["id"])
-    join_group(gid, carol["id"])
-    group = get_group(gid)
-    print(f"group {gid} created, split_mode={group['split_mode']}, total={group['total_amount']}")
-
-    # 1) Invalid split_mode (note: route does .strip().lower() so trailing/leading
-    # whitespace and case differences are normalised. Only truly invalid tokens
-    # should be rejected.)
-    for bad in ["smart", "", "items", "equal"]:
-        r = set_split_mode(gid, alice["id"], bad)
-        try:
-            detail = r.json().get("detail", "")
-        except Exception:
-            detail = r.text
-        ok = r.status_code == 400 and "split_mode must be" in str(detail).lower()
-        record(f"invalid mode={bad!r}", ok, f"status={r.status_code} detail={detail!r}")
-
-    # Missing field
-    r = requests.post(f"{BASE}/groups/{gid}/split-mode", json={"user_id": alice["id"]}, timeout=20)
-    record("invalid mode (missing field) -> 4xx", r.status_code in (400, 422), f"status={r.status_code} body={r.text[:200]}")
-
-    # 2) Unknown group_id
-    r = set_split_mode("g_DOES_NOT_EXIST_X", alice["id"], "fast")
+# ---------- Helpers ----------
+def _short(resp: requests.Response, n: int = 280) -> str:
     try:
-        detail = r.json().get("detail", "")
+        body = json.dumps(resp.json())
     except Exception:
-        detail = r.text
-    ok = r.status_code == 404 and "group not found" in str(detail).lower()
-    record("unknown group_id -> 404", ok, f"status={r.status_code} detail={detail!r}")
+        body = resp.text or ""
+    return body[:n]
 
-    # 3) Non-lead caller -> 403
-    r = set_split_mode(gid, bob["id"], "fast")
-    try:
-        detail = r.json().get("detail", "")
-    except Exception:
-        detail = r.text
-    ok = r.status_code == 403 and "only the lead" in str(detail).lower()
-    record("non-lead caller -> 403", ok, f"status={r.status_code} detail={detail!r}")
 
-    # 7) HAPPY: itemized -> fast
-    r = set_split_mode(gid, alice["id"], "fast")
-    ok = r.status_code == 200
-    body = r.json() if ok else {}
-    record(
-        "happy: itemized -> fast (200)",
-        ok and body.get("split_mode") == "fast",
-        f"status={r.status_code} split_mode={body.get('split_mode')}",
-    )
-    if ok:
-        per = body.get("per_user", [])
-        total = float(body.get("total_amount") or 0)
-        expected_share = total / 3.0
-        food_shares = [p["food"] for p in per]
-        food_ok = len(food_shares) == 3 and all(abs(f - expected_share) <= 0.02 for f in food_shares)
-        record(
-            "fast mode: per_user food == total/members",
-            food_ok,
-            f"shares={food_shares}, expected≈{expected_share:.2f}",
-        )
-    fresh = get_group(gid)
-    record("persistence: fast saved", fresh.get("split_mode") == "fast", f"split_mode={fresh.get('split_mode')}")
+class Results:
+    def __init__(self):
+        self.rows: List[Tuple[str, bool, str]] = []
 
-    # 8) Idempotency
-    r = set_split_mode(gid, alice["id"], "fast")
-    body2 = r.json() if r.status_code == 200 else {}
-    record(
-        "idempotency: fast -> fast (200)",
-        r.status_code == 200 and body2.get("split_mode") == "fast",
-        f"status={r.status_code} split_mode={body2.get('split_mode')}",
-    )
+    def add(self, case: str, ok: bool, note: str = ""):
+        self.rows.append((case, ok, note))
+        flag = "PASS" if ok else "FAIL"
+        print(f"[{flag}] {case} — {note}")
 
-    # 7b) HAPPY reverse: fast -> itemized
-    r = set_split_mode(gid, alice["id"], "itemized")
-    body = r.json() if r.status_code == 200 else {}
-    record(
-        "happy: fast -> itemized (200)",
-        r.status_code == 200 and body.get("split_mode") == "itemized",
-        f"status={r.status_code} split_mode={body.get('split_mode')}",
-    )
+    def summary(self):
+        passed = sum(1 for _, ok, _ in self.rows if ok)
+        failed = len(self.rows) - passed
+        print("\n" + "=" * 72)
+        print(f"SUMMARY: {passed}/{len(self.rows)} PASS, {failed} FAIL")
+        print("=" * 72)
+        for case, ok, note in self.rows:
+            mark = "✅" if ok else "❌"
+            print(f"  {mark} {case}: {note}")
+        return failed
 
-    # Assign all items to alice
-    items = body.get("items", [])
-    for it in items:
-        ar = requests.post(
-            f"{BASE}/groups/{gid}/assign",
-            json={"user_id": alice["id"], "item_id": it["id"], "quantity": it["quantity"]},
-            timeout=20,
-        )
-        ar.raise_for_status()
-    fresh = get_group(gid)
-    per = {p["user_id"]: p for p in fresh.get("per_user", [])}
-    alice_food = per.get(alice["id"], {}).get("food", -1)
-    bob_food = per.get(bob["id"], {}).get("food", -1)
-    carol_food = per.get(carol["id"], {}).get("food", -1)
-    itemized_ok = abs(alice_food - 18.0) < 0.01 and abs(bob_food) < 0.01 and abs(carol_food) < 0.01
-    record(
-        "itemized mode: shares reflect claimed items",
-        itemized_ok,
-        f"alice={alice_food} bob={bob_food} carol={carol_food} (expected 18/0/0)",
-    )
 
-    # 5) Contributions started -> 400
-    sr = set_split_mode(gid, alice["id"], "fast")
-    record("setup: back to fast before contribute", sr.status_code == 200, f"status={sr.status_code}")
+R = Results()
 
-    fresh = get_group(gid)
-    alice_per = next((p for p in fresh["per_user"] if p["user_id"] == alice["id"]), None)
-    contrib_amount = alice_per["total"] if alice_per else 5.0
 
-    # Contribute requires cash (Stripe) when no credits — to keep the test
-    # self-contained, admin-grant Alice enough credits to fund her share so
-    # contribute can complete without Stripe redirection.
-    grant_r = requests.post(
-        f"{BASE}/admin/users/{alice['id']}/credits/grant",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={"amount": round(contrib_amount + 1, 2), "note": "test split-mode contribute"},
-        timeout=20,
-    )
-    record(
-        "setup: admin grants credit to alice",
-        grant_r.status_code == 200,
-        f"status={grant_r.status_code} body={grant_r.text[:200]}",
-    )
-
-    cr = requests.post(
-        f"{BASE}/groups/{gid}/contribute",
-        json={"user_id": alice["id"], "amount": contrib_amount},
+def admin_login() -> str:
+    r = requests.post(
+        f"{API}/admin/auth/login",
+        json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
         timeout=30,
     )
-    record(
-        "setup: alice contributes",
-        cr.status_code == 200,
-        f"status={cr.status_code} amount={contrib_amount} body={cr.text[:200]}",
-    )
+    r.raise_for_status()
+    token = r.json().get("token")
+    assert token, f"No token in admin login response: {_short(r)}"
+    return token
 
-    r = set_split_mode(gid, alice["id"], "itemized")
-    try:
-        detail = r.json().get("detail", "")
-    except Exception:
-        detail = r.text
-    ok = r.status_code == 400 and "contributions have started" in str(detail).lower()
-    record(
-        "contributions started -> 400",
-        ok,
-        f"status={r.status_code} detail={detail!r}",
-    )
 
-    # 4) status != 'open' lock
-    fresh = get_group(gid)
-    rtc = float((fresh.get("funding") or {}).get("remaining_to_collect") or 0)
-    if rtc > 0:
-        for u in (bob, carol):
-            per_u = next((p for p in fresh["per_user"] if p["user_id"] == u["id"]), None)
-            if not per_u:
-                continue
-            amt = per_u["total"]
-            # Grant credit so contribute can complete without Stripe
-            requests.post(
-                f"{BASE}/admin/users/{u['id']}/credits/grant",
-                headers={"Authorization": f"Bearer {admin_token}"},
-                json={"amount": round(amt + 1, 2), "note": "test split-mode contribute"},
-                timeout=20,
-            )
-            cr = requests.post(
-                f"{BASE}/groups/{gid}/contribute",
-                json={"user_id": u["id"], "amount": amt},
-                timeout=30,
-            )
-            print(f"  {u['name']} contribute -> {cr.status_code}: {cr.text[:160]}")
-        fresh = get_group(gid)
-
-    raw_status = fresh.get("status")
-    print(f"  after contributions: status={raw_status} derived={fresh.get('derived_status')} rtc={fresh.get('funding',{}).get('remaining_to_collect')}")
-
-    if raw_status == "open":
-        pr = requests.post(f"{BASE}/groups/{gid}/pay", json={"user_id": alice["id"]}, timeout=30)
-        print(f"  /pay -> {pr.status_code}: {pr.text[:200]}")
-        fresh = get_group(gid)
-        raw_status = fresh.get("status")
-
-    if raw_status != "open":
-        r = set_split_mode(gid, alice["id"], "fast")
-        try:
-            detail = r.json().get("detail", "")
-        except Exception:
-            detail = r.text
-        ok = r.status_code == 400 and "locked" in str(detail).lower()
-        record(
-            f"status != 'open' (status={raw_status}) -> 400 locked",
-            ok,
-            f"status={r.status_code} detail={detail!r}",
-        )
-    else:
-        record(
-            "status != 'open' lock test",
-            False,
-            f"could not move group out of 'open' to verify (status={raw_status})",
-        )
-
-    # 6) is_blocked -> 403  (fresh group)
-    block_group_data = create_group(alice["id"], f"BlockTest{ts}", split_mode="fast")
-    bgid = block_group_data["id"]
-    join_group(bgid, bob["id"])
-    br = requests.post(
-        f"{BASE}/admin/groups/{bgid}/block",
+def set_sms_mode_mock(admin_token: str):
+    """Ensure SMS routing is in mock so sms_sent counter increments cleanly."""
+    r = requests.post(
+        f"{API}/admin/integrations/sms-mode",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"is_blocked": True, "reason": "test split-mode block"},
-        timeout=20,
+        json={"mode": "mock"},
+        timeout=30,
     )
-    if br.status_code != 200:
-        record("setup: admin blocks group", False, f"status={br.status_code} body={br.text[:200]}")
-    else:
-        record("setup: admin blocks group", True, "")
-        r = set_split_mode(bgid, alice["id"], "itemized")
-        try:
-            detail = r.json().get("detail", "")
-        except Exception:
-            detail = r.text
-        ok = r.status_code == 403 and "blocked by an administrator" in str(detail).lower()
-        record(
-            "is_blocked group -> 403",
-            ok,
-            f"status={r.status_code} detail={detail!r}",
-        )
-
-    print("\n=== SUMMARY ===")
-    passed = sum(1 for _, ok, _ in results if ok)
-    total = len(results)
-    print(f"{passed}/{total} assertions passed")
-    failed = [r for r in results if not r[1]]
-    if failed:
-        print("FAILED:")
-        for label, _, detail in failed:
-            print(f"  - {label}: {detail}")
-    sys.exit(0 if passed == total else 1)
+    if r.status_code != 200:
+        print(f"[warn] set sms mode mock returned {r.status_code} {_short(r)}")
 
 
-if __name__ == "__main__":
-    main()
+def register_user(name: str) -> str:
+    r = requests.post(f"{API}/auth/register", json={"name": name}, timeout=30)
+    r.raise_for_status()
+    return r.json()["id"]
+
+
+_phone_counter = 0
+
+
+def make_phone() -> str:
+    """Return a fresh-looking US phone number unique to this run."""
+    global _phone_counter
+    _phone_counter += 1
+    # Build a 10-digit US number that's unique per call
+    tail = (TS * 10 + _phone_counter) % 10_000_000
+    return f"+1832{tail:07d}"
+
+
+def verify_user(user_id: str, phone: str) -> str:
+    """Send + verify OTP in mock mode → returns the (possibly collapsed) user id."""
+    r = requests.post(
+        f"{API}/auth/send-otp",
+        json={"user_id": user_id, "phone": phone},
+        timeout=30,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"send-otp failed: {r.status_code} {_short(r)}")
+
+    r2 = requests.post(
+        f"{API}/auth/verify-otp",
+        json={
+            "user_id": user_id,
+            "phone": phone,
+            "code": "123456",
+            "confirm_existing": True,
+        },
+        timeout=30,
+    )
+    if r2.status_code != 200:
+        raise RuntimeError(f"verify-otp failed: {r2.status_code} {_short(r2)}")
+    return r2.json().get("id") or user_id
+
+
+def create_user_full(name: str) -> Dict[str, str]:
+    uid = register_user(name)
+    phone = make_phone()
+    final_uid = verify_user(uid, phone)
+    return {"id": final_uid, "name": name, "phone": phone}
+
+
+def create_group(lead_id: str, title: str, total: float = 30.0) -> str:
+    r = requests.post(
+        f"{API}/groups",
+        json={
+            "lead_id": lead_id,
+            "title": title,
+            "total_amount": total,
+            "split_mode": "fast",
+            "tax": 0.0,
+            "tip": 0.0,
+            "items": [],
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()["id"]
+
+
+def join_group(group_id: str, user_id: str):
+    r = requests.post(
+        f"{API}/groups/{group_id}/join",
+        json={"user_id": user_id, "joined_via": "code"},
+        timeout=30,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"join failed: {r.status_code} {_short(r)}")
+
+
+# ---------- Setup: admin + fixture users + group ----------
+print(f"[setup] Backend base: {API}")
+admin_token = admin_login()
+print(f"[setup] Admin login OK, token len={len(admin_token)}")
+
+set_sms_mode_mock(admin_token)
+
+# Fixture: lead + 2 members + 1 lone user (verified, no group)
+print("[setup] creating fixture users + group...")
+lead = create_user_full(f"NotifLead{TS}")
+member_a = create_user_full(f"NotifMemA{TS}")
+member_b = create_user_full(f"NotifMemB{TS}")
+lonely = create_user_full(f"NotifSolo{TS}")
+print(f"[setup] lead={lead['id']} memA={member_a['id']} memB={member_b['id']} solo={lonely['id']}")
+
+group_id = create_group(lead["id"], f"NotifGroup-{TS}", total=30.0)
+join_group(group_id, member_a["id"])
+join_group(group_id, member_b["id"])
+print(f"[setup] group={group_id} (lead + 2 members)")
+
+H_ADMIN = {"Authorization": f"Bearer {admin_token}"}
+
+
+# ---------------- Case 1: 401 without admin token ----------------
+r = requests.post(
+    f"{API}/admin/notifications/broadcast",
+    json={
+        "message": "hi",
+        "audience": {"type": "all"},
+        "channels": {"in_app": True, "sms": False},
+    },
+    timeout=30,
+)
+R.add(
+    "C1 401 without admin token",
+    r.status_code in (401, 403),
+    f"status={r.status_code} body={_short(r, 120)}",
+)
+
+
+# ---------------- Case 3: empty message → 400 ----------------
+r = requests.post(
+    f"{API}/admin/notifications/broadcast",
+    headers=H_ADMIN,
+    json={
+        "message": "   ",
+        "audience": {"type": "all"},
+        "channels": {"in_app": True, "sms": False},
+    },
+    timeout=30,
+)
+R.add(
+    "C3 empty message → 400",
+    r.status_code == 400,
+    f"status={r.status_code} body={_short(r, 160)}",
+)
+
+
+# ---------------- Case 4: message > 1000 chars → 400 ----------------
+long_msg = "A" * 1001
+r = requests.post(
+    f"{API}/admin/notifications/broadcast",
+    headers=H_ADMIN,
+    json={
+        "message": long_msg,
+        "audience": {"type": "all"},
+        "channels": {"in_app": True, "sms": False},
+    },
+    timeout=30,
+)
+R.add(
+    "C4 message >1000 chars → 400",
+    r.status_code == 400,
+    f"status={r.status_code} body={_short(r, 160)}",
+)
+
+
+# ---------------- Case 5: both channels off → 400 ----------------
+r = requests.post(
+    f"{API}/admin/notifications/broadcast",
+    headers=H_ADMIN,
+    json={
+        "message": "hello there",
+        "audience": {"type": "all"},
+        "channels": {"in_app": False, "sms": False},
+    },
+    timeout=30,
+)
+R.add(
+    "C5 both channels off → 400",
+    r.status_code == 400,
+    f"status={r.status_code} body={_short(r, 160)}",
+)
+
+
+# ---------------- Case 6: audience.type=vip → 400 ----------------
+r = requests.post(
+    f"{API}/admin/notifications/broadcast",
+    headers=H_ADMIN,
+    json={
+        "message": "hi vips",
+        "audience": {"type": "vip"},
+        "channels": {"in_app": True, "sms": False},
+    },
+    timeout=30,
+)
+R.add(
+    "C6 audience=vip → 400",
+    r.status_code == 400,
+    f"status={r.status_code} body={_short(r, 160)}",
+)
+
+
+# ---------------- Case 7: audience.type=groups with empty group_ids → 400 ----------------
+r = requests.post(
+    f"{API}/admin/notifications/broadcast",
+    headers=H_ADMIN,
+    json={
+        "message": "hi groups",
+        "audience": {"type": "groups", "group_ids": []},
+        "channels": {"in_app": True, "sms": False},
+    },
+    timeout=30,
+)
+R.add(
+    "C7 groups audience with empty group_ids → 400",
+    r.status_code == 400,
+    f"status={r.status_code} body={_short(r, 160)}",
+)
+
+
+# ---------------- Case 2 + Case 8 + Case 12 + Case 14: audience=all → 200 ----------------
+broadcast_msg_all = f"Hello from SquadPay test {TS} — all users"
+r = requests.post(
+    f"{API}/admin/notifications/broadcast",
+    headers=H_ADMIN,
+    json={
+        "message": broadcast_msg_all,
+        "audience": {"type": "all"},
+        "channels": {"in_app": True, "sms": False},
+    },
+    timeout=60,
+)
+ok_status = r.status_code == 200
+body_all = r.json() if ok_status else {}
+R.add(
+    "C2 valid admin token → 200 (audience=all, in_app only)",
+    ok_status,
+    f"status={r.status_code} body={_short(r, 200)}",
+)
+
+# C8 — recipient_count > 0
+rc_all = int(body_all.get("recipient_count") or 0)
+R.add(
+    "C8 audience=all recipient_count > 0",
+    rc_all > 0,
+    f"recipient_count={rc_all}",
+)
+
+# C14 — response shape
+required_keys = {"id", "recipient_count", "in_app_delivered", "sms_sent", "sms_failed"}
+missing = [k for k in required_keys if k not in body_all]
+R.add(
+    "C14 response shape includes id/recipient_count/in_app_delivered/sms_sent/sms_failed",
+    not missing,
+    f"missing={missing} body={_short(r, 200)}",
+)
+broadcast_id_all = body_all.get("id")
+
+
+# C12 — in-app persisted: check the lead's inbox contains this message
+def get_inbox(user_id: str) -> Dict[str, Any]:
+    rr = requests.get(f"{API}/users/{user_id}/inbox", timeout=30)
+    rr.raise_for_status()
+    return rr.json()
+
+
+inbox_lead = get_inbox(lead["id"])
+items_lead = inbox_lead.get("items") or []
+has_msg = any(
+    it.get("message") == broadcast_msg_all and it.get("broadcast_id") == broadcast_id_all
+    for it in items_lead
+)
+R.add(
+    "C12 in_app=true persists user_inbox doc for recipient (lead)",
+    has_msg,
+    f"inbox_count={len(items_lead)} found_match={has_msg}",
+)
+
+
+# ---------------- Case 9: audience=leads ----------------
+broadcast_msg_leads = f"Leads-only message {TS}"
+r = requests.post(
+    f"{API}/admin/notifications/broadcast",
+    headers=H_ADMIN,
+    json={
+        "message": broadcast_msg_leads,
+        "audience": {"type": "leads"},
+        "channels": {"in_app": True, "sms": False},
+    },
+    timeout=60,
+)
+body_leads = r.json() if r.status_code == 200 else {}
+ok_leads = r.status_code == 200 and int(body_leads.get("recipient_count") or 0) > 0
+R.add(
+    "C9 audience=leads → 200 with recipient_count>0",
+    ok_leads,
+    f"status={r.status_code} rc={body_leads.get('recipient_count')}",
+)
+broadcast_id_leads = body_leads.get("id")
+
+# Verify subset: our lead should have received it; members A/B should NOT
+# (unless they happen to lead some other group too — but they're fresh users).
+inbox_lead2 = get_inbox(lead["id"])
+inbox_a = get_inbox(member_a["id"])
+inbox_b = get_inbox(member_b["id"])
+inbox_solo = get_inbox(lonely["id"])
+
+lead_got = any(it.get("broadcast_id") == broadcast_id_leads for it in inbox_lead2.get("items", []))
+a_got = any(it.get("broadcast_id") == broadcast_id_leads for it in inbox_a.get("items", []))
+b_got = any(it.get("broadcast_id") == broadcast_id_leads for it in inbox_b.get("items", []))
+solo_got = any(it.get("broadcast_id") == broadcast_id_leads for it in inbox_solo.get("items", []))
+
+R.add(
+    "C9 leads-subset: our lead received, members/solo did not",
+    lead_got and (not a_got) and (not b_got) and (not solo_got),
+    f"lead={lead_got} memA={a_got} memB={b_got} solo={solo_got}",
+)
+
+
+# ---------------- Case 10: audience=members ----------------
+broadcast_msg_members = f"Members-only message {TS}"
+r = requests.post(
+    f"{API}/admin/notifications/broadcast",
+    headers=H_ADMIN,
+    json={
+        "message": broadcast_msg_members,
+        "audience": {"type": "members"},
+        "channels": {"in_app": True, "sms": False},
+    },
+    timeout=60,
+)
+body_mem = r.json() if r.status_code == 200 else {}
+ok_mem = r.status_code == 200 and int(body_mem.get("recipient_count") or 0) > 0
+R.add(
+    "C10 audience=members → 200 with recipient_count>0",
+    ok_mem,
+    f"status={r.status_code} rc={body_mem.get('recipient_count')}",
+)
+broadcast_id_mem = body_mem.get("id")
+
+# Verify subset: member A and B should receive; our lead and lonely should NOT
+inbox_lead3 = get_inbox(lead["id"])
+inbox_a3 = get_inbox(member_a["id"])
+inbox_b3 = get_inbox(member_b["id"])
+inbox_solo3 = get_inbox(lonely["id"])
+
+lead_got_m = any(it.get("broadcast_id") == broadcast_id_mem for it in inbox_lead3.get("items", []))
+a_got_m = any(it.get("broadcast_id") == broadcast_id_mem for it in inbox_a3.get("items", []))
+b_got_m = any(it.get("broadcast_id") == broadcast_id_mem for it in inbox_b3.get("items", []))
+solo_got_m = any(it.get("broadcast_id") == broadcast_id_mem for it in inbox_solo3.get("items", []))
+
+R.add(
+    "C10 members-subset: members A&B received, lead and solo did not",
+    a_got_m and b_got_m and (not lead_got_m) and (not solo_got_m),
+    f"lead={lead_got_m} memA={a_got_m} memB={b_got_m} solo={solo_got_m}",
+)
+
+
+# ---------------- Case 11: audience=groups with valid ids ----------------
+broadcast_msg_groups = f"Group-targeted message {TS}"
+r = requests.post(
+    f"{API}/admin/notifications/broadcast",
+    headers=H_ADMIN,
+    json={
+        "message": broadcast_msg_groups,
+        "audience": {"type": "groups", "group_ids": [group_id]},
+        "channels": {"in_app": True, "sms": False},
+    },
+    timeout=30,
+)
+body_g = r.json() if r.status_code == 200 else {}
+rc_g = int(body_g.get("recipient_count") or 0)
+ok_g = r.status_code == 200 and rc_g == 3  # lead + 2 members
+R.add(
+    "C11 audience=groups([group_id]) → recipient_count==3",
+    ok_g,
+    f"status={r.status_code} rc={rc_g}",
+)
+broadcast_id_g = body_g.get("id")
+
+# Solo (not in the group) should NOT receive
+inbox_solo4 = get_inbox(lonely["id"])
+solo_got_g = any(it.get("broadcast_id") == broadcast_id_g for it in inbox_solo4.get("items", []))
+inbox_a4 = get_inbox(member_a["id"])
+a_got_g = any(it.get("broadcast_id") == broadcast_id_g for it in inbox_a4.get("items", []))
+R.add(
+    "C11 groups-audience: members of group receive, outsiders do not",
+    a_got_g and (not solo_got_g),
+    f"memA={a_got_g} solo={solo_got_g}",
+)
+
+
+# ---------------- Case 13: channels.sms=true → sms_sent increments (mock provider) ----------------
+broadcast_msg_sms = f"SMS test {TS}"
+r = requests.post(
+    f"{API}/admin/notifications/broadcast",
+    headers=H_ADMIN,
+    json={
+        "message": broadcast_msg_sms,
+        "audience": {"type": "groups", "group_ids": [group_id]},
+        "channels": {"in_app": True, "sms": True},
+    },
+    timeout=60,
+)
+body_sms = r.json() if r.status_code == 200 else {}
+ok_sms = r.status_code == 200 and int(body_sms.get("sms_sent") or 0) > 0
+R.add(
+    "C13 channels.sms=true increments sms_sent (mock provider counts as delivered)",
+    ok_sms,
+    f"status={r.status_code} sms_sent={body_sms.get('sms_sent')} sms_failed={body_sms.get('sms_failed')}",
+)
+broadcast_id_sms = body_sms.get("id")
+
+
+# ---------------- Case 15: GET /admin/notifications/broadcasts ----------------
+r = requests.get(f"{API}/admin/notifications/broadcasts", headers=H_ADMIN, timeout=30)
+ok_list = r.status_code == 200
+items = (r.json() or {}).get("items", []) if ok_list else []
+ids_in_list = {it.get("id") for it in items}
+recent = {broadcast_id_all, broadcast_id_leads, broadcast_id_mem, broadcast_id_g, broadcast_id_sms}
+recent.discard(None)
+found_recent = recent.issubset(ids_in_list) if recent else False
+R.add(
+    "C15 GET /admin/notifications/broadcasts returns recently-sent broadcasts",
+    ok_list and found_recent,
+    f"status={r.status_code} items={len(items)} all_recent_present={found_recent}",
+)
+
+
+# ---------------- Case 16: GET inbox sorted DESC by created_at, accurate unread count ----------------
+inbox_a_final = get_inbox(member_a["id"])
+items_a = inbox_a_final.get("items") or []
+sorted_ok = all(
+    items_a[i].get("created_at", "") >= items_a[i + 1].get("created_at", "")
+    for i in range(len(items_a) - 1)
+)
+unread_reported = inbox_a_final.get("unread")
+unread_actual = sum(1 for it in items_a if not it.get("read_at"))
+R.add(
+    "C16 inbox sorted DESC by created_at and unread count accurate",
+    sorted_ok and unread_reported == unread_actual,
+    f"sorted={sorted_ok} unread_reported={unread_reported} unread_actual={unread_actual} items={len(items_a)}",
+)
+
+
+# ---------------- Case 17: POST /users/{uid}/inbox/{msg_id}/read marks one ----------------
+unread_items_a = [it for it in items_a if not it.get("read_at")]
+if not unread_items_a:
+    R.add("C17 mark one as read", False, "no unread items to mark for member_a")
+else:
+    target = unread_items_a[0]
+    msg_id = target["id"]
+    r = requests.post(
+        f"{API}/users/{member_a['id']}/inbox/{msg_id}/read",
+        timeout=30,
+    )
+    ok_mark = r.status_code == 200 and (r.json() or {}).get("updated") == 1
+    # Re-fetch to confirm unread decremented
+    inbox_after = get_inbox(member_a["id"])
+    new_unread = inbox_after.get("unread")
+    expected = unread_reported - 1
+    R.add(
+        "C17 mark one as read → unread decrements by 1",
+        ok_mark and new_unread == expected,
+        f"resp={_short(r, 120)} unread_before={unread_reported} unread_after={new_unread} expected={expected}",
+    )
+
+
+# ---------------- Case 18: POST /users/{uid}/inbox/read-all clears unread ----------------
+r = requests.post(f"{API}/users/{member_a['id']}/inbox/read-all", timeout=30)
+ok_all = r.status_code == 200
+inbox_final = get_inbox(member_a["id"])
+final_unread = inbox_final.get("unread")
+R.add(
+    "C18 read-all clears all unread",
+    ok_all and final_unread == 0,
+    f"resp={_short(r, 120)} unread_after={final_unread}",
+)
+
+
+# ---------- Final summary ----------
+failed = R.summary()
+exit(0 if failed == 0 else 1)

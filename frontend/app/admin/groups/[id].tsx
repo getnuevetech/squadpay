@@ -241,7 +241,7 @@ export default function AdminGroupDetailPage() {
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
           <UsersIcon size={14} color={COLORS.text} />
-          <Text style={styles.sectionTitle}>Members ({group.members.length})</Text>
+          <Text style={styles.sectionTitle}>Squad ({group.members.length})</Text>
           {profile?.role === 'super_admin' && (
             <TouchableOpacity
               onPress={() => setReassignOpen((v) => !v)}

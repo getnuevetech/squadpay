@@ -21,6 +21,7 @@ import { api } from '../src/api';
 import { loadUser } from '../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../src/theme';
 import { toast } from '../src/components/Toast';
+import { friendlyError } from '../src/errors';
 
 type Mode = 'fast' | 'smart' | 'itemized';
 
@@ -71,7 +72,7 @@ export default function CreateBillScreen() {
       setTip(parsed.tip ? String(parsed.tip) : '');
       setMode('itemized');
     } catch (e: any) {
-      toast.error(e?.message || 'Receipt scan failed');
+      toast.error(friendlyError(e, "We couldn't read that receipt. Try a clearer photo or add items manually."));
     } finally {
       setScanning(false);
     }
@@ -92,7 +93,7 @@ export default function CreateBillScreen() {
       if (res.canceled || !res.assets?.[0]?.base64) return;
       await handleParsedReceipt(res.assets[0].base64!);
     } catch (e: any) {
-      toast.error(e?.message || 'Upload failed');
+      toast.error(friendlyError(e, "We couldn't open your photo library. Please try again."));
     }
   };
 
@@ -111,7 +112,7 @@ export default function CreateBillScreen() {
       if (res.canceled || !res.assets?.[0]?.base64) return;
       await handleParsedReceipt(res.assets[0].base64!);
     } catch (e: any) {
-      toast.error(e?.message || 'Camera capture failed');
+      toast.error(friendlyError(e, "We couldn't open your camera. Please try again."));
     }
   };
 

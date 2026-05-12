@@ -24,6 +24,7 @@ import { api, Group, Item } from '../../../src/api';
 import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 import { toast } from '../../../src/components/Toast';
+import { friendlyError } from '../../../src/errors';
 import { Skeleton, SkeletonGroupRow } from '../../../src/components/Skeleton';
 
 export default function ItemsScreen() {
@@ -203,7 +204,7 @@ export default function ItemsScreen() {
       setGroup(g);
       toast.success(`Added ${newItems.length} item${newItems.length === 1 ? '' : 's'}`);
     } catch (e: any) {
-      toast.error(e?.message || 'Receipt scan failed');
+      toast.error(friendlyError(e, "We couldn't read that receipt. Try a clearer photo or add items manually."));
     } finally {
       setScanning(false);
     }

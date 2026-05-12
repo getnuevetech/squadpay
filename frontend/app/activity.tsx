@@ -93,7 +93,7 @@ export default function ActivityScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.rowTitle} numberOfLines={1}>{item.title}</Text>
                 <Text style={styles.rowMeta}>
-                  {item.member_count} members · ${Number(item.total || 0).toFixed(2)} · {new Date(item.created_at).toLocaleDateString()}
+                  {item.member_count} Squad members · ${Number(item.total || 0).toFixed(2)} · {new Date(item.created_at).toLocaleDateString()}
                 </Text>
               </View>
               <StatusBadge

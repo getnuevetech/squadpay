@@ -6170,3 +6170,141 @@ backend:
       needs_retesting=false. No further backend action required for this
       endpoint.
 
+
+
+backend:
+  - task: "Admin Notification Center (broadcast + user inbox) — Batch June 2025"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/admin_notifications.py + /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Admin Notification Center end-to-end tested via /app/backend_test.py
+            against the live preview backend (https://joint-pay-1.preview.emergentagent.com/api).
+            21/21 assertions PASS — covers all 18 cases in the review request.
+            No 5xx errors.
+
+            Fixture: super_admin login OK (token len=205). SMS routing forced to
+            'mock'. Fresh real-looking users created:
+              lead  = u_816a4ddc67  (NotifLead<ts>)
+              memA  = u_3591d3446c  (NotifMemA<ts>)
+              memB  = u_ebb282bdda  (NotifMemB<ts>)
+              solo  = u_f39924ffd2  (NotifSolo<ts>)
+            Group g_3073149463 ($30 fast-split) with lead + memA + memB.
+
+            Results (case-by-case):
+
+            ✅ C1 401 without admin token:
+                status=401, detail="Admin auth required".
+
+            ✅ C2 valid admin token → 200 (audience=all, in_app only):
+                response={"id":"bc_bf0cc1beb8","recipient_count":285,
+                "in_app_delivered":285,"sms_sent":0,"sms_failed":0}.
+
+            ✅ C3 empty/whitespace message → 400:
+                detail="Message text is required."
+
+            ✅ C4 message >1000 chars → 400:
+                detail="Message is too long. Please keep it under 1000 characters."
+
+            ✅ C5 channels.in_app=false AND channels.sms=false → 400:
+                detail="Choose at least one delivery channel (in-app or SMS)."
+
+            ✅ C6 audience.type='vip' → 400:
+                detail="Audience type must be 'all', 'leads', 'members', or 'groups'."
+
+            ✅ C7 audience.type='groups' with empty group_ids=[] → 400:
+                detail="Pick at least one Squad when audience is 'groups'."
+
+            ✅ C8 audience='all' on a populated system → recipient_count=285 (>0).
+
+            ✅ C9 audience='leads' → 200, recipient_count=99. Verified subset:
+                our newly-created lead got the message; memA, memB, solo did NOT
+                (they have never led a group). Subset proof passes.
+
+            ✅ C10 audience='members' → 200, recipient_count=88. Verified subset:
+                memA and memB got the message; our lead and solo did NOT (lead is
+                only a lead in this fixture, solo never joined any group).
+
+            ✅ C11 audience='groups' with group_ids=[group_id] → recipient_count==3
+                (lead + memA + memB). memA's inbox contains it, solo's does NOT.
+
+            ✅ C12 channels.in_app=true persists user_inbox docs — confirmed by
+                GET /api/users/{lead_id}/inbox after the broadcast: the document
+                has correct broadcast_id, message text, and image_url/link_url
+                null fields exactly as expected.
+
+            ✅ C13 channels.sms=true increments sms_sent: with sms routing in
+                'mock', a 3-recipient group broadcast returned sms_sent=3,
+                sms_failed=0. Mock provider is treated as delivered per code path
+                (line 204 in admin_notifications.py).
+
+            ✅ C14 response shape — all 5 required keys present:
+                {id, recipient_count, in_app_delivered, sms_sent, sms_failed}.
+
+            ✅ C15 GET /api/admin/notifications/broadcasts — returned items list
+                (sorted by sent_at DESC, limit 100). All 5 broadcast IDs from
+                this run were present in the response.
+
+            ✅ C16 GET /api/users/{uid}/inbox — sorted DESC by created_at:
+                items[i].created_at >= items[i+1].created_at for all i.
+                unread count reported == count of items with read_at=null
+                (unread_reported=4, unread_actual=4, items=4).
+
+            ✅ C17 POST /api/users/{uid}/inbox/{msg_id}/read — response
+                {"ok":true,"updated":1}. unread went from 4 → 3.
+
+            ✅ C18 POST /api/users/{uid}/inbox/read-all — response
+                {"ok":true,"updated":3}. unread went from 3 → 0.
+
+            Test harness saved at /app/backend_test.py — idempotent across runs
+            (uses TS-based user names + fresh phones). No backend action
+            required. Marking working=true, needs_retesting=false.
+
+        - working: "NA"
+          agent: "main"
+          comment: |
+            New endpoints:
+            * POST /api/admin/notifications/broadcast   (admin auth required)
+            * GET  /api/admin/notifications/broadcasts  (admin auth required)
+            * GET  /api/users/{user_id}/inbox           (public — user-scoped)
+            * POST /api/users/{user_id}/inbox/{msg_id}/read
+            * POST /api/users/{user_id}/inbox/read-all
+
+          Validation cases to verify for POST /admin/notifications/broadcast:
+            1) Auth: 401 when no admin bearer / 200 when valid.
+            2) Empty message → 400 "Message text is required".
+            3) Message > 1000 chars → 400.
+            4) Both channels false (in_app=false, sms=false) → 400.
+            5) Audience type unknown (e.g. "vip") → 400.
+            6) Audience type "groups" with no group_ids → 400.
+            7) Audience "all" with at least one user → 200 and recipient_count > 0.
+            8) Audience "leads" returns only users who lead at least one group.
+            9) Audience "members" returns only users who joined a group as
+               non-lead member.
+            10) Audience "groups" with valid group_ids returns ONLY users
+                from those groups (members + lead).
+            11) Happy path with channels.in_app=true persists inbox docs in
+                user_inbox collection.
+            12) Happy path with channels.sms=true increments sms_sent /
+                sms_failed counters on the admin_broadcasts doc (mock provider
+                in test env should count toward sms_sent).
+            13) Returned payload contains: id, recipient_count, in_app_delivered,
+                sms_sent, sms_failed.
+
+          Validation cases for user inbox endpoints (no admin auth):
+            14) GET /users/{uid}/inbox returns items[] sorted DESC by
+                created_at, unread (count) is the # of items with read_at=null.
+            15) POST /users/{uid}/inbox/{msg_id}/read marks ONE item read.
+            16) POST /users/{uid}/inbox/read-all marks all unread items read.
+
+          Use admin@squadpay.us / Letmein@2007#ForReal for admin auth, and
+          reuse any existing user accounts for the inbox checks. Confirm the
+          new user_inbox + admin_broadcasts collections do NOT collide with
+          existing collection names.
+

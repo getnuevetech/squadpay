@@ -323,6 +323,30 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ user_id, split_mode }),
     }),
+  // User inbox — June 2025 Notification Center.
+  getInbox: (user_id: string) =>
+    request<{
+      items: Array<{
+        id: string;
+        broadcast_id: string;
+        message: string;
+        image_url: string | null;
+        link_url: string | null;
+        read_at: string | null;
+        created_at: string;
+      }>;
+      unread: number;
+    }>(`/users/${user_id}/inbox`),
+  markInboxRead: (user_id: string, msg_id: string) =>
+    request<{ ok: boolean; updated: number }>(
+      `/users/${user_id}/inbox/${msg_id}/read`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+  markAllInboxRead: (user_id: string) =>
+    request<{ ok: boolean; updated: number }>(
+      `/users/${user_id}/inbox/read-all`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
   updateGroupMeta: (
     id: string,
     user_id: string,

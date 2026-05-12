@@ -352,6 +352,9 @@ def attach_module_routes(router: APIRouter, db, get_current_admin):
             "updated_at": now,
         }
         await db.roles.insert_one(doc)
+        # Motor's insert_one mutates `doc` to add `_id`; strip it before any
+        # JSON serialization downstream (FastAPI can't encode ObjectId).
+        doc.pop("_id", None)
         await load_roles_cache(db)
         try:
             from admin import write_audit

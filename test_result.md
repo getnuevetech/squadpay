@@ -111,6 +111,125 @@ user_problem_statement: |
   pay no longer errors with "bill is short".
 
 backend:
+  - task: "Phase H7 — POST /api/groups/{group_id}/split-mode (lead switches fast/itemized mid-flight)"
+    implemented: true
+    working: false
+    file: "backend/routes/groups_routes.py, backend/core.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: false
+          agent: "testing"
+          comment: |
+            Tested new POST /api/groups/{group_id}/split-mode (lines 112–160 in
+            /app/backend/routes/groups_routes.py). Test harness at /app/backend_test.py,
+            ran against the live preview backend
+            (https://joint-pay-1.preview.emergentagent.com/api). Setup: super_admin login,
+            SMS mode=mock, three fresh verified users (Alice/Bob/Carol), one fresh
+            itemized group ($18 — Burger $12 + Fries $4 + Soda $2) with Alice as lead.
+
+            18/20 assertions PASS. 1 CRITICAL BUG, 1 untestable from outside.
+
+            ✅ PASSING SCENARIOS (per review-request numbering):
+
+            (1) Invalid split_mode — endpoint returns 400 with
+                "split_mode must be 'fast' or 'itemized'" for:
+                  • "smart"  → 400 ✓
+                  • ""       → 400 ✓
+                  • "items"  → 400 ✓
+                  • "equal"  → 400 ✓
+                  • missing field → 422 (pydantic) ✓
+                Note: the route does .strip().lower() on the input before validation,
+                so "EQUAL" and "fast " are normalised and accepted as the valid lowercase
+                equivalents — this is intentional whitespace/case tolerance.
+
+            (2) Unknown group_id → 404 "Group not found" ✓
+                  status=404, detail="Group not found"
+
+            (3) Non-lead caller (Bob calling on Alice's group) → 403 ✓
+                  status=403, detail="Only the lead can change the split mode"
+
+            (6) Group is_blocked=true → 403 ✓
+                  Created a fresh fast group, admin POST /api/admin/groups/{gid}/block
+                  with is_blocked=true. Subsequent set_split_mode →
+                  status=403, detail="This group has been blocked by an administrator."
+
+            (7) HAPPY PATH bidirectional ✓
+                  • itemized → fast: 200, response.split_mode='fast', per_user food
+                    shares = [6.0, 6.0, 6.0] (total $18 / 3 members, exact match).
+                  • DB persistence: subsequent GET /api/groups/{gid} returns
+                    split_mode='fast' (persisted in mongo).
+                  • fast → itemized: 200, response.split_mode='itemized'. After
+                    assigning all 3 items to Alice via /assign, the recomputed per_user
+                    food shares are alice=$18.0, bob=$0.0, carol=$0.0 — claims correctly
+                    drive itemized shares.
+
+            (8) Idempotency ✓
+                  Calling set_split_mode again with the current value 'fast' →
+                  200 with response.split_mode='fast' (no error, returns enriched group).
+                  Route's early-return branch (if group.get("split_mode") == mode) works.
+
+            ❌ CRITICAL BUG — Rule (5) "contributions have started" is NEVER enforced:
+
+            The route (groups_routes.py lines 144–151) reads:
+                contributed = float((group.get("funding") or {}).get("total_contributed") or 0)
+                repaid      = float((group.get("funding") or {}).get("total_repaid") or 0)
+                if contributed > 0.01 or repaid > 0.01:
+                    raise HTTPException(400, "Split mode cannot change after contributions have started. ...")
+
+            But `group` here is the RAW mongo document (from db.groups.find_one). The
+            `funding` key is NEVER persisted in mongo — it is only synthesised by
+            `_recompute_group` in core.py line 458 and returned as part of the enriched
+            view. Verified by grep: only `routes/admin_master_account.py`, `routes/pay_routes.py`,
+            `routes/admin_income_fees.py` read `funding` — all of them already pre-enrich
+            or call `_recompute_group` first. groups_routes.py:set_split_mode does NOT.
+
+            Repro (from test run):
+              1) Lead Alice creates fast-mode $18 group with Bob+Carol; admin grants
+                 Alice $7.21 credit; Alice contributes $6.21 (her full share).
+                 group.contributions now has 1 row, raw status='open'.
+              2) Alice calls POST /api/groups/{gid}/split-mode {"user_id":alice,
+                 "split_mode":"itemized"} → expected 400 "contributions have started";
+                 ACTUAL: 200, split_mode flipped to 'itemized'.
+
+            Impact: a lead can flip split modes AFTER one or more members have already
+            contributed, which inverts what those members already paid for (the exact
+            failure mode the validation comment in the route is meant to prevent).
+
+            FIX (one-line, in groups_routes.py around line 144):
+                Either:
+                  enriched = await _recompute_group(group)
+                  contributed = float((enriched.get("funding") or {}).get("total_contributed") or 0)
+                  repaid      = float((enriched.get("funding") or {}).get("total_repaid") or 0)
+                Or read the raw arrays directly:
+                  contributed = sum(float(c.get("amount") or 0) for c in (group.get("contributions") or []))
+                  repaid      = sum(float(r.get("amount") or 0) for r in (group.get("repayments") or []))
+
+            ⚠ Rule (4) "Split mode is locked — bill is no longer open." — NOT
+            VERIFIED end-to-end (test infra limitation, NOT a code defect):
+              The route checks `if group.get("status") != "open"` against the raw doc,
+              and `status` IS persisted in mongo, so this rule is structurally sound.
+              However, to flip a group out of 'open' we would need either:
+                (a) a successful Stripe checkout completion (requires browser redirect), or
+                (b) cumulative credit-only contributions totalling >= bill total — which
+                    we tried but the per_user.total cap on subsequent contributions and the
+                    lead-pay precondition prevented us from reaching status='paid' from
+                    pure API calls in this environment.
+              Logically, once the bill is settled the `if group.get("status") != "open"`
+              branch will fire correctly because it reads from the same persistent field
+              the rest of the codebase reads. Main agent should still add a unit test that
+              forces status='paid' via direct DB write to fully cover this branch.
+
+            Files changed in test harness:
+              /app/backend_test.py — rewritten to focus solely on POST split-mode.
+
+            Action required:
+              Fix the rule-5 guard (read from enriched view or raw contributions/repayments).
+              No retest needed for rules 1, 2, 3, 6, 7, 8 — those are confirmed working.
+              Re-run only the rule-5 case (and ideally add an admin-driven test for rule 4).
+
+
   - task: "Shortfall settlement endpoint — POST /api/groups/{id}/pay with shortfall_settlement options"
     implemented: true
     working: true
@@ -1308,15 +1427,42 @@ metadata:
 
 test_plan:
   current_focus:
-    - "POST /api/auth/verify-otp now returns session_id; user record gets current_session_id set"
-    - "POST /api/auth/check-session — valid/invalid session_id behavior"
-    - "POST /api/auth/logout — clears current_session_id (with and without session_id parameter)"
-    - "Single-active-session: second login invalidates first device's session"
-  stuck_tasks: []
+    - "Phase H7 — POST /api/groups/{group_id}/split-mode (lead switches fast/itemized mid-flight)"
+  stuck_tasks:
+    - "Phase H7 — POST /api/groups/{group_id}/split-mode (lead switches fast/itemized mid-flight)"
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
+    - agent: "testing"
+      message: |
+        Tested NEW POST /api/groups/{group_id}/split-mode. 18/20 assertions pass.
+
+        WORKING: invalid mode → 400 ("split_mode must be ..."), unknown group → 404,
+        non-lead → 403, is_blocked group → 403, fast↔itemized happy path (persists in
+        mongo, per_user shares recompute correctly: fast = total/members, itemized =
+        claimed items), idempotent same-mode call → 200.
+
+        ❌ CRITICAL BUG — rule 5 ("contributions have started" guard) NEVER FIRES.
+        groups_routes.py lines 144–145 read group.get("funding")...total_contributed from
+        the RAW mongo doc, but `funding` is only synthesised by _recompute_group (core.py
+        line 458) and is NOT persisted. As a result, a lead CAN flip split modes after
+        members already contributed, inverting what they paid for. Repro: Alice
+        contributes $6.21 (her full share) via credit-only, then POST split-mode
+        {split_mode:"itemized"} returns 200 instead of 400.
+
+        Fix is one-liner: either (a) call _recompute_group(group) first and read
+        enriched["funding"], or (b) compute contributed/repaid from group["contributions"]
+        and group["repayments"] arrays directly.
+
+        Rule 4 ("status != 'open' → 400 locked") was NOT verified end-to-end because
+        getting a bill out of 'open' requires Stripe checkout completion or cumulative
+        non-Stripe contributions hitting bill total, neither was achievable in the test
+        environment. The code path is structurally sound (reads persisted `status`
+        field), but please add an admin-driven unit test that forces status='paid'.
+
+        Test harness at /app/backend_test.py. No frontend changes needed.
+
     - agent: "main"
       message: |
         New feature — 3 admin-action endpoints in /app/backend/admin_actions.py,
@@ -5913,3 +6059,41 @@ frontend:
 
           User will verify on device. No frontend testing required.
 
+
+
+backend:
+  - task: "POST /api/groups/{group_id}/split-mode — Lead switches the bill's split mode mid-flight"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/routes/groups_routes.py + /app/backend/core.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          New endpoint POST /api/groups/{group_id}/split-mode lets the bill
+          lead toggle between "fast" (equal split) and "itemized" (per-item
+          claims). Request body: SetSplitModeIn { user_id, split_mode }.
+
+          Validation rules to verify:
+            1) split_mode must be one of {"fast","itemized"}. Anything else
+               (including "smart" / "" / unknown) → 400.
+            2) Group must exist (404 otherwise).
+            3) Only the group's lead_id may call this endpoint (403 for
+               members or unrelated users).
+            4) Group status must be "open" (400 once closed/settled).
+            5) Once funding.total_contributed > 0 OR funding.total_repaid > 0
+               the route must reject with 400 ("Split mode cannot change
+               after contributions have started.").
+            6) Blocked groups (is_blocked=true) → 403.
+            7) Happy path: switching from "fast" → "itemized" and vice versa
+               persists split_mode in MongoDB and returns the enriched
+               Group with the new split_mode reflected in per_user totals.
+            8) Idempotent: calling with the current split_mode again should
+               not error and should still return the enriched group.
+
+          Use the existing admin credentials from /app/memory/test_credentials.md
+          for the lead-user setup (or create a fresh test user + group via
+          existing endpoints).

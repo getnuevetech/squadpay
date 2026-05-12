@@ -316,6 +316,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ user_id, items }),
     }),
+  // Lead switches a bill's split mode mid-flight. Backend rejects this once
+  // any contribution has been made (see /groups/{id}/split-mode).
+  setSplitMode: (id: string, user_id: string, split_mode: 'fast' | 'itemized') =>
+    request<Group>(`/groups/${id}/split-mode`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id, split_mode }),
+    }),
   updateGroupMeta: (
     id: string,
     user_id: string,

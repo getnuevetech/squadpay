@@ -1,314 +1,354 @@
-"""
-Phase Q backend tests:
-  1) GET/PUT /api/admin/app-config — new core_fees label fields.
-  2) POST /api/groups/{id}/join — joined_via logging.
-  3) POST /api/cards/{group_id}/provision — wallet gate uses issuing settings.
+"""Focused backend test for POST /api/groups/{group_id}/split-mode.
 
-Auth: admin@squadpay.us / Letmein@2007#ForReal
-Base URL: read from /app/frontend/.env (EXPO_PUBLIC_BACKEND_URL).
+Covers all 8 validation/happy-path scenarios from the review request.
 """
 import os
 import sys
 import time
 import json
-import random
-import string
-from pathlib import Path
-
 import requests
 
-# ---------- Resolve base URL ----------
-def _read_env(path: str, key: str) -> str:
-    p = Path(path)
-    if not p.exists():
-        return ""
-    for line in p.read_text().splitlines():
-        line = line.strip()
-        if line.startswith(f"{key}="):
-            v = line.split("=", 1)[1].strip().strip('"').strip("'")
-            return v
-    return ""
-
-BASE = _read_env("/app/frontend/.env", "EXPO_PUBLIC_BACKEND_URL").rstrip("/")
-assert BASE, "EXPO_PUBLIC_BACKEND_URL not set in /app/frontend/.env"
-API = f"{BASE}/api"
-print(f"[setup] BASE = {BASE}")
-
+BASE = "https://joint-pay-1.preview.emergentagent.com/api"
 ADMIN_EMAIL = "admin@squadpay.us"
-ADMIN_PASSWORD = "Letmein@2007#ForReal"
+ADMIN_PASS = "Letmein@2007#ForReal"
 
-results = []  # list of (label, passed, detail)
-
-def check(label, ok, detail=""):
-    results.append((label, bool(ok), detail))
-    flag = "PASS" if ok else "FAIL"
-    print(f"  [{flag}] {label}" + (f" :: {detail}" if (not ok and detail) else ""))
+PASS = "[PASS]"
+FAIL = "[FAIL]"
+results = []
 
 
-def rand_phone():
-    # 10-digit US phone, randomised
-    return "+1" + "".join(random.choices(string.digits, k=10))
+def record(label, ok, detail=""):
+    tag = PASS if ok else FAIL
+    print(f"{tag} {label} :: {detail}")
+    results.append((label, ok, detail))
 
 
-# ---------------------------------------------------------------------------
-# Admin login
-# ---------------------------------------------------------------------------
-print("\n=== Setup: admin login ===")
-r = requests.post(f"{API}/admin/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}, timeout=30)
-print(f"  admin login -> {r.status_code}")
-if r.status_code != 200:
-    print(r.text)
-    sys.exit(1)
-admin_token = r.json().get("token") or r.json().get("access_token")
-assert admin_token, f"no admin token: {r.text}"
-ADMIN_H = {"Authorization": f"Bearer {admin_token}"}
+def admin_login():
+    r = requests.post(f"{BASE}/admin/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASS}, timeout=20)
+    r.raise_for_status()
+    return r.json()["token"]
 
 
-# ---------------------------------------------------------------------------
-# 1) Configurable fee labels in app-config
-# ---------------------------------------------------------------------------
-print("\n=== Test 1: GET/PUT /api/admin/app-config — fee labels ===")
-
-r = requests.get(f"{API}/admin/app-config", headers=ADMIN_H, timeout=30)
-check("GET /admin/app-config returns 200", r.status_code == 200, f"status={r.status_code} body={r.text[:300]}")
-
-cfg = r.json() if r.status_code == 200 else {}
-core_fees = cfg.get("core_fees") or {}
-check("GET response has core_fees.transaction_fee_label",
-      "transaction_fee_label" in core_fees,
-      f"keys={list(core_fees.keys())}")
-check("GET response has core_fees.platform_fee_label",
-      "platform_fee_label" in core_fees,
-      f"keys={list(core_fees.keys())}")
-check("Default transaction_fee_label == 'Transaction Fee'",
-      core_fees.get("transaction_fee_label") == "Transaction Fee",
-      f"got={core_fees.get('transaction_fee_label')!r}")
-check("Default platform_fee_label == 'Platform Fee'",
-      core_fees.get("platform_fee_label") == "Platform Fee",
-      f"got={core_fees.get('platform_fee_label')!r}")
-
-# Save originals for later restore
-orig_tx_label = core_fees.get("transaction_fee_label", "Transaction Fee")
-orig_pf_label = core_fees.get("platform_fee_label", "Platform Fee")
-
-# Build full PUT payload (must satisfy AppConfigPayload schema). Re-use what
-# GET returned, then overwrite the two labels.
-put_payload = dict(cfg)
-new_core = dict(core_fees)
-new_core["transaction_fee_label"] = "Convenience Fee"
-new_core["platform_fee_label"] = "Service Charge"
-put_payload["core_fees"] = new_core
-
-r = requests.put(f"{API}/admin/app-config", headers=ADMIN_H, json=put_payload, timeout=30)
-check("PUT /admin/app-config with new labels returns 200",
-      r.status_code == 200,
-      f"status={r.status_code} body={r.text[:400]}")
-
-# subsequent GET reflects
-r = requests.get(f"{API}/admin/app-config", headers=ADMIN_H, timeout=30)
-cfg2 = r.json() if r.status_code == 200 else {}
-cf2 = cfg2.get("core_fees") or {}
-check("After PUT, GET shows transaction_fee_label='Convenience Fee'",
-      cf2.get("transaction_fee_label") == "Convenience Fee",
-      f"got={cf2.get('transaction_fee_label')!r}")
-check("After PUT, GET shows platform_fee_label='Service Charge'",
-      cf2.get("platform_fee_label") == "Service Charge",
-      f"got={cf2.get('platform_fee_label')!r}")
-
-# Restore defaults
-restore_payload = dict(cfg2)
-rc = dict(cf2)
-rc["transaction_fee_label"] = orig_tx_label
-rc["platform_fee_label"] = orig_pf_label
-restore_payload["core_fees"] = rc
-r = requests.put(f"{API}/admin/app-config", headers=ADMIN_H, json=restore_payload, timeout=30)
-check("Restore defaults via PUT returns 200",
-      r.status_code == 200,
-      f"status={r.status_code} body={r.text[:200]}")
-
-# verify restored
-r = requests.get(f"{API}/admin/app-config", headers=ADMIN_H, timeout=30)
-cf3 = (r.json() or {}).get("core_fees") or {}
-check("Final GET shows transaction_fee_label restored to default",
-      cf3.get("transaction_fee_label") == orig_tx_label)
-check("Final GET shows platform_fee_label restored to default",
-      cf3.get("platform_fee_label") == orig_pf_label)
-
-
-# ---------------------------------------------------------------------------
-# Helpers for user setup (register + verify_otp w/ mock 123456)
-# ---------------------------------------------------------------------------
-def register_and_verify(name: str) -> str:
-    """Register a fresh user + verify on a fresh phone. Returns user_id."""
-    r = requests.post(f"{API}/auth/register", json={"name": name}, timeout=30)
-    assert r.status_code == 200, f"register failed: {r.status_code} {r.text}"
-    uid = r.json().get("id") or r.json().get("user_id") or r.json().get("user", {}).get("id")
-    assert uid, f"register response missing id: {r.json()}"
-    phone = rand_phone()
-    r = requests.post(f"{API}/auth/send-otp", json={"user_id": uid, "phone": phone}, timeout=30)
-    assert r.status_code == 200, f"send-otp failed: {r.status_code} {r.text}"
-    r = requests.post(f"{API}/auth/verify-otp", json={"user_id": uid, "phone": phone, "code": "123456"}, timeout=30)
-    assert r.status_code == 200, f"verify-otp failed: {r.status_code} {r.text}"
-    final_id = r.json().get("id") or uid
-    return final_id
-
-
-# ---------------------------------------------------------------------------
-# 2) joined_via logging on POST /api/groups/{id}/join
-# ---------------------------------------------------------------------------
-print("\n=== Test 2: joined_via logging on /groups/{id}/join ===")
-ts = int(time.time())
-
-lead_id = register_and_verify(f"PhQLead{ts}")
-u_qr = register_and_verify(f"PhQUserQR{ts}")
-u_code = register_and_verify(f"PhQUserCode{ts}")
-u_none = register_and_verify(f"PhQUserNone{ts}")
-u_bad = register_and_verify(f"PhQUserBad{ts}")
-print(f"  lead={lead_id}; users qr={u_qr} code={u_code} none={u_none} bad={u_bad}")
-
-# Create a fresh group
-r = requests.post(f"{API}/groups", json={
-    "lead_id": lead_id,
-    "title": f"Phase Q Join Test {ts}",
-    "total_amount": 40.00,
-    "split_mode": "equal",
-    "tax": 0,
-    "tip": 0,
-    "items": [],
-}, timeout=30)
-check("Create group succeeds for lead", r.status_code == 200, f"status={r.status_code} body={r.text[:300]}")
-group = r.json()
-gid = group.get("id")
-assert gid, f"group create response missing id: {group}"
-
-def get_member(g, uid):
-    for m in g.get("members") or []:
-        if m.get("user_id") == uid:
-            return m
-    return None
-
-# 2a) joined_via: "qr"
-r = requests.post(f"{API}/groups/{gid}/join", json={"user_id": u_qr, "joined_via": "qr"}, timeout=30)
-check("Join with joined_via='qr' returns 200", r.status_code == 200, f"status={r.status_code} body={r.text[:300]}")
-g = r.json() if r.status_code == 200 else {}
-m = get_member(g, u_qr)
-check("Member entry for qr-user exists", m is not None)
-check("Member entry has joined_via='qr'",
-      (m or {}).get("joined_via") == "qr",
-      f"got={(m or {}).get('joined_via')!r}")
-
-# 2b) joined_via: "code"
-r = requests.post(f"{API}/groups/{gid}/join", json={"user_id": u_code, "joined_via": "code"}, timeout=30)
-check("Join with joined_via='code' returns 200", r.status_code == 200, f"status={r.status_code} body={r.text[:300]}")
-g = r.json() if r.status_code == 200 else {}
-m = get_member(g, u_code)
-check("Member entry has joined_via='code'",
-      (m or {}).get("joined_via") == "code",
-      f"got={(m or {}).get('joined_via')!r}")
-
-# 2c) No joined_via field → "unknown"
-r = requests.post(f"{API}/groups/{gid}/join", json={"user_id": u_none}, timeout=30)
-check("Join without joined_via returns 200", r.status_code == 200, f"status={r.status_code} body={r.text[:300]}")
-g = r.json() if r.status_code == 200 else {}
-m = get_member(g, u_none)
-check("Member entry has joined_via='unknown' when omitted",
-      (m or {}).get("joined_via") == "unknown",
-      f"got={(m or {}).get('joined_via')!r}")
-
-# 2d) invalid joined_via='twitter' → "unknown"
-r = requests.post(f"{API}/groups/{gid}/join", json={"user_id": u_bad, "joined_via": "twitter"}, timeout=30)
-check("Join with joined_via='twitter' returns 200", r.status_code == 200, f"status={r.status_code} body={r.text[:300]}")
-g = r.json() if r.status_code == 200 else {}
-m = get_member(g, u_bad)
-check("Invalid joined_via normalised to 'unknown'",
-      (m or {}).get("joined_via") == "unknown",
-      f"got={(m or {}).get('joined_via')!r}")
-
-
-# ---------------------------------------------------------------------------
-# 3) POST /api/cards/{group_id}/provision — wallet gate reads issuing settings
-# ---------------------------------------------------------------------------
-print("\n=== Test 3: POST /api/cards/{group_id}/provision ===")
-
-# Use existing group + lead. The endpoint enforces:
-#   - group exists
-#   - body.user_id == group.lead_id
-#   - group.virtual_card.stripe_card_id present
-# Since the virtual card isn't actually issued in this flow, the endpoint will
-# return 'card_not_issued' — but the review request says: "The endpoint should
-# still return status: 'pending_psp_approval' for both platform: 'apple' and
-# 'google'". So we patch a synthetic virtual_card row directly via Mongo? No — we
-# do NOT have direct mongo access here. Instead: rely on the gate path.
-#
-# The wallet route ordering is:
-#   1. group exists -> 404
-#   2. not lead -> 'not_lead'
-#   3. no virtual_card.stripe_card_id -> 'card_not_issued'
-#   4. unsupported_platform
-#   5. admin gate (issuing settings)
-#
-# So to reach the gate, the group MUST have virtual_card.stripe_card_id set.
-# Since we cannot mock that via API, we test what we CAN: response shape.
-# We'll attempt both platforms and document the actual status returned.
-
-for platform in ("apple", "google"):
+def set_sms_mock(admin_token):
     r = requests.post(
-        f"{API}/cards/{gid}/provision",
-        json={"user_id": lead_id, "platform": platform},
+        f"{BASE}/admin/integrations/sms-mode",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"mode": "mock"},
+        timeout=20,
+    )
+    r.raise_for_status()
+
+
+def make_user(name: str, phone: str) -> dict:
+    r = requests.post(f"{BASE}/auth/register", json={"name": name}, timeout=20)
+    r.raise_for_status()
+    user = r.json()
+    uid = user["id"]
+    r = requests.post(f"{BASE}/auth/send-otp", json={"user_id": uid, "phone": phone}, timeout=20)
+    r.raise_for_status()
+    r = requests.post(
+        f"{BASE}/auth/verify-otp",
+        json={"user_id": uid, "phone": phone, "code": "123456", "confirm_existing": True},
+        timeout=20,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def create_group(lead_id: str, title: str, split_mode: str = "itemized", items=None, total=None) -> dict:
+    items = items or [
+        {"name": "Burger", "price": 12.0, "quantity": 1},
+        {"name": "Fries", "price": 4.0, "quantity": 1},
+        {"name": "Soda", "price": 2.0, "quantity": 1},
+    ]
+    if total is None:
+        total = sum(i["price"] * i["quantity"] for i in items)
+    payload = {
+        "lead_id": lead_id,
+        "title": title,
+        "total_amount": total,
+        "split_mode": split_mode,
+        "tax": 0.0,
+        "tip": 0.0,
+        "items": items,
+    }
+    r = requests.post(f"{BASE}/groups", json=payload, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def join_group(gid: str, user_id: str):
+    r = requests.post(f"{BASE}/groups/{gid}/join", json={"user_id": user_id, "joined_via": "code"}, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def set_split_mode(gid: str, user_id: str, mode):
+    return requests.post(
+        f"{BASE}/groups/{gid}/split-mode",
+        json={"user_id": user_id, "split_mode": mode},
+        timeout=20,
+    )
+
+
+def get_group(gid: str) -> dict:
+    r = requests.get(f"{BASE}/groups/{gid}", timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def main():
+    ts = int(time.time())
+    print(f"== split-mode endpoint test, ts={ts} ==")
+
+    admin_token = admin_login()
+    set_sms_mock(admin_token)
+    print("admin login + sms mock ok")
+
+    suffix = f"{ts % 10000000:07d}"
+    alice = make_user(f"Alice{ts}", f"+1500{suffix}")
+    bob = make_user(f"Bob{ts}", f"+1501{suffix}")
+    carol = make_user(f"Carol{ts}", f"+1502{suffix}")
+    print(f"users: alice={alice['id']} bob={bob['id']} carol={carol['id']}")
+
+    group = create_group(alice["id"], f"DinnerA{ts}", split_mode="itemized")
+    gid = group["id"]
+    join_group(gid, bob["id"])
+    join_group(gid, carol["id"])
+    group = get_group(gid)
+    print(f"group {gid} created, split_mode={group['split_mode']}, total={group['total_amount']}")
+
+    # 1) Invalid split_mode (note: route does .strip().lower() so trailing/leading
+    # whitespace and case differences are normalised. Only truly invalid tokens
+    # should be rejected.)
+    for bad in ["smart", "", "items", "equal"]:
+        r = set_split_mode(gid, alice["id"], bad)
+        try:
+            detail = r.json().get("detail", "")
+        except Exception:
+            detail = r.text
+        ok = r.status_code == 400 and "split_mode must be" in str(detail).lower()
+        record(f"invalid mode={bad!r}", ok, f"status={r.status_code} detail={detail!r}")
+
+    # Missing field
+    r = requests.post(f"{BASE}/groups/{gid}/split-mode", json={"user_id": alice["id"]}, timeout=20)
+    record("invalid mode (missing field) -> 4xx", r.status_code in (400, 422), f"status={r.status_code} body={r.text[:200]}")
+
+    # 2) Unknown group_id
+    r = set_split_mode("g_DOES_NOT_EXIST_X", alice["id"], "fast")
+    try:
+        detail = r.json().get("detail", "")
+    except Exception:
+        detail = r.text
+    ok = r.status_code == 404 and "group not found" in str(detail).lower()
+    record("unknown group_id -> 404", ok, f"status={r.status_code} detail={detail!r}")
+
+    # 3) Non-lead caller -> 403
+    r = set_split_mode(gid, bob["id"], "fast")
+    try:
+        detail = r.json().get("detail", "")
+    except Exception:
+        detail = r.text
+    ok = r.status_code == 403 and "only the lead" in str(detail).lower()
+    record("non-lead caller -> 403", ok, f"status={r.status_code} detail={detail!r}")
+
+    # 7) HAPPY: itemized -> fast
+    r = set_split_mode(gid, alice["id"], "fast")
+    ok = r.status_code == 200
+    body = r.json() if ok else {}
+    record(
+        "happy: itemized -> fast (200)",
+        ok and body.get("split_mode") == "fast",
+        f"status={r.status_code} split_mode={body.get('split_mode')}",
+    )
+    if ok:
+        per = body.get("per_user", [])
+        total = float(body.get("total_amount") or 0)
+        expected_share = total / 3.0
+        food_shares = [p["food"] for p in per]
+        food_ok = len(food_shares) == 3 and all(abs(f - expected_share) <= 0.02 for f in food_shares)
+        record(
+            "fast mode: per_user food == total/members",
+            food_ok,
+            f"shares={food_shares}, expected≈{expected_share:.2f}",
+        )
+    fresh = get_group(gid)
+    record("persistence: fast saved", fresh.get("split_mode") == "fast", f"split_mode={fresh.get('split_mode')}")
+
+    # 8) Idempotency
+    r = set_split_mode(gid, alice["id"], "fast")
+    body2 = r.json() if r.status_code == 200 else {}
+    record(
+        "idempotency: fast -> fast (200)",
+        r.status_code == 200 and body2.get("split_mode") == "fast",
+        f"status={r.status_code} split_mode={body2.get('split_mode')}",
+    )
+
+    # 7b) HAPPY reverse: fast -> itemized
+    r = set_split_mode(gid, alice["id"], "itemized")
+    body = r.json() if r.status_code == 200 else {}
+    record(
+        "happy: fast -> itemized (200)",
+        r.status_code == 200 and body.get("split_mode") == "itemized",
+        f"status={r.status_code} split_mode={body.get('split_mode')}",
+    )
+
+    # Assign all items to alice
+    items = body.get("items", [])
+    for it in items:
+        ar = requests.post(
+            f"{BASE}/groups/{gid}/assign",
+            json={"user_id": alice["id"], "item_id": it["id"], "quantity": it["quantity"]},
+            timeout=20,
+        )
+        ar.raise_for_status()
+    fresh = get_group(gid)
+    per = {p["user_id"]: p for p in fresh.get("per_user", [])}
+    alice_food = per.get(alice["id"], {}).get("food", -1)
+    bob_food = per.get(bob["id"], {}).get("food", -1)
+    carol_food = per.get(carol["id"], {}).get("food", -1)
+    itemized_ok = abs(alice_food - 18.0) < 0.01 and abs(bob_food) < 0.01 and abs(carol_food) < 0.01
+    record(
+        "itemized mode: shares reflect claimed items",
+        itemized_ok,
+        f"alice={alice_food} bob={bob_food} carol={carol_food} (expected 18/0/0)",
+    )
+
+    # 5) Contributions started -> 400
+    sr = set_split_mode(gid, alice["id"], "fast")
+    record("setup: back to fast before contribute", sr.status_code == 200, f"status={sr.status_code}")
+
+    fresh = get_group(gid)
+    alice_per = next((p for p in fresh["per_user"] if p["user_id"] == alice["id"]), None)
+    contrib_amount = alice_per["total"] if alice_per else 5.0
+
+    # Contribute requires cash (Stripe) when no credits — to keep the test
+    # self-contained, admin-grant Alice enough credits to fund her share so
+    # contribute can complete without Stripe redirection.
+    grant_r = requests.post(
+        f"{BASE}/admin/users/{alice['id']}/credits/grant",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"amount": round(contrib_amount + 1, 2), "note": "test split-mode contribute"},
+        timeout=20,
+    )
+    record(
+        "setup: admin grants credit to alice",
+        grant_r.status_code == 200,
+        f"status={grant_r.status_code} body={grant_r.text[:200]}",
+    )
+
+    cr = requests.post(
+        f"{BASE}/groups/{gid}/contribute",
+        json={"user_id": alice["id"], "amount": contrib_amount},
         timeout=30,
     )
-    check(f"POST /cards/{{gid}}/provision platform={platform} returns 2xx",
-          200 <= r.status_code < 300,
-          f"status={r.status_code} body={r.text[:300]}")
+    record(
+        "setup: alice contributes",
+        cr.status_code == 200,
+        f"status={cr.status_code} amount={contrib_amount} body={cr.text[:200]}",
+    )
+
+    r = set_split_mode(gid, alice["id"], "itemized")
     try:
-        data = r.json()
+        detail = r.json().get("detail", "")
     except Exception:
-        data = {}
-    print(f"    {platform} response: status={r.status_code} body={data}")
-    # If the group never minted a card (typical here), we expect 'card_not_issued'.
-    # If the card IS present, we expect 'pending_psp_approval'.
-    status_field = data.get("status")
-    check(f"{platform}: response has a `status` string",
-          isinstance(status_field, str) and len(status_field) > 0,
-          f"got={status_field!r}")
-    # If card is not issued for this test group, the gate is unreachable — note
-    # that. The review explicitly asks that pending_psp_approval still returns
-    # when the gate IS reached, so we accept either 'card_not_issued' OR
-    # 'pending_psp_approval'.
-    check(f"{platform}: status in expected set (pending_psp_approval | card_not_issued)",
-          status_field in ("pending_psp_approval", "card_not_issued"),
-          f"got={status_field!r}")
+        detail = r.text
+    ok = r.status_code == 400 and "contributions have started" in str(detail).lower()
+    record(
+        "contributions started -> 400",
+        ok,
+        f"status={r.status_code} detail={detail!r}",
+    )
 
-# ---------------------------------------------------------------------------
-# 3b) Try to force a 'pending_psp_approval' path by directly seeding a
-#     virtual_card stub in Mongo via the admin endpoint (if available).
-#     Not strictly needed for the review request — the request says we don't
-#     have to verify source code, just that the endpoint responds per contract.
-# ---------------------------------------------------------------------------
+    # 4) status != 'open' lock
+    fresh = get_group(gid)
+    rtc = float((fresh.get("funding") or {}).get("remaining_to_collect") or 0)
+    if rtc > 0:
+        for u in (bob, carol):
+            per_u = next((p for p in fresh["per_user"] if p["user_id"] == u["id"]), None)
+            if not per_u:
+                continue
+            amt = per_u["total"]
+            # Grant credit so contribute can complete without Stripe
+            requests.post(
+                f"{BASE}/admin/users/{u['id']}/credits/grant",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={"amount": round(amt + 1, 2), "note": "test split-mode contribute"},
+                timeout=20,
+            )
+            cr = requests.post(
+                f"{BASE}/groups/{gid}/contribute",
+                json={"user_id": u["id"], "amount": amt},
+                timeout=30,
+            )
+            print(f"  {u['name']} contribute -> {cr.status_code}: {cr.text[:160]}")
+        fresh = get_group(gid)
 
-# Optionally try unknown group → 404
-r = requests.post(
-    f"{API}/cards/DOES_NOT_EXIST_xyz/provision",
-    json={"user_id": lead_id, "platform": "apple"},
-    timeout=30,
-)
-check("Unknown group → 404", r.status_code == 404, f"status={r.status_code} body={r.text[:200]}")
+    raw_status = fresh.get("status")
+    print(f"  after contributions: status={raw_status} derived={fresh.get('derived_status')} rtc={fresh.get('funding',{}).get('remaining_to_collect')}")
+
+    if raw_status == "open":
+        pr = requests.post(f"{BASE}/groups/{gid}/pay", json={"user_id": alice["id"]}, timeout=30)
+        print(f"  /pay -> {pr.status_code}: {pr.text[:200]}")
+        fresh = get_group(gid)
+        raw_status = fresh.get("status")
+
+    if raw_status != "open":
+        r = set_split_mode(gid, alice["id"], "fast")
+        try:
+            detail = r.json().get("detail", "")
+        except Exception:
+            detail = r.text
+        ok = r.status_code == 400 and "locked" in str(detail).lower()
+        record(
+            f"status != 'open' (status={raw_status}) -> 400 locked",
+            ok,
+            f"status={r.status_code} detail={detail!r}",
+        )
+    else:
+        record(
+            "status != 'open' lock test",
+            False,
+            f"could not move group out of 'open' to verify (status={raw_status})",
+        )
+
+    # 6) is_blocked -> 403  (fresh group)
+    block_group_data = create_group(alice["id"], f"BlockTest{ts}", split_mode="fast")
+    bgid = block_group_data["id"]
+    join_group(bgid, bob["id"])
+    br = requests.post(
+        f"{BASE}/admin/groups/{bgid}/block",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"is_blocked": True, "reason": "test split-mode block"},
+        timeout=20,
+    )
+    if br.status_code != 200:
+        record("setup: admin blocks group", False, f"status={br.status_code} body={br.text[:200]}")
+    else:
+        record("setup: admin blocks group", True, "")
+        r = set_split_mode(bgid, alice["id"], "itemized")
+        try:
+            detail = r.json().get("detail", "")
+        except Exception:
+            detail = r.text
+        ok = r.status_code == 403 and "blocked by an administrator" in str(detail).lower()
+        record(
+            "is_blocked group -> 403",
+            ok,
+            f"status={r.status_code} detail={detail!r}",
+        )
+
+    print("\n=== SUMMARY ===")
+    passed = sum(1 for _, ok, _ in results if ok)
+    total = len(results)
+    print(f"{passed}/{total} assertions passed")
+    failed = [r for r in results if not r[1]]
+    if failed:
+        print("FAILED:")
+        for label, _, detail in failed:
+            print(f"  - {label}: {detail}")
+    sys.exit(0 if passed == total else 1)
 
 
-# ---------------------------------------------------------------------------
-# Summary
-# ---------------------------------------------------------------------------
-print("\n=========================================")
-print("PHASE Q TEST SUMMARY")
-print("=========================================")
-passed = sum(1 for _, ok, _ in results if ok)
-failed = sum(1 for _, ok, _ in results if not ok)
-for label, ok, detail in results:
-    flag = "PASS" if ok else "FAIL"
-    line = f"  [{flag}] {label}"
-    if not ok and detail:
-        line += f" :: {detail}"
-    print(line)
-
-print(f"\nTOTAL: {passed} passed, {failed} failed, {len(results)} total")
-sys.exit(0 if failed == 0 else 1)
+if __name__ == "__main__":
+    main()

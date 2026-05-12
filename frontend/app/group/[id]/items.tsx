@@ -16,7 +16,8 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { CheckCircle2, AlertCircle, UserCircle2, Plus, Lock, Trash2, Minus, ArrowLeft, X } from 'lucide-react-native';
+import * as ImagePicker from 'expo-image-picker';
+import { CheckCircle2, AlertCircle, UserCircle2, Plus, Lock, Trash2, Minus, ArrowLeft, X, Upload, Camera } from 'lucide-react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { Button } from '../../../src/Button';
 import { api, Group, Item } from '../../../src/api';
@@ -44,6 +45,12 @@ export default function ItemsScreen() {
   const [newPrice, setNewPrice] = useState('');
   const [newQty, setNewQty] = useState('1');
   const [adding, setAdding] = useState(false);
+  // Item 1 (June 2025 batch) — Lead can now append additional receipts to the
+  // existing bill from this screen via Upload / Scan icons (mirrors the
+  // Start-a-Bill toolbar). The OCR pipeline is the same one used in
+  // /app/create.tsx — we just route the parsed items into appendItems
+  // instead of replacing the bill.
+  const [scanning, setScanning] = useState(false);
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -170,6 +177,96 @@ export default function ItemsScreen() {
     }
   };
 
+  // Item 1 (June 2025) — Receipt scan flows for the items page. We reuse the
+  // same OpenAI OCR pipeline as create.tsx and append the parsed items via
+  // `appendItems` so the lead can stack multiple receipts onto one bill.
+  // We deliberately ignore tax/tip the parser returns here — the bill already
+  // has tax/tip set by the lead. If they need to update those, the dashboard
+  // exposes an "Edit tax & tip" button.
+  const handleParsedReceipt = async (base64: string) => {
+    if (!group || !userId) return;
+    setScanning(true);
+    try {
+      const parsed = await api.scanReceipt(base64);
+      const newItems = (parsed.items || [])
+        .filter((it: any) => it?.name && Number(it?.price) > 0)
+        .map((it: any) => ({
+          name: String(it.name).trim(),
+          price: Number(it.price),
+          quantity: Math.max(1, parseInt(String(it.quantity || 1), 10) || 1),
+        }));
+      if (newItems.length === 0) {
+        toast.info('No items detected on receipt');
+        return;
+      }
+      const g = await api.appendItems(group.id, userId, newItems);
+      setGroup(g);
+      toast.success(`Added ${newItems.length} item${newItems.length === 1 ? '' : 's'}`);
+    } catch (e: any) {
+      toast.error(e?.message || 'Receipt scan failed');
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  // Confirm-with-contributions warning shared by all three lead actions —
+  // mirrors the existing inline-add behaviour so swiped/edited items can't
+  // be quietly inserted after money has started moving.
+  const guardAndRun = (fn: () => void) => {
+    if (!group) return;
+    const hasContribs = (group.contributions || []).length > 0;
+    if (hasContribs) {
+      Alert.alert(
+        'Heads up',
+        'Items you add now CANNOT be deleted because contributions have already started. Continue?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Continue', onPress: fn },
+        ],
+      );
+    } else {
+      fn();
+    }
+  };
+
+  const uploadReceipt = async () => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permission needed', 'Allow photo access to upload receipts.');
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        base64: true,
+        quality: 0.6,
+      });
+      if (res.canceled || !res.assets?.[0]?.base64) return;
+      await handleParsedReceipt(res.assets[0].base64!);
+    } catch (e: any) {
+      toast.error(e?.message || 'Upload failed');
+    }
+  };
+
+  const captureReceipt = async () => {
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permission needed', 'Allow camera access to scan a receipt.');
+        return;
+      }
+      const res = await ImagePicker.launchCameraAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        base64: true,
+        quality: 0.6,
+      });
+      if (res.canceled || !res.assets?.[0]?.base64) return;
+      await handleParsedReceipt(res.assets[0].base64!);
+    } catch (e: any) {
+      toast.error(e?.message || 'Camera capture failed');
+    }
+  };
+
   const confirmDelete = (itemId: string, name: string) => {
     Alert.alert('Delete item?', `Remove "${name}" from the bill? This cannot be undone.`, [
       { text: 'Cancel', style: 'cancel' },
@@ -250,28 +347,41 @@ export default function ItemsScreen() {
           </TouchableOpacity>
           <Text style={[styles.title, { flex: 1, marginLeft: 8 }]}>Who ordered what?</Text>
           {isLead && group.status !== 'closed' && (
-            <TouchableOpacity
-              testID="items-header-add-btn"
-              onPress={() => {
-                const hasContribs = (group.contributions || []).length > 0;
-                if (hasContribs) {
-                  Alert.alert(
-                    'Heads up',
-                    'Items you add now CANNOT be deleted because contributions have already started. Continue?',
-                    [
-                      { text: 'Cancel', style: 'cancel' },
-                      { text: 'Continue', onPress: () => setShowAddForm(true) },
-                    ],
-                  );
-                } else {
-                  setShowAddForm(true);
-                }
-              }}
-              activeOpacity={0.85}
-              style={styles.headerPlusBtn}
-            >
-              <Plus size={20} color="#fff" />
-            </TouchableOpacity>
+            <View style={styles.headerActions} testID="items-header-actions">
+              {/* Upload — pick a receipt image from the gallery, OCR, append. */}
+              <TouchableOpacity
+                testID="items-header-upload-btn"
+                onPress={() => guardAndRun(uploadReceipt)}
+                activeOpacity={0.85}
+                style={styles.headerIconBtn}
+                disabled={scanning}
+              >
+                {scanning ? (
+                  <ActivityIndicator size="small" color={COLORS.primary} />
+                ) : (
+                  <Upload size={18} color={COLORS.primary} />
+                )}
+              </TouchableOpacity>
+              {/* Scan — open camera, OCR, append. */}
+              <TouchableOpacity
+                testID="items-header-scan-btn"
+                onPress={() => guardAndRun(captureReceipt)}
+                activeOpacity={0.85}
+                style={styles.headerIconBtn}
+                disabled={scanning}
+              >
+                <Camera size={18} color={COLORS.primary} />
+              </TouchableOpacity>
+              {/* Add — open the inline add-item form (legacy + button). */}
+              <TouchableOpacity
+                testID="items-header-add-btn"
+                onPress={() => guardAndRun(() => setShowAddForm(true))}
+                activeOpacity={0.85}
+                style={styles.headerPlusBtn}
+              >
+                <Plus size={20} color="#fff" />
+              </TouchableOpacity>
+            </View>
           )}
         </View>
         <Text style={styles.sub}>Tap the quantity you had.</Text>
@@ -602,6 +712,23 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 4,
+  },
+  // Container that hosts Upload / Scan / Add icon buttons in the items
+  // header. Icon-only on purpose — mirrors the action-bar pattern from the
+  // Start-a-Bill screen but keeps things compact since the title sits beside
+  // the buttons.
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  headerIconBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   itemHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.sm },
   itemName: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, color: COLORS.text },

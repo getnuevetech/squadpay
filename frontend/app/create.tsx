@@ -247,8 +247,9 @@ export default function CreateBillScreen() {
             ))}
           </View>
 
-          <View style={styles.itemsHeader}>
-            <Text style={styles.itemsTitle}>Items {items.length > 0 ? `(${items.length})` : ''}</Text>
+          {/* "Items" label removed per UX request. Action chips align right
+              so the receipt-action row reads as a toolbar above the list. */}
+          <View style={[styles.itemsHeader, { justifyContent: 'flex-end' }]}>
             <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
               {/* Item 5 — Upload from gallery (renamed from old "Scan") */}
               <TouchableOpacity

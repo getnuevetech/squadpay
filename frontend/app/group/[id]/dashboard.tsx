@@ -20,7 +20,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Swipeable } from 'react-native-gesture-handler';
-import { Receipt, CheckCircle2, Clock, Wallet, AlertCircle, Plus, Pencil, ChevronDown, UserPlus, Trash2 } from 'lucide-react-native';
+import { Receipt, CheckCircle2, Clock, Wallet, AlertCircle, Plus, Pencil, ChevronDown, UserPlus, Trash2, Split } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
@@ -47,6 +47,11 @@ export default function DashboardScreen() {
   // Remove button never fires on web.
   const [removeTarget, setRemoveTarget] = useState<{ id: string; name: string } | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
+  // June 2025 Item 3 — Lead can switch the split mode mid-flight via a
+  // confirm modal (`splitModeTarget` is the proposed new mode). The backend
+  // route rejects switches once any contribution has been made.
+  const [splitModeTarget, setSplitModeTarget] = useState<'fast' | 'itemized' | null>(null);
+  const [splitModeBusy, setSplitModeBusy] = useState(false);
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -155,6 +160,28 @@ export default function DashboardScreen() {
     }
   };
 
+  // June 2025 Item 3 — apply the queued split-mode change. We keep the
+  // existing item rows in the DB regardless of the switch (the backend's
+  // recompute ignores them in "fast"/equal mode). If switching to itemized
+  // and there are zero items, the bill total stays correct via the existing
+  // total_amount, but we surface a hint so the lead knows to add items.
+  const performSplitModeChange = async () => {
+    if (!splitModeTarget || !userId || !group) return;
+    setSplitModeBusy(true);
+    try {
+      const updated = await api.setSplitMode(group.id, userId, splitModeTarget);
+      setGroup(updated);
+      toast.success(
+        `Split mode set to ${splitModeTarget === 'fast' ? 'Equal' : 'Itemized'}`,
+      );
+    } catch (e: any) {
+      toast.error(e?.message || 'Could not change split mode');
+    } finally {
+      setSplitModeBusy(false);
+      setSplitModeTarget(null);
+    }
+  };
+
   const leadShareCovered = myContributed >= myShare - 0.01;
 
   return (
@@ -192,19 +219,44 @@ export default function DashboardScreen() {
           testIDPrefix="dashboard"
         />
 
-        {/* Edit Tax & Tips — right after the top bar, before the quick actions */}
+        {/* Edit Tax & Tips + Split Mode pill — sit right under the hero card
+            so the lead has quick access to the two attributes most likely
+            to need adjusting before settlement. */}
         {group.status === 'open' && (
-          <TouchableOpacity
-            testID="dashboard-edit-tax-tip"
-            style={styles.editTaxTipBtn}
-            onPress={() => setEditTaxTipVisible(true)}
-            activeOpacity={0.7}
-          >
-            <Pencil size={14} color={COLORS.primary} />
-            <Text style={styles.editTaxTipText}>
-              Edit tax (${(group.tax || 0).toFixed(2)}) & tip (${(group.tip || 0).toFixed(2)})
-            </Text>
-          </TouchableOpacity>
+          <View style={styles.metaPillRow}>
+            <TouchableOpacity
+              testID="dashboard-edit-tax-tip"
+              style={styles.metaPill}
+              onPress={() => setEditTaxTipVisible(true)}
+              activeOpacity={0.7}
+            >
+              <Pencil size={14} color={COLORS.primary} />
+              <Text style={styles.metaPillText}>
+                Edit tax (${(group.tax || 0).toFixed(2)}) & tip (${(group.tip || 0).toFixed(2)})
+              </Text>
+            </TouchableOpacity>
+            {(() => {
+              const currentMode = (group.split_mode || 'fast').toLowerCase();
+              // "smart" — legacy intermediate mode — is treated as itemized
+              // for the toggle UX since both flows rely on per-item claims.
+              const isEqual = currentMode === 'fast';
+              const label = isEqual ? 'Equal' : 'Itemized';
+              const proposed: 'fast' | 'itemized' = isEqual ? 'itemized' : 'fast';
+              return (
+                <TouchableOpacity
+                  testID="dashboard-split-mode-pill"
+                  style={styles.metaPill}
+                  onPress={() => setSplitModeTarget(proposed)}
+                  activeOpacity={0.7}
+                >
+                  <Split size={14} color={COLORS.primary} />
+                  <Text style={styles.metaPillText}>
+                    Split: <Text style={{ fontWeight: FONT.weights.heavy }}>{label}</Text>
+                  </Text>
+                </TouchableOpacity>
+              );
+            })()}
+          </View>
         )}
 
         {/* Quick actions: Items / Invite / Card */}
@@ -524,6 +576,33 @@ export default function DashboardScreen() {
         onClose={() => !removeBusy && setRemoveTarget(null)}
         testID="dashboard-remove-confirm"
       />
+
+      {/* June 2025 Item 3 — Split-mode confirm. Warns the lead that switching
+          modes affects how everyone's share is computed and that the change
+          is blocked once contributions start. */}
+      <ConfirmModal
+        visible={!!splitModeTarget}
+        title={
+          splitModeTarget === 'fast'
+            ? 'Switch to Equal split?'
+            : 'Switch to Itemized split?'
+        }
+        message={
+          splitModeTarget === 'fast'
+            ? "Everyone will be charged an equal share of the bill total. Item assignments stay on the bill but won't affect each member's share. You can switch back any time before contributions start."
+            : 'Each member will only pay for the items they claim. Make sure all items are added and assigned so the totals add up.'
+        }
+        confirmLabel={
+          splitModeBusy
+            ? 'Switching…'
+            : splitModeTarget === 'fast'
+            ? 'Switch to Equal'
+            : 'Switch to Itemized'
+        }
+        onConfirm={performSplitModeChange}
+        onClose={() => !splitModeBusy && setSplitModeTarget(null)}
+        testID="dashboard-split-mode-confirm"
+      />
     </SafeAreaView>
   );
 }
@@ -571,6 +650,30 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
   },
   editTaxTipText: { color: COLORS.primary, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold },
+  // Compact pill row used to surface inline edits below the hero — keeps
+  // the screen readable on phones by allowing the pills to wrap.
+  metaPillRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: SPACING.md,
+  },
+  metaPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: RADIUS.pill,
+    backgroundColor: COLORS.primaryLight,
+    borderWidth: 1,
+    borderColor: COLORS.primaryLight,
+  },
+  metaPillText: {
+    color: COLORS.primary,
+    fontSize: FONT.sizes.sm,
+    fontWeight: FONT.weights.semibold,
+  },
   memberCard: {
     backgroundColor: COLORS.surface,
     padding: SPACING.md,

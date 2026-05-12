@@ -125,6 +125,15 @@ export default function AdminAppConfig() {
       {/* ═══════════════════════════════════ Core Fees ═══════════════════════════════════ */}
       <Section icon={<DollarSign size={18} color={COLORS.primary} />} title="Core Fees">
         <Field
+          label="Transaction Fee — Display Label"
+          help="Shown as the row name in every Bill Breakdown card."
+          value={cfg.core_fees.transaction_fee_label}
+          onChangeText={(t) =>
+            patch('core_fees', { ...cfg.core_fees, transaction_fee_label: t.slice(0, 40) })
+          }
+          testID="config-transaction-fee-label"
+        />
+        <Field
           label="Transaction Fee (%)"
           help="Applied to each member's merchant share. Default 3.0%."
           value={String(cfg.core_fees.transaction_fee_pct)}
@@ -134,6 +143,15 @@ export default function AdminAppConfig() {
           }
           suffix="%"
           testID="config-transaction-fee"
+        />
+        <Field
+          label="Platform Fee — Display Label"
+          help="Shown as the row name in every Bill Breakdown card."
+          value={cfg.core_fees.platform_fee_label}
+          onChangeText={(t) =>
+            patch('core_fees', { ...cfg.core_fees, platform_fee_label: t.slice(0, 40) })
+          }
+          testID="config-platform-fee-label"
         />
         <Field
           label="Platform Fee ($)"
@@ -197,33 +215,11 @@ export default function AdminAppConfig() {
         ))}
       </Section>
 
-      {/* ═══════════════════════════════════ Wallet ═══════════════════════════════════ */}
-      <Section
-        icon={<WalletIcon size={18} color={COLORS.primary} />}
-        title="Apple / Google Wallet"
-      >
-        <Text style={styles.sectionHelp}>
-          Master switch for Apple Pay / Google Pay push provisioning. Keep OFF until Stripe + Visa/Mastercard approve our program.
-        </Text>
-        <Toggle
-          label="Push provisioning enabled"
-          value={cfg.wallet.enabled}
-          onChange={(v) => patch('wallet', { ...cfg.wallet, enabled: v })}
-          testID="config-wallet-master"
-        />
-        <Toggle
-          label="Apple Pay"
-          value={cfg.wallet.apple_enabled}
-          onChange={(v) => patch('wallet', { ...cfg.wallet, apple_enabled: v })}
-          disabled={!cfg.wallet.enabled}
-        />
-        <Toggle
-          label="Google Pay"
-          value={cfg.wallet.google_enabled}
-          onChange={(v) => patch('wallet', { ...cfg.wallet, google_enabled: v })}
-          disabled={!cfg.wallet.enabled}
-        />
-      </Section>
+      {/* ═══════════════════════════════════ Wallet ═══════════════════════════════════
+          REMOVED — Apple/Google Pay enrollment toggles already exist on the
+          /admin/integrations page (Phase G4). We deliberately do NOT duplicate
+          them here. The backend wallet_routes.py reads the enrollment flags
+          from the issuing-settings doc (managed by /admin/integrations). */}
 
       {/* ═══════════════════════════════════ Limits ═══════════════════════════════════ */}
       <Section icon={<Shield size={18} color={COLORS.primary} />} title="Limits & Guardrails">

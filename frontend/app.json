@@ -18,7 +18,7 @@
         "applinks:www.squadpay.us"
       ],
       "infoPlist": {
-        "NSCameraUsageDescription": "Scan receipts to split bills with friends",
+        "NSCameraUsageDescription": "Scan receipts and QR codes to join or split bills",
         "NSPhotoLibraryUsageDescription": "Pick a receipt photo to split a bill",
         "ITSAppUsesNonExemptEncryption": false
       }

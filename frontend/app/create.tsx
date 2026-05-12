@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
-import { Camera, Edit3, Trash2, Plus, Zap, Target, Sparkles } from 'lucide-react-native';
+import { Camera, Edit3, Trash2, Plus, Zap, Target, Sparkles, Upload } from 'lucide-react-native';
 import { Button } from '../src/Button';
 import { GradientButton } from '../src/components/GradientButton';
 import { api } from '../src/api';
@@ -51,22 +51,15 @@ export default function CreateBillScreen() {
   const removeItem = (idx: number) =>
     setItems((prev) => prev.filter((_, i) => i !== idx));
 
-  const scanReceipt = async () => {
+  // Item 5 — receipt input has TWO buttons now:
+  //   • Upload  → picks a photo from the gallery (renamed from old "Scan")
+  //   • Scan    → opens the phone camera to take a picture of a receipt
+  // Both feed into the same scanReceipt → api.scanReceipt(b64) pipeline.
+
+  const handleParsedReceipt = async (base64: string) => {
+    setScanning(true);
     try {
-      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!perm.granted) {
-        Alert.alert('Permission needed', 'Allow photo access to scan receipts.');
-        return;
-      }
-      const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        base64: true,
-        quality: 0.6,
-      });
-      if (res.canceled || !res.assets?.[0]?.base64) return;
-      setScanning(true);
-      const b64 = res.assets[0].base64!;
-      const parsed = await api.scanReceipt(b64);
+      const parsed = await api.scanReceipt(base64);
       setItems(
         parsed.items.map((it) => ({
           name: it.name,
@@ -83,6 +76,47 @@ export default function CreateBillScreen() {
       setScanning(false);
     }
   };
+
+  const uploadReceipt = async () => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permission needed', 'Allow photo access to upload receipts.');
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        base64: true,
+        quality: 0.6,
+      });
+      if (res.canceled || !res.assets?.[0]?.base64) return;
+      await handleParsedReceipt(res.assets[0].base64!);
+    } catch (e: any) {
+      toast.error(e?.message || 'Upload failed');
+    }
+  };
+
+  const captureReceipt = async () => {
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permission needed', 'Allow camera access to scan a receipt.');
+        return;
+      }
+      const res = await ImagePicker.launchCameraAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        base64: true,
+        quality: 0.6,
+      });
+      if (res.canceled || !res.assets?.[0]?.base64) return;
+      await handleParsedReceipt(res.assets[0].base64!);
+    } catch (e: any) {
+      toast.error(e?.message || 'Camera capture failed');
+    }
+  };
+
+  // Backwards-compat alias for any callers still using the old name.
+  const scanReceipt = uploadReceipt;
 
   const computedSubtotal = () =>
     items.reduce(
@@ -216,19 +250,31 @@ export default function CreateBillScreen() {
           <View style={styles.itemsHeader}>
             <Text style={styles.itemsTitle}>Items {items.length > 0 ? `(${items.length})` : ''}</Text>
             <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
+              {/* Item 5 — Upload from gallery (renamed from old "Scan") */}
               <TouchableOpacity
-                testID="create-scan-btn"
-                onPress={scanReceipt}
+                testID="create-upload-btn"
+                onPress={uploadReceipt}
                 style={styles.chip}
+                disabled={scanning}
               >
                 {scanning ? (
                   <ActivityIndicator size="small" color={COLORS.primary} />
                 ) : (
                   <>
-                    <Camera size={14} color={COLORS.primary} />
-                    <Text style={styles.chipText}>Scan</Text>
+                    <Upload size={14} color={COLORS.primary} />
+                    <Text style={styles.chipText}>Upload</Text>
                   </>
                 )}
+              </TouchableOpacity>
+              {/* Item 5 — Scan via phone camera (NEW) */}
+              <TouchableOpacity
+                testID="create-scan-camera-btn"
+                onPress={captureReceipt}
+                style={styles.chip}
+                disabled={scanning}
+              >
+                <Camera size={14} color={COLORS.primary} />
+                <Text style={styles.chipText}>Scan</Text>
               </TouchableOpacity>
               <TouchableOpacity testID="create-add-item-btn" onPress={addItem} style={styles.chip}>
                 <Plus size={14} color={COLORS.primary} />

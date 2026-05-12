@@ -432,7 +432,13 @@ export type MasterCard = {
 };
 
 export type AppConfig = {
-  core_fees: { transaction_fee_pct: number; platform_fee_flat: number };
+  core_fees: {
+    transaction_fee_pct: number;
+    platform_fee_flat: number;
+    // Admin-editable display labels (Item 2 of May 2026 batch).
+    transaction_fee_label: string;
+    platform_fee_label: string;
+  };
   extra_fees: AdminPlatformFee[];
   wallet: { enabled: boolean; apple_enabled: boolean; google_enabled: boolean };
   limits: {

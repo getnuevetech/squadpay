@@ -36,6 +36,10 @@ CONFIG_ID = "platform_fees_config"
 class CoreFees(BaseModel):
     transaction_fee_pct: float = Field(3.0, ge=0, le=20, description="Percent applied to merchant_share per member")
     platform_fee_flat: float = Field(0.03, ge=0, le=10, description="Flat dollars charged per member")
+    # Admin-editable display labels — surfaced everywhere we render these fees
+    # (Bill Breakdown card, Income & Fees ledger, receipts, etc.).
+    transaction_fee_label: str = Field("Transaction Fee", min_length=1, max_length=40)
+    platform_fee_label: str = Field("Platform Fee", min_length=1, max_length=40)
 
 
 class ExtraFee(BaseModel):

@@ -3,19 +3,34 @@ import { useEffect, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { QrCode } from 'lucide-react-native';
+import { QrCode, Camera as CameraIcon } from 'lucide-react-native';
 import { Button } from '../../src/Button';
 import { api } from '../../src/api';
 import { loadUser } from '../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
 import { toast } from '../../src/components/Toast';
 import { Skeleton } from '../../src/components/Skeleton';
+import { QRScannerModal } from '../../src/QRScannerModal';
+
+/** Pull a SquadPay invite code out of either a raw code or a join URL.
+ *  We expect codes to be 4-12 alphanumeric chars; URLs look like
+ *  `https://squadpay.us/join/ABC12345`. We also handle the deep link
+ *  scheme `squadpay://join/ABC12345`. */
+function extractCode(raw: string): string {
+  const s = (raw || '').trim();
+  // URL or deep-link form → grab the last non-empty segment.
+  const m = s.match(/(?:join\/)([A-Za-z0-9]{4,12})/i);
+  if (m) return m[1];
+  // Otherwise treat the entire string as the code (after stripping whitespace).
+  return s;
+}
 
 export default function JoinScreen() {
   const { code } = useLocalSearchParams<{ code: string }>();
@@ -23,8 +38,9 @@ export default function JoinScreen() {
   const [loading, setLoading] = useState(true);
   const [inputCode, setInputCode] = useState('');
   const [joining, setJoining] = useState(false);
+  const [scannerOpen, setScannerOpen] = useState(false);
 
-  const tryJoin = async (joinCode: string) => {
+  const tryJoin = async (joinCode: string, source: 'code' | 'qr' | 'link' = 'code') => {
     const u = await loadUser();
     if (!u) {
       router.replace('/auth');
@@ -33,7 +49,8 @@ export default function JoinScreen() {
     setJoining(true);
     try {
       const group = await api.getGroupByCode(joinCode);
-      await api.joinGroup(group.id, u.id);
+      // Pass `source` so the backend logs how the member joined (Item 6).
+      await api.joinGroup(group.id, u.id, source);
       router.replace(`/group/${group.id}`);
     } catch (e: any) {
       toast.error(e?.message || 'Join failed');
@@ -45,12 +62,25 @@ export default function JoinScreen() {
 
   useEffect(() => {
     if (code && code !== 'code' && code.length >= 4) {
-      tryJoin(code);
+      // Joined via a Universal Link / deep link.
+      tryJoin(code, 'link');
     } else {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
+
+  const handleScanned = (data: string) => {
+    setScannerOpen(false);
+    const extracted = extractCode(data);
+    if (!extracted) {
+      toast.error('No SquadPay code found in that QR.');
+      return;
+    }
+    setInputCode(extracted);
+    // Auto-join after a successful scan — saves a tap.
+    tryJoin(extracted, 'qr');
+  };
 
   if (loading || joining) {
     return (
@@ -75,7 +105,25 @@ export default function JoinScreen() {
           <QrCode size={40} color={COLORS.primary} />
         </View>
         <Text style={styles.title}>Join a bill</Text>
-        <Text style={styles.sub}>Enter the 8-character code from the lead.</Text>
+        <Text style={styles.sub}>Scan the QR or enter the 8-character code from the lead.</Text>
+
+        {/* NEW (Item 4) — scan a QR code with the phone camera */}
+        <Pressable
+          onPress={() => setScannerOpen(true)}
+          style={styles.scanCta}
+          testID="join-scan-qr-btn"
+          android_ripple={{ color: 'rgba(255,255,255,0.15)' }}
+        >
+          <CameraIcon size={20} color="#fff" />
+          <Text style={styles.scanCtaText}>Scan QR code</Text>
+        </Pressable>
+
+        <View style={styles.dividerRow}>
+          <View style={styles.divider} />
+          <Text style={styles.dividerText}>or enter code</Text>
+          <View style={styles.divider} />
+        </View>
+
         <TextInput
           testID="join-code-input"
           value={inputCode}
@@ -89,11 +137,18 @@ export default function JoinScreen() {
         <Button
           title="Join"
           testID="join-submit-btn"
-          onPress={() => tryJoin(inputCode)}
+          onPress={() => tryJoin(inputCode, 'code')}
           disabled={!inputCode}
           style={{ marginTop: SPACING.md }}
         />
       </SafeAreaView>
+
+      <QRScannerModal
+        visible={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        onScanned={handleScanned}
+        prompt="Scan the SquadPay QR code"
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -118,6 +173,19 @@ const styles = StyleSheet.create({
     letterSpacing: -0.5,
   },
   sub: { fontSize: FONT.sizes.md, color: COLORS.subtext, marginTop: SPACING.sm, marginBottom: SPACING.lg },
+  scanCta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: COLORS.primary,
+    paddingVertical: 14,
+    borderRadius: RADIUS.md,
+  },
+  scanCtaText: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: FONT.sizes.md },
+  dividerRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm, marginVertical: SPACING.lg },
+  divider: { flex: 1, height: 1, backgroundColor: COLORS.border },
+  dividerText: { color: COLORS.subtext, fontSize: FONT.sizes.xs, textTransform: 'uppercase', letterSpacing: 1 },
   input: {
     height: 56,
     borderRadius: RADIUS.md,

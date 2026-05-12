@@ -94,7 +94,18 @@ def attach_groups_routes(router: APIRouter, db):
             raise HTTPException(403, "Your account has been blocked. Please contact support.")
         members = group.get("members", [])
         if not any(m["user_id"] == body.user_id for m in members):
-            members.append({"user_id": body.user_id, "role": "member", "joined_at": now_iso()})
+            # Normalise the join-source for backend analytics. Captured per
+            # member-doc so the admin can later report on how members were
+            # acquired (code vs QR vs link vs invite vs manual).
+            joined_via = (body.joined_via or "unknown").lower().strip()
+            if joined_via not in {"code", "qr", "link", "invite", "manual", "unknown"}:
+                joined_via = "unknown"
+            members.append({
+                "user_id": body.user_id,
+                "role": "member",
+                "joined_at": now_iso(),
+                "joined_via": joined_via,
+            })
             await db.groups.update_one({"id": group_id}, {"$set": {"members": members}})
         return await _load_group_enriched(db, group_id)
 

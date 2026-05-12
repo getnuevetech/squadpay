@@ -361,22 +361,10 @@ export default function DashboardScreen() {
                           <ChevronDown size={16} color={COLORS.subtext} />
                         </View>
                       )}
-                      {canRemove && (
-                        // Visible fallback button — swipes are non-discoverable
-                        // on web and harder to trigger on tablets. Both this
-                        // button and the swipe action open the same modal.
-                        <TouchableOpacity
-                          onPress={(e) => {
-                            e.stopPropagation?.();
-                            handleRemoveMember(m.user_id, m.name || 'this member');
-                          }}
-                          style={styles.inlineRemoveBtn}
-                          hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
-                          testID={`dashboard-remove-btn-${m.user_id}`}
-                        >
-                          <Trash2 size={16} color={COLORS.danger || '#DC2626'} />
-                        </TouchableOpacity>
-                      )}
+                      {/* Inline trash icon intentionally removed per UX request.
+                          Removal is swipe-only — the Swipeable wrapping this
+                          row reveals the red "Remove" panel, which routes
+                          through the cross-platform ConfirmModal. */}
                     </TouchableOpacity>
                   );
                   if (!canRemove) return rowContent;

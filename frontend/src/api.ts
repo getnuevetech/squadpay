@@ -295,10 +295,11 @@ export const api = {
     }),
   getGroup: (id: string) => request<Group>(`/groups/${id}`),
   getGroupByCode: (code: string) => request<Group>(`/groups/by-code/${code}`),
-  joinGroup: (id: string, user_id: string) =>
+  joinGroup: (id: string, user_id: string, joined_via?: 'code' | 'qr' | 'link' | 'invite' | 'manual') =>
     request<Group>(`/groups/${id}/join`, {
       method: 'POST',
-      body: JSON.stringify({ user_id }),
+      // joined_via is logged backend-side per Item 6 of the May 2026 batch.
+      body: JSON.stringify({ user_id, joined_via }),
     }),
   removeMember: (id: string, user_id: string, target_id: string) =>
     request<Group>(`/groups/${id}/remove-member`, {

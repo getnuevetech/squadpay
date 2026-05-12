@@ -96,23 +96,24 @@ async def provision_card_to_wallet(group_id: str, body: ProvisionRequest):
         )
 
     # ── ADMIN GATE ─────────────────────────────────────────────────────
-    # The admin controls wallet enablement via /admin/app-config:
-    #   wallet.enabled         = master switch (off until Stripe approves)
-    #   wallet.apple_enabled   = per-platform staged-rollout toggle
-    #   wallet.google_enabled  = per-platform staged-rollout toggle
-    # If the master switch is off OR the per-platform sub-toggle is off,
-    # we return `pending_psp_approval` so the frontend shows the polished
-    # "coming soon" toast instead of a broken-feeling error.
+    # Apple/Google Pay enablement is owned by the EXISTING Phase G4 toggles
+    # on /admin/integrations (stored in app_settings.integrations.issuing).
+    # We deliberately do NOT duplicate the controls on /admin/platform-fees.
+    #
+    # Flags we honour:
+    #   issuing.apple_pay_enrolled   — per-platform sub-toggle
+    #   issuing.google_pay_enrolled  — per-platform sub-toggle
+    # If the relevant flag is off, we return `pending_psp_approval` so the
+    # frontend shows the polished "coming soon" toast.
     try:
-        from routes.admin_app_config import get_app_config_cache  # type: ignore
-        cfg = get_app_config_cache()
-        wallet_cfg = (cfg or {}).get("wallet") or {}
-        master_on = bool(wallet_cfg.get("enabled"))
+        from issuing import get_issuing_settings  # type: ignore
+        from server import db as _db  # type: ignore
+        iss = await get_issuing_settings(_db) or {}
         platform_on = bool(
-            wallet_cfg.get("apple_enabled") if body.platform == "apple"
-            else wallet_cfg.get("google_enabled")
+            iss.get("apple_pay_enrolled") if body.platform == "apple"
+            else iss.get("google_pay_enrolled")
         )
-        if not (master_on and platform_on):
+        if not platform_on:
             return ProvisionResponse(
                 ok=True,
                 status="pending_psp_approval",
@@ -123,7 +124,7 @@ async def provision_card_to_wallet(group_id: str, body: ProvisionRequest):
                 ),
             )
     except Exception:
-        # Cache not loaded yet (very early in startup) — fail safe to "pending".
+        # Settings not loaded yet (very early in startup) — fail safe to "pending".
         return ProvisionResponse(
             ok=True,
             status="pending_psp_approval",

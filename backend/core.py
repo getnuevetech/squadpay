@@ -531,6 +531,16 @@ class CreateGroupIn(BaseModel):
 
 class JoinGroupIn(BaseModel):
     user_id: str
+    # How the member joined this group. Logged on the member record for
+    # backend analytics + audit. Frontend should send one of:
+    #   "code"   — typed the 8-char invite code
+    #   "qr"     — scanned a QR code (in-app camera scanner)
+    #   "link"   — opened a Universal Link / deep link
+    #   "invite" — tapped an SMS / push invite
+    #   "manual" — joined via /admin (rare)
+    # Accepts free-form strings to keep the schema flexible; the join route
+    # normalises to lowercase and falls back to "unknown".
+    joined_via: Optional[str] = None
 
 
 class RemoveMemberIn(BaseModel):

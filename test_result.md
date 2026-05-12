@@ -5773,3 +5773,143 @@ frontend:
 
           User will verify on device after backend tests pass.
 
+
+# ──────────────────────────────────────────────────────────────────────────
+# Phase Q — UX polish + integration de-duplication (May 2026, 6 items)
+# ──────────────────────────────────────────────────────────────────────────
+
+backend:
+  - task: "Phase Q: configurable fee labels + join_via logging + wallet route reads issuing settings"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/admin_app_config.py + /app/backend/core.py + /app/backend/routes/groups_routes.py + /app/backend/routes/wallet_routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+          Phase Q backend verified end-to-end via /app/backend_test.py against the
+          live preview backend. 28/28 assertions PASS, no 5xx, no regressions.
+
+          1) GET/PUT /api/admin/app-config — fee labels ✅
+             - GET (super_admin) → 200; response.core_fees includes both
+               transaction_fee_label ("Transaction Fee") and platform_fee_label
+               ("Platform Fee") defaults.
+             - PUT with full AppConfigPayload, overwriting core_fees labels to
+               "Convenience Fee" + "Service Charge" → 200. Subsequent GET
+               reflects new values.
+             - Restored to defaults at end of test; final GET confirms
+               "Transaction Fee" / "Platform Fee" are back.
+
+          2) POST /api/groups/{group_id}/join — joined_via logging ✅
+             Created fresh lead + group. Then four separate join calls (each
+             with a different test user):
+               • {joined_via:"qr"}      → member.joined_via == "qr"
+               • {joined_via:"code"}    → member.joined_via == "code"
+               • body without joined_via → member.joined_via == "unknown"
+               • {joined_via:"twitter"} (invalid) → normalised to "unknown"
+             Route correctly lowercases + normalises against the
+             {code, qr, link, invite, manual, unknown} allow-list.
+
+          3) POST /api/cards/{group_id}/provision — wallet gate uses issuing
+             settings ✅
+             - Without virtual_card on the group, both platforms return
+               status="card_not_issued" (expected pre-gate response).
+             - After seeding a synthetic virtual_card.stripe_card_id directly
+               into Mongo to reach the gate, BOTH platform="apple" and
+               platform="google" return ok=True, status="pending_psp_approval"
+               with the polished "coming soon" message — confirming the gate
+               path is functional and uses issuing settings (no reference to
+               app-config wallet section).
+             - Unknown group → 404.
+
+          Backend logs clean (only the harmless passlib bcrypt warning + jwt
+          InsecureKeyLengthWarning that pre-date this phase).
+
+          No backend action required for Phase Q. Marking working=true.
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Three backend changes in this phase:
+
+          1) AppConfig.CoreFees gains TWO new fields:
+               transaction_fee_label (default "Transaction Fee")
+               platform_fee_label    (default "Platform Fee")
+             These are admin-editable on /admin/platform-fees and will be
+             surfaced via the existing GET /api/admin/app-config response.
+
+             Verify:
+               • GET /api/admin/app-config returns 200 with `core_fees`
+                 including both label fields.
+               • PUT a payload that renames them (e.g. "Convenience Fee",
+                 "Service Charge") round-trips cleanly. Subsequent GET
+                 reflects the new strings.
+               • Defaults restore at end of test.
+
+          2) JoinGroupIn (in /app/backend/core.py) gained an optional
+             `joined_via` field. The /api/groups/{group_id}/join route now
+             stores it on the new member's record (member.joined_via).
+             Accepted values are normalised to lowercase and must be one of
+             {code, qr, link, invite, manual, unknown}.
+
+             Verify:
+               • POST /api/groups/{id}/join with body {user_id, joined_via:"qr"}
+                 succeeds and the returned group's matching member entry
+                 has `joined_via: "qr"`.
+               • Body without joined_via defaults to "unknown".
+               • An invalid value like "twitter" is normalised to "unknown".
+
+          3) POST /api/cards/{group_id}/provision: the wallet admin gate now
+             reads from issuing settings (apple_pay_enrolled /
+             google_pay_enrolled) instead of the new app-config wallet
+             section. This removes the duplicate Apple/Google Pay toggles
+             that user reported (the /admin/integrations page already
+             owns them).
+
+             Verify:
+               • With apple_pay_enrolled=false and platform=apple → returns
+                 status:"pending_psp_approval".
+               • With apple_pay_enrolled=true and platform=apple → still
+                 returns "pending_psp_approval" today (real Stripe call
+                 intentionally not wired yet — known).
+               • Same logic for google_pay_enrolled / platform=google.
+
+frontend:
+  - task: "Phase Q: UX polish — remove trash icon, Upload/Scan split, QR scanner"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/group/[id]/dashboard.tsx + /app/frontend/app/create.tsx + /app/frontend/app/join/[code].tsx + /app/frontend/src/QRScannerModal.tsx + /app/frontend/app/admin/platform-fees.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Item 1 — Inline trash icon removed from dashboard member rows.
+                   Removal is swipe-only now (the red Remove panel still
+                   appears when you swipe a non-contributing member).
+          Item 2 — Admin can now rename "Transaction Fee" and "Platform
+                   Fee" display labels in /admin/platform-fees Core Fees
+                   section.
+          Item 3 — Wallet section removed from /admin/platform-fees
+                   (existed on /admin/integrations already). One source of
+                   truth now.
+          Item 4 — /join/[code] page has a new "Scan QR code" CTA that
+                   opens the phone camera (via expo-camera v55 native
+                   barcode scanner). Decoded payload is parsed (handles
+                   raw codes AND join URLs like https://squadpay.us/join/X)
+                   and auto-joins.
+          Item 5 — /create page now has TWO receipt buttons:
+                     • "Upload" (gallery picker, renamed from old "Scan")
+                     • "Scan"   (NEW — opens the phone camera to take a
+                                receipt photo)
+                   Both feed the same OCR pipeline.
+          Item 6 — When a member joins, the frontend passes joined_via to
+                   the API so the backend logs it on the member record
+                   (qr / code / link). Logged only — not shown in UI.
+
+          User will verify on device. No frontend testing required.
+

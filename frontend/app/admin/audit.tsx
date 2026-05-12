@@ -2,6 +2,16 @@ import { useEffect, useState } from 'react';
 import { View, Text, ScrollView, TextInput, StyleSheet, ActivityIndicator } from 'react-native';
 import { adminApi, AuditEntry } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
+import { formatUid, formatSid } from '../../src/ids';
+
+/** Render the audit row's target identifier in friendly UID/SID form when applicable. */
+function formatTarget(targetType?: string | null, targetId?: string | null): string {
+  if (!targetId) return '';
+  const t = (targetType || '').toLowerCase();
+  if (t === 'user' || t === 'admin' || targetId.startsWith('u_')) return formatUid(targetId);
+  if (t === 'group' || t === 'squad' || targetId.startsWith('g_')) return formatSid(targetId);
+  return `${targetType || 'item'}:${targetId}`;
+}
 
 export default function AdminAudit() {
   const [items, setItems] = useState<AuditEntry[]>([]);
@@ -31,7 +41,12 @@ export default function AdminAudit() {
           <View style={[styles.dot, { backgroundColor: r.destructive ? COLORS.danger : COLORS.primary }]} />
           <View style={{ flex: 1 }}>
             <Text style={styles.action}>{r.action}</Text>
-            <Text style={styles.meta}>by {r.admin_email} • {new Date(r.at).toLocaleString()}{r.target_id ? ` • target ${r.target_type}:${r.target_id}` : ''}</Text>
+            <Text style={styles.meta}>by {r.admin_email} • {new Date(r.at).toLocaleString()}</Text>
+            {r.target_id ? (
+              <Text style={styles.target} selectable>
+                target {r.target_type || 'item'} · {formatTarget(r.target_type, r.target_id)}
+              </Text>
+            ) : null}
             {r.payload && Object.keys(r.payload).length > 0 ? (
               <Text style={styles.payload}>{JSON.stringify(r.payload)}</Text>
             ) : null}
@@ -52,5 +67,12 @@ const styles = StyleSheet.create({
   dot: { width: 8, height: 8, borderRadius: 4, marginTop: 6 },
   action: { fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold, color: COLORS.text },
   meta: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
+  target: {
+    fontSize: 11,
+    color: COLORS.subtext,
+    marginTop: 2,
+    fontFamily: 'monospace',
+    letterSpacing: 0.5,
+  },
   payload: { fontSize: 11, color: COLORS.subtext, marginTop: 4, fontFamily: 'monospace' },
 });

@@ -98,6 +98,17 @@ except Exception as _e:
     print("[startup] account deletion routes attach failed:", _e)
 
 
+# ---------- Module Registry + RBAC (Batch June 2025) ----------
+# Same pre-include placement reasoning — /admin/access/* and /admin/me/modules
+# need to register before the legacy admin_router so its catch-all sub-paths
+# don't shadow them.
+try:
+    from admin_modules import attach_module_routes as _attach_module_routes
+    _attach_module_routes(api_router, db, _adm_factory_early(db))
+except Exception as _e:
+    print("[startup] module registry routes attach failed:", _e)
+
+
 # ---------- Admin dashboard ----------
 from admin_routes import build_admin_router  # noqa: E402
 api_router.include_router(build_admin_router(db))

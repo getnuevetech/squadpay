@@ -1,64 +1,125 @@
 import { Stack, useRouter, usePathname } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Platform, ActivityIndicator, ScrollView } from 'react-native';
-import { LayoutDashboard, ScrollText, Users, LogOut, Shield, UserCog, Receipt, Gift, Plug, Wallet, RefreshCw, Lock, BarChart3, FileText, KeyRound, Percent, Megaphone, MessageSquare, Coins, Inbox } from 'lucide-react-native';
+import {
+  LayoutDashboard, ScrollText, Users, LogOut, Shield, UserCog, Receipt, Gift,
+  Plug, Wallet, RefreshCw, Lock, BarChart3, FileText, KeyRound, Percent,
+  Megaphone, MessageSquare, Coins, Inbox, ShieldCheck, ShieldAlert, CircleDollarSign,
+} from 'lucide-react-native';
 import { adminApi, AdminProfile, getProfile, getToken, clearSession } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
 import { AdminSearchBar } from '../../src/components/admin/AdminSearchBar';
 
-const NAV_ITEMS = [
-  { href: '/admin/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/admin/analytics', label: 'Analytics', icon: BarChart3 },
-  { href: '/admin/users', label: 'Users', icon: UserCog },
-  { href: '/admin/groups', label: 'Squads', icon: Receipt },
-  { href: '/admin/customer-service', label: 'Customer Service', icon: Inbox },
-  { href: '/admin/referrals', label: 'Referrals', icon: Gift },
-  { href: '/admin/integrations', label: 'Integrations', icon: Plug },
-  { href: '/admin/notifications', label: 'Notifications', icon: Megaphone },
-  { href: '/admin/bulk-sms', label: 'Bulk SMS', icon: MessageSquare },
-  { href: '/admin/credit-rules', label: 'Credit Rules', icon: Coins },
-  { href: '/admin/platform-fees', label: 'Platform Fees', icon: Percent, requireRole: ['super_admin'] as const },
-  { href: '/admin/reconciliations', label: 'Reconciliations', icon: RefreshCw },
-  { href: '/admin/master-account', label: 'Master Account', icon: Wallet },
-  { href: '/admin/security', label: 'Security', icon: Lock, requireRole: ['super_admin'] as const },
-  { href: '/admin/audit', label: 'Audit log', icon: ScrollText },
-  { href: '/admin/legal-pages', label: 'Legal pages', icon: FileText },
-  { href: '/admin/admins', label: 'Admins', icon: Users, requireRole: ['super_admin'] as const },
-];
+// ---------------------------------------------------------------------------
+// Module-key → icon mapping. The labels + paths now come from the backend
+// (/api/admin/me/modules), but icons must be bundled with the frontend.
+// ---------------------------------------------------------------------------
+const ICON_BY_KEY: Record<string, any> = {
+  dashboard: LayoutDashboard,
+  analytics: BarChart3,
+  users: UserCog,
+  squads: Receipt,
+  customer_service: Inbox,
+  referrals: Gift,
+  integrations: Plug,
+  notifications: Megaphone,
+  bulk_sms: MessageSquare,
+  credit_rules: Coins,
+  platform_fees: Percent,
+  income_fees: CircleDollarSign,
+  reconciliations: RefreshCw,
+  master_account: Wallet,
+  security: Lock,
+  audit: ScrollText,
+  legal_pages: FileText,
+  admins: Users,
+  access: ShieldCheck,
+};
 
-// Exported so AdminSearchBar can fuzzy-match nav labels.
-export { NAV_ITEMS };
+type ModuleEntry = {
+  key: string; label: string; group: string; path: string; sensitive: boolean;
+};
 
-function AdminSidebar({ profile, onLogout }: { profile: AdminProfile | null; onLogout: () => void }) {
+// ---------------------------------------------------------------------------
+// Legacy NAV_ITEMS export (kept for AdminSearchBar fuzzy nav matching).
+// We hand it the same shape it expects, derived from the modules response.
+// ---------------------------------------------------------------------------
+let LATEST_NAV_ITEMS: Array<{ href: string; label: string; icon: any; key?: string }> = [];
+export const NAV_ITEMS = new Proxy([] as any, {
+  get(_t, p) {
+    // Always re-read so consumers see the freshest list.
+    return (LATEST_NAV_ITEMS as any)[p];
+  },
+});
+
+function AdminSidebar({
+  profile,
+  modules,
+  groupOrder,
+  onLogout,
+}: {
+  profile: AdminProfile | null;
+  modules: ModuleEntry[];
+  groupOrder: string[];
+  onLogout: () => void;
+}) {
   const router = useRouter();
   const pathname = usePathname();
+
+  // Group the modules by their .group attribute, preserving registry order.
+  const grouped = useMemo(() => {
+    const out: Record<string, ModuleEntry[]> = {};
+    for (const g of groupOrder) out[g] = [];
+    for (const m of modules) {
+      if (!out[m.group]) out[m.group] = [];
+      out[m.group].push(m);
+    }
+    return out;
+  }, [modules, groupOrder]);
+
   return (
     <View style={styles.sidebar}>
       <View style={styles.sidebarHeader}>
         <Shield size={20} color={COLORS.primary} />
         <Text style={styles.sidebarTitle}>SquadPay Admin</Text>
       </View>
-      {/* Nav now scrolls independently so it never overlaps the sticky
-          footer no matter how many modules are enabled. */}
       <ScrollView
         style={styles.navScroll}
-        contentContainerStyle={{ gap: 4, paddingBottom: SPACING.md }}
+        contentContainerStyle={{ paddingBottom: SPACING.md }}
         showsVerticalScrollIndicator={false}
       >
-        {NAV_ITEMS.filter((it) => !it.requireRole || (profile && (it.requireRole as readonly string[]).includes(profile.role))).map((it) => {
-          const Icon = it.icon;
-          const active = pathname?.startsWith(it.href);
+        {groupOrder.map((g) => {
+          const items = grouped[g] || [];
+          if (items.length === 0) return null;
           return (
-            <TouchableOpacity
-              key={it.href}
-              testID={`admin-nav-${it.label.toLowerCase().replace(/\s+/g,'-')}`}
-              onPress={() => router.replace(it.href as any)}
-              style={[styles.navItem, active && styles.navItemActive]}
-              activeOpacity={0.7}
-            >
-              <Icon size={16} color={active ? '#fff' : COLORS.subtext} />
-              <Text style={[styles.navLabel, active && { color: '#fff' }]}>{it.label}</Text>
-            </TouchableOpacity>
+            <View key={g} style={styles.navGroup}>
+              <Text style={styles.navGroupTitle}>{g}</Text>
+              {items.map((it) => {
+                const Icon = ICON_BY_KEY[it.key] || LayoutDashboard;
+                const active = pathname?.startsWith(it.path);
+                return (
+                  <TouchableOpacity
+                    key={it.key}
+                    testID={`admin-nav-${it.key}`}
+                    onPress={() => router.replace(it.path as any)}
+                    style={[styles.navItem, active && styles.navItemActive]}
+                    activeOpacity={0.7}
+                  >
+                    <Icon size={16} color={active ? '#fff' : COLORS.subtext} />
+                    <Text style={[styles.navLabel, active && { color: '#fff' }]} numberOfLines={1}>
+                      {it.label}
+                    </Text>
+                    {it.sensitive ? (
+                      <ShieldAlert
+                        size={11}
+                        color={active ? '#fff' : COLORS.warning}
+                        style={{ marginLeft: 'auto' }}
+                      />
+                    ) : null}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
           );
         })}
       </ScrollView>
@@ -89,6 +150,10 @@ export default function AdminLayout() {
   const pathname = usePathname();
   const [profile, setProfile] = useState<AdminProfile | null>(null);
   const [ready, setReady] = useState(false);
+  const [modules, setModules] = useState<ModuleEntry[]>([]);
+  const [groupOrder, setGroupOrder] = useState<string[]>(
+    ['Overview', 'Operations', 'Marketing', 'Finance', 'System'],
+  );
 
   useEffect(() => {
     (async () => {
@@ -106,6 +171,20 @@ export default function AdminLayout() {
       try {
         const me = await adminApi.me();
         setProfile(me);
+        try {
+          const mods = await adminApi.myModules();
+          setModules(mods.modules);
+          setGroupOrder(mods.group_order || groupOrder);
+          // Update legacy NAV_ITEMS proxy data for AdminSearchBar.
+          LATEST_NAV_ITEMS = mods.modules.map((m) => ({
+            href: m.path,
+            label: m.label,
+            icon: ICON_BY_KEY[m.key] || LayoutDashboard,
+            key: m.key,
+          }));
+        } catch {
+          // Non-fatal — sidebar simply stays empty until next reload.
+        }
         if (pathname === '/admin/login' || pathname === '/admin') router.replace('/admin/dashboard');
       } catch {
         await clearSession();
@@ -114,6 +193,7 @@ export default function AdminLayout() {
         setReady(true);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]);
 
   if (!ready) {
@@ -124,7 +204,6 @@ export default function AdminLayout() {
     );
   }
 
-  // Login / forgot-password / reset-password render without sidebar shell
   const isPublicRoute =
     pathname === '/admin/login' ||
     pathname === '/admin/forgot-password' ||
@@ -148,13 +227,21 @@ export default function AdminLayout() {
 
   return (
     <View style={styles.shell}>
-      <AdminSidebar profile={profile} onLogout={onLogout} />
+      <AdminSidebar
+        profile={profile}
+        modules={modules}
+        groupOrder={groupOrder}
+        onLogout={onLogout}
+      />
       <View style={styles.content}>
-        {/* Sticky top bar with global search — visible on every admin page. */}
         <View style={styles.topbar}>
           <View style={{ flex: 1, maxWidth: 520 }}>
             <AdminSearchBar
-              navItems={NAV_ITEMS.filter((it) => !it.requireRole || (profile && (it.requireRole as readonly string[]).includes(profile.role)))}
+              navItems={modules.map((m) => ({
+                href: m.path,
+                label: m.label,
+                icon: ICON_BY_KEY[m.key] || LayoutDashboard,
+              }))}
             />
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -190,13 +277,22 @@ const styles = StyleSheet.create({
     borderRightColor: COLORS.border,
     paddingHorizontal: SPACING.md,
     paddingVertical: SPACING.lg,
-    gap: SPACING.md,
-    // CRITICAL: explicit flex column so the nav ScrollView can claim
-    // available height between header + footer without collapsing.
+    gap: SPACING.sm,
     flexDirection: 'column',
     height: Platform.OS === 'web' ? ('100vh' as any) : '100%',
   },
   navScroll: { flex: 1, marginHorizontal: -SPACING.xs },
+  navGroup: { marginBottom: SPACING.sm },
+  navGroupTitle: {
+    fontSize: 10,
+    color: COLORS.subtext,
+    fontWeight: FONT.weights.bold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 4,
+    marginTop: 4,
+  },
   sidebarHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -211,11 +307,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
     paddingHorizontal: SPACING.md,
-    paddingVertical: 10,
+    paddingVertical: 8,
     borderRadius: RADIUS.md,
   },
   navItemActive: { backgroundColor: COLORS.primary },
-  navLabel: { fontSize: FONT.sizes.sm, color: COLORS.subtext, fontWeight: FONT.weights.medium },
+  navLabel: { fontSize: FONT.sizes.sm, color: COLORS.subtext, fontWeight: FONT.weights.medium, flex: 1 },
   sidebarFooter: {
     borderTopWidth: 1,
     borderTopColor: COLORS.border,

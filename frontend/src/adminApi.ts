@@ -243,6 +243,55 @@ export const adminApi = {
         id: string;
       }>;
     }>(`/search?q=${encodeURIComponent(q)}`),
+
+  // ─────────────── Module Registry + Access Control (June 2025) ───────────────
+  // Backend mounts these at /api/admin/me/modules + /api/admin/access/...
+  // The request helper already prepends /api/admin, so we pass the suffix only.
+  myModules: () =>
+    request<{
+      role: AdminRole;
+      is_super_admin: boolean;
+      group_order: string[];
+      modules: Array<{
+        key: string;
+        label: string;
+        group: string;
+        path: string;
+        sensitive: boolean;
+      }>;
+    }>('/me/modules'),
+  accessRegistry: () =>
+    request<{
+      group_order: string[];
+      available_roles: AdminRole[];
+      modules: Array<{
+        key: string; label: string; group: string; path: string;
+        default_roles: AdminRole[]; sensitive: boolean;
+      }>;
+    }>('/access/registry'),
+  accessAdmins: () =>
+    request<{
+      count: number;
+      items: Array<{
+        id: string;
+        email: string;
+        name: string;
+        role: AdminRole;
+        is_active: boolean;
+        last_login_at: string | null;
+        module_overrides: Record<string, 'grant' | 'deny'>;
+        accessible_modules: string[];
+      }>;
+    }>('/access/admins'),
+  setAdminAccess: (
+    admin_id: string,
+    body: { role?: AdminRole; module_overrides?: Record<string, 'grant' | 'deny'> },
+  ) =>
+    request<{ ok: boolean; admin?: any; unchanged?: boolean }>(
+      `/access/admins/${encodeURIComponent(admin_id)}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
+
   // Customer Service (Contact Us tickets).
   listContactMessages: (page: number = 1, page_size: number = 25, opts: { status?: string; subject?: string; q?: string } = {}) => {
     const qs = new URLSearchParams({ page: String(page), page_size: String(page_size) });

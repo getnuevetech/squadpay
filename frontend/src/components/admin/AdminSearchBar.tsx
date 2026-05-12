@@ -20,6 +20,7 @@ import { useRouter } from 'expo-router';
 import { Search, X } from 'lucide-react-native';
 import { adminApi } from '../../adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../theme';
+import { formatUid, formatSid } from '../../ids';
 
 type Hit = {
   category: 'users' | 'squads' | 'admins' | 'audit' | 'tickets' | 'nav';
@@ -124,18 +125,31 @@ export function AdminSearchBar({ navItems }: { navItems: { href: string; label: 
               (Object.keys(grouped) as Hit['category'][]).map((cat) => (
                 <View key={cat}>
                   <Text style={styles.groupHeader}>{CATEGORY_LABEL[cat]}</Text>
-                  {grouped[cat].map((h) => (
-                    <TouchableOpacity
-                      key={`${cat}:${h.id}`}
-                      onPress={() => go(h.href)}
-                      activeOpacity={0.7}
-                      style={styles.hit}
-                      testID={`admin-search-hit-${cat}-${h.id}`}
-                    >
-                      <Text style={styles.hitLabel} numberOfLines={1}>{h.label}</Text>
-                      <Text style={styles.hitSub} numberOfLines={1}>{h.sub}</Text>
-                    </TouchableOpacity>
-                  ))}
+                  {grouped[cat].map((h) => {
+                    // Surface UID/SID inline so support staff can read the
+                    // exact identifier without opening the row.
+                    const idLabel =
+                      cat === 'users' || cat === 'admins'
+                        ? formatUid(h.id)
+                        : cat === 'squads'
+                        ? formatSid(h.id)
+                        : null;
+                    return (
+                      <TouchableOpacity
+                        key={`${cat}:${h.id}`}
+                        onPress={() => go(h.href)}
+                        activeOpacity={0.7}
+                        style={styles.hit}
+                        testID={`admin-search-hit-${cat}-${h.id}`}
+                      >
+                        <Text style={styles.hitLabel} numberOfLines={1}>{h.label}</Text>
+                        {idLabel ? (
+                          <Text style={styles.hitId} numberOfLines={1} selectable>{idLabel}</Text>
+                        ) : null}
+                        <Text style={styles.hitSub} numberOfLines={1}>{h.sub}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
                 </View>
               ))
             )}
@@ -175,6 +189,13 @@ const styles = StyleSheet.create({
   },
   hit: { paddingHorizontal: SPACING.md, paddingVertical: 8 },
   hitLabel: { color: COLORS.text, fontWeight: FONT.weights.semibold, fontSize: FONT.sizes.sm },
+  hitId: {
+    color: COLORS.subtext,
+    fontSize: 11,
+    marginTop: 2,
+    fontFamily: 'monospace',
+    letterSpacing: 0.6,
+  },
   hitSub: { color: COLORS.subtext, fontSize: FONT.sizes.xs, marginTop: 2 },
   empty: { padding: SPACING.md, color: COLORS.subtext, fontSize: FONT.sizes.sm, textAlign: 'center' },
 });

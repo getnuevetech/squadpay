@@ -1,380 +1,361 @@
-"""Backend test harness for Account Deletion (App Store 5.1.1(v)).
+"""Module Registry + RBAC backend (June 2025) end-to-end test.
 
-Runs against the live preview backend.
+Covers E1–E7 from the review request.
 
-Covers the 4 case groups from the review request:
-  (A) Happy path
-  (B) Auth guards
-  (C) Phone-collision blocks new placeholder login
-  (D) Admin endpoints (restore / purge / list deleted)
-
-Notes:
-  - send-otp endpoint is rate-limited to 5/minute per IP, so we space out
-    OTP sends with explicit sleeps (~14s) to stay under the limit.
-  - We use the exact phone from the spec (+15551237777) since SMS provider is
-    forced to "mock" mode (OTP is always "123456").
+Uses LOCAL backend at http://localhost:8001/api.
 """
-import json
+from __future__ import annotations
+import os
+import re
 import sys
-import time
-from datetime import datetime, timezone
-from typing import Optional, Tuple
-
+import uuid
 import requests
 
-BASE = "https://joint-pay-1.preview.emergentagent.com/api"
-ADMIN_EMAIL = "admin@squadpay.us"
-ADMIN_PASSWORD = "Letmein@2007#ForReal"
+BASE = os.environ.get("BACKEND_URL", "http://localhost:8001/api")
+SUPER_EMAIL = "admin@squadpay.us"
+SUPER_PASSWORD = "Letmein@2007#ForReal"
 
-TS = int(time.time())
-SUFFIX = f"{TS % 100000:05d}"
-PHONE = "+15551237777"  # spec phone — SMS mode is mock so number doesn't matter
+passed = 0
+failed = 0
+issues: list[str] = []
 
-OTP_BACKOFF_S = 14  # send-otp is 5/minute; 14s spacing keeps us safe
+def assert_eq(label, got, want):
+    global passed, failed
+    if got == want:
+        print(f"  ✅ {label}")
+        passed += 1
+        return True
+    else:
+        msg = f"  ❌ {label}  got={got!r} want={want!r}"
+        print(msg)
+        issues.append(msg)
+        failed += 1
+        return False
 
-_passes = []
-_fails = []
-
-
-def ok(name, cond, detail=""):
+def assert_true(label, cond, extra=""):
+    global passed, failed
     if cond:
-        _passes.append(name)
-        print(f"  ✅ {name}")
+        print(f"  ✅ {label}")
+        passed += 1
+        return True
     else:
-        _fails.append((name, detail))
-        print(f"  ❌ {name} -- {detail}")
+        msg = f"  ❌ {label}  {extra}"
+        print(msg)
+        issues.append(msg)
+        failed += 1
+        return False
 
+def login(email, password):
+    r = requests.post(f"{BASE}/admin/auth/login",
+                      json={"email": email, "password": password}, timeout=20)
+    if r.status_code != 200:
+        return None, r
+    return r.json()["token"], r
 
-def post(path, json_body=None, headers=None):
-    url = f"{BASE}{path}"
-    try:
-        r = requests.post(url, json=json_body or {}, headers=headers or {}, timeout=30)
-    except Exception as e:
-        return None, {"error": str(e)}
-    try:
-        data = r.json()
-    except Exception:
-        data = {"_raw": r.text}
-    return r, data
+def H(tok):
+    return {"Authorization": f"Bearer {tok}"}
 
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n=== Setup: login as super admin ===")
+super_token, r = login(SUPER_EMAIL, SUPER_PASSWORD)
+assert_true("super admin login 200", super_token is not None,
+            f"status={r.status_code} body={r.text[:200]}")
+if not super_token:
+    print("FATAL: cannot proceed without super admin token")
+    sys.exit(1)
+SH = H(super_token)
 
-def get(path, headers=None, params=None):
-    url = f"{BASE}{path}"
-    try:
-        r = requests.get(url, headers=headers or {}, params=params or {}, timeout=30)
-    except Exception as e:
-        return None, {"error": str(e)}
-    try:
-        data = r.json()
-    except Exception:
-        data = {"_raw": r.text}
-    return r, data
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n=== E1: Super admin sees all 19 modules ===")
+r = requests.get(f"{BASE}/admin/me/modules", headers=SH, timeout=20)
+assert_eq("E1 GET /admin/me/modules → 200", r.status_code, 200)
+if r.status_code == 200:
+    body = r.json()
+    assert_eq("E1 is_super_admin == true", body.get("is_super_admin"), True)
+    assert_eq("E1 modules.length == 19", len(body.get("modules") or []), 19)
+    assert_eq("E1 group_order matches",
+              body.get("group_order"),
+              ["Overview", "Operations", "Marketing", "Finance", "System"])
+    keys = [m["key"] for m in body.get("modules") or []]
+    for k in ("dashboard", "platform_fees", "access", "integrations"):
+        assert_true(f"E1 super has '{k}'", k in keys)
 
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n=== E2 setup: locate a manager admin ===")
+r = requests.get(f"{BASE}/admin/access/admins", headers=SH, timeout=20)
+assert_eq("E2 GET /admin/access/admins → 200", r.status_code, 200)
+admins_list = (r.json() or {}).get("items") or []
+print(f"  → admins.count = {len(admins_list)}")
 
-def _status(r):
-    return r.status_code if r is not None else None
+manager = next((a for a in admins_list
+                if (a.get("role") == "manager" and a.get("is_active", True))),
+               None)
+created_manager = False
+NEW_MGR_PASSWORD = "ManagerTemp!2026Aa"
+if not manager:
+    print("  (no existing manager — creating one)")
+    new_mgr_email = f"e2.mgr.{uuid.uuid4().hex[:6]}@squadpay.us"
+    r2 = requests.post(
+        f"{BASE}/admin/admins", headers=SH, timeout=20,
+        json={"email": new_mgr_email,
+              "password": NEW_MGR_PASSWORD,
+              "name": "E2 Test Manager",
+              "role": "manager"}
+    )
+    assert_eq("E2 create manager admin → 200", r2.status_code, 200)
+    manager = r2.json()
+    created_manager = True
 
+manager_id = manager["id"]
+manager_email = manager["email"]
+print(f"  → manager_id={manager_id}  email={manager_email}  (newly_created={created_manager})")
 
-def admin_login() -> Optional[str]:
-    r, data = post("/admin/auth/login", {"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
-    if _status(r) != 200:
-        print(f"  !! admin login failed: {_status(r)} {data}")
-        return None
-    return data.get("token") or data.get("access_token")
+# Reset password to a known value via:
+#   POST /admin/admins/{id}/send-password-reset {return_link:true} → reset URL with token
+#   POST /admin/auth/reset-password {token, new_password} → applies the new password
+# NOTE: review spec calls for /admin/admins/{id}/reset returning a fresh password directly.
+# That endpoint does NOT exist in this codebase; the available admin password-reset flow
+# is two-step (send-link + apply). We use that and report it.
+if not created_manager:
+    rr = requests.post(
+        f"{BASE}/admin/admins/{manager_id}/send-password-reset",
+        headers=SH, timeout=20,
+        json={"return_link": True}
+    )
+    assert_true(
+        "E2 send-password-reset (super) → 200",
+        rr.status_code == 200,
+        f"status={rr.status_code} body={rr.text[:200]}",
+    )
+    if rr.status_code == 200:
+        reset_url = rr.json().get("reset_url") or ""
+        m = re.search(r"token=([^&\s]+)", reset_url)
+        assert_true("E2 reset_url contains token", bool(m), f"reset_url={reset_url}")
+        if m:
+            tok = m.group(1)
+            rrp = requests.post(
+                f"{BASE}/admin/auth/reset-password",
+                json={"token": tok, "new_password": NEW_MGR_PASSWORD},
+                timeout=20,
+            )
+            assert_eq("E2 reset-password apply → 200", rrp.status_code, 200)
 
+mgr_token, mr = login(manager_email, NEW_MGR_PASSWORD)
+assert_true(
+    "E2 manager login 200", mgr_token is not None,
+    f"status={getattr(mr,'status_code',None)} body={getattr(mr,'text','')[:200]}",
+)
+MH = H(mgr_token) if mgr_token else {}
 
-def ensure_mock_mode(token: str):
-    r, _ = post("/admin/integrations/sms-mode", {"mode": "mock"},
-                headers={"Authorization": f"Bearer {token}"})
-    print(f"  [setup] sms-mode=mock -> status={_status(r)}")
+# ─────────────────────────────────────────────────────────────────────────────
+if mgr_token:
+    print("\n=== E2: Manager sees only their defaults ===")
+    r = requests.get(f"{BASE}/admin/me/modules", headers=MH, timeout=20)
+    assert_eq("E2 GET /admin/me/modules (manager) → 200", r.status_code, 200)
+    if r.status_code == 200:
+        body = r.json()
+        assert_eq("E2 is_super_admin == false", body.get("is_super_admin"), False)
+        keys = [m["key"] for m in body.get("modules") or []]
+        print(f"  → manager modules: {keys}")
 
+        SHOULD_NOT_HAVE = ["platform_fees", "income_fees", "master_account",
+                           "integrations", "security", "admins", "legal_pages",
+                           "access"]
+        for k in SHOULD_NOT_HAVE:
+            assert_true(f"E2 manager DOES NOT have '{k}'", k not in keys)
 
-def register(name: str) -> Optional[str]:
-    r, data = post("/auth/register", {"name": name})
-    if _status(r) != 200:
-        print(f"  !! register failed: {_status(r)} {data}")
-        return None
-    return data.get("id")
+        SHOULD_HAVE = ["dashboard", "analytics", "users", "squads",
+                       "customer_service", "notifications", "bulk_sms",
+                       "credit_rules", "referrals", "reconciliations", "audit"]
+        for k in SHOULD_HAVE:
+            assert_true(f"E2 manager HAS '{k}'", k in keys)
 
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n=== E3: Grant override flows through ===")
+r = requests.put(
+    f"{BASE}/admin/access/admins/{manager_id}",
+    headers=SH, timeout=20,
+    json={"module_overrides": {"platform_fees": "grant"}},
+)
+assert_eq("E3 PUT grant platform_fees → 200", r.status_code, 200)
+if r.status_code == 200:
+    body = r.json()
+    acc_mods = ((body.get("admin") or {}).get("accessible_modules")) or []
+    assert_true("E3 response admin.accessible_modules contains platform_fees",
+                "platform_fees" in acc_mods,
+                f"got={acc_mods}")
 
-def send_otp_with_retry(user_id: str, phone: str, max_wait_s: int = 75) -> Tuple[int, dict]:
-    """Sends OTP; on 429 sleeps and retries up to max_wait_s seconds."""
-    start = time.time()
-    while True:
-        r, data = post("/auth/send-otp", {"user_id": user_id, "phone": phone})
-        st = _status(r)
-        if st != 429:
-            return st, data
-        if time.time() - start > max_wait_s:
-            return st, data
-        print(f"  [rate-limited; sleeping {OTP_BACKOFF_S}s]")
-        time.sleep(OTP_BACKOFF_S)
+if mgr_token:
+    r2 = requests.get(f"{BASE}/admin/me/modules", headers=MH, timeout=20)
+    assert_eq("E3 GET /admin/me/modules (manager re-check) → 200", r2.status_code, 200)
+    if r2.status_code == 200:
+        keys2 = [m["key"] for m in (r2.json().get("modules") or [])]
+        assert_true("E3 manager now sees platform_fees", "platform_fees" in keys2)
 
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n=== E4: Invalid module key / value rejected ===")
+r = requests.put(
+    f"{BASE}/admin/access/admins/{manager_id}",
+    headers=SH, timeout=20,
+    json={"module_overrides": {"bogus_key": "grant"}},
+)
+assert_eq("E4 unknown key → 400", r.status_code, 400)
+detail = ""
+try:
+    detail = (r.json() or {}).get("detail") or ""
+except Exception:
+    detail = r.text
+assert_true("E4 detail contains 'Unknown module key'",
+            "Unknown module key" in str(detail),
+            f"detail={detail}")
 
-def verify_otp(user_id: str, phone: str, code: str = "123456",
-               confirm_existing: bool = False) -> Tuple[int, dict]:
-    body = {"user_id": user_id, "phone": phone, "code": code}
-    if confirm_existing:
-        body["confirm_existing"] = True
-    r, data = post("/auth/verify-otp", body)
-    return _status(r), data
+# Invalid value: Pydantic Literal['grant','deny'] would 422, route's manual check would 400.
+r = requests.put(
+    f"{BASE}/admin/access/admins/{manager_id}",
+    headers=SH, timeout=20,
+    json={"module_overrides": {"platform_fees": "kinda"}},
+)
+assert_true("E4 invalid value rejected (400 or 422)",
+            r.status_code in (400, 422),
+            f"status={r.status_code} body={r.text[:200]}")
 
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n=== E5: Cannot demote the last super admin ===")
+r = requests.get(f"{BASE}/admin/access/admins", headers=SH, timeout=20)
+admins_list = (r.json() or {}).get("items") or []
+active_supers = [a for a in admins_list
+                 if a.get("role") == "super_admin" and a.get("is_active", True)]
+print(f"  → active super_admins count: {len(active_supers)}")
 
-def main():
-    print(f"BASE = {BASE}")
-    print(f"PHONE = {PHONE}")
+actor_super_id = next((a["id"] for a in active_supers
+                       if a["email"] == SUPER_EMAIL.lower()), None)
+print(f"  → actor super_admin id (self) = {actor_super_id}")
 
-    print("\n[setup] admin login & SMS mock mode")
-    admin_token = admin_login()
-    if not admin_token:
-        print("FATAL: cannot get admin token; aborting")
-        sys.exit(2)
-    ok("admin.login", bool(admin_token))
-    admin_headers = {"Authorization": f"Bearer {admin_token}"}
-    ensure_mock_mode(admin_token)
+# Spec: create a throwaway super_admin, demote it (succeeds since actor remains super),
+# then attempt to demote the actor (last remaining) — should 400.
+throwaway_email = f"e5.throwaway.{uuid.uuid4().hex[:6]}@squadpay.us"
+r_create = requests.post(
+    f"{BASE}/admin/admins", headers=SH, timeout=20,
+    json={"email": throwaway_email,
+          "password": "ThrowawaySuperPass!2026",
+          "name": "E5 Throwaway Super",
+          "role": "super_admin"}
+)
+assert_eq("E5 create throwaway super_admin → 200", r_create.status_code, 200)
+throwaway_id = r_create.json().get("id") if r_create.status_code == 200 else None
 
-    # Pre-clean: if PHONE is owned by a previously-deleted user, purge them
-    # so we can reuse it. Some side effects from earlier test runs may persist.
-    r, data = get("/admin/users/deleted", headers=admin_headers)
-    pre_clean_blocked = False
-    if _status(r) == 200 and isinstance(data, dict):
-        for it in (data.get("items") or []):
-            if it.get("phone") == PHONE and not it.get("is_purged"):
-                # Purge it to free up the phone slot.
-                pr, _ = post(f"/admin/users/{it['id']}/purge", headers=admin_headers)
-                print(f"  [pre-clean] purged stale deleted user {it['id']} -> {_status(pr)}")
-    else:
-        # admin/users/deleted endpoint hit the route-shadow bug; can't pre-clean.
-        # Continue regardless — we'll surface the bug in the actual test.
-        pre_clean_blocked = True
-        print(f"  [pre-clean] admin/users/deleted not reachable yet: {_status(r)} {data}")
+r = requests.get(f"{BASE}/admin/access/admins", headers=SH, timeout=20)
+admins_list = (r.json() or {}).get("items") or []
+active_supers = [a for a in admins_list
+                 if a.get("role") == "super_admin" and a.get("is_active", True)]
+print(f"  → active super_admins after creating throwaway: {len(active_supers)}")
 
-    # ────────────────────────────────────────────────────────────
-    # (A) HAPPY PATH
-    # ────────────────────────────────────────────────────────────
-    print("\n[A] Happy path")
-    uid = register(f"DelTest_{SUFFIX}")
-    ok("A1.register.200", bool(uid), f"got {uid}")
-    ok("A1.user_id_prefix", (uid or "").startswith("u_"))
+# Pre-existing "other" super_admins (not actor, not throwaway) must be demoted to managers
+# so that only actor + throwaway remain super (to make the next demote of throwaway → 1 super left).
+others = [a for a in active_supers
+          if a["id"] not in (actor_super_id, throwaway_id)]
+print(f"  → other pre-existing super_admins (not actor, not throwaway): {len(others)}")
 
-    status, data = send_otp_with_retry(uid, PHONE)
-    ok("A2.send_otp.200", status == 200, f"status={status} body={data}")
-    msg = (data.get("message") or "").lower() if isinstance(data, dict) else ""
-    ok("A2.mock_code_hint", "123456" in msg or data.get("mocked") is True,
-       f"body={data}")
+restored = []
+for o in others:
+    r_dem = requests.put(
+        f"{BASE}/admin/access/admins/{o['id']}",
+        headers=SH, timeout=20,
+        json={"role": "manager"},
+    )
+    print(f"  → demoted pre-existing super {o['email']} → status={r_dem.status_code}")
+    assert_true(f"E5 pre-cleanup demote {o['email']} → 200",
+                r_dem.status_code == 200,
+                f"body={r_dem.text[:200]}")
+    if r_dem.status_code == 200:
+        restored.append(o["id"])
 
-    status, data = verify_otp(uid, PHONE, "123456")
-    # If there's a leftover verified user with this phone (from earlier runs),
-    # we may get a 409 collision — confirm and retry.
-    if status == 409:
-        status, data = verify_otp(uid, PHONE, "123456", confirm_existing=True)
-    ok("A3.verify_otp.200", status == 200, f"status={status} body={data}")
-    session_id = data.get("session_id")
-    ok("A3.session_id_present", bool(session_id))
-    # uid may have been collapsed if the phone was already verified earlier
-    uid = data.get("id") or uid
+# Demote throwaway → should succeed (actor still super, ≥1 super remains).
+r_t = requests.put(
+    f"{BASE}/admin/access/admins/{throwaway_id}",
+    headers=SH, timeout=20,
+    json={"role": "manager"},
+)
+assert_eq("E5 demote throwaway super (succeeds, actor still super) → 200",
+          r_t.status_code, 200)
 
-    r, data = post("/users/me/delete", {
-        "user_id": uid, "session_id": session_id, "reason": "qa run",
-    })
-    status = _status(r)
-    ok("A4.delete.200", status == 200, f"status={status} body={data}")
-    ok("A4.delete.ok_true", data.get("ok") is True, f"body={data}")
-    spa = data.get("scheduled_purge_at")
-    ok("A4.scheduled_purge_at_present", bool(spa))
-    ok("A4.grace_days_30", data.get("grace_days") == 30)
-    if spa:
-        try:
-            spa_dt = datetime.fromisoformat(spa.replace("Z", "+00:00"))
-            delta_days = (spa_dt - datetime.now(timezone.utc)).total_seconds() / 86400.0
-            ok("A4.purge_in_~30d", 29.5 < delta_days < 30.5, f"delta={delta_days:.2f}d")
-        except Exception as e:
-            ok("A4.purge_iso_parse", False, f"err={e} spa={spa}")
+# Try to demote the actor (the only remaining super) → expect 400.
+# Route enforces BOTH self-demote and last-super guards. Both produce 400; the
+# self-demote check fires first in the current code path.
+r_self = requests.put(
+    f"{BASE}/admin/access/admins/{actor_super_id}",
+    headers=SH, timeout=20,
+    json={"role": "manager"},
+)
+assert_eq("E5 demote remaining last super → 400", r_self.status_code, 400)
+detail = ""
+try:
+    detail = (r_self.json() or {}).get("detail") or ""
+except Exception:
+    detail = r_self.text
+ok_msg = ("Cannot demote the last active super_admin" in str(detail) or
+          "cannot demote your own" in str(detail).lower())
+assert_true("E5 detail explains protected demotion",
+            ok_msg, f"detail={detail}")
 
-    # A5: confirm soft-delete state. Admin /admin/users/deleted (CRITICAL — may be
-    # shadowed by /admin/users/{user_id} route). Also confirm GET /users/{uid}
-    # still returns during grace (PII preserved).
-    r, data = get("/admin/users/deleted", headers=admin_headers)
-    if _status(r) == 200:
-        items = data.get("items") or []
-        found_in_deleted = any(it.get("id") == uid for it in items)
-        ok("A5.user_appears_in_admin_deleted_list", found_in_deleted,
-           f"uid={uid} item_count={len(items)}")
-    else:
-        ok("A5.user_appears_in_admin_deleted_list", False,
-           f"endpoint returned {_status(r)} {data} -- "
-           f"CRITICAL: /admin/users/deleted is shadowed by /admin/users/{{user_id}}")
+# Cleanup: restore pre-existing super_admins back to super_admin role.
+for oid in restored:
+    r_rest = requests.put(
+        f"{BASE}/admin/access/admins/{oid}",
+        headers=SH, timeout=20,
+        json={"role": "super_admin"},
+    )
+    print(f"  → restored {oid} → super_admin status={r_rest.status_code}")
 
-    r, data = get(f"/users/{uid}")
-    ok("A5b.get_user_returns_during_grace", _status(r) == 200, f"status={_status(r)}")
-    if _status(r) == 200:
-        ok("A5b.name_preserved_during_grace",
-           isinstance(data.get("name"), str) and data["name"].startswith("DelTest_"),
-           f"name={data.get('name')}")
+# ─────────────────────────────────────────────────────────────────────────────
+if mgr_token:
+    print("\n=== E6: Non-super blocked from access mgmt ===")
+    r = requests.get(f"{BASE}/admin/access/admins", headers=MH, timeout=20)
+    assert_eq("E6 GET /admin/access/admins (manager) → 403", r.status_code, 403)
+    r = requests.get(f"{BASE}/admin/access/registry", headers=MH, timeout=20)
+    assert_eq("E6 GET /admin/access/registry (manager) → 403", r.status_code, 403)
+    r = requests.put(
+        f"{BASE}/admin/access/admins/{manager_id}",
+        headers=MH, timeout=20,
+        json={"module_overrides": {"audit": "deny"}},
+    )
+    assert_eq("E6 PUT /admin/access/admins (manager) → 403", r.status_code, 403)
 
-    # A6: send_otp on deleted user → 403
-    # NOTE: we have just sent an OTP earlier so we may hit rate limit. Use retry.
-    status, data = send_otp_with_retry(uid, PHONE)
-    detail_raw = data.get("detail") if isinstance(data, dict) else ""
-    detail = json.dumps(detail_raw) if isinstance(detail_raw, dict) else str(detail_raw or "")
-    ok("A6.send_otp_blocked.403", status == 403, f"status={status} body={data}")
-    ok("A6.msg_contains_deleted", "deleted" in detail.lower(), f"detail={detail}")
-    ok("A6.msg_contains_help_email", "help@squadpay.us" in detail.lower(), f"detail={detail}")
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n=== E7: Idempotency — PUT {} ===")
+r = requests.put(
+    f"{BASE}/admin/access/admins/{manager_id}",
+    headers=SH, timeout=20,
+    json={},
+)
+assert_eq("E7 PUT {} → 200", r.status_code, 200)
+if r.status_code == 200:
+    body = r.json()
+    ok = body.get("ok") in (True, "true")
+    unchanged = body.get("unchanged") in (True, "true")
+    assert_true("E7 body.ok true (unchanged true or admin echoed)",
+                ok and (unchanged or body.get("admin") is not None),
+                f"body={body}")
 
-    # ────────────────────────────────────────────────────────────
-    # (B) AUTH GUARDS
-    # ────────────────────────────────────────────────────────────
-    print("\n[B] Auth guards")
+r = requests.put(
+    f"{BASE}/admin/access/admins/{manager_id}",
+    headers=SH, timeout=20,
+    json={"role": "manager",
+          "module_overrides": {"platform_fees": "grant"}},
+)
+assert_eq("E7 PUT same values → 200 (no 500)", r.status_code, 200)
 
-    # Restore via admin so we can get a fresh session id and run B1/B2/B3.
-    r, data = post(f"/admin/users/{uid}/restore", headers=admin_headers)
-    ok("B.setup.admin_restore.200", _status(r) == 200, f"status={_status(r)} body={data}")
+# Final cleanup: clear platform_fees override
+r = requests.put(
+    f"{BASE}/admin/access/admins/{manager_id}",
+    headers=SH, timeout=20,
+    json={"module_overrides": {}},
+)
+print(f"  → cleared overrides status={r.status_code}")
 
-    # Wait a bit to let any OTP rate-limit window expire before the next send
-    time.sleep(OTP_BACKOFF_S)
-    status, data = send_otp_with_retry(uid, PHONE)
-    ok("B.setup.send_otp.200", status == 200, f"status={status} body={data}")
-    status, data = verify_otp(uid, PHONE, "123456")
-    if status == 409:
-        status, data = verify_otp(uid, PHONE, "123456", confirm_existing=True)
-    ok("B.setup.verify_otp.200", status == 200, f"status={status} body={data}")
-    real_sid = data.get("session_id")
-    uid = data.get("id") or uid
-
-    # B1: bogus session_id → 401 Invalid session
-    r, data = post("/users/me/delete", {
-        "user_id": uid, "session_id": "totally-bogus-session-xyz", "reason": "qa B1",
-    })
-    ok("B1.bogus_session.401", _status(r) == 401, f"status={_status(r)} body={data}")
-    ok("B1.detail_invalid_session",
-       "invalid session" in str(data.get("detail") or "").lower(),
-       f"detail={data.get('detail')}")
-
-    # B2: unknown user_id → 404 User not found
-    r, data = post("/users/me/delete", {
-        "user_id": "u_doesnotexist_999", "session_id": "x", "reason": "qa B2",
-    })
-    ok("B2.unknown_user.404", _status(r) == 404, f"status={_status(r)} body={data}")
-    ok("B2.detail_user_not_found",
-       "user not found" in str(data.get("detail") or "").lower(),
-       f"detail={data.get('detail')}")
-
-    # B3: happy-path delete called twice (without restoring in between).
-    # Spec: 2nd call should still return 200 with already_pending:true.
-    r, data = post("/users/me/delete", {
-        "user_id": uid, "session_id": real_sid, "reason": "qa B3.1",
-    })
-    ok("B3.first_delete.200", _status(r) == 200, f"status={_status(r)} body={data}")
-    ok("B3.first.not_already_pending",
-       data.get("ok") is True and not data.get("already_pending"),
-       f"body={data}")
-
-    # Second call with the SAME session_id. Server clears current_session_id on
-    # delete, so _verify_session will see (current=None) != session_id and 401.
-    # Spec expects 200 already_pending:true — this exposes an ordering bug
-    # where idempotency check happens AFTER session-equality check.
-    r, data = post("/users/me/delete", {
-        "user_id": uid, "session_id": real_sid, "reason": "qa B3.2",
-    })
-    ok("B3.second_delete.200_already_pending",
-       _status(r) == 200 and data.get("already_pending") is True,
-       f"status={_status(r)} body={data} -- expected 200 already_pending:true per spec")
-
-    # B4: admin restore without Bearer → 401 or 403
-    r, data = post(f"/admin/users/{uid}/restore")  # no admin headers
-    ok("B4.admin_restore_no_token.401_or_403", _status(r) in (401, 403),
-       f"status={_status(r)} body={data}")
-
-    # ────────────────────────────────────────────────────────────
-    # (C) PHONE COLLISION
-    # ────────────────────────────────────────────────────────────
-    print("\n[C] Phone collision blocks new placeholder login")
-    new_uid = register(f"CollideTest_{SUFFIX}")
-    ok("C.register_new_placeholder.200", bool(new_uid))
-
-    # uid is still soft-deleted (B3 deleted it). Send OTP from NEW placeholder
-    # for the SAME phone → expect 403 collision message. Backoff first.
-    time.sleep(OTP_BACKOFF_S)
-    status, data = send_otp_with_retry(new_uid, PHONE)
-    detail_raw = data.get("detail") if isinstance(data, dict) else ""
-    detail = json.dumps(detail_raw) if isinstance(detail_raw, dict) else str(detail_raw or "")
-    ok("C.collision.403", status == 403, f"status={status} body={data}")
-    ok("C.msg_mentions_deleted_phone",
-       "deleted" in detail.lower() and "phone" in detail.lower(),
-       f"detail={detail}")
-
-    # ────────────────────────────────────────────────────────────
-    # (D) ADMIN ENDPOINTS
-    # ────────────────────────────────────────────────────────────
-    print("\n[D] Admin endpoints (restore / purge / list deleted)")
-
-    # D1: admin restore the user
-    r, data = post(f"/admin/users/{uid}/restore", headers=admin_headers)
-    ok("D1.admin_restore.200", _status(r) == 200, f"status={_status(r)} body={data}")
-    ok("D1.restored_true", data.get("restored") is True or data.get("already_active") is True,
-       f"body={data}")
-
-    # confirm via admin/users/deleted no longer contains user
-    r, data = get("/admin/users/deleted", headers=admin_headers)
-    if _status(r) == 200:
-        items = data.get("items") or []
-        ok("D1.user_not_in_deleted_list_after_restore",
-           not any(it.get("id") == uid for it in items),
-           f"items count={len(items)}")
-    else:
-        ok("D1.user_not_in_deleted_list_after_restore", False,
-           f"endpoint shadowed: {_status(r)} {data}")
-
-    # D2: soft-delete again, then purge
-    time.sleep(OTP_BACKOFF_S)
-    status, data = send_otp_with_retry(uid, PHONE)
-    ok("D2.setup.send_otp.200", status == 200, f"status={status} body={data}")
-    status, data = verify_otp(uid, PHONE, "123456")
-    if status == 409:
-        status, data = verify_otp(uid, PHONE, "123456", confirm_existing=True)
-    ok("D2.setup.verify_otp.200", status == 200, f"status={status} body={data}")
-    sid2 = data.get("session_id")
-    uid = data.get("id") or uid
-
-    r, data = post("/users/me/delete", {
-        "user_id": uid, "session_id": sid2, "reason": "qa D2",
-    })
-    ok("D2.soft_delete_again.200", _status(r) == 200, f"status={_status(r)} body={data}")
-
-    r, data = post(f"/admin/users/{uid}/purge", headers=admin_headers)
-    ok("D2.admin_purge.200", _status(r) == 200, f"status={_status(r)} body={data}")
-    ok("D2.purged_true", data.get("purged") is True, f"body={data}")
-
-    r, data = get(f"/users/{uid}")
-    ok("D2.get_user_after_purge.200", _status(r) == 200, f"status={_status(r)} body={data}")
-    if _status(r) == 200:
-        name = data.get("name") or ""
-        ok("D2.name_starts_with_Deleted_User", name.startswith("Deleted User"),
-           f"name={name!r}")
-        ok("D2.phone_is_null", data.get("phone") in (None, ""),
-           f"phone={data.get('phone')!r}")
-
-    # D3: admin/users/deleted
-    r, data = get("/admin/users/deleted", headers=admin_headers)
-    status = _status(r)
-    ok("D3.admin_list_deleted.200", status == 200, f"status={status} body={data}")
-    if status == 200 and isinstance(data, dict):
-        items = data.get("items") or []
-        ok("D3.purged_user_in_list", any(it.get("id") == uid for it in items),
-           f"uid={uid}; ids={[it.get('id') for it in items[:10]]}")
-        ok("D3.grace_days_30", data.get("grace_days") == 30, f"keys={list(data.keys())}")
-        ok("D3.has_items_array", isinstance(items, list), f"type={type(items).__name__}")
-
-    # ────────────────────────────────────────────────────────────
-    print("\n" + "=" * 64)
-    print(f"PASSED: {len(_passes)}    FAILED: {len(_fails)}")
-    if _fails:
-        print("\nFailures:")
-        for n, d in _fails:
-            print(f"  ❌ {n}\n     {d}")
-    print("=" * 64)
-    return 0 if not _fails else 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+print(f"\n=== TOTAL: {passed} passed, {failed} failed ===")
+if failed:
+    print("\nIssues encountered:")
+    for x in issues:
+        print("  -", x)
+sys.exit(0 if failed == 0 else 1)

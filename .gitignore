@@ -705,8 +705,9 @@ credentials.json
 # Private, download-only documentation (contains code snippets + sample payloads)
 DOCUMENTATION_FULL.md
 
-# Stripe enablement email draft (contains personal contact details)
-STRIPE_PUSH_PROVISIONING_REQUEST.md
+# Stripe enablement email draft — UN-GITIGNORED per user request 2026-05-11
+# (Still keep your own contact info private before pushing publicly!)
+# STRIPE_PUSH_PROVISIONING_REQUEST.md
 -e 
 # Environment and credential files
 .env

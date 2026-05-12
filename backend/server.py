@@ -181,6 +181,14 @@ except Exception as _e:
     print("[startup] admin search attach failed:", _e)
 
 
+# ---------- Account deletion (App Store Guideline 5.1.1(v)) ----------
+try:
+    from routes.account_deletion_routes import attach_account_deletion_routes
+    attach_account_deletion_routes(api_router, db, _adm_factory(db))
+except Exception as _e:
+    print("[startup] account deletion routes attach failed:", _e)
+
+
 # ---------- Stripe payment routes (Phase E) ----------
 try:
     from payments import attach_payment_routes

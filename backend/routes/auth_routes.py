@@ -214,6 +214,25 @@ def attach_auth_routes(router: APIRouter, db):
         user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
         if not user:
             raise HTTPException(404, "User not found")
+        # Block soft-deleted accounts from logging back in (App Store 5.1.1(v))
+        if user.get("is_deleted"):
+            raise HTTPException(
+                403,
+                "This account has been deleted. Please contact help@squadpay.us to restore "
+                "within 30 days, or create a new account.",
+            )
+        # Also block if another verified user owning this phone is soft-deleted.
+        other = await db.users.find_one(
+            {"phone": body.phone, "verified": True, "is_deleted": True,
+             "id": {"$ne": body.user_id}},
+            {"_id": 0, "id": 1},
+        )
+        if other:
+            raise HTTPException(
+                403,
+                "An account using this phone number was deleted. Please contact "
+                "help@squadpay.us to restore it within 30 days.",
+            )
         # Phase H6.2 — mode-aware OTP. In LIVE mode the code is cryptographically
         # random and never returned in the response. In MOCK mode the code is
         # "123456" and surfaced in `message` so demo/dev can sign in without SMS.
@@ -254,7 +273,7 @@ def attach_auth_routes(router: APIRouter, db):
                 "verified": True,
                 "id": {"$ne": exclude_user_id} if exclude_user_id else {"$exists": True},
             },
-            {"_id": 0, "id": 1, "name": 1, "is_blocked": 1},
+            {"_id": 0, "id": 1, "name": 1, "is_blocked": 1, "is_deleted": 1},
         )
         if not existing:
             return {"exists": False}
@@ -262,6 +281,7 @@ def attach_auth_routes(router: APIRouter, db):
             "exists": True,
             "name": existing.get("name"),
             "blocked": bool(existing.get("is_blocked")),
+            "deleted": bool(existing.get("is_deleted")),
         }
 
     @router.post("/auth/verify-otp")
@@ -280,6 +300,12 @@ def attach_auth_routes(router: APIRouter, db):
             if existing.get("is_blocked"):
                 # Don't delete the placeholder yet — let the user contact support.
                 raise HTTPException(403, "This account has been blocked. Please contact support.")
+            if existing.get("is_deleted"):
+                raise HTTPException(
+                    403,
+                    "An account using this phone number was deleted. Please contact "
+                    "help@squadpay.us to restore it within 30 days.",
+                )
 
             # Phase H2 — REQUIRE explicit confirmation before merging.
             # Otherwise return 409 with the existing name so the client can show

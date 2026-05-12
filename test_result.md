@@ -6914,3 +6914,420 @@ agent_communication:
 
       Harness: /app/backend_test.py. Both tasks marked working=true,
       needs_retesting=false. No other endpoints were re-tested per scope.
+
+
+  - task: "Account deletion (App Store Guideline 5.1.1(v)) — soft delete with 30‑day grace"
+    implemented: true
+    working: false
+    file: "/app/backend/routes/account_deletion_routes.py + /app/backend/routes/auth_routes.py + /app/backend/server.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+          End-to-end tested via /app/backend_test.py against the live preview
+          backend (https://joint-pay-1.preview.emergentagent.com/api). SMS
+          forced to "mock" mode (OTP=123456). Admin login via
+          POST /api/admin/auth/login (note: the spec said /api/admin/login but
+          the actual route is /api/admin/auth/login — admin_routes.py line 63).
+
+          RESULT: 40/44 assertions PASS, **2 distinct backend bugs found**.
+
+          ──────────────────────────────────────────────────────────
+          ❌ BUG #1 — CRITICAL — `GET /api/admin/users/deleted` is
+             shadowed by `GET /api/admin/users/{user_id}` (route ordering).
+
+          Reproduction (curl):
+            TOKEN=$(POST /api/admin/auth/login admin@squadpay.us / ...)
+            GET /api/admin/users/deleted -H "Authorization: Bearer $TOKEN"
+              → 404 {"detail":"User not found"}
+
+          Root cause:
+            - /app/backend/admin_routes.py:91 includes the admin router which
+              registers @router.get("/users/{user_id}") at
+              admin_users_groups.py:116. That route is added to FastAPI's
+              router table FIRST.
+            - /app/backend/server.py:184–189 attaches
+              account_deletion_routes.attach_account_deletion_routes(api_router,
+              ...) AFTER, registering @router.get("/admin/users/deleted").
+            - FastAPI matches routes in registration order. `GET /api/admin/users/deleted`
+              hits the path-parameter route first with user_id="deleted",
+              which then returns 404 because no user has id "deleted".
+
+          Impact:
+            - Admin cannot fetch the soft-deleted users dashboard.
+            - The entire D3 scenario (third bullet of group D in the review)
+              cannot succeed in production.
+            - A5 / D1 indirect verifications also fail because we can't read
+              the deleted-list to confirm membership.
+
+          Fix options (one-line either-or):
+            (a) In server.py, REGISTER account_deletion_routes BEFORE
+                build_admin_router. E.g. move lines 184–189 ABOVE line 91:
+                  from routes.account_deletion_routes import attach_account_deletion_routes
+                  attach_account_deletion_routes(api_router, db, _adm_factory(db))
+                  …
+                  api_router.include_router(build_admin_router(db))
+                (FastAPI will then prefer the literal path over the path-param
+                because the literal route is registered first.)
+            (b) Rename to a non-conflicting path:
+                  @router.get("/admin/deleted-users")   # or /admin/users-deleted
+                in /app/backend/routes/account_deletion_routes.py line 267.
+            (c) Define the literal route ALSO inside admin_users_groups.py
+                BEFORE the path-param route at line 116.
+
+          Recommended: (a) – preserves the documented path.
+
+          ──────────────────────────────────────────────────────────
+          ❌ BUG #2 — `POST /api/users/me/delete` second-call is NOT
+             idempotent in the way the spec promised.
+
+          Spec text:
+            "Run the happy-path delete twice (without restoring in between)
+             → 2nd call should still return 200 with `already_pending:true`."
+
+          Actual:
+            - 1st call: 200 ok=true (good).
+            - 2nd call (same body, same session_id): 401 "Invalid session".
+
+          Root cause (account_deletion_routes.py lines 82–107):
+            `delete_account` calls `_verify_session(...)` BEFORE checking the
+            `is_deleted` branch. _verify_session checks
+            user.current_session_id == session_id. The first delete clears
+            current_session_id (line 106), so the equality fails on the 2nd
+            call → 401 raised before the idempotency early-return runs.
+
+          Fix (in delete_account):
+            Move the is_deleted idempotency check to before the strict
+            session-equality check (or short-circuit only when the inbound
+            session_id matches some `last_session_id_before_delete` stored
+            during the first delete).
+
+            Minimal diff:
+              @router.post("/users/me/delete")
+              async def delete_account(body: DeleteAccountIn):
+                  user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
+                  if not user:
+                      raise HTTPException(404, "User not found")
+                  if user.get("is_deleted"):
+                      # idempotent — don't reject on missing session, the user
+                      # is already gone.
+                      return {"ok": True, "already_pending": True, ...}
+                  if user.get("current_session_id") != body.session_id:
+                      raise HTTPException(401, "Invalid session")
+                  # … existing soft-delete logic …
+
+          ──────────────────────────────────────────────────────────
+          ✅ PASSING scenarios (40/44):
+
+          (A) Happy path
+            A1 register → u_… 200
+            A2 send-otp → 200, mocked=true / message contains "123456"
+            A3 verify-otp → 200, session_id returned
+            A4 POST /users/me/delete → 200, ok=true, scheduled_purge_at ≈30d
+                in the future (29.5 < delta < 30.5), grace_days=30
+            A5b GET /api/users/{uid} still returns the user during grace,
+                name preserved ("DelTest_xxxxx" intact — PII not yet wiped)
+            A6 send-otp on deleted user → 403 with detail "This account has
+                been deleted. Please contact help@squadpay.us …"
+                ✓ contains "deleted"
+                ✓ contains "help@squadpay.us"
+
+          (B) Auth guards
+            B1 bogus session_id → 401 "Invalid session"
+            B2 unknown user_id → 404 "User not found"
+            B3 first delete → 200 ok=true (already_pending NOT set) ✓
+            B4 /admin/users/{uid}/restore without Bearer → 401
+                ("Admin auth required")
+
+          (C) Phone collision
+            New placeholder + send-otp on previously-deleted user's phone →
+            403 with detail "An account using this phone number was deleted.
+            Please contact help@squadpay.us to restore it within 30 days."
+            ✓ contains "deleted" + "phone"
+
+          (D) Admin endpoints
+            D1 POST /admin/users/{uid}/restore (with Bearer) → 200,
+                restored:true
+            D2 send-otp → 200, verify-otp → 200, soft-delete again → 200,
+                admin /purge → 200, purged:true
+            D2 GET /users/{uid} after purge:
+                ✓ name starts with "Deleted User"
+                ✓ phone is null
+
+          Auth flow guards in routes/auth_routes.py work correctly:
+            - send-otp on user.is_deleted=true → 403 (line 217–223)
+            - send-otp where another verified+is_deleted user owns this phone
+              → 403 (line 224–235)
+
+          Admin Bearer auth is required on /admin/users/{uid}/restore and
+          /admin/users/{uid}/purge as expected.
+
+          ──────────────────────────────────────────────────────────
+          ❌ FAILING (4 assertions, 2 distinct bugs):
+            A5.user_appears_in_admin_deleted_list  — Bug #1
+            D1.user_not_in_deleted_list_after_restore — Bug #1
+            D3.admin_list_deleted.200              — Bug #1
+            B3.second_delete.200_already_pending   — Bug #2
+
+          ──────────────────────────────────────────────────────────
+          Test harness saved at /app/backend_test.py. It is idempotent —
+          uses a unique SUFFIX (epoch%100000) for names and includes pre-
+          clean logic that purges any stale soft-deleted user on +15551237777
+          before the run. Honours the 5/minute rate limit on /auth/send-otp
+          with a 14-second backoff between OTP sends.
+
+          Backend log notes (informational, not blockers):
+            - passlib bcrypt cosmetic warning (no functional impact).
+            - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes).
+
+          Action required from main agent:
+            1. Fix BUG #1 (route ordering or rename — option (a) recommended).
+            2. Fix BUG #2 (re-order is_deleted check vs session check in
+               delete_account).
+            Once both are in, retest only the 4 failing assertions.
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Implements App Store mandatory in-app account deletion (Guideline
+          5.1.1(v)) with a soft-delete + 30-day grace pattern.
+
+          Endpoints added in /app/backend/routes/account_deletion_routes.py
+          and wired in /app/backend/server.py:
+
+           1) POST /api/users/me/delete
+              Body: { user_id, session_id, reason? (<=500ch) }
+              - 404 if user_id unknown
+              - 401 if session_id != user.current_session_id
+              - Idempotent: if user already is_deleted=true, returns
+                {ok:true, already_pending:true, ...}
+              - On success sets is_deleted=true, deleted_at=now_iso(),
+                deletion_scheduled_at=now+30d, deletion_reason, AND
+                clears current_session_id. Drops db.otp_codes for the user.
+                Inserts audit_log row.
+                Returns {ok, deleted_at, scheduled_purge_at, grace_days:30,
+                message}.
+
+           2) POST /api/users/me/restore
+              Body: { user_id, session_id }
+              - 404 if user_id unknown
+              - {ok:true, already_active:true} if user.is_deleted=false
+              - 410 if past scheduled_purge_at
+              - 401 unless session_id == user.last_session_id_before_delete
+                (a separately-stored pre-delete token — useful for hands-on
+                rollback; otherwise route through admin endpoint).
+
+           3) POST /api/users/me/deletion-status
+              Body: { user_id, session_id }  -- session check NOT enforced here
+                because a logged-out user may still need to query status.
+              Returns {is_deleted, deleted_at, scheduled_purge_at, grace_days}.
+
+           4) POST /api/admin/users/{uid}/restore  (admin Bearer required)
+              Clears is_deleted + deleted_at + deletion_scheduled_at +
+              deletion_reason. Audit-logged. Idempotent.
+
+           5) POST /api/admin/users/{uid}/purge  (admin Bearer required)
+              Anonymises name/phone/email immediately, sets is_purged=true.
+
+           6) GET /api/admin/users/deleted?limit= (admin Bearer required)
+              Lists soft-deleted users sorted by deleted_at desc.
+
+          Auth-flow blocks added in /app/backend/routes/auth_routes.py:
+           - send-otp returns 403 if the placeholder user is_deleted=true
+             OR if another verified+is_deleted user owns this phone.
+           - verify-otp Path A returns 403 if `existing` user is_deleted=true.
+           - lookup-phone now includes `deleted: true|false` in its payload.
+
+          Suggested test cases (high priority for backend tester):
+            A) Happy path:
+               1. Create + verify a user; capture session_id from verify-otp.
+               2. POST /api/users/me/delete with that user_id + session_id →
+                  expect 200, {ok:true, scheduled_purge_at is +30d}.
+               3. GET /api/users/{id} → user.is_deleted=true, name kept.
+               4. POST /api/auth/send-otp same user → 403 with friendly msg.
+               5. POST /api/admin/users/{id}/restore → ok:true; user
+                  is_deleted=false.
+
+            B) Auth guards:
+               1. POST /api/users/me/delete with bogus session_id → 401.
+               2. POST /api/users/me/delete with bogus user_id → 404.
+               3. POST /api/users/me/delete twice in a row → 2nd call
+                  returns {already_pending:true} (no errors).
+               4. POST /api/admin/users/{id}/restore without Bearer → 401.
+
+            C) Login block via phone collision:
+               1. User A verified with phone +1888...; A then deletes acct.
+               2. Brand-new placeholder user B with name "Test" tries
+                  /api/auth/send-otp on the same phone → expect 403 with
+                  "An account using this phone number was deleted...".
+
+            D) Admin purge:
+               1. After delete, POST /api/admin/users/{id}/purge → name
+                  becomes "Deleted User (xxxxxx)", phone=null, email=null,
+                  is_purged=true.
+               2. GET /api/admin/users/deleted should include the row.
+
+          Auth for admin endpoints: admin@squadpay.us / Letmein@2007#ForReal
+          via existing /api/admin/login → Bearer.
+
+  - task: "Frontend Settings → Delete Account button + confirmation modal"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/settings.tsx + /app/frontend/src/api.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Added "Delete account" row above "Sign out" in Settings → opens a
+          full-screen confirmation Modal that:
+            • Lists what happens (soft delete, 30d grace, contact email).
+            • Asks for optional reason (<=500 chars).
+            • Requires the user to type DELETE (case-insensitive in compare
+              but rendered as uppercase) to enable the destructive button.
+            • On submit, calls api.deleteMyAccount(user_id, session_id, reason),
+              swaps to a success view, then forces sign-out (clearUser +
+              router.replace('/')).
+          Cancel button + onRequestClose preserved while submitting=false.
+          Web fallback: Modal works on web too.
+
+          No frontend testing required at this stage per testing protocol —
+          will ask user before invoking expo_frontend_testing_agent.
+
+  - task: "Mobile App Build Readiness — iOS/Android EAS config"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app.json + /app/frontend/eas.json + /app/frontend/package.json + /app/MOBILE_BUILD_RUNBOOK.md"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          • eas.json submit.production.ios.appleTeamId = "4JXHW2G4T7"
+          • eas.json submit.production.ios.ascAppId    = "6768632339"
+          • app.json ios.entitlements.com.apple.developer.in-app-payments =
+            ["merchant.us.squadpay"] (Apple Pay)
+          • app.json ios.privacyManifests added — NSPrivacyAccessedAPITypes
+            (UserDefaults CA92.1, FileTimestamp C617.1, SystemBootTime 35F9.1,
+            DiskSpace E174.1) + NSPrivacyTracking=false +
+            NSPrivacyCollectedDataTypes (Name, Phone, Payment, Photos, UserID,
+            DeviceID — all linked, none tracking, app-functionality purpose).
+          • Added expo-build-properties plugin pinning iOS deploymentTarget
+            15.1, Android compileSdk/targetSdk 35, minSdk 24.
+          • expo-camera & expo-document-picker re-aligned to SDK-54-compatible
+            versions (17.0.10 / 14.0.8) via `npx expo install` (previously they
+            were at v55 which would have failed `eas build`).
+          • app.json infoPlist additions: NSContactsUsageDescription,
+            NSFaceIDUsageDescription, LSApplicationQueriesSchemes.
+          • android.permissions added VIBRATE for native haptics.
+          • Deep linking files already present at
+            /app/frontend/public/.well-known/{apple-app-site-association,
+            assetlinks.json} with Team ID 4JXHW2G4T7 + package
+            com.squadpay.app — no changes required.
+          • Runbook written to /app/MOBILE_BUILD_RUNBOOK.md with step-by-step
+            EAS build/submit instructions, Apple Pay Merchant ID setup,
+            App Store / Play Console listings, and common pitfalls.
+
+          Manual verification only (this isn't a runtime feature — EAS will
+          consume the config when the user runs `eas build` locally).
+
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Mobile App Build Readiness batch (June 2025) implemented in one session.
+
+      ▸ Backend: account deletion endpoints (soft-delete + 30-day grace + admin
+        restore/purge) wired and reachable at /api/users/me/delete,
+        /api/users/me/restore, /api/users/me/deletion-status,
+        /api/admin/users/{uid}/restore, /api/admin/users/{uid}/purge,
+        /api/admin/users/deleted. Auth-flow guards added in send-otp /
+        verify-otp / lookup-phone so soft-deleted accounts can't sign back in.
+
+      ▸ Frontend: Delete-account row + modal in /app/frontend/app/settings.tsx;
+        new api client methods deleteMyAccount + myDeletionStatus.
+
+      ▸ Native config: eas.json + app.json updated with Apple Team ID,
+        App Store Connect App ID, Apple Pay entitlement
+        (merchant.us.squadpay), iOS Privacy Manifest, expo-build-properties.
+        expo-camera / expo-document-picker downgraded to v17/v14 to match
+        Expo SDK 54.
+
+      ▸ Runbook: /app/MOBILE_BUILD_RUNBOOK.md — exact `eas build` / `eas submit`
+        commands the user needs to run from their laptop.
+
+      REQUEST FOR TESTING:
+        Please test the **Account deletion (App Store 5.1.1(v))** task
+        following the A/B/C/D suggested cases above. Do NOT re-test pre-existing
+        Contact-Us / Bulk SMS / Credit Rules / Admin Search routes (still
+        marked working=true, needs_retesting=false).
+
+      Auth for tests:
+        - Admin: admin@squadpay.us / Letmein@2007#ForReal
+          → POST /api/admin/login → Bearer token
+        - Regular user flow: POST /api/auth/register → POST /api/auth/send-otp
+          (mock mode = OTP 123456) → POST /api/auth/verify-otp returns
+          session_id you must thread into the delete call.
+
+      Frontend/native-build pieces don't need automated testing — the user
+      will verify them by running `eas build` from their laptop.
+
+    -agent: "testing"
+    -message: |
+      Account Deletion (App Store 5.1.1(v)) — backend tested end-to-end via
+      /app/backend_test.py against the live preview backend. 40/44 PASS.
+      **2 distinct backend bugs found** that block App-Store-grade behavior.
+
+      ❌ BUG #1 (CRITICAL): GET /api/admin/users/deleted returns 404 because
+         it's shadowed by GET /api/admin/users/{user_id} (registered earlier
+         in admin_routes.build_admin_router). The path-parameter route eats
+         "deleted" as a user_id and returns "User not found". The entire
+         D-group admin-listing scenario is unreachable in production.
+         Fix: in server.py, move the
+         `attach_account_deletion_routes(api_router, db, _adm_factory(db))`
+         call ABOVE `api_router.include_router(build_admin_router(db))`
+         (currently lines 91 vs 184–189), OR rename to
+         `/admin/deleted-users`. Recommend option (a) so the documented
+         path doesn't change.
+
+      ❌ BUG #2: POST /api/users/me/delete second-call idempotency returns
+         401 "Invalid session" instead of the spec'd
+         {200, ok:true, already_pending:true}. Root cause: in
+         account_deletion_routes.py the `_verify_session` check runs BEFORE
+         the `if user.get("is_deleted")` early-return branch, AND the first
+         delete clears current_session_id. So the second call's session
+         check fails before idempotency kicks in. Fix: in `delete_account`,
+         move the `is_deleted` check BEFORE the session equality assertion.
+
+      ✅ Everything else works as designed:
+        - A1–A4 happy path: delete returns 200 with scheduled_purge_at ≈30d,
+          grace_days=30, audit row inserted.
+        - A6 send-otp on deleted user → 403 with "deleted" + "help@squadpay.us"
+          in the message.
+        - B1 bogus session_id → 401, B2 unknown user_id → 404, B4 admin
+          restore without Bearer → 401.
+        - C phone collision: new placeholder + send-otp on previously-deleted
+          phone → 403 "An account using this phone number was deleted…".
+        - D1 admin restore → 200 restored:true.
+        - D2 admin purge → 200, name becomes "Deleted User (xxxxxx)",
+          phone null.
+
+      Caveats / notes for main agent:
+        - Admin login is at /api/admin/auth/login (not /api/admin/login as
+          the review text said) — verified via admin_routes.py:63.
+        - /auth/send-otp is rate-limited to 5/min per IP — test harness
+          spaces calls with a 14-second backoff.
+        - Test harness saved at /app/backend_test.py — idempotent and
+          self-purges any stale soft-deleted user on +15551237777 from
+          earlier runs.
+
+      Action items for main agent:
+        1) Fix BUG #1 (re-order attach_account_deletion_routes call).
+        2) Fix BUG #2 (re-order is_deleted check vs session check).
+        3) Re-test only the 4 failing assertions in /app/backend_test.py.

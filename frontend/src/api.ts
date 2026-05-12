@@ -230,6 +230,28 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ user_id, ...(session_id ? { session_id } : {}) }),
     }),
+  deleteMyAccount: (user_id: string, session_id: string, reason?: string) =>
+    request<{
+      ok: boolean;
+      already_pending?: boolean;
+      deleted_at: string;
+      scheduled_purge_at: string;
+      grace_days: number;
+      message: string;
+    }>('/users/me/delete', {
+      method: 'POST',
+      body: JSON.stringify({ user_id, session_id, ...(reason ? { reason } : {}) }),
+    }),
+  myDeletionStatus: (user_id: string, session_id: string) =>
+    request<{
+      is_deleted: boolean;
+      deleted_at: string | null;
+      scheduled_purge_at: string | null;
+      grace_days: number;
+    }>('/users/me/deletion-status', {
+      method: 'POST',
+      body: JSON.stringify({ user_id, session_id }),
+    }),
   getUser: (user_id: string) => request<User>(`/users/${user_id}`),
   acceptTerms: (user_id: string) =>
     request<{ ok: boolean; terms_accepted_at: string }>(

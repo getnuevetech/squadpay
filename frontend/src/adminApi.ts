@@ -356,6 +356,36 @@ export const adminApi = {
       method: 'PUT',
       body: JSON.stringify({ fees }),
     }),
+
+  // -------- Unified App Config (core fees, wallet, limits, otp, etc.) --------
+  // Source of truth for ALL admin-tunable runtime settings. See
+  // /app/backend/routes/admin_app_config.py for the section schemas.
+  getAppConfig: () => request<AppConfig>('/app-config'),
+  updateAppConfig: (cfg: AppConfig) =>
+    request<AppConfig>('/app-config', { method: 'PUT', body: JSON.stringify(cfg) }),
+};
+
+export type AppConfig = {
+  core_fees: { transaction_fee_pct: number; platform_fee_flat: number };
+  extra_fees: AdminPlatformFee[];
+  wallet: { enabled: boolean; apple_enabled: boolean; google_enabled: boolean };
+  limits: {
+    min_members_per_bill: number;
+    min_bill_amount: number;
+    max_bill_amount: number;
+    max_items_per_bill: number;
+  };
+  otp: { code_length: number; expiry_seconds: number; max_attempts_per_hour: number };
+  card: { spend_cap_buffer_pct: number; auto_disable_hours: number };
+  reminders: { cadence_hours: number; bill_expiry_hours: number };
+  ocr: { provider: 'openai' | 'anthropic' | 'gemini'; model: string };
+  brand: {
+    sms_sender_id: string;
+    support_email: string;
+    default_tip_suggestions: number[];
+    currency: 'USD';
+  };
+  ops: { maintenance_mode: boolean; maintenance_message: string };
 };
 
 export type AdminPlatformFee = {

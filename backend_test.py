@@ -1,435 +1,443 @@
 """
-Phase N backend test — Lead removes a non-contributing member.
+Phase O — Unified Admin App-Config (Batch A) backend test suite.
 
-Endpoint: POST /api/groups/{group_id}/remove-member
-Body:     { "user_id": "<lead_id>", "target_id": "<member_to_remove_id>" }
-
-Acceptance:
-  1. Non-lead caller → 403 "lead can remove"
-  2. Bill status != "open" → 400 "Members can no longer be removed"
-  3. Target = lead → 400 "lead cannot be removed"
-  4. Target not in group → 404 "not part of this group"
-  5. Target has contributed → 400 "already contributed"
-  6. Happy path: 200; member gone; assignments scrubbed; notifications +N (N=orig members)
-  7. After removal, contributing member can still contribute and pay normally
+Tests:
+  1) GET/PUT /api/admin/app-config — shape, defaults, RBAC, round-trip.
+  2) core_fees.transaction_fee_pct propagates to bill math live.
+  3) Wallet provisioning admin gate on POST /api/cards/{group_id}/provision.
+  4) Legacy /api/admin/platform-fees still works and mirrors into app-config.
+  5) Auth / RBAC.
 """
 import os
 import sys
 import time
-from typing import Any, Dict, List, Optional
-
+import json
+import re
 import requests
+from pathlib import Path
 
-BACKEND_URL = os.environ.get(
-    "BACKEND_URL",
-    "https://joint-pay-1.preview.emergentagent.com",
-).rstrip("/")
+# --- Load backend URL from frontend .env (NEVER hardcode) -------------------
+FRONTEND_ENV = Path("/app/frontend/.env")
+BACKEND_URL = None
+for line in FRONTEND_ENV.read_text().splitlines():
+    if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
+        BACKEND_URL = line.split("=", 1)[1].strip().strip('"').strip("'")
+        break
+if not BACKEND_URL:
+    print("FATAL: EXPO_PUBLIC_BACKEND_URL not found in /app/frontend/.env")
+    sys.exit(1)
+
 API = f"{BACKEND_URL}/api"
+print(f"BASE: {API}")
 
 ADMIN_EMAIL = "admin@squadpay.us"
 ADMIN_PASSWORD = "Letmein@2007#ForReal"
 
-TS = int(time.time())
-RESULTS: List[Dict[str, Any]] = []
+# ----------------------------------------------------------------------------
+
+results = []          # list of (name, ok, detail)
+failures = []         # list of (name, detail)
 
 
-def record(name: str, ok: bool, info: str = ""):
-    RESULTS.append({"name": name, "ok": ok, "info": info})
-    flag = "PASS" if ok else "FAIL"
-    print(f"[{flag}] {name}" + (f"  -- {info}" if info else ""))
+def record(name, ok, detail=""):
+    results.append((name, ok, detail))
+    status = "✅" if ok else "❌"
+    print(f"  {status} {name}" + (f"  ({detail})" if detail and not ok else ""))
+    if not ok:
+        failures.append((name, detail))
 
 
-def assert_eq(name: str, actual, expected, tol: float = 0.0):
-    if isinstance(expected, float) or isinstance(actual, float):
-        ok = abs(float(actual) - float(expected)) <= tol
-    else:
-        ok = actual == expected
-    record(name, ok, "" if ok else f"expected={expected!r} actual={actual!r}")
+def post(path, json_body=None, headers=None, expected=None):
+    url = f"{API}{path}"
+    r = requests.post(url, json=json_body, headers=headers or {}, timeout=30)
+    return r
 
 
-def assert_contains(name: str, haystack: str, needle: str):
-    ok = needle.lower() in (haystack or "").lower()
-    record(name, ok, "" if ok else f"expected substring {needle!r} in {haystack!r}")
+def get(path, headers=None):
+    url = f"{API}{path}"
+    return requests.get(url, headers=headers or {}, timeout=30)
 
 
-# ───────────────────────── admin & user helpers ─────────────────────────
+def put(path, json_body=None, headers=None):
+    url = f"{API}{path}"
+    return requests.put(url, json=json_body, headers=headers or {}, timeout=30)
 
-def admin_login() -> str:
-    r = requests.post(
-        f"{API}/admin/auth/login",
-        json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
-        timeout=20,
-    )
+
+def admin_login(email, password):
+    r = post("/admin/auth/login", {"email": email, "password": password})
     if r.status_code != 200:
-        raise RuntimeError(f"admin login failed: {r.status_code} {r.text}")
-    body = r.json()
-    tok = body.get("access_token") or body.get("token")
-    if not tok:
-        raise RuntimeError(f"no token in login response: {body}")
-    return tok
+        return None, r
+    return r.json().get("token"), r
 
 
-def auth_headers(tok: str) -> Dict[str, str]:
-    return {"Authorization": f"Bearer {tok}"}
+# ----------------------------------------------------------------------------
+# Test sections
+# ----------------------------------------------------------------------------
+
+def section(name):
+    print(f"\n=== {name} ===")
 
 
-def register_user(name: str) -> str:
-    r = requests.post(f"{API}/auth/register", json={"name": name}, timeout=15)
-    r.raise_for_status()
-    return r.json()["id"]
+def main():
+    section("0) Admin login")
+    token, r = admin_login(ADMIN_EMAIL, ADMIN_PASSWORD)
+    record("admin login 200", r.status_code == 200, f"status={r.status_code} body={r.text[:200]}")
+    if not token:
+        print("Cannot proceed without admin token. Aborting.")
+        return
+    admin_h = {"Authorization": f"Bearer {token}"}
 
+    # ============================================================
+    # 1) GET/PUT /api/admin/app-config
+    # ============================================================
+    section("1A) GET /admin/app-config — auth required")
+    r = get("/admin/app-config")
+    record("GET /admin/app-config without auth -> 401", r.status_code == 401, f"got {r.status_code}")
 
-def send_otp(user_id: str, phone: str) -> Dict[str, Any]:
-    r = requests.post(
-        f"{API}/auth/send-otp",
-        json={"user_id": user_id, "phone": phone},
-        timeout=20,
-    )
-    r.raise_for_status()
-    return r.json()
+    section("1B) GET /admin/app-config — happy path + shape")
+    r = get("/admin/app-config", headers=admin_h)
+    record("GET 200 with admin token", r.status_code == 200, f"got {r.status_code}")
+    cfg = r.json() if r.status_code == 200 else {}
+    required = ["core_fees", "extra_fees", "wallet", "limits", "otp", "card", "reminders", "ocr", "brand", "ops"]
+    for k in required:
+        record(f"section '{k}' present", k in cfg)
 
+    # Capture original values so we restore them at the end.
+    original = json.loads(json.dumps(cfg))  # deep copy
 
-def verify_otp(user_id: str, phone: str, code: str = "123456") -> Dict[str, Any]:
-    r = requests.post(
-        f"{API}/auth/verify-otp",
-        json={"user_id": user_id, "phone": phone, "code": code},
-        timeout=20,
-    )
-    if r.status_code != 200:
-        raise RuntimeError(f"verify-otp failed: {r.status_code} {r.text}")
-    return r.json()
+    section("1C) Default values verification (note: PUT may have run previously)")
+    # We can't strictly assert defaults if a prior PUT changed them, but if
+    # a fresh install these should all match. Just record observed values.
+    cf = cfg.get("core_fees", {})
+    wal = cfg.get("wallet", {})
+    lim = cfg.get("limits", {})
+    otp = cfg.get("otp", {})
+    ocr = cfg.get("ocr", {})
 
+    # core_fees defaults are 3.0 / 0.03 — but they may have been edited.
+    # We'll verify them after restoring at end. For now, just check types.
+    record("core_fees.transaction_fee_pct is number", isinstance(cf.get("transaction_fee_pct"), (int, float)))
+    record("core_fees.platform_fee_flat is number", isinstance(cf.get("platform_fee_flat"), (int, float)))
+    record("wallet.enabled is bool", isinstance(wal.get("enabled"), bool))
+    record("wallet.apple_enabled is bool", isinstance(wal.get("apple_enabled"), bool))
+    record("wallet.google_enabled is bool", isinstance(wal.get("google_enabled"), bool))
+    record("limits.min_members_per_bill is int", isinstance(lim.get("min_members_per_bill"), int))
+    record("otp.code_length == 6 (default)", otp.get("code_length") == 6, f"got {otp.get('code_length')}")
+    record("otp.expiry_seconds == 300 (default)", otp.get("expiry_seconds") == 300, f"got {otp.get('expiry_seconds')}")
+    record("ocr.provider == 'openai'", ocr.get("provider") == "openai", f"got {ocr.get('provider')}")
+    record("ocr.model == 'gpt-4o'", ocr.get("model") == "gpt-4o", f"got {ocr.get('model')}")
 
-def _phone_for(suffix: int, salt: int = 0) -> str:
-    """Build a deterministic but per-run unique +1XXXXXXXXXX phone."""
-    last4 = f"{(TS + salt) % 10000:04d}"
-    sfx = f"{suffix:03d}"
-    return f"+1832{last4}{sfx}"
+    section("1D) PUT /admin/app-config — auth required")
+    r = put("/admin/app-config", json_body={"core_fees": {"transaction_fee_pct": 2.5, "platform_fee_flat": 0.03}})
+    record("PUT without auth -> 401", r.status_code == 401, f"got {r.status_code}")
 
+    section("1E) PUT round-trip — change fees, wallet, limits, ops")
+    payload = json.loads(json.dumps(cfg))  # start from current full doc
+    payload["core_fees"]["transaction_fee_pct"] = 2.5
+    payload["wallet"]["enabled"] = True
+    payload["limits"]["min_members_per_bill"] = 3
+    payload["ops"]["maintenance_mode"] = True
+    r = put("/admin/app-config", json_body=payload, headers=admin_h)
+    record("PUT 200", r.status_code == 200, f"got {r.status_code} body={r.text[:300]}")
 
-def create_verified_user(name: str, suffix: int, salt: int = 0) -> str:
-    uid = register_user(name)
-    phone = _phone_for(suffix, salt)
-    send_otp(uid, phone)
-    resp = verify_otp(uid, phone, "123456")
-    return resp.get("user", {}).get("id") or resp.get("id") or uid
+    # Subsequent GET reflects changes
+    r2 = get("/admin/app-config", headers=admin_h)
+    record("GET after PUT -> 200", r2.status_code == 200)
+    cfg2 = r2.json() if r2.status_code == 200 else {}
+    record("core_fees.transaction_fee_pct == 2.5",
+           abs(cfg2.get("core_fees", {}).get("transaction_fee_pct", 0) - 2.5) < 1e-6,
+           f"got {cfg2.get('core_fees', {}).get('transaction_fee_pct')}")
+    record("wallet.enabled == True", cfg2.get("wallet", {}).get("enabled") is True,
+           f"got {cfg2.get('wallet', {}).get('enabled')}")
+    record("limits.min_members_per_bill == 3",
+           cfg2.get("limits", {}).get("min_members_per_bill") == 3,
+           f"got {cfg2.get('limits', {}).get('min_members_per_bill')}")
+    record("ops.maintenance_mode == True", cfg2.get("ops", {}).get("maintenance_mode") is True)
 
+    # ============================================================
+    # 2) Live fee propagation — transaction_fee_pct=5% → bill math
+    # ============================================================
+    section("2) Live fee propagation to bill math")
 
-def create_fast_group(lead_id: str, title: str, total: float) -> str:
-    body = {
-        "lead_id": lead_id,
-        "title": title,
-        "total_amount": total,
-        "split_mode": "fast",
-        "tax": 0.0,
-        "tip": 0.0,
-        "items": [],
+    # Set transaction_fee_pct to 5
+    payload2 = json.loads(json.dumps(cfg2))
+    payload2["core_fees"]["transaction_fee_pct"] = 5.0
+    # Also reset wallet/limits/ops to defaults during this test so they don't
+    # interfere; but core_fees is the focus.
+    payload2["wallet"]["enabled"] = False
+    payload2["limits"]["min_members_per_bill"] = 2
+    payload2["ops"]["maintenance_mode"] = False
+    r = put("/admin/app-config", json_body=payload2, headers=admin_h)
+    record("PUT transaction_fee_pct=5.0 -> 200", r.status_code == 200, f"got {r.status_code}")
+
+    # Register two test users
+    ts = int(time.time())
+    lead_phone = f"+1832500{ts % 10000:04d}"
+    member_phone = f"+1832501{ts % 10000:04d}"
+
+    def register_and_verify(name, phone):
+        rr = post("/auth/register", {"name": name})
+        if rr.status_code not in (200, 201):
+            return None, f"register failed {rr.status_code} {rr.text[:200]}"
+        uid = rr.json().get("id") or rr.json().get("user_id") or rr.json().get("user", {}).get("id")
+        rr2 = post("/auth/send-otp", {"user_id": uid, "phone": phone})
+        if rr2.status_code != 200:
+            return None, f"send-otp failed {rr2.status_code} {rr2.text[:200]}"
+        rr3 = post("/auth/verify-otp", {"user_id": uid, "phone": phone, "code": "123456"})
+        if rr3.status_code != 200:
+            return None, f"verify-otp failed {rr3.status_code} {rr3.text[:200]}"
+        body = rr3.json()
+        return body.get("id") or body.get("user_id") or uid, None
+
+    lead_id, err = register_and_verify(f"FeeLead{ts}", lead_phone)
+    record("register+verify lead", err is None, err or f"id={lead_id}")
+    member_id, err2 = register_and_verify(f"FeeMember{ts}", member_phone)
+    record("register+verify member", err2 is None, err2 or f"id={member_id}")
+
+    if lead_id and member_id:
+        # Create group via fast-split, total=10, two members, tax/tip=0
+        body = {
+            "lead_id": lead_id,
+            "title": f"FeeTest {ts}",
+            "total_amount": 10.0,
+            "split_mode": "fast",
+            "tax": 0.0,
+            "tip": 0.0,
+            "items": [{"name": "X", "price": 10.0, "quantity": 1}],
+        }
+        rg = post("/groups", body)
+        record("POST /groups -> 200", rg.status_code == 200, f"got {rg.status_code} body={rg.text[:200]}")
+        if rg.status_code == 200:
+            grp = rg.json()
+            gid = grp.get("id")
+            # Member joins
+            rj = post(f"/groups/{gid}/join", {"user_id": member_id})
+            record("member join -> 200", rj.status_code == 200, f"got {rj.status_code} body={rj.text[:200]}")
+            # Reload enriched
+            rget = get(f"/groups/{gid}")
+            record("GET /groups/{id} -> 200", rget.status_code == 200)
+            grp = rget.json()
+            per_user = grp.get("per_user", [])
+            # Each member: merchant_share=5 (10/2), transaction_fee at 5% = 0.25
+            ok_all = len(per_user) == 2
+            record("per_user has 2 entries", ok_all, f"got {len(per_user)}")
+            for p in per_user:
+                ms = p.get("merchant_share")
+                tf = p.get("transaction_fee")
+                expected = round(float(ms) * 0.05, 2)
+                ok = abs(float(tf) - expected) < 0.011
+                record(f"user {p.get('user_id')[-6:]}: tx_fee={tf} == 5% of merchant_share={ms} (expected {expected})", ok,
+                       f"got tf={tf}, expected ~{expected}")
+
+    # Restore transaction_fee_pct to 3.0
+    payload3 = json.loads(json.dumps(payload2))
+    payload3["core_fees"]["transaction_fee_pct"] = 3.0
+    r = put("/admin/app-config", json_body=payload3, headers=admin_h)
+    record("Restore transaction_fee_pct=3.0 -> 200", r.status_code == 200)
+
+    # ============================================================
+    # 3) Wallet provisioning admin gate
+    # ============================================================
+    section("3) Wallet provisioning admin gate")
+
+    # Need a test group with a lead. Reuse lead_id/gid from above, or create one.
+    # For status branches, we need: a group, a virtual_card to test the
+    # gate path. The current code requires virtual_card.stripe_card_id to be
+    # set before reaching the admin gate. If no card → status='card_not_issued'.
+    # So testing the wallet gate (master/per-platform off) requires a group
+    # WITH an issued virtual_card.
+    #
+    # We'll attempt the gate test with the gid above (no card) — which should
+    # return 'card_not_issued'. Then we'll directly inject a virtual_card via
+    # admin API... but there isn't one for that. Workaround: we'll use the DB
+    # via direct manipulation? No — let's stick to API only and:
+    #   a) Verify card_not_issued path (no virtual card on the group).
+    #   b) Verify not_lead path (call with a non-lead user_id).
+    #   c) Verify unsupported_platform (Pydantic rejection).
+    #
+    # The admin-gate-with-issued-card test requires injecting virtual_card.
+    # The current backend has no admin route to forge a virtual_card directly,
+    # so for the gate-toggle scenarios we will monkey-patch via DB if
+    # available. Since this is a test environment, we'll use the requests
+    # API exclusively — and if no card exists we'll note this branch as not
+    # exercised end-to-end but verify the gate logic where possible.
+
+    if lead_id and 'gid' in dir():
+        # 3a) unsupported_platform → Pydantic rejection (422)
+        r = post(f"/cards/{gid}/provision", {"user_id": lead_id, "platform": "banana"})
+        record("unsupported_platform -> 422 from Pydantic", r.status_code == 422,
+               f"got {r.status_code} body={r.text[:200]}")
+
+        # 3b) not_lead → call with member_id
+        r = post(f"/cards/{gid}/provision", {"user_id": member_id, "platform": "apple"})
+        ok = r.status_code == 200 and r.json().get("status") == "not_lead"
+        record("not_lead branch (member calls)", ok, f"got {r.status_code} body={r.text[:200]}")
+
+        # 3c) card_not_issued (no virtual_card on group)
+        r = post(f"/cards/{gid}/provision", {"user_id": lead_id, "platform": "apple"})
+        ok = r.status_code == 200 and r.json().get("status") == "card_not_issued"
+        record("card_not_issued branch (no virtual_card)", ok, f"got {r.status_code} body={r.text[:200]}")
+
+    # 3d) For admin gate tests (master/per-platform toggles), we MUST inject a
+    # virtual_card into the group document. Use a direct Mongo update via the
+    # admin API if available, OR use motor directly (test env).
+    section("3d) Wallet admin gate — inject virtual_card via motor")
+    try:
+        import asyncio
+        from motor.motor_asyncio import AsyncIOMotorClient
+        mongo_url = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+        client = AsyncIOMotorClient(mongo_url)
+        # Detect DB name from backend/.env
+        dbname = "test_database"
+        be_env = Path("/app/backend/.env").read_text()
+        m = re.search(r'DB_NAME="?([^"\n]+)"?', be_env)
+        if m:
+            dbname = m.group(1)
+        db = client[dbname]
+
+        async def set_vc():
+            await db.groups.update_one(
+                {"id": gid},
+                {"$set": {"virtual_card": {"stripe_card_id": "ic_test_fakecard123", "last4": "4242"}}},
+            )
+
+        asyncio.get_event_loop().run_until_complete(set_vc())
+        record("Inject virtual_card into group via motor", True)
+    except Exception as e:
+        record("Inject virtual_card into group via motor", False, str(e))
+        return
+
+    # Helper to set wallet config quickly
+    def set_wallet(enabled, apple, google):
+        p = json.loads(json.dumps(payload3))
+        p["wallet"]["enabled"] = enabled
+        p["wallet"]["apple_enabled"] = apple
+        p["wallet"]["google_enabled"] = google
+        rr = put("/admin/app-config", json_body=p, headers=admin_h)
+        return rr.status_code == 200
+
+    # 3e) wallet.enabled=false (default): pending_psp_approval
+    record("set wallet.enabled=false", set_wallet(False, True, True))
+    r = post(f"/cards/{gid}/provision", {"user_id": lead_id, "platform": "apple"})
+    ok = r.status_code == 200 and r.json().get("ok") is True and r.json().get("status") == "pending_psp_approval"
+    record("wallet OFF + apple => pending_psp_approval", ok, f"got {r.status_code} body={r.text[:200]}")
+
+    # 3f) wallet.enabled=true, apple_enabled=true → still pending (stub branch)
+    record("set wallet.enabled=true, apple=true", set_wallet(True, True, True))
+    r = post(f"/cards/{gid}/provision", {"user_id": lead_id, "platform": "apple"})
+    ok = r.status_code == 200 and r.json().get("status") == "pending_psp_approval"
+    record("wallet ON + apple ON => pending_psp_approval (stub)", ok, f"got {r.status_code} body={r.text[:200]}")
+
+    # 3g) wallet.enabled=true, apple_enabled=false → pending (per-platform off)
+    record("set wallet.enabled=true, apple=false, google=true", set_wallet(True, False, True))
+    r = post(f"/cards/{gid}/provision", {"user_id": lead_id, "platform": "apple"})
+    ok = r.status_code == 200 and r.json().get("status") == "pending_psp_approval"
+    record("wallet ON + apple OFF => pending_psp_approval", ok, f"got {r.status_code} body={r.text[:200]}")
+
+    # 3h) wallet.enabled=true, google_enabled=false → pending (per-platform off)
+    record("set wallet.enabled=true, apple=true, google=false", set_wallet(True, True, False))
+    r = post(f"/cards/{gid}/provision", {"user_id": lead_id, "platform": "google"})
+    ok = r.status_code == 200 and r.json().get("status") == "pending_psp_approval"
+    record("wallet ON + google OFF => pending_psp_approval", ok, f"got {r.status_code} body={r.text[:200]}")
+
+    # Restore wallet OFF
+    record("set wallet.enabled=false at end", set_wallet(False, True, True))
+
+    # ============================================================
+    # 4) Legacy /api/admin/platform-fees still works
+    # ============================================================
+    section("4) Legacy /admin/platform-fees compatibility")
+    r = get("/admin/platform-fees", headers=admin_h)
+    ok = r.status_code == 200 and "fees" in r.json()
+    record("GET /admin/platform-fees -> 200 with {fees: [...]}", ok, f"got {r.status_code} body={r.text[:200]}")
+    if ok:
+        fees = r.json()["fees"]
+        record("GET legacy returns 2 extra-fee slots", len(fees) == 2, f"got {len(fees)} slots")
+
+    # PUT legacy: change extra_1 to enabled flat $1
+    legacy_payload = {
+        "fees": [
+            {"id": "extra_1", "name": "Test legacy fee", "type": "flat", "value": 1.0, "enabled": True},
+            {"id": "extra_2", "name": "Extra Fee 2", "type": "flat", "value": 0.0, "enabled": False},
+        ]
     }
-    r = requests.post(f"{API}/groups", json=body, timeout=20)
-    if r.status_code != 200:
-        raise RuntimeError(f"create group failed: {r.status_code} {r.text}")
-    return r.json()["id"]
+    r = put("/admin/platform-fees", json_body=legacy_payload, headers=admin_h)
+    record("PUT /admin/platform-fees -> 200", r.status_code == 200, f"got {r.status_code} body={r.text[:200]}")
 
+    # GET new /admin/app-config reflects extra_fees update
+    r = get("/admin/app-config", headers=admin_h)
+    cfg3 = r.json() if r.status_code == 200 else {}
+    extras = cfg3.get("extra_fees", [])
+    extra_1 = next((e for e in extras if e.get("id") == "extra_1"), None)
+    ok = bool(extra_1) and extra_1.get("enabled") is True and abs(extra_1.get("value", 0) - 1.0) < 1e-6
+    record("New /admin/app-config reflects legacy PUT (extra_1 enabled=true value=1.0)", ok,
+           f"got extra_1={extra_1}")
 
-def join_group(gid: str, uid: str):
-    r = requests.post(f"{API}/groups/{gid}/join", json={"user_id": uid}, timeout=20)
-    if r.status_code != 200:
-        raise RuntimeError(f"join failed: {r.status_code} {r.text}")
-
-
-def get_group(gid: str) -> Dict[str, Any]:
-    r = requests.get(f"{API}/groups/{gid}", timeout=20)
-    r.raise_for_status()
-    return r.json()
-
-
-def remove_member(gid: str, lead_id: str, target_id: str) -> requests.Response:
-    return requests.post(
-        f"{API}/groups/{gid}/remove-member",
-        json={"user_id": lead_id, "target_id": target_id},
-        timeout=20,
-    )
-
-
-def grant_credit(admin_tok: str, user_id: str, amount: float, note: str = "Phase N test") -> Dict[str, Any]:
-    r = requests.post(
-        f"{API}/admin/users/{user_id}/credits/grant",
-        headers=auth_headers(admin_tok),
-        json={"amount": amount, "note": note},
-        timeout=20,
-    )
-    if r.status_code != 200:
-        raise RuntimeError(f"grant credit failed: {r.status_code} {r.text}")
-    return r.json()
-
-
-def contribute_full_credit(gid: str, uid: str) -> Dict[str, Any]:
-    """Contribute the user's full remaining share via credit (no Stripe)."""
-    r = requests.post(
-        f"{API}/groups/{gid}/contribute",
-        json={"user_id": uid, "notify_on_settled": False},
-        timeout=20,
-    )
-    if r.status_code != 200:
-        raise RuntimeError(f"contribute failed: {r.status_code} {r.text}")
-    return r.json()
-
-
-def user_total_in_group(group_doc: Dict[str, Any], uid: str) -> float:
-    for p in group_doc.get("per_user") or []:
-        if p.get("user_id") == uid:
-            return float(p.get("total") or 0.0)
-    return 0.0
-
-
-# ───────────────────────────── main test ────────────────────────────────
-
-def main() -> int:
-    print(f"=== Phase N Test against {API} ===")
-
-    # --- admin login (only needed for grant credit + driving paid state) ---
-    try:
-        tok = admin_login()
-        record("admin login", True)
-    except Exception as e:
-        record("admin login", False, str(e))
-        return 1
+    # Restore legacy fees
+    restore_payload = {
+        "fees": [
+            {"id": "extra_1", "name": "Extra Fee 1", "type": "flat", "value": 0.0, "enabled": False},
+            {"id": "extra_2", "name": "Extra Fee 2", "type": "flat", "value": 0.0, "enabled": False},
+        ]
+    }
+    r = put("/admin/platform-fees", json_body=restore_payload, headers=admin_h)
+    record("Restore legacy fees", r.status_code == 200)
 
     # ============================================================
-    # Setup A: lead + 2 members in a fresh fast-split group.
-    # Used for scenarios 1, 3, 4, 5, 6, 7.
+    # 5) Auth / RBAC
     # ============================================================
-    try:
-        lead_id = create_verified_user(f"Lead N{TS}", 100)
-        m1_id = create_verified_user(f"Alice N{TS}", 101)
-        m2_id = create_verified_user(f"Bob N{TS}", 102)
-        outsider_id = create_verified_user(f"Carl N{TS}", 103)
-        record("setupA. created lead + 2 members + outsider", True,
-               f"lead={lead_id} m1={m1_id} m2={m2_id} outsider={outsider_id}")
-    except Exception as e:
-        record("setupA. created lead + 2 members + outsider", False, str(e))
-        return 1
+    section("5) Auth / RBAC")
+    r = get("/admin/app-config")
+    record("No auth header -> 401", r.status_code == 401, f"got {r.status_code}")
+    r = put("/admin/app-config", json_body={})
+    record("PUT no auth -> 401", r.status_code == 401, f"got {r.status_code}")
 
-    # Create the main test group ($60 fast-split → ~$20 each + fees)
-    try:
-        gid = create_fast_group(lead_id, f"Phase N Main Bill {TS}", 60.0)
-        join_group(gid, m1_id)
-        join_group(gid, m2_id)
-        record("setupA. created $60 fast-split group + joined m1, m2", True, f"gid={gid}")
-    except Exception as e:
-        record("setupA. created $60 fast-split group + joined m1, m2", False, str(e))
-        return 1
-
-    # ------------------------------------------------------------
-    # Scenario 1 — Non-lead caller → 403 "lead can remove"
-    # ------------------------------------------------------------
-    r = remove_member(gid, lead_id=m1_id, target_id=m2_id)
-    assert_eq("1a. non-lead caller status", r.status_code, 403)
-    try:
-        d = r.json().get("detail") or ""
-    except Exception:
-        d = r.text
-    assert_contains("1b. detail mentions 'lead can remove'", d, "lead can remove")
-
-    # ------------------------------------------------------------
-    # Scenario 3 — Target = lead → 400 "lead cannot be removed"
-    # ------------------------------------------------------------
-    r = remove_member(gid, lead_id=lead_id, target_id=lead_id)
-    assert_eq("3a. target=lead status", r.status_code, 400)
-    try:
-        d = r.json().get("detail") or ""
-    except Exception:
-        d = r.text
-    assert_contains("3b. detail mentions 'lead cannot be removed'", d, "lead cannot be removed")
-
-    # ------------------------------------------------------------
-    # Scenario 4 — Target not in group → 404 "not part of this group"
-    # ------------------------------------------------------------
-    r = remove_member(gid, lead_id=lead_id, target_id=outsider_id)
-    assert_eq("4a. target-not-member status", r.status_code, 404)
-    try:
-        d = r.json().get("detail") or ""
-    except Exception:
-        d = r.text
-    assert_contains("4b. detail mentions 'not part of this group'", d, "not part of this group")
-
-    # ------------------------------------------------------------
-    # Scenario 5 — Target has contributed → 400 "already contributed"
-    # First find m1's share, grant exact credit, contribute partial.
-    # ------------------------------------------------------------
-    grp_now = get_group(gid)
-    m1_share = user_total_in_group(grp_now, m1_id)
-    print(f"  m1 share (with fees) = ${m1_share:.2f}")
-    # Grant a small partial credit so m1 makes a tiny but non-zero contribution.
-    try:
-        partial = round(min(5.0, max(0.5, m1_share / 5.0)), 2)
-        grant_credit(tok, m1_id, partial, note="Phase N partial contribute")
-        c_resp = requests.post(
-            f"{API}/groups/{gid}/contribute",
-            json={"user_id": m1_id, "amount": partial, "notify_on_settled": False},
-            timeout=20,
-        )
-        record("5a. m1 partial credit-only contribute returns 200",
-               c_resp.status_code == 200,
-               f"{c_resp.status_code} {c_resp.text[:200]}")
-        if c_resp.status_code == 200:
-            body = c_resp.json()
-            record("5b. credit_only path taken (checkout_required=False)",
-                   body.get("checkout_required") is False and body.get("credit_only") is True,
-                   f"resp={body}")
-    except Exception as e:
-        record("5a. m1 partial credit-only contribute returns 200", False, str(e))
-
-    r = remove_member(gid, lead_id=lead_id, target_id=m1_id)
-    assert_eq("5c. target contributed status", r.status_code, 400)
-    try:
-        d = r.json().get("detail") or ""
-    except Exception:
-        d = r.text
-    assert_contains("5d. detail mentions 'already contributed'", d, "already contributed")
-
-    # ------------------------------------------------------------
-    # Scenario 6 — Happy path: remove m2 (no contribution).
-    # ------------------------------------------------------------
-    grp_before = get_group(gid)
-    original_member_count = len(grp_before.get("members") or [])
-    notif_before = len(grp_before.get("notifications") or [])
-    record("6.pre. orig member count == 3", original_member_count == 3,
-           f"got {original_member_count}")
-    print(f"  notifications before = {notif_before}, member_count = {original_member_count}")
-
-    r = remove_member(gid, lead_id=lead_id, target_id=m2_id)
-    assert_eq("6a. happy path status", r.status_code, 200)
-    if r.status_code == 200:
-        body = r.json()
-        members_after = body.get("members") or []
-        member_ids_after = {m.get("user_id") for m in members_after}
-        record("6b. m2 no longer in response.members",
-               m2_id not in member_ids_after,
-               f"members={member_ids_after}")
-        record("6c. lead + m1 still in response.members",
-               lead_id in member_ids_after and m1_id in member_ids_after,
-               f"members={member_ids_after}")
-        assignments_after = body.get("assignments") or []
-        rows_for_m2 = [a for a in assignments_after if a.get("user_id") == m2_id]
-        record("6d. no assignment rows for removed user",
-               len(rows_for_m2) == 0,
-               f"got {rows_for_m2}")
-        notifs_after = body.get("notifications") or []
-        gain = len(notifs_after) - notif_before
-        assert_eq("6e. notifications grew by exactly N (orig member count)",
-                  gain, original_member_count)
-        # Inspect the *new* notifications (last N entries)
-        new_notifs = notifs_after[-original_member_count:] if original_member_count > 0 else []
-        kinds_ok = all(n.get("kind") == "member_removed" for n in new_notifs)
-        record("6f. all new notifications have kind='member_removed'",
-               kinds_ok and len(new_notifs) == original_member_count,
-               f"new_kinds={[n.get('kind') for n in new_notifs]}")
-        target_user_ids = {n.get("user_id") for n in new_notifs}
-        expected_recipients = {lead_id, m1_id, m2_id}
-        record("6g. one notification per ORIGINAL member (incl. removed)",
-               target_user_ids == expected_recipients,
-               f"got={target_user_ids} expected={expected_recipients}")
-        # Recompute math: per_user must only have 2 entries (lead + m1).
-        per_user = body.get("per_user") or []
-        record("6h. per_user has 2 rows after removal",
-               len(per_user) == 2,
-               f"per_user_ids={[p.get('user_id') for p in per_user]}")
-        # No 5xx anywhere → recompute math executed without error.
-        total_after = float(body.get("total_amount") or 0.0)
-        record("6i. group total_amount unchanged ($60)",
-               abs(total_after - 60.0) < 0.5,
-               f"total_after={total_after}")
-
-    # ------------------------------------------------------------
-    # Scenario 7 — After removal, contributing member can still
-    # contribute and pay normally (bill settles).
-    # ------------------------------------------------------------
-    grp_after = get_group(gid)
-    m1_remaining = 0.0
-    for p in grp_after.get("per_user") or []:
-        if p.get("user_id") == m1_id:
-            m1_remaining = max(0.0, float(p.get("total") or 0.0) - float(p.get("contributed") or 0.0))
-    lead_remaining = 0.0
-    for p in grp_after.get("per_user") or []:
-        if p.get("user_id") == lead_id:
-            lead_remaining = max(0.0, float(p.get("total") or 0.0) - float(p.get("contributed") or 0.0))
-    print(f"  m1 remaining = ${m1_remaining:.2f}, lead remaining = ${lead_remaining:.2f}")
-
-    # Grant credits to m1 and lead so we can settle the bill purely via credits
-    # (no Stripe Checkout needed). Slightly over to avoid rounding misses.
-    try:
-        grant_credit(tok, m1_id, round(m1_remaining + 1.0, 2), note="Phase N final m1")
-        grant_credit(tok, lead_id, round(lead_remaining + 1.0, 2), note="Phase N final lead")
-        record("7a. granted credits for m1 + lead", True)
-    except Exception as e:
-        record("7a. granted credits for m1 + lead", False, str(e))
-
-    # m1 contributes full remaining via credit_only
-    try:
-        c1 = requests.post(
-            f"{API}/groups/{gid}/contribute",
-            json={"user_id": m1_id, "notify_on_settled": False},
-            timeout=20,
-        )
-        record("7b. m1 contribute (post-removal) returns 200",
-               c1.status_code == 200,
-               f"{c1.status_code} {c1.text[:160]}")
-        if c1.status_code == 200:
-            b1 = c1.json()
-            record("7c. m1 contribute used credit_only path",
-                   b1.get("checkout_required") is False,
-                   f"resp_keys={list(b1.keys())}")
-    except Exception as e:
-        record("7b. m1 contribute (post-removal) returns 200", False, str(e))
-
-    # lead contributes full remaining via credit_only → should auto-flip to paid
-    try:
-        c2 = requests.post(
-            f"{API}/groups/{gid}/contribute",
-            json={"user_id": lead_id, "notify_on_settled": False},
-            timeout=20,
-        )
-        record("7d. lead contribute (post-removal) returns 200",
-               c2.status_code == 200,
-               f"{c2.status_code} {c2.text[:160]}")
-    except Exception as e:
-        record("7d. lead contribute (post-removal) returns 200", False, str(e))
-
-    # Verify bill auto-flipped to paid
-    final_grp = get_group(gid)
-    record("7e. group.status flipped to 'paid' (or beyond)",
-           final_grp.get("status") in ("paid", "closed"),
-           f"status={final_grp.get('status')}, derived={final_grp.get('derived_status')}")
-
-    # ------------------------------------------------------------
-    # Scenario 2 — Bill status != "open" → 400 "Members can no longer be removed"
-    # Reuse the now-paid group; try to remove m1 (should fail with 400).
-    # ------------------------------------------------------------
-    r = remove_member(gid, lead_id=lead_id, target_id=m1_id)
-    assert_eq("2a. paid bill, remove blocked status", r.status_code, 400)
-    try:
-        d = r.json().get("detail") or ""
-    except Exception:
-        d = r.text
-    assert_contains("2b. detail mentions 'Members can no longer be removed'",
-                    d, "members can no longer be removed")
+    # Try with a non-admin user token (use a regular user_id as Bearer — should be rejected)
+    r = get("/admin/app-config", headers={"Authorization": f"Bearer not_a_real_admin_token_12345"})
+    record("Non-admin token -> 401/403", r.status_code in (401, 403),
+           f"got {r.status_code} body={r.text[:200]}")
 
     # ============================================================
-    # SUMMARY
+    # FINAL RESTORE — set everything back to defaults
     # ============================================================
-    print()
-    print("=" * 60)
-    passed = sum(1 for x in RESULTS if x["ok"])
-    failed = sum(1 for x in RESULTS if not x["ok"])
-    print(f"TOTAL: {passed} pass / {failed} fail")
-    if failed:
-        print("\nFailures:")
-        for x in RESULTS:
-            if not x["ok"]:
-                print(f"  - {x['name']}  {x['info']}")
-    return 0 if failed == 0 else 1
+    section("FINAL: Restore defaults")
+    final = json.loads(json.dumps(cfg3))
+    final["core_fees"]["transaction_fee_pct"] = 3.0
+    final["core_fees"]["platform_fee_flat"] = 0.03
+    final["wallet"]["enabled"] = False
+    final["wallet"]["apple_enabled"] = True
+    final["wallet"]["google_enabled"] = True
+    final["limits"]["min_members_per_bill"] = 2
+    final["ops"]["maintenance_mode"] = False
+    r = put("/admin/app-config", json_body=final, headers=admin_h)
+    record("Restore defaults -> 200", r.status_code == 200, f"got {r.status_code}")
+
+    rfin = get("/admin/app-config", headers=admin_h)
+    cfin = rfin.json() if rfin.status_code == 200 else {}
+    record("Final: transaction_fee_pct == 3.0",
+           abs(cfin.get("core_fees", {}).get("transaction_fee_pct", 0) - 3.0) < 1e-6,
+           f"got {cfin.get('core_fees', {}).get('transaction_fee_pct')}")
+    record("Final: wallet.enabled == False", cfin.get("wallet", {}).get("enabled") is False)
+    record("Final: min_members_per_bill == 2", cfin.get("limits", {}).get("min_members_per_bill") == 2)
+    record("Final: maintenance_mode == False", cfin.get("ops", {}).get("maintenance_mode") is False)
+
+    # Summary
+    section("SUMMARY")
+    total = len(results)
+    passed = sum(1 for _, ok, _ in results if ok)
+    print(f"PASSED: {passed}/{total}")
+    if failures:
+        print(f"FAILURES ({len(failures)}):")
+        for name, det in failures:
+            print(f"  ❌ {name} — {det}")
+    else:
+        print("ALL GREEN ✅")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        sys.exit(2)

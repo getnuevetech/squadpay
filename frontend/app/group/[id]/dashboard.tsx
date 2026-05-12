@@ -26,6 +26,7 @@ import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 import { EditMetaModal } from '../../../src/EditMetaModal';
+import { ConfirmModal } from '../../../src/ConfirmModal';
 import { toast } from '../../../src/components/Toast';
 import { Skeleton, SkeletonGroupRow } from '../../../src/components/Skeleton';
 import { HeroCard } from '../../../src/components/redesign/HeroCard';
@@ -40,6 +41,12 @@ export default function DashboardScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [editTaxTipVisible, setEditTaxTipVisible] = useState(false);
   const [memberItemsOpen, setMemberItemsOpen] = useState<Record<string, boolean>>({});
+  // Pending removal target — drives the cross-platform ConfirmModal.
+  // We use a custom modal instead of Alert.alert because RN-Web silently
+  // collapses multi-button alerts to a single OK, so the destructive
+  // Remove button never fires on web.
+  const [removeTarget, setRemoveTarget] = useState<{ id: string; name: string } | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -123,27 +130,29 @@ export default function DashboardScreen() {
   };
 
   const handleRemoveMember = (targetId: string, name: string) => {
-    Alert.alert(
-      'Remove member?',
-      `${name} will be removed from this bill. Their item claims will be released and everyone on the bill will be notified.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const updated = await api.removeMember(String(group.id), String(userId), targetId);
-              setGroup(updated);
-              toast.success(`${name} removed`);
-            } catch (e: any) {
-              const msg = e?.message || 'Could not remove member';
-              Alert.alert('Cannot remove', msg);
-            }
-          },
-        },
-      ],
-    );
+    // Open our cross-platform ConfirmModal. RN-Web's Alert.alert silently
+    // drops multi-button alerts, which is why the previous implementation
+    // appeared broken on web — the destructive callback never fired.
+    setRemoveTarget({ id: targetId, name });
+  };
+
+  const performRemove = async () => {
+    if (!removeTarget || !userId) return;
+    setRemoveBusy(true);
+    try {
+      const updated = await api.removeMember(
+        String(group.id),
+        String(userId),
+        removeTarget.id,
+      );
+      setGroup(updated);
+      toast.success(`${removeTarget.name} removed`);
+    } catch (e: any) {
+      toast.error(e?.message || 'Could not remove member');
+    } finally {
+      setRemoveBusy(false);
+      setRemoveTarget(null);
+    }
   };
 
   const leadShareCovered = myContributed >= myShare - 0.01;
@@ -352,6 +361,22 @@ export default function DashboardScreen() {
                           <ChevronDown size={16} color={COLORS.subtext} />
                         </View>
                       )}
+                      {canRemove && (
+                        // Visible fallback button — swipes are non-discoverable
+                        // on web and harder to trigger on tablets. Both this
+                        // button and the swipe action open the same modal.
+                        <TouchableOpacity
+                          onPress={(e) => {
+                            e.stopPropagation?.();
+                            handleRemoveMember(m.user_id, m.name || 'this member');
+                          }}
+                          style={styles.inlineRemoveBtn}
+                          hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
+                          testID={`dashboard-remove-btn-${m.user_id}`}
+                        >
+                          <Trash2 size={16} color={COLORS.danger || '#DC2626'} />
+                        </TouchableOpacity>
+                      )}
                     </TouchableOpacity>
                   );
                   if (!canRemove) return rowContent;
@@ -498,6 +523,19 @@ export default function DashboardScreen() {
           field="tax_tip"
         />
       )}
+
+      {/* Cross-platform remove-member confirmation. Driven by `removeTarget`
+          so the same code path fires on iOS, Android, and Web. */}
+      <ConfirmModal
+        visible={!!removeTarget}
+        title={removeTarget ? `Remove ${removeTarget.name}?` : 'Remove member?'}
+        message="They'll be removed from this bill. Their item claims will be released and everyone on the bill will be notified."
+        confirmLabel={removeBusy ? 'Removing…' : 'Remove'}
+        destructive
+        onConfirm={performRemove}
+        onClose={() => !removeBusy && setRemoveTarget(null)}
+        testID="dashboard-remove-confirm"
+      />
     </SafeAreaView>
   );
 }
@@ -674,5 +712,14 @@ const styles = StyleSheet.create({
     fontSize: FONT.sizes.xs,
     fontWeight: FONT.weights.bold,
     letterSpacing: 0.4,
+  },
+  // Always-visible trash icon — pairs with the swipe gesture so users on
+  // web (where swipe is non-discoverable) still have a clear way to remove
+  // a member.
+  inlineRemoveBtn: {
+    marginLeft: 8,
+    padding: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(220, 38, 38, 0.08)',
   },
 });

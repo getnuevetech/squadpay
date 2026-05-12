@@ -95,9 +95,47 @@ async def provision_card_to_wallet(group_id: str, body: ProvisionRequest):
             message=f"Platform '{body.platform}' is not supported.",
         )
 
+    # ── ADMIN GATE ─────────────────────────────────────────────────────
+    # The admin controls wallet enablement via /admin/app-config:
+    #   wallet.enabled         = master switch (off until Stripe approves)
+    #   wallet.apple_enabled   = per-platform staged-rollout toggle
+    #   wallet.google_enabled  = per-platform staged-rollout toggle
+    # If the master switch is off OR the per-platform sub-toggle is off,
+    # we return `pending_psp_approval` so the frontend shows the polished
+    # "coming soon" toast instead of a broken-feeling error.
+    try:
+        from routes.admin_app_config import get_app_config_cache  # type: ignore
+        cfg = get_app_config_cache()
+        wallet_cfg = (cfg or {}).get("wallet") or {}
+        master_on = bool(wallet_cfg.get("enabled"))
+        platform_on = bool(
+            wallet_cfg.get("apple_enabled") if body.platform == "apple"
+            else wallet_cfg.get("google_enabled")
+        )
+        if not (master_on and platform_on):
+            return ProvisionResponse(
+                ok=True,
+                status="pending_psp_approval",
+                payload=None,
+                message=(
+                    "Apple/Google Wallet provisioning is pending bank-network approval. "
+                    "You'll be able to add the SquadPay card to your wallet as soon as it's enabled."
+                ),
+            )
+    except Exception:
+        # Cache not loaded yet (very early in startup) — fail safe to "pending".
+        return ProvisionResponse(
+            ok=True,
+            status="pending_psp_approval",
+            payload=None,
+            message="Wallet provisioning is initialising — please try again shortly.",
+        )
+
     # ── STUB BRANCH ─────────────────────────────────────────────────────
     # When PSP approvals land, this block becomes a real Stripe Issuing call
     # that returns the platform-specific encrypted provisioning data.
+    # Today even with admin toggles ON we still return the stub — flip the
+    # implementation here in lockstep with the real Stripe Issuing call.
     return ProvisionResponse(
         ok=True,
         status="pending_psp_approval",

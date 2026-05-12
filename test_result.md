@@ -5224,3 +5224,320 @@ agent_communication:
         moves the bill to paid.
 
         Phase N is ready to ship. No backend action required.
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Phase O — Unified Admin App-Config (May 2026)
+# ──────────────────────────────────────────────────────────────────────────
+
+backend:
+  - task: "Unified admin app-config endpoints + cache wiring"
+    implemented: true
+    working: false
+    file: "/app/backend/routes/admin_app_config.py + /app/backend/core.py + /app/backend/server.py + /app/backend/routes/wallet_routes.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: false
+          agent: "testing"
+          comment: |
+            Phase O (Unified Admin App-Config — Batch A) tested end-to-end via
+            /app/backend_test.py against the live preview backend
+            (https://joint-pay-1.preview.emergentagent.com/api).
+            64/66 assertions PASS, 2 real bugs found.
+
+            ✅ PASSING (64):
+              1) GET /api/admin/app-config
+                 - Without auth → 401 ✓
+                 - With admin token → 200, response contains ALL 10 sections:
+                   core_fees, extra_fees, wallet, limits, otp, card, reminders,
+                   ocr, brand, ops ✓
+                 - Default OTP code_length=6, expiry_seconds=300 ✓
+                 - Default OCR provider="openai", model="gpt-4o" ✓
+                 - All wallet fields are bools, limits are ints, etc. ✓
+
+              2) PUT /api/admin/app-config
+                 - Without auth → 401 ✓
+                 - Round-trip with admin token: transaction_fee_pct 3.0→2.5,
+                   wallet.enabled true, limits.min_members_per_bill=3,
+                   ops.maintenance_mode=true — subsequent GET reflects ALL
+                   new values exactly ✓
+
+              3) Core fee changes propagate LIVE to bill math
+                 - PUT transaction_fee_pct=5.0 → 200 ✓
+                 - Created fresh test group (fast-split, $10, 2 members) ✓
+                 - per_user[].transaction_fee = $0.25 on merchant_share $5.00
+                   for BOTH members (5% of $5 = $0.25 — matches 5%, NOT 3%) ✓
+                 - Restored to 3.0 ✓
+                 - Confirms set_core_fees_cache wiring works without restart.
+
+              4) Wallet provisioning admin gate matrix:
+                 - unsupported_platform → Pydantic 422 (rejected before reaching
+                   handler) ✓
+                 - not_lead branch (non-lead user_id) → 200 status='not_lead' ✓
+                 - wallet.enabled=false, apple → status='pending_psp_approval' ✓
+                 - wallet.enabled=true, apple_enabled=true, apple platform →
+                   status='pending_psp_approval' (per spec, stub branch) ✓
+                 - wallet.enabled=true, apple_enabled=false, apple platform →
+                   status='pending_psp_approval' (per-platform sub-toggle off) ✓
+                 - wallet.enabled=true, google_enabled=false, google platform →
+                   status='pending_psp_approval' (per-platform sub-toggle off) ✓
+                 - Restored wallet.enabled=false at end ✓
+                 (Used motor to inject virtual_card into the test group to
+                 reach the gate code path — no API exposes this directly.)
+
+              5) Legacy /api/admin/platform-fees endpoints
+                 - GET → 200 with {fees: [...2 extra-fee slots]} shape ✓
+                 - PUT → 200 with old payload format ✓
+
+              6) Auth / RBAC
+                 - GET /admin/app-config no auth → 401 ✓
+                 - PUT no auth → 401 ✓
+                 - Non-admin (junk) Bearer token → 401/403 ✓
+
+              7) Final restore — defaults reseated:
+                 transaction_fee_pct=3.0, wallet.enabled=false,
+                 min_members_per_bill=2, maintenance_mode=false. ✓
+
+            ❌ FAILING (2 — both real bugs main_agent should fix):
+
+              BUG 1 — 500 (AttributeError) on POST /api/cards/{group_id}/provision
+                       when group.virtual_card is None
+                File: /app/backend/routes/wallet_routes.py line 84
+                Code: `if not group.get("virtual_card", {}).get("stripe_card_id"):`
+                Issue: At create_group time `virtual_card` is set to the JSON
+                value `None` (see groups_routes.py:59 — `"virtual_card": None`).
+                `dict.get("virtual_card", {})` returns `None` when the key
+                EXISTS with value None (the default {} is NOT applied), so the
+                chained `.get(...)` raises AttributeError → HTTP 500.
+
+                Repro:
+                  curl -X POST $API/cards/<group_with_no_card>/provision \
+                       -H 'Content-Type: application/json' \
+                       -d '{"user_id":"<lead_id>","platform":"apple"}'
+                  → 500 Internal Server Error
+                  Backend log:
+                    File "/app/backend/routes/wallet_routes.py", line 84,
+                      in provision_card_to_wallet
+                    if not group.get("virtual_card", {}).get("stripe_card_id"):
+                    AttributeError: 'NoneType' object has no attribute 'get'
+
+                Expected per spec: 200 with status='card_not_issued'.
+
+                One-line fix:
+                  - if not group.get("virtual_card", {}).get("stripe_card_id"):
+                  + if not (group.get("virtual_card") or {}).get("stripe_card_id"):
+
+                Impact: any group that hasn't yet been funded into a virtual
+                card will crash the /provision endpoint. The frontend's
+                "Add to wallet" CTA will break instead of showing the
+                "Coming Soon" status. CRITICAL because this is the exact
+                user-visible path on the dashboard.
+
+              BUG 2 — Legacy PUT /api/admin/platform-fees does NOT propagate
+                       into the new /admin/app-config response
+                File: /app/backend/routes/admin_platform_fees.py
+                Issue: The legacy PUT only writes to `fees` field:
+                       {"$set": {"fees": cleaned}}
+                       But load_app_config (admin_app_config.py:142) reads:
+                       `extras_raw = doc.get("extra_fees") or doc.get("fees") or []`
+                       — `extra_fees` takes precedence. After any PUT to
+                       /admin/app-config, both `extra_fees` AND `fees` exist
+                       in the doc. A subsequent PUT to legacy /admin/platform-fees
+                       only updates `fees`, leaving `extra_fees` stale, so the
+                       new endpoint keeps returning the OLD values.
+
+                Repro (after at least one prior PUT to /admin/app-config):
+                  1. PUT /admin/platform-fees {fees:[{id:"extra_1", name:"Test",
+                     type:"flat", value:1.0, enabled:true}, ...]} → 200
+                  2. GET /admin/app-config → extra_fees still shows the OLD
+                     extra_1 (e.g. {name:"Service Fee", type:"percent",
+                     value:1.5, enabled:true} from earlier app-config PUT).
+
+                Expected per review: "After PUT on the legacy endpoint, GET
+                on the new /admin/app-config should reflect the change in
+                extra_fees." → FAILS.
+
+                Suggested fix: in admin_platform_fees.py PUT handler, mirror
+                the same payload into `extra_fees` as well:
+                  await db.platform_config.update_one(
+                      {"_id": CONFIG_ID},
+                      {"$set": {"fees": cleaned, "extra_fees": cleaned}},
+                      upsert=True,
+                  )
+                Or change admin_app_config.load_app_config() to prefer
+                `fees` over `extra_fees` when they disagree (less clean).
+
+            DEFAULTS NOTE: The review asks to confirm "clean install" defaults
+            (transaction_fee_pct=3.0, wallet.enabled=false, etc.). Because
+            many prior tests have hit this backend, the doc already has
+            non-default extra_fees + may have leftover state. The test
+            DOES restore the agreed defaults at the end (transaction_fee_pct
+            =3.0, wallet.enabled=false, apple_enabled=true, google_enabled=true,
+            min_members_per_bill=2, maintenance_mode=false). All other
+            section keys (otp, ocr, etc.) returned the spec-mandated defaults
+            from Pydantic when missing from the doc. ✓
+
+            WALLET GATE SPEC COMPLIANCE: Despite Bug 1, the GATE LOGIC itself
+            (master toggle + per-platform sub-toggle) is implemented exactly
+            per spec — verified by injecting a virtual_card and running the
+            full matrix:
+              wallet.enabled=false                → pending_psp_approval ✓
+              enabled=true + apple_enabled=true   → pending_psp_approval (stub) ✓
+              enabled=true + apple_enabled=false  → pending_psp_approval ✓
+              enabled=true + google_enabled=false → pending_psp_approval ✓
+            OFF-by-default ✓, admin-controlled ✓. The wallet feature CANNOT
+            "leak" to users until BOTH master + per-platform toggles are flipped
+            AND the real Stripe push-provisioning call is wired up. This
+            matches the security posture in the review request exactly.
+
+            FILES TOUCHED BY TESTING:
+              /app/backend_test.py rewritten for Phase O.
+              No backend code modifications.
+
+            Marking working=false because Bug 1 (500 on /provision) is a
+            user-facing crash on a documented status branch ('card_not_issued').
+            Bug 2 (mirror) breaks legacy → new sync, also user-visible in the
+            admin UI's Extra Fees panel after a legacy save.
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Phase O ships a single source-of-truth admin config endpoint
+          /api/admin/app-config (GET + PUT) backed by the existing
+          `platform_config` doc. Sections: core_fees, extra_fees, wallet,
+          limits, otp, card, reminders, ocr, brand, ops.
+
+          Specific changes:
+
+          1) core.py — replaced hard-coded TRANSACTION_FEE_RATE (3%) and
+             PLATFORM_FEE ($0.03) constants with a `_CORE_FEES_CACHE` dict
+             that's hydrated on startup and on admin save. The defaults are
+             preserved so bills created before the admin saves anything
+             work identically to before.
+
+          2) routes/admin_app_config.py (NEW) — adds GET + PUT /admin/app-config.
+             On PUT, mirrors `extra_fees` back to the legacy `fees` key so the
+             older /admin/platform-fees endpoint still returns consistent
+             data. Refreshes both core_fees + extra_fees caches.
+
+          3) server.py — wires the new route + on-startup cache refresh
+             (log line: "[startup] app-config cache loaded").
+
+          4) wallet_routes.py — POST /cards/{id}/provision now checks
+             `wallet.enabled`, `wallet.apple_enabled`, `wallet.google_enabled`
+             from the cached app-config. If master is off OR per-platform
+             toggle is off → returns `pending_psp_approval`. If both ON →
+             still returns the stub today (real Stripe call is the next
+             commit when PSP approvals land).
+
+          Please verify:
+          • GET /api/admin/app-config returns all 10 sections with sensible
+            defaults for a fresh DB (transaction_fee_pct=3.0, platform_fee_flat=0.03,
+            wallet.enabled=false, etc.).
+          • PUT with a modified payload (e.g. transaction_fee_pct=2.5) round-trips
+            cleanly and the next GET reflects the new value.
+          • After a PUT, a freshly-created bill's per_user[].transaction_fee
+            uses the new rate (no need to restart backend).
+          • Wallet toggle works: with wallet.enabled=false, POST /cards/{group_id}/provision
+            returns status=`pending_psp_approval`. With both wallet.enabled=true
+            AND wallet.apple_enabled=true, it still returns `pending_psp_approval`
+            today (the real Stripe call is intentionally not wired yet).
+          • Legacy /admin/platform-fees endpoint (GET + PUT) still works
+            and returns/persists extra_fees in sync with the new endpoint.
+          • Auth: all endpoints reject requests without a valid admin token.
+
+frontend:
+  - task: "Cross-platform ConfirmModal + dashboard remove-member fix"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/src/ConfirmModal.tsx + /app/frontend/app/group/[id]/dashboard.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Bug: "Remove member button does not work" (user-reported).
+          Root cause: Alert.alert with multiple buttons silently collapses
+          to a single OK on React Native Web, so the destructive callback
+          never fired on web.
+
+          Fix: built a reusable ConfirmModal component (works on iOS, Android,
+          Web) and routed both the swipe-to-remove AND a new always-visible
+          inline trash icon through it. Members on web now have a discoverable
+          path (the trash icon) AND a confirmation step that actually fires.
+
+          Not requesting backend testing on this — pure frontend fix. User
+          will verify on their device.
+
+  - task: "Admin App Config UI (replaces Platform Fees page)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/admin/platform-fees.tsx + /app/frontend/src/adminApi.ts"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Rewrote the /admin/platform-fees route into a comprehensive
+          App Config page with 10 sectioned editors: Core Fees, Extra Fees,
+          Wallet toggles, Limits, OTP, Card, Reminders, OCR, Brand, Ops.
+          Backed by GET/PUT /api/admin/app-config. The user will verify
+          the UI manually after backend tests pass.
+
+metadata:
+  notes_for_next_agent:
+    - Phase O wraps up Batch A. Batches B (Income & Fees ledger) and C
+      (Master Account + Master Virtual Card) are queued.
+    - The wallet stub in routes/wallet_routes.py still returns
+      `pending_psp_approval` even when admin toggles are ON — that's
+      intentional. The real `stripe.issuing.Card.create_push_provisioning_data`
+      call lands the day Stripe approves push provisioning on the account.
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        PHASE O — Unified Admin App-Config tested via /app/backend_test.py against
+        live preview (https://joint-pay-1.preview.emergentagent.com/api).
+        64/66 PASS. Two real bugs found:
+
+        ❌ BUG 1 (CRITICAL) — POST /api/cards/{group_id}/provision returns 500
+           AttributeError when group.virtual_card is None.
+           File: /app/backend/routes/wallet_routes.py line 84.
+           Fix: change `group.get("virtual_card", {}).get(...)` →
+                `(group.get("virtual_card") or {}).get(...)`.
+           This breaks the documented 'card_not_issued' status branch — every
+           pre-funded group's "Add to Wallet" CTA will 500 instead of returning
+           pending_psp_approval/card_not_issued cleanly.
+
+        ❌ BUG 2 — Legacy PUT /api/admin/platform-fees does not propagate into
+           /api/admin/app-config response. Legacy only writes `fees` field,
+           but load_app_config reads `extra_fees or fees` (extra_fees wins
+           after any prior app-config PUT). Fix: in admin_platform_fees.py PUT,
+           mirror cleaned list into BOTH keys:
+              {"$set": {"fees": cleaned, "extra_fees": cleaned}}
+
+        ✅ Everything else works as documented:
+          • GET/PUT /api/admin/app-config — 10 sections, auth-gated, round-trips.
+          • Core fee changes propagate live to bill math (transaction_fee_pct
+            set to 5% → per_user[].transaction_fee = 5% of merchant_share).
+          • Wallet gate matrix (with virtual_card injected) — ALL 4 toggle
+            combinations correctly return pending_psp_approval. OFF-by-default
+            spec compliance: ✓
+          • Legacy /admin/platform-fees GET still returns {fees:[...]} shape.
+          • RBAC: 401 without auth, 401/403 with junk token.
+          • Defaults verified: otp.code_length=6, otp.expiry_seconds=300,
+            ocr.provider="openai", ocr.model="gpt-4o".
+          • Final state restored: transaction_fee_pct=3.0, wallet.enabled=false,
+            min_members_per_bill=2, maintenance_mode=false.
+
+        ACTION ITEMS FOR MAIN AGENT:
+          1) Apply Bug 1 one-liner fix to wallet_routes.py:84.
+          2) Apply Bug 2 fix to admin_platform_fees.py PUT — mirror to both
+             `fees` and `extra_fees` keys.
+          3) Re-test ONLY the two failing scenarios (provision card_not_issued
+             branch + legacy→new mirror) after fix.

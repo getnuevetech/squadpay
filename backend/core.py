@@ -22,9 +22,36 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 
-# ---------------- Pricing constants ----------------
-TRANSACTION_FEE_RATE = 0.03  # 3% per-member surcharge
-PLATFORM_FEE = 0.03          # 3 cents flat per member
+# ---------------- Pricing constants (admin-overridable) ----------------
+# These are the *defaults* used until the admin saves an override on the
+# Platform Fees page. The live values are kept in `_CORE_FEES_CACHE` and
+# read by `_recompute_group` via the helpers below.
+DEFAULT_TRANSACTION_FEE_RATE = 0.03  # 3% per-member surcharge
+DEFAULT_PLATFORM_FEE = 0.03          # 3 cents flat per member
+
+# Backwards-compat aliases — other modules historically imported these.
+TRANSACTION_FEE_RATE = DEFAULT_TRANSACTION_FEE_RATE
+PLATFORM_FEE = DEFAULT_PLATFORM_FEE
+
+# Live overrides set by admin via /api/admin/app-config (or fallback to defaults).
+_CORE_FEES_CACHE: Dict[str, float] = {
+    "transaction_fee_rate": DEFAULT_TRANSACTION_FEE_RATE,
+    "platform_fee": DEFAULT_PLATFORM_FEE,
+}
+
+
+def set_core_fees_cache(transaction_fee_rate: float, platform_fee: float) -> None:
+    """Called by the admin route on save + at startup to refresh values."""
+    global _CORE_FEES_CACHE
+    _CORE_FEES_CACHE = {
+        "transaction_fee_rate": float(transaction_fee_rate) if transaction_fee_rate is not None else DEFAULT_TRANSACTION_FEE_RATE,
+        "platform_fee": float(platform_fee) if platform_fee is not None else DEFAULT_PLATFORM_FEE,
+    }
+
+
+def get_core_fees_cache() -> Dict[str, float]:
+    return dict(_CORE_FEES_CACHE)
+
 
 # Admin-configurable extra fees (populated at startup / on admin PUT).
 # Each entry: {id, name, type ("percent"|"flat"), value, enabled}.
@@ -325,8 +352,8 @@ async def _recompute_group(group: dict) -> dict:
     for p in per_user:
         merchant_share = round(p["total"], 2)
         p["merchant_share"] = merchant_share
-        p["transaction_fee"] = round(merchant_share * TRANSACTION_FEE_RATE, 2)
-        p["platform_fee"] = round(PLATFORM_FEE, 2)
+        p["transaction_fee"] = round(merchant_share * _CORE_FEES_CACHE["transaction_fee_rate"], 2)
+        p["platform_fee"] = round(_CORE_FEES_CACHE["platform_fee"], 2)
         # Admin-configurable extra fees (split equally across members).
         extra_fees = _compute_extra_fees_per_member(merchant_share, len(per_user))
         p["extra_fees"] = extra_fees

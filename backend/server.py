@@ -106,6 +106,25 @@ except Exception as _e:
     print("[startup] admin platform fees attach failed:", _e)
 
 
+# ---------- Admin: full app-config (core fees, wallet, limits, otp, etc.) ----------
+# Single source of truth for ALL admin-tunable runtime settings. Reads
+# /api/admin/app-config, writes /api/admin/app-config. Mirrors changes
+# into in-process caches via the returned refresh helper.
+try:
+    from routes.admin_app_config import attach_app_config_routes
+    _refresh_app_config = attach_app_config_routes(api_router, db, _adm_factory(db))
+
+    @app.on_event("startup")
+    async def _load_app_config_cache():
+        try:
+            await _refresh_app_config()
+            print("[startup] app-config cache loaded")
+        except Exception as _e:
+            print("[startup] app-config initial load failed:", _e)
+except Exception as _e:
+    print("[startup] admin app-config attach failed:", _e)
+
+
 # ---------- Stripe payment routes (Phase E) ----------
 try:
     from payments import attach_payment_routes

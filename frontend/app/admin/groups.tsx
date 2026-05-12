@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import { Search, Ban, ChevronRight, Filter, Receipt } from 'lucide-react-native';
 import { adminApi, AdminGroupRow } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
+import { formatSid } from '../../src/ids';
 
 type StatusFilter = 'all' | 'open' | 'paid' | 'closed' | 'blocked';
 
@@ -111,6 +112,9 @@ export default function AdminGroupsList() {
                 </View>
               </View>
               <Text style={styles.meta}>{g.code} • lead {g.lead_name || '—'} • {g.members_count} Squad members</Text>
+              <Text style={styles.sidLine} testID={`admin-groups-sid-${g.id}`} selectable>
+                {formatSid(g.id)}
+              </Text>
               <Text style={styles.metaSmall}>${(g.total_amount || 0).toFixed(2)} total • ${(g.contributions_total || 0).toFixed(2)} collected • {new Date(g.created_at).toLocaleDateString()}</Text>
             </View>
             <ChevronRight size={16} color={COLORS.subtext} />
@@ -167,6 +171,13 @@ const styles = StyleSheet.create({
   badgeText: { fontSize: 10, fontWeight: FONT.weights.bold, letterSpacing: 0.4 },
   meta: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
   metaSmall: { fontSize: 11, color: COLORS.subtext, marginTop: 2 },
+  sidLine: {
+    fontSize: 11,
+    color: COLORS.subtext,
+    marginTop: 2,
+    fontFamily: 'monospace',
+    letterSpacing: 0.6,
+  },
   pagination: {
     flexDirection: 'row',
     alignItems: 'center',

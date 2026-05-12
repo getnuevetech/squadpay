@@ -4,6 +4,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ArrowLeft, Ban, ShieldCheck, Crown, Users as UsersIcon, Wallet, Plus, X as XIcon, Percent, DollarSign, Trash2, KeyRound, FileCheck2, FileWarning } from 'lucide-react-native';
 import { adminApi, AdminUserDetail, AdminGroupRow, UserCreditWallet, LeadAutoDiscount } from '../../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
+import { formatUid } from '../../../src/ids';
 
 function confirm(title: string, message: string, onYes: () => void) {
   if (Platform.OS === 'web') {
@@ -178,7 +179,10 @@ export default function AdminUserDetailPage() {
             ) : null}
           </View>
           <Text style={styles.meta}>{user.phone || 'no phone on file'}</Text>
-          <Text style={styles.metaSmall}>id {user.id} • joined {new Date(user.created_at).toLocaleDateString()}</Text>
+          <Text style={styles.uidLine} testID="admin-user-uid" selectable>
+            {formatUid(user.id)}
+          </Text>
+          <Text style={styles.metaSmall}>raw id {user.id} • joined {new Date(user.created_at).toLocaleDateString()}</Text>
           {user.is_blocked && user.blocked_reason ? (
             <Text style={styles.blockedReason}>Reason: {user.blocked_reason}</Text>
           ) : null}
@@ -392,6 +396,14 @@ const styles = StyleSheet.create({
   name: { fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold, color: COLORS.text },
   meta: { fontSize: FONT.sizes.sm, color: COLORS.subtext, marginTop: 2 },
   metaSmall: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
+  uidLine: {
+    fontSize: 12,
+    color: COLORS.subtext,
+    marginTop: 4,
+    fontFamily: 'monospace',
+    letterSpacing: 0.6,
+    fontWeight: FONT.weights.semibold,
+  },
   blockedPill: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: COLORS.dangerLight, paddingHorizontal: 6, paddingVertical: 2, borderRadius: RADIUS.pill },
   blockedPillText: { fontSize: 10, color: COLORS.danger, fontWeight: FONT.weights.bold },
   blockedReason: { fontSize: FONT.sizes.xs, color: COLORS.danger, marginTop: 6, fontStyle: 'italic' },

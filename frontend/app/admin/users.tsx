@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import { Search, Ban, ShieldCheck, ChevronRight, Filter, FileCheck2 } from 'lucide-react-native';
 import { adminApi, AdminUserRow } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
+import { formatUid } from '../../src/ids';
 
 type FilterMode = 'all' | 'verified' | 'unverified' | 'blocked';
 
@@ -113,6 +114,9 @@ export default function AdminUsersList() {
               ) : null}
             </View>
             <Text style={styles.meta}>{u.phone || 'no phone'}</Text>
+            <Text style={styles.uidLine} testID={`admin-users-uid-${u.id}`} selectable>
+              {formatUid(u.id)}
+            </Text>
             <Text style={styles.metaSmall}>led {u.groups_led} • joined {u.groups_joined} • ${u.total_billed_as_lead.toFixed(2)} billed</Text>
           </View>
           <ChevronRight size={16} color={COLORS.subtext} />
@@ -167,6 +171,13 @@ const styles = StyleSheet.create({
   name: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, color: COLORS.text },
   meta: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
   metaSmall: { fontSize: 11, color: COLORS.subtext, marginTop: 2 },
+  uidLine: {
+    fontSize: 11,
+    color: COLORS.subtext,
+    marginTop: 2,
+    fontFamily: 'monospace',
+    letterSpacing: 0.6,
+  },
   blockedBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: COLORS.dangerLight, paddingHorizontal: 6, paddingVertical: 2, borderRadius: RADIUS.pill },
   blockedBadgeText: { fontSize: 10, color: COLORS.danger, fontWeight: FONT.weights.bold },
   // Pagination footer — used on /admin/users, /admin/groups, /admin/notifications.

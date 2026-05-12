@@ -4,6 +4,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ArrowLeft, Ban, ShieldCheck, Crown, Users as UsersIcon, ListChecks, Wallet, Percent, DollarSign, X as XIcon, Tag, RefreshCw } from 'lucide-react-native';
 import { adminApi, AdminGroupDetail, getProfile, AdminProfile } from '../../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
+import { formatSid, formatUid } from '../../../src/ids';
 
 function confirm(title: string, message: string, onYes: () => void) {
   if (Platform.OS === 'web') {
@@ -110,8 +111,14 @@ export default function AdminGroupDetailPage() {
             </View>
           </View>
           <Text style={styles.meta}>code {group.code} • split mode {group.split_mode || 'itemized'}</Text>
+          <Text style={styles.sidLine} testID="admin-group-sid" selectable>
+            {formatSid(group.id)}
+          </Text>
           <TouchableOpacity onPress={() => router.push(`/admin/users/${group.lead_id}` as any)} activeOpacity={0.7}>
             <Text style={styles.leadLink}><Crown size={11} color={COLORS.warning} />  Lead: {group.lead_name || group.lead_id}{group.lead_phone ? ` • ${group.lead_phone}` : ''}</Text>
+            <Text style={styles.uidLine} testID="admin-group-lead-uid" selectable>
+              {formatUid(group.lead_id)}
+            </Text>
           </TouchableOpacity>
           <Text style={styles.metaSmall}>created {new Date(group.created_at).toLocaleString()}</Text>
           {group.is_blocked && group.blocked_reason ? (
@@ -368,6 +375,21 @@ const styles = StyleSheet.create({
   meta: { fontSize: FONT.sizes.sm, color: COLORS.subtext, marginTop: 4 },
   leadLink: { fontSize: FONT.sizes.sm, color: COLORS.primary, marginTop: 2, fontWeight: FONT.weights.medium },
   metaSmall: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
+  sidLine: {
+    fontSize: 12,
+    color: COLORS.subtext,
+    marginTop: 4,
+    fontFamily: 'monospace',
+    letterSpacing: 0.6,
+    fontWeight: FONT.weights.semibold,
+  },
+  uidLine: {
+    fontSize: 11,
+    color: COLORS.subtext,
+    marginTop: 2,
+    fontFamily: 'monospace',
+    letterSpacing: 0.4,
+  },
   blockedReason: { fontSize: FONT.sizes.xs, color: COLORS.danger, marginTop: 6, fontStyle: 'italic' },
   statsRow: { flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.md, flexWrap: 'wrap' },
   statCard: { flex: 1, minWidth: 100, padding: SPACING.sm, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS.md },

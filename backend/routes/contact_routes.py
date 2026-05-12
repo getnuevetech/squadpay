@@ -202,10 +202,14 @@ def attach_contact_routes(api_router: APIRouter, db, get_current_admin):
         if subject and subject in VALID_SUBJECTS:
             flt["subject"] = subject
         if q:
+            # Escape regex metachars so an admin typing "+1 (202)" doesn't
+            # blow up the cursor. Matches the pattern used in admin_search.py.
+            import re as _re
+            rx = _re.escape(q)
             flt["$or"] = [
-                {"name": {"$regex": q, "$options": "i"}},
-                {"email": {"$regex": q, "$options": "i"}},
-                {"message": {"$regex": q, "$options": "i"}},
+                {"name": {"$regex": rx, "$options": "i"}},
+                {"email": {"$regex": rx, "$options": "i"}},
+                {"message": {"$regex": rx, "$options": "i"}},
                 {"id": q},
             ]
         total = await db.contact_messages.count_documents(flt)

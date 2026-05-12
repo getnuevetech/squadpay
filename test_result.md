@@ -113,11 +113,49 @@ user_problem_statement: |
 backend:
   - task: "Phase H7 — POST /api/groups/{group_id}/split-mode (lead switches fast/itemized mid-flight)"
     implemented: true
-    working: false
+    working: true
     file: "backend/routes/groups_routes.py, backend/core.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Rule 5 RE-VERIFIED after main agent fix (groups_routes.py lines 146–155 now
+            sums raw `group["contributions"]` and `group["repayments"]` directly instead
+            of reading the non-persisted `funding` aggregate).
+
+            Focused re-test harness: /app/backend_test_rule5.py — 8/8 assertions PASS.
+
+            ✅ R5-A (contributions path):
+              Setup: registered fresh Alice/Bob/Carol, created itemized $18 group
+              (Burger+Fries+Soda), flipped to fast, admin-granted Alice $7.21 credit,
+              Alice contributed her $6.21 share via credit_only (no Stripe).
+              Verified raw mongo doc: group.contributions = [{amount: 6.21, ...}], sum=6.21.
+              Called POST /api/groups/{gid}/split-mode with {user_id: alice, split_mode:
+              "itemized"} → **400** with detail = "Split mode cannot change after
+              contributions have started. Refund all contributions first if you need
+              to switch." ✅
+
+            ✅ R5-B (repayments path):
+              Setup: fresh lead, fresh itemized group, directly injected one repayment
+              row into the raw mongo doc:
+                  {"id": "rep_..._synthetic", "user_id": lead, "amount": 4.25, ...}
+              Verified raw doc: group.repayments has 1 row, sum=4.25, group.contributions=[].
+              Called set_split_mode lead→fast → **400** same "contributions have started"
+              detail. Confirms the new code now correctly inspects repayments[] as well
+              (previous implementation read funding.total_repaid which was never persisted). ✅
+
+            ✅ R5-C (happy-path sanity — fix did not break clean path):
+              Setup: fresh lead, fresh itemized group, raw doc had contributions=[]
+              and repayments=[].
+              itemized → fast  → 200, response.split_mode='fast'. ✅
+              fast → itemized → 200, response.split_mode='itemized'. ✅
+
+            Per review request, rules 1, 2, 3, 4, 6, 7, 8 were NOT re-tested (already
+            passing in the previous run). Marking task working=true; no further action
+            required from main agent for this endpoint.
     status_history:
         - working: false
           agent: "testing"
@@ -6097,3 +6135,27 @@ backend:
           Use the existing admin credentials from /app/memory/test_credentials.md
           for the lead-user setup (or create a fresh test user + group via
           existing endpoints).
+
+    -agent: "testing"
+    -message: |
+      Rule 5 of POST /api/groups/{group_id}/split-mode re-verified after the
+      main agent's fix (groups_routes.py now sums raw contributions/repayments
+      arrays from the persisted mongo doc instead of the non-persisted funding
+      aggregate). Focused harness: /app/backend_test_rule5.py — 8/8 PASS.
+
+      • R5-A (contributions): fresh group, Alice contributed $6.21 via credit;
+        raw doc shows contributions[].amount=6.21. Subsequent set_split_mode
+        returned 400 "Split mode cannot change after contributions have
+        started." ✅
+      • R5-B (repayments): fresh group, repayment row injected directly into
+        mongo (amount=4.25, contributions empty). set_split_mode returned 400
+        with same detail — confirms the new repayments[] sum path is reached. ✅
+      • R5-C (happy path sanity): fresh group with no contributions/repayments
+        — itemized→fast and fast→itemized both returned 200 with the new
+        split_mode persisted. ✅
+
+      Per the review request, rules 1, 2, 3, 4, 6, 7, 8 were NOT re-run (they
+      were green in the prior cycle). Marking task working=true, stuck_count=0,
+      needs_retesting=false. No further backend action required for this
+      endpoint.
+

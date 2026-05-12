@@ -140,9 +140,13 @@ def attach_groups_routes(router: APIRouter, db):
         if group.get("status") != "open":
             raise HTTPException(400, "Split mode is locked — bill is no longer open.")
         # Block once anyone has contributed/repaid — switching would invert
-        # what they already paid for.
-        contributed = float((group.get("funding") or {}).get("total_contributed") or 0)
-        repaid = float((group.get("funding") or {}).get("total_repaid") or 0)
+        # what they already paid for. The `funding` aggregate is only
+        # synthesised by `_recompute_group` at read-time and never persisted,
+        # so we must sum the source-of-truth arrays directly here.
+        contribs = group.get("contributions") or []
+        repays = group.get("repayments") or []
+        contributed = sum(float(c.get("amount") or 0) for c in contribs)
+        repaid = sum(float(r.get("amount") or 0) for r in repays)
         if contributed > 0.01 or repaid > 0.01:
             raise HTTPException(
                 400,

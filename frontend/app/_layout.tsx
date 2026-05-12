@@ -61,6 +61,7 @@ export default function RootLayout() {
           {/* Custom-headered screens — hide the auto stack header. */}
           <Stack.Screen name="credits" options={{ headerShown: false }} />
           <Stack.Screen name="legal/terms" options={{ headerShown: false }} />
+          <Stack.Screen name="contact" options={{ headerShown: false }} />
         </Stack>
         <ToastHost />
         <SessionGuard />

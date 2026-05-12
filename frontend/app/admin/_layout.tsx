@@ -1,15 +1,17 @@
 import { Stack, useRouter, usePathname } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Platform, ActivityIndicator } from 'react-native';
-import { LayoutDashboard, ScrollText, Users, LogOut, Shield, UserCog, Receipt, Gift, Plug, Wallet, RefreshCw, Lock, BarChart3, FileText, KeyRound, Percent, Megaphone, MessageSquare, Coins } from 'lucide-react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Platform, ActivityIndicator, ScrollView } from 'react-native';
+import { LayoutDashboard, ScrollText, Users, LogOut, Shield, UserCog, Receipt, Gift, Plug, Wallet, RefreshCw, Lock, BarChart3, FileText, KeyRound, Percent, Megaphone, MessageSquare, Coins, Inbox } from 'lucide-react-native';
 import { adminApi, AdminProfile, getProfile, getToken, clearSession } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
+import { AdminSearchBar } from '../../src/components/admin/AdminSearchBar';
 
 const NAV_ITEMS = [
   { href: '/admin/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/admin/analytics', label: 'Analytics', icon: BarChart3 },
   { href: '/admin/users', label: 'Users', icon: UserCog },
-  { href: '/admin/groups', label: 'Groups', icon: Receipt },
+  { href: '/admin/groups', label: 'Squads', icon: Receipt },
+  { href: '/admin/customer-service', label: 'Customer Service', icon: Inbox },
   { href: '/admin/referrals', label: 'Referrals', icon: Gift },
   { href: '/admin/integrations', label: 'Integrations', icon: Plug },
   { href: '/admin/notifications', label: 'Notifications', icon: Megaphone },
@@ -24,6 +26,9 @@ const NAV_ITEMS = [
   { href: '/admin/admins', label: 'Admins', icon: Users, requireRole: ['super_admin'] as const },
 ];
 
+// Exported so AdminSearchBar can fuzzy-match nav labels.
+export { NAV_ITEMS };
+
 function AdminSidebar({ profile, onLogout }: { profile: AdminProfile | null; onLogout: () => void }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -33,7 +38,13 @@ function AdminSidebar({ profile, onLogout }: { profile: AdminProfile | null; onL
         <Shield size={20} color={COLORS.primary} />
         <Text style={styles.sidebarTitle}>SquadPay Admin</Text>
       </View>
-      <View style={{ flex: 1, gap: 4 }}>
+      {/* Nav now scrolls independently so it never overlaps the sticky
+          footer no matter how many modules are enabled. */}
+      <ScrollView
+        style={styles.navScroll}
+        contentContainerStyle={{ gap: 4, paddingBottom: SPACING.md }}
+        showsVerticalScrollIndicator={false}
+      >
         {NAV_ITEMS.filter((it) => !it.requireRole || (profile && (it.requireRole as readonly string[]).includes(profile.role))).map((it) => {
           const Icon = it.icon;
           const active = pathname?.startsWith(it.href);
@@ -50,7 +61,7 @@ function AdminSidebar({ profile, onLogout }: { profile: AdminProfile | null; onL
             </TouchableOpacity>
           );
         })}
-      </View>
+      </ScrollView>
       <View style={styles.sidebarFooter}>
         <Text style={styles.profileName} numberOfLines={1}>{profile?.name || '—'}</Text>
         <Text style={styles.profileMeta}>{profile?.email}</Text>
@@ -139,6 +150,20 @@ export default function AdminLayout() {
     <View style={styles.shell}>
       <AdminSidebar profile={profile} onLogout={onLogout} />
       <View style={styles.content}>
+        {/* Sticky top bar with global search — visible on every admin page. */}
+        <View style={styles.topbar}>
+          <View style={{ flex: 1, maxWidth: 520 }}>
+            <AdminSearchBar
+              navItems={NAV_ITEMS.filter((it) => !it.requireRole || (profile && (it.requireRole as readonly string[]).includes(profile.role)))}
+            />
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Text style={styles.topbarEmail} numberOfLines={1}>{profile.email}</Text>
+            <TouchableOpacity onPress={onLogout} style={styles.topbarLogout} activeOpacity={0.7} testID="admin-topbar-logout">
+              <LogOut size={14} color={COLORS.danger} />
+            </TouchableOpacity>
+          </View>
+        </View>
         <Stack
           screenOptions={{
             headerShown: false,
@@ -166,7 +191,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.md,
     paddingVertical: SPACING.lg,
     gap: SPACING.md,
+    // CRITICAL: explicit flex column so the nav ScrollView can claim
+    // available height between header + footer without collapsing.
+    flexDirection: 'column',
+    height: Platform.OS === 'web' ? ('100vh' as any) : '100%',
   },
+  navScroll: { flex: 1, marginHorizontal: -SPACING.xs },
   sidebarHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -211,4 +241,17 @@ const styles = StyleSheet.create({
   changePwdBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: SPACING.sm },
   changePwdText: { color: COLORS.primary, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.medium },
   content: { flex: 1, padding: SPACING.lg },
+  topbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+    backgroundColor: COLORS.surface,
+    zIndex: 50,
+  },
+  topbarEmail: { color: COLORS.subtext, fontSize: FONT.sizes.xs, fontWeight: FONT.weights.semibold, maxWidth: 220 },
+  topbarLogout: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.dangerLight },
 });

@@ -232,6 +232,30 @@ export const adminApi = {
     request<any>(`/credit-rules/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteCreditRule: (id: string) =>
     request<any>(`/credit-rules/${id}`, { method: 'DELETE' }),
+  // June 2025 — full-content search bar.
+  search: (q: string) =>
+    request<{
+      items: Array<{
+        category: 'users' | 'squads' | 'admins' | 'audit' | 'tickets';
+        label: string;
+        sub: string;
+        href: string;
+        id: string;
+      }>;
+    }>(`/search?q=${encodeURIComponent(q)}`),
+  // Customer Service (Contact Us tickets).
+  listContactMessages: (page: number = 1, page_size: number = 25, opts: { status?: string; subject?: string; q?: string } = {}) => {
+    const qs = new URLSearchParams({ page: String(page), page_size: String(page_size) });
+    if (opts.status) qs.set('status', opts.status);
+    if (opts.subject) qs.set('subject', opts.subject);
+    if (opts.q) qs.set('q', opts.q);
+    return request<any>(`/contact-messages?${qs.toString()}`);
+  },
+  getContactMessage: (id: string) => request<any>(`/contact-messages/${id}`),
+  patchContactMessage: (id: string, body: { status?: string; assignee_email?: string }) =>
+    request<any>(`/contact-messages/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  addContactNote: (id: string, note: string) =>
+    request<any>(`/contact-messages/${id}/notes`, { method: 'POST', body: JSON.stringify({ note }) }),
   createAdmin: (body: { email: string; password: string; name: string; role: AdminRole }) =>
     request<AdminProfile>('/admins', { method: 'POST', body: JSON.stringify(body) }),
   toggleAdmin: (id: string, is_active: boolean) =>

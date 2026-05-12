@@ -347,6 +347,18 @@ export const api = {
       `/users/${user_id}/inbox/read-all`,
       { method: 'POST', body: JSON.stringify({}) },
     ),
+  // June 2025 — Contact Us submission.
+  submitContact: (body: {
+    name: string;
+    email: string;
+    subject: 'general_enquiry' | 'technical_support' | 'account_refund' | 'others';
+    message: string;
+    user_id?: string | null;
+  }) =>
+    request<{ ok: boolean; ticket_id: string; email_dispatched: boolean }>(
+      '/contact',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
   // June 2025 — Credit-rules summary used by Settings & profile.
   getCreditsSummary: (user_id: string) =>
     request<{

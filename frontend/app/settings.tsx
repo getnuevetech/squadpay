@@ -21,6 +21,7 @@ import {
   ShieldCheck,
   FileText,
   HelpCircle,
+  Mail,
   LogOut,
   ChevronRight,
   Lock,
@@ -109,6 +110,13 @@ export default function SettingsScreen() {
       sub: 'FAQ and contact options.',
       icon: HelpCircle,
       onPress: () => router.push('/legal/support'),
+    },
+    {
+      key: 'contact',
+      label: 'Contact Us',
+      sub: 'Send our team a message — we get back fast.',
+      icon: Mail,
+      onPress: () => router.push('/contact' as any),
     },
     {
       key: 'privacy',

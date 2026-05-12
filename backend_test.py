@@ -1,563 +1,522 @@
 """
-Backend test suite for the NEW Admin Notification Center endpoints.
+Backend tests for:
+  1) NEW Bulk SMS broadcaster — POST /api/admin/bulk-sms/send + GET /api/admin/bulk-sms/history
+  2) Paginated broadcasts — GET /api/admin/notifications/broadcasts
 
-Covers all 18 cases listed in the review request:
-  POST /api/admin/notifications/broadcast (admin auth required)
-  GET  /api/admin/notifications/broadcasts (admin auth required)
-  GET  /api/users/{user_id}/inbox
-  POST /api/users/{user_id}/inbox/{msg_id}/read
-  POST /api/users/{user_id}/inbox/read-all
+Auth: admin@squadpay.us / Letmein@2007#ForReal (super_admin).
+Backend URL: from frontend/.env EXPO_PUBLIC_BACKEND_URL.
 
-Uses the live preview backend via EXPO_PUBLIC_BACKEND_URL.
+Important: ensures SMS routing is set to "mock" before sending bulk SMS so
+sms_sent == recipient_count, then restores prior mode at the end.
 """
 
 from __future__ import annotations
 
 import os
-import time
+import re
+import sys
 import json
-import requests
-from typing import Dict, Any, List, Tuple
+import time
+import uuid
+import string
+import random
+from pathlib import Path
 
-# ---------- Config ----------
-BACKEND_BASE = os.environ.get(
-    "EXPO_PUBLIC_BACKEND_URL",
-    "https://joint-pay-1.preview.emergentagent.com",
-).rstrip("/")
-API = f"{BACKEND_BASE}/api"
+import requests
+
+# ---- Read backend URL from frontend env (per testing rules) ----
+def _read_env_url() -> str:
+    fp = Path("/app/frontend/.env")
+    txt = fp.read_text()
+    for line in txt.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k = k.strip()
+        v = v.strip().strip('"').strip("'")
+        if k in ("EXPO_PUBLIC_BACKEND_URL", "REACT_APP_BACKEND_URL"):
+            return v
+    raise SystemExit("No backend URL in /app/frontend/.env")
+
+
+BASE = _read_env_url().rstrip("/") + "/api"
+print(f"[setup] BASE = {BASE}")
 
 ADMIN_EMAIL = "admin@squadpay.us"
 ADMIN_PASSWORD = "Letmein@2007#ForReal"
 
-TS = int(time.time())
+
+# ---- tiny test recorder ----
+RESULTS: list[tuple[str, bool, str]] = []
+
+def rec(name: str, ok: bool, detail: str = "") -> None:
+    flag = "PASS" if ok else "FAIL"
+    print(f"  [{flag}] {name}" + (f"  — {detail}" if detail else ""))
+    RESULTS.append((name, ok, detail))
 
 
-# ---------- Helpers ----------
-def _short(resp: requests.Response, n: int = 280) -> str:
-    try:
-        body = json.dumps(resp.json())
-    except Exception:
-        body = resp.text or ""
-    return body[:n]
+def auth_headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
-class Results:
-    def __init__(self):
-        self.rows: List[Tuple[str, bool, str]] = []
-
-    def add(self, case: str, ok: bool, note: str = ""):
-        self.rows.append((case, ok, note))
-        flag = "PASS" if ok else "FAIL"
-        print(f"[{flag}] {case} — {note}")
-
-    def summary(self):
-        passed = sum(1 for _, ok, _ in self.rows if ok)
-        failed = len(self.rows) - passed
-        print("\n" + "=" * 72)
-        print(f"SUMMARY: {passed}/{len(self.rows)} PASS, {failed} FAIL")
-        print("=" * 72)
-        for case, ok, note in self.rows:
-            mark = "✅" if ok else "❌"
-            print(f"  {mark} {case}: {note}")
-        return failed
-
-
-R = Results()
-
-
+# ====== 0) login ======
 def admin_login() -> str:
     r = requests.post(
-        f"{API}/admin/auth/login",
+        f"{BASE}/admin/auth/login",
         json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
         timeout=30,
     )
-    r.raise_for_status()
-    token = r.json().get("token")
-    assert token, f"No token in admin login response: {_short(r)}"
-    return token
+    if r.status_code != 200:
+        print("Login failed:", r.status_code, r.text)
+        sys.exit(1)
+    d = r.json()
+    return d.get("access_token") or d.get("token")
 
 
-def set_sms_mode_mock(admin_token: str):
-    """Ensure SMS routing is in mock so sms_sent counter increments cleanly."""
+# ====== util: set sms routing ======
+def set_sms_mode(token: str, mode: str) -> None:
     r = requests.post(
-        f"{API}/admin/integrations/sms-mode",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={"mode": "mock"},
+        f"{BASE}/admin/integrations/sms-mode",
+        headers=auth_headers(token),
+        json={"mode": mode},
         timeout=30,
     )
     if r.status_code != 200:
-        print(f"[warn] set sms mode mock returned {r.status_code} {_short(r)}")
+        print(f"[warn] set sms-mode={mode} failed: {r.status_code} {r.text}")
 
 
-def register_user(name: str) -> str:
-    r = requests.post(f"{API}/auth/register", json={"name": name}, timeout=30)
-    r.raise_for_status()
-    return r.json()["id"]
+def get_sms_mode(token: str) -> str:
+    r = requests.get(
+        f"{BASE}/admin/integrations", headers=auth_headers(token), timeout=30
+    )
+    if r.status_code == 200:
+        d = r.json()
+        return (d.get("sms_routing") or {}).get("mode") or "unknown"
+    return "unknown"
 
 
-_phone_counter = 0
+# ====== seed: ensure we have some users, leads, members, groups ======
+def _rand_phone() -> str:
+    # avoid +1 to keep it US 10-digit but unique-ish
+    return "+1832" + "".join(random.choices(string.digits, k=7))
 
 
-def make_phone() -> str:
-    """Return a fresh-looking US phone number unique to this run."""
-    global _phone_counter
-    _phone_counter += 1
-    # Build a 10-digit US number that's unique per call
-    tail = (TS * 10 + _phone_counter) % 10_000_000
-    return f"+1832{tail:07d}"
-
-
-def verify_user(user_id: str, phone: str) -> str:
-    """Send + verify OTP in mock mode → returns the (possibly collapsed) user id."""
+def register_user(name: str) -> dict:
     r = requests.post(
-        f"{API}/auth/send-otp",
+        f"{BASE}/auth/register",
+        json={"name": name},
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def verify_phone(user_id: str, phone: str) -> dict:
+    r = requests.post(
+        f"{BASE}/auth/send-otp",
         json={"user_id": user_id, "phone": phone},
         timeout=30,
     )
-    if r.status_code != 200:
-        raise RuntimeError(f"send-otp failed: {r.status_code} {_short(r)}")
-
-    r2 = requests.post(
-        f"{API}/auth/verify-otp",
-        json={
-            "user_id": user_id,
-            "phone": phone,
-            "code": "123456",
-            "confirm_existing": True,
-        },
-        timeout=30,
-    )
-    if r2.status_code != 200:
-        raise RuntimeError(f"verify-otp failed: {r2.status_code} {_short(r2)}")
-    return r2.json().get("id") or user_id
-
-
-def create_user_full(name: str) -> Dict[str, str]:
-    uid = register_user(name)
-    phone = make_phone()
-    final_uid = verify_user(uid, phone)
-    return {"id": final_uid, "name": name, "phone": phone}
-
-
-def create_group(lead_id: str, title: str, total: float = 30.0) -> str:
-    r = requests.post(
-        f"{API}/groups",
-        json={
-            "lead_id": lead_id,
-            "title": title,
-            "total_amount": total,
-            "split_mode": "fast",
-            "tax": 0.0,
-            "tip": 0.0,
-            "items": [],
-        },
-        timeout=30,
-    )
     r.raise_for_status()
-    return r.json()["id"]
-
-
-def join_group(group_id: str, user_id: str):
-    r = requests.post(
-        f"{API}/groups/{group_id}/join",
-        json={"user_id": user_id, "joined_via": "code"},
+    r2 = requests.post(
+        f"{BASE}/auth/verify-otp",
+        json={"user_id": user_id, "phone": phone, "code": "123456"},
         timeout=30,
     )
-    if r.status_code != 200:
-        raise RuntimeError(f"join failed: {r.status_code} {_short(r)}")
+    r2.raise_for_status()
+    return r2.json()
 
 
-# ---------- Setup: admin + fixture users + group ----------
-print(f"[setup] Backend base: {API}")
-admin_token = admin_login()
-print(f"[setup] Admin login OK, token len={len(admin_token)}")
-
-set_sms_mode_mock(admin_token)
-
-# Fixture: lead + 2 members + 1 lone user (verified, no group)
-print("[setup] creating fixture users + group...")
-lead = create_user_full(f"NotifLead{TS}")
-member_a = create_user_full(f"NotifMemA{TS}")
-member_b = create_user_full(f"NotifMemB{TS}")
-lonely = create_user_full(f"NotifSolo{TS}")
-print(f"[setup] lead={lead['id']} memA={member_a['id']} memB={member_b['id']} solo={lonely['id']}")
-
-group_id = create_group(lead["id"], f"NotifGroup-{TS}", total=30.0)
-join_group(group_id, member_a["id"])
-join_group(group_id, member_b["id"])
-print(f"[setup] group={group_id} (lead + 2 members)")
-
-H_ADMIN = {"Authorization": f"Bearer {admin_token}"}
-
-
-# ---------------- Case 1: 401 without admin token ----------------
-r = requests.post(
-    f"{API}/admin/notifications/broadcast",
-    json={
-        "message": "hi",
-        "audience": {"type": "all"},
-        "channels": {"in_app": True, "sms": False},
-    },
-    timeout=30,
-)
-R.add(
-    "C1 401 without admin token",
-    r.status_code in (401, 403),
-    f"status={r.status_code} body={_short(r, 120)}",
-)
+def create_fresh_group(lead_id: str, member_ids: list[str]) -> str:
+    body = {
+        "lead_id": lead_id,
+        "title": f"BulkSMS Test {uuid.uuid4().hex[:6]}",
+        "total_amount": 30.0,
+        "split_mode": "fast",
+        "items": [],
+        "tax_amount": 0.0,
+        "tip_amount": 0.0,
+    }
+    r = requests.post(f"{BASE}/groups", json=body, timeout=30)
+    r.raise_for_status()
+    gid = r.json()["id"]
+    for mid in member_ids:
+        r2 = requests.post(
+            f"{BASE}/groups/{gid}/join",
+            json={"user_id": mid},
+            timeout=30,
+        )
+        r2.raise_for_status()
+    return gid
 
 
-# ---------------- Case 3: empty message → 400 ----------------
-r = requests.post(
-    f"{API}/admin/notifications/broadcast",
-    headers=H_ADMIN,
-    json={
-        "message": "   ",
-        "audience": {"type": "all"},
-        "channels": {"in_app": True, "sms": False},
-    },
-    timeout=30,
-)
-R.add(
-    "C3 empty message → 400",
-    r.status_code == 400,
-    f"status={r.status_code} body={_short(r, 160)}",
-)
+def seed_min_squad() -> tuple[str, list[str]]:
+    """Make 1 lead + 2 non-lead members, return (group_id, [lead_phone, ...member_phones])."""
+    ts = int(time.time())
+    lead = register_user(f"BS Lead {ts}")
+    m1 = register_user(f"BS Mem1 {ts}")
+    m2 = register_user(f"BS Mem2 {ts}")
+    lead_phone = _rand_phone()
+    m1_phone = _rand_phone()
+    m2_phone = _rand_phone()
+    verify_phone(lead["id"], lead_phone)
+    verify_phone(m1["id"], m1_phone)
+    verify_phone(m2["id"], m2_phone)
+    gid = create_fresh_group(lead["id"], [m1["id"], m2["id"]])
+    return gid, lead["id"], [m1["id"], m2["id"]], [lead_phone, m1_phone, m2_phone]
 
 
-# ---------------- Case 4: message > 1000 chars → 400 ----------------
-long_msg = "A" * 1001
-r = requests.post(
-    f"{API}/admin/notifications/broadcast",
-    headers=H_ADMIN,
-    json={
-        "message": long_msg,
-        "audience": {"type": "all"},
-        "channels": {"in_app": True, "sms": False},
-    },
-    timeout=30,
-)
-R.add(
-    "C4 message >1000 chars → 400",
-    r.status_code == 400,
-    f"status={r.status_code} body={_short(r, 160)}",
-)
+# ====== TEST 1: Bulk SMS ======
+def test_bulk_sms(token: str) -> None:
+    print("\n=== TEST 1: Bulk SMS broadcaster ===")
 
-
-# ---------------- Case 5: both channels off → 400 ----------------
-r = requests.post(
-    f"{API}/admin/notifications/broadcast",
-    headers=H_ADMIN,
-    json={
-        "message": "hello there",
-        "audience": {"type": "all"},
-        "channels": {"in_app": False, "sms": False},
-    },
-    timeout=30,
-)
-R.add(
-    "C5 both channels off → 400",
-    r.status_code == 400,
-    f"status={r.status_code} body={_short(r, 160)}",
-)
-
-
-# ---------------- Case 6: audience.type=vip → 400 ----------------
-r = requests.post(
-    f"{API}/admin/notifications/broadcast",
-    headers=H_ADMIN,
-    json={
-        "message": "hi vips",
-        "audience": {"type": "vip"},
-        "channels": {"in_app": True, "sms": False},
-    },
-    timeout=30,
-)
-R.add(
-    "C6 audience=vip → 400",
-    r.status_code == 400,
-    f"status={r.status_code} body={_short(r, 160)}",
-)
-
-
-# ---------------- Case 7: audience.type=groups with empty group_ids → 400 ----------------
-r = requests.post(
-    f"{API}/admin/notifications/broadcast",
-    headers=H_ADMIN,
-    json={
-        "message": "hi groups",
-        "audience": {"type": "groups", "group_ids": []},
-        "channels": {"in_app": True, "sms": False},
-    },
-    timeout=30,
-)
-R.add(
-    "C7 groups audience with empty group_ids → 400",
-    r.status_code == 400,
-    f"status={r.status_code} body={_short(r, 160)}",
-)
-
-
-# ---------------- Case 2 + Case 8 + Case 12 + Case 14: audience=all → 200 ----------------
-broadcast_msg_all = f"Hello from SquadPay test {TS} — all users"
-r = requests.post(
-    f"{API}/admin/notifications/broadcast",
-    headers=H_ADMIN,
-    json={
-        "message": broadcast_msg_all,
-        "audience": {"type": "all"},
-        "channels": {"in_app": True, "sms": False},
-    },
-    timeout=60,
-)
-ok_status = r.status_code == 200
-body_all = r.json() if ok_status else {}
-R.add(
-    "C2 valid admin token → 200 (audience=all, in_app only)",
-    ok_status,
-    f"status={r.status_code} body={_short(r, 200)}",
-)
-
-# C8 — recipient_count > 0
-rc_all = int(body_all.get("recipient_count") or 0)
-R.add(
-    "C8 audience=all recipient_count > 0",
-    rc_all > 0,
-    f"recipient_count={rc_all}",
-)
-
-# C14 — response shape
-required_keys = {"id", "recipient_count", "in_app_delivered", "sms_sent", "sms_failed"}
-missing = [k for k in required_keys if k not in body_all]
-R.add(
-    "C14 response shape includes id/recipient_count/in_app_delivered/sms_sent/sms_failed",
-    not missing,
-    f"missing={missing} body={_short(r, 200)}",
-)
-broadcast_id_all = body_all.get("id")
-
-
-# C12 — in-app persisted: check the lead's inbox contains this message
-def get_inbox(user_id: str) -> Dict[str, Any]:
-    rr = requests.get(f"{API}/users/{user_id}/inbox", timeout=30)
-    rr.raise_for_status()
-    return rr.json()
-
-
-inbox_lead = get_inbox(lead["id"])
-items_lead = inbox_lead.get("items") or []
-has_msg = any(
-    it.get("message") == broadcast_msg_all and it.get("broadcast_id") == broadcast_id_all
-    for it in items_lead
-)
-R.add(
-    "C12 in_app=true persists user_inbox doc for recipient (lead)",
-    has_msg,
-    f"inbox_count={len(items_lead)} found_match={has_msg}",
-)
-
-
-# ---------------- Case 9: audience=leads ----------------
-broadcast_msg_leads = f"Leads-only message {TS}"
-r = requests.post(
-    f"{API}/admin/notifications/broadcast",
-    headers=H_ADMIN,
-    json={
-        "message": broadcast_msg_leads,
-        "audience": {"type": "leads"},
-        "channels": {"in_app": True, "sms": False},
-    },
-    timeout=60,
-)
-body_leads = r.json() if r.status_code == 200 else {}
-ok_leads = r.status_code == 200 and int(body_leads.get("recipient_count") or 0) > 0
-R.add(
-    "C9 audience=leads → 200 with recipient_count>0",
-    ok_leads,
-    f"status={r.status_code} rc={body_leads.get('recipient_count')}",
-)
-broadcast_id_leads = body_leads.get("id")
-
-# Verify subset: our lead should have received it; members A/B should NOT
-# (unless they happen to lead some other group too — but they're fresh users).
-inbox_lead2 = get_inbox(lead["id"])
-inbox_a = get_inbox(member_a["id"])
-inbox_b = get_inbox(member_b["id"])
-inbox_solo = get_inbox(lonely["id"])
-
-lead_got = any(it.get("broadcast_id") == broadcast_id_leads for it in inbox_lead2.get("items", []))
-a_got = any(it.get("broadcast_id") == broadcast_id_leads for it in inbox_a.get("items", []))
-b_got = any(it.get("broadcast_id") == broadcast_id_leads for it in inbox_b.get("items", []))
-solo_got = any(it.get("broadcast_id") == broadcast_id_leads for it in inbox_solo.get("items", []))
-
-R.add(
-    "C9 leads-subset: our lead received, members/solo did not",
-    lead_got and (not a_got) and (not b_got) and (not solo_got),
-    f"lead={lead_got} memA={a_got} memB={b_got} solo={solo_got}",
-)
-
-
-# ---------------- Case 10: audience=members ----------------
-broadcast_msg_members = f"Members-only message {TS}"
-r = requests.post(
-    f"{API}/admin/notifications/broadcast",
-    headers=H_ADMIN,
-    json={
-        "message": broadcast_msg_members,
-        "audience": {"type": "members"},
-        "channels": {"in_app": True, "sms": False},
-    },
-    timeout=60,
-)
-body_mem = r.json() if r.status_code == 200 else {}
-ok_mem = r.status_code == 200 and int(body_mem.get("recipient_count") or 0) > 0
-R.add(
-    "C10 audience=members → 200 with recipient_count>0",
-    ok_mem,
-    f"status={r.status_code} rc={body_mem.get('recipient_count')}",
-)
-broadcast_id_mem = body_mem.get("id")
-
-# Verify subset: member A and B should receive; our lead and lonely should NOT
-inbox_lead3 = get_inbox(lead["id"])
-inbox_a3 = get_inbox(member_a["id"])
-inbox_b3 = get_inbox(member_b["id"])
-inbox_solo3 = get_inbox(lonely["id"])
-
-lead_got_m = any(it.get("broadcast_id") == broadcast_id_mem for it in inbox_lead3.get("items", []))
-a_got_m = any(it.get("broadcast_id") == broadcast_id_mem for it in inbox_a3.get("items", []))
-b_got_m = any(it.get("broadcast_id") == broadcast_id_mem for it in inbox_b3.get("items", []))
-solo_got_m = any(it.get("broadcast_id") == broadcast_id_mem for it in inbox_solo3.get("items", []))
-
-R.add(
-    "C10 members-subset: members A&B received, lead and solo did not",
-    a_got_m and b_got_m and (not lead_got_m) and (not solo_got_m),
-    f"lead={lead_got_m} memA={a_got_m} memB={b_got_m} solo={solo_got_m}",
-)
-
-
-# ---------------- Case 11: audience=groups with valid ids ----------------
-broadcast_msg_groups = f"Group-targeted message {TS}"
-r = requests.post(
-    f"{API}/admin/notifications/broadcast",
-    headers=H_ADMIN,
-    json={
-        "message": broadcast_msg_groups,
-        "audience": {"type": "groups", "group_ids": [group_id]},
-        "channels": {"in_app": True, "sms": False},
-    },
-    timeout=30,
-)
-body_g = r.json() if r.status_code == 200 else {}
-rc_g = int(body_g.get("recipient_count") or 0)
-ok_g = r.status_code == 200 and rc_g == 3  # lead + 2 members
-R.add(
-    "C11 audience=groups([group_id]) → recipient_count==3",
-    ok_g,
-    f"status={r.status_code} rc={rc_g}",
-)
-broadcast_id_g = body_g.get("id")
-
-# Solo (not in the group) should NOT receive
-inbox_solo4 = get_inbox(lonely["id"])
-solo_got_g = any(it.get("broadcast_id") == broadcast_id_g for it in inbox_solo4.get("items", []))
-inbox_a4 = get_inbox(member_a["id"])
-a_got_g = any(it.get("broadcast_id") == broadcast_id_g for it in inbox_a4.get("items", []))
-R.add(
-    "C11 groups-audience: members of group receive, outsiders do not",
-    a_got_g and (not solo_got_g),
-    f"memA={a_got_g} solo={solo_got_g}",
-)
-
-
-# ---------------- Case 13: channels.sms=true → sms_sent increments (mock provider) ----------------
-broadcast_msg_sms = f"SMS test {TS}"
-r = requests.post(
-    f"{API}/admin/notifications/broadcast",
-    headers=H_ADMIN,
-    json={
-        "message": broadcast_msg_sms,
-        "audience": {"type": "groups", "group_ids": [group_id]},
-        "channels": {"in_app": True, "sms": True},
-    },
-    timeout=60,
-)
-body_sms = r.json() if r.status_code == 200 else {}
-ok_sms = r.status_code == 200 and int(body_sms.get("sms_sent") or 0) > 0
-R.add(
-    "C13 channels.sms=true increments sms_sent (mock provider counts as delivered)",
-    ok_sms,
-    f"status={r.status_code} sms_sent={body_sms.get('sms_sent')} sms_failed={body_sms.get('sms_failed')}",
-)
-broadcast_id_sms = body_sms.get("id")
-
-
-# ---------------- Case 15: GET /admin/notifications/broadcasts ----------------
-r = requests.get(f"{API}/admin/notifications/broadcasts", headers=H_ADMIN, timeout=30)
-ok_list = r.status_code == 200
-items = (r.json() or {}).get("items", []) if ok_list else []
-ids_in_list = {it.get("id") for it in items}
-recent = {broadcast_id_all, broadcast_id_leads, broadcast_id_mem, broadcast_id_g, broadcast_id_sms}
-recent.discard(None)
-found_recent = recent.issubset(ids_in_list) if recent else False
-R.add(
-    "C15 GET /admin/notifications/broadcasts returns recently-sent broadcasts",
-    ok_list and found_recent,
-    f"status={r.status_code} items={len(items)} all_recent_present={found_recent}",
-)
-
-
-# ---------------- Case 16: GET inbox sorted DESC by created_at, accurate unread count ----------------
-inbox_a_final = get_inbox(member_a["id"])
-items_a = inbox_a_final.get("items") or []
-sorted_ok = all(
-    items_a[i].get("created_at", "") >= items_a[i + 1].get("created_at", "")
-    for i in range(len(items_a) - 1)
-)
-unread_reported = inbox_a_final.get("unread")
-unread_actual = sum(1 for it in items_a if not it.get("read_at"))
-R.add(
-    "C16 inbox sorted DESC by created_at and unread count accurate",
-    sorted_ok and unread_reported == unread_actual,
-    f"sorted={sorted_ok} unread_reported={unread_reported} unread_actual={unread_actual} items={len(items_a)}",
-)
-
-
-# ---------------- Case 17: POST /users/{uid}/inbox/{msg_id}/read marks one ----------------
-unread_items_a = [it for it in items_a if not it.get("read_at")]
-if not unread_items_a:
-    R.add("C17 mark one as read", False, "no unread items to mark for member_a")
-else:
-    target = unread_items_a[0]
-    msg_id = target["id"]
+    # 1) 401 without admin bearer
     r = requests.post(
-        f"{API}/users/{member_a['id']}/inbox/{msg_id}/read",
+        f"{BASE}/admin/bulk-sms/send",
+        json={"message": "hi", "audience": "all_users"},
         timeout=30,
     )
-    ok_mark = r.status_code == 200 and (r.json() or {}).get("updated") == 1
-    # Re-fetch to confirm unread decremented
-    inbox_after = get_inbox(member_a["id"])
-    new_unread = inbox_after.get("unread")
-    expected = unread_reported - 1
-    R.add(
-        "C17 mark one as read → unread decrements by 1",
-        ok_mark and new_unread == expected,
-        f"resp={_short(r, 120)} unread_before={unread_reported} unread_after={new_unread} expected={expected}",
+    rec("1) POST /bulk-sms/send without admin bearer → 401",
+        r.status_code in (401, 403),
+        f"status={r.status_code}")
+
+    H = auth_headers(token)
+
+    # 2) Empty message → 400
+    r = requests.post(
+        f"{BASE}/admin/bulk-sms/send",
+        headers=H,
+        json={"message": "   ", "audience": "all_users"},
+        timeout=30,
     )
+    rec("2) Empty message → 400",
+        r.status_code == 400,
+        f"status={r.status_code} body={r.text[:120]}")
+
+    # 3) Message > 1000 → 400
+    big = "x" * 1001
+    r = requests.post(
+        f"{BASE}/admin/bulk-sms/send",
+        headers=H,
+        json={"message": big, "audience": "all_users"},
+        timeout=30,
+    )
+    rec("3) Message > 1000 chars → 400",
+        r.status_code == 400,
+        f"status={r.status_code} body={r.text[:120]}")
+
+    # 4) audience=vip → 400
+    r = requests.post(
+        f"{BASE}/admin/bulk-sms/send",
+        headers=H,
+        json={"message": "hi", "audience": "vip"},
+        timeout=30,
+    )
+    rec("4) audience=vip → 400",
+        r.status_code == 400,
+        f"status={r.status_code} body={r.text[:120]}")
+
+    # 5) audience=groups w/ empty group_ids → 400 mentioning Squad
+    r = requests.post(
+        f"{BASE}/admin/bulk-sms/send",
+        headers=H,
+        json={"message": "hi", "audience": "groups", "group_ids": []},
+        timeout=30,
+    )
+    ok = (r.status_code == 400) and ("squad" in r.text.lower())
+    rec("5) audience=groups + empty group_ids → 400 mentioning Squad",
+        ok,
+        f"status={r.status_code} body={r.text[:200]}")
+
+    # 6) audience=numbers with empty list → 404
+    r = requests.post(
+        f"{BASE}/admin/bulk-sms/send",
+        headers=H,
+        json={"message": "hi", "audience": "numbers", "phone_numbers": []},
+        timeout=30,
+    )
+    ok = (r.status_code == 404) and ("no phone" in r.text.lower())
+    rec("6) audience=numbers w/ empty list → 404 'No phone numbers resolved...'",
+        ok,
+        f"status={r.status_code} body={r.text[:200]}")
+
+    # Seed: make sure there's at least 1 fresh squad so leads/members/groups paths exist.
+    gid, lead_id, member_ids, phones = seed_min_squad()
+    print(f"  [seed] group_id={gid}  lead={lead_id}  members={member_ids}")
+
+    # 7) audience=all_users → 200 with recipient_count > 0
+    r = requests.post(
+        f"{BASE}/admin/bulk-sms/send",
+        headers=H,
+        json={"message": "SquadPay test all_users " + uuid.uuid4().hex[:6], "audience": "all_users"},
+        timeout=60,
+    )
+    ok7 = (r.status_code == 200) and (r.json().get("recipient_count", 0) > 0)
+    rec("7) audience=all_users → 200 recipient_count > 0",
+        ok7,
+        f"status={r.status_code} body={r.text[:200]}")
+    all_users_count = r.json().get("recipient_count", 0) if r.status_code == 200 else 0
+    all_users_sent = r.json().get("sms_sent", 0) if r.status_code == 200 else 0
+    all_users_failed = r.json().get("sms_failed", 0) if r.status_code == 200 else 0
+
+    # 8) audience=leads ≤ all_users
+    r = requests.post(
+        f"{BASE}/admin/bulk-sms/send",
+        headers=H,
+        json={"message": "SquadPay test leads " + uuid.uuid4().hex[:6], "audience": "leads"},
+        timeout=60,
+    )
+    leads_count = r.json().get("recipient_count", 0) if r.status_code == 200 else -1
+    rec("8) audience=leads → 200 and recipient_count <= all_users",
+        r.status_code == 200 and 0 <= leads_count <= all_users_count,
+        f"status={r.status_code} leads={leads_count} all_users={all_users_count}")
+
+    # 9) audience=members ≤ all_users
+    r = requests.post(
+        f"{BASE}/admin/bulk-sms/send",
+        headers=H,
+        json={"message": "SquadPay test members " + uuid.uuid4().hex[:6], "audience": "members"},
+        timeout=60,
+    )
+    members_count = r.json().get("recipient_count", 0) if r.status_code == 200 else -1
+    rec("9) audience=members → 200 and recipient_count <= all_users",
+        r.status_code == 200 and 0 <= members_count <= all_users_count,
+        f"status={r.status_code} members={members_count} all_users={all_users_count}")
+
+    # 10) audience=groups w/ our gid returns just our squad members (3 phones)
+    r = requests.post(
+        f"{BASE}/admin/bulk-sms/send",
+        headers=H,
+        json={
+            "message": "SquadPay test groups " + uuid.uuid4().hex[:6],
+            "audience": "groups",
+            "group_ids": [gid],
+        },
+        timeout=60,
+    )
+    groups_resp = r.json() if r.status_code == 200 else {}
+    groups_count = groups_resp.get("recipient_count", -1)
+    # we seeded 3 unique fresh phones
+    rec("10) audience=groups w/ known gid → recipient_count == 3 (lead + 2 members)",
+        r.status_code == 200 and groups_count == 3,
+        f"status={r.status_code} count={groups_count} expected=3")
+
+    # 11) audience=numbers with mixed formats → 1 unique
+    r = requests.post(
+        f"{BASE}/admin/bulk-sms/send",
+        headers=H,
+        json={
+            "message": "SquadPay test numbers " + uuid.uuid4().hex[:6],
+            "audience": "numbers",
+            "phone_numbers": ["+12025550123", "2025550123", "(202) 555-0123"],
+        },
+        timeout=60,
+    )
+    body_11 = r.json() if r.status_code == 200 else {}
+    rec("11) audience=numbers w/ mixed formats → recipient_count == 1",
+        r.status_code == 200 and body_11.get("recipient_count") == 1,
+        f"status={r.status_code} body={r.text[:200]}")
+
+    # 12) Mock provider counts toward sms_sent for populated audience
+    # Use the groups audience response (well-known recipient_count == 3)
+    rec("12) Mock SMS → sms_sent == recipient_count and sms_failed == 0 (groups audience, 3 recipients)",
+        groups_resp.get("sms_sent") == groups_count and groups_resp.get("sms_failed") == 0,
+        f"sms_sent={groups_resp.get('sms_sent')} sms_failed={groups_resp.get('sms_failed')} recipient_count={groups_count}")
+
+    # Also verify for all_users
+    rec("12b) Mock SMS → sms_sent == recipient_count (all_users)",
+        all_users_sent == all_users_count and all_users_failed == 0,
+        f"sms_sent={all_users_sent} sms_failed={all_users_failed} recipient_count={all_users_count}")
+
+    # Record latest sent broadcast id so we can verify it's in history
+    latest_broadcast_id = body_11.get("id")
+
+    # 13) GET /admin/bulk-sms/history shape + sort + contains our broadcast
+    r = requests.get(
+        f"{BASE}/admin/bulk-sms/history",
+        headers=H,
+        params={"page": 1, "page_size": 20},
+        timeout=30,
+    )
+    body = r.json() if r.status_code == 200 else {}
+    keys_ok = set(["items", "page", "page_size", "total", "has_more"]).issubset(set(body.keys()))
+    items = body.get("items", []) if isinstance(body, dict) else []
+    # Sort DESC by sent_at
+    sort_ok = True
+    if len(items) >= 2:
+        for i in range(len(items) - 1):
+            if (items[i].get("sent_at") or "") < (items[i + 1].get("sent_at") or ""):
+                sort_ok = False
+                break
+    contains = any(it.get("id") == latest_broadcast_id for it in items) if latest_broadcast_id else True
+    rec("13) GET /bulk-sms/history → shape + sorted DESC + contains latest broadcast",
+        r.status_code == 200 and keys_ok and sort_ok and contains,
+        f"status={r.status_code} keys_ok={keys_ok} sort_ok={sort_ok} contains={contains} total={body.get('total')}")
+
+    # 14) page_size=5 caps; page=2 returns different slice (or empty + no overlap)
+    r1 = requests.get(
+        f"{BASE}/admin/bulk-sms/history",
+        headers=H, params={"page": 1, "page_size": 5}, timeout=30,
+    )
+    r2 = requests.get(
+        f"{BASE}/admin/bulk-sms/history",
+        headers=H, params={"page": 2, "page_size": 5}, timeout=30,
+    )
+    if r1.status_code == 200 and r2.status_code == 200:
+        b1 = r1.json(); b2 = r2.json()
+        items1 = b1.get("items", []); items2 = b2.get("items", [])
+        ids1 = {it.get("id") for it in items1}
+        ids2 = {it.get("id") for it in items2}
+        overlap = ids1 & ids2
+        cap_ok = len(items1) <= 5 and len(items2) <= 5
+        # Page 2 could be empty if total < 6; that's also "no overlap"
+        no_overlap = not overlap
+        rec("14) page_size=5 caps items.length; page=2 no overlap with page=1",
+            cap_ok and no_overlap,
+            f"len1={len(items1)} len2={len(items2)} overlap={list(overlap)[:3]} total={b1.get('total')}")
+    else:
+        rec("14) page_size=5 caps + page=2 no overlap", False,
+            f"status1={r1.status_code} status2={r2.status_code}")
 
 
-# ---------------- Case 18: POST /users/{uid}/inbox/read-all clears unread ----------------
-r = requests.post(f"{API}/users/{member_a['id']}/inbox/read-all", timeout=30)
-ok_all = r.status_code == 200
-inbox_final = get_inbox(member_a["id"])
-final_unread = inbox_final.get("unread")
-R.add(
-    "C18 read-all clears all unread",
-    ok_all and final_unread == 0,
-    f"resp={_short(r, 120)} unread_after={final_unread}",
-)
+# ====== TEST 2: paginated /admin/notifications/broadcasts ======
+def test_paginated_broadcasts(token: str) -> None:
+    print("\n=== TEST 2: GET /admin/notifications/broadcasts (paginated) ===")
+
+    H = auth_headers(token)
+
+    # First make sure there are at least a few broadcast docs (so paging is meaningful).
+    # The Notification Center had its own broadcasts collection (admin_broadcasts).
+    # We'll try to ensure at least 6 exist by creating new ones via the notification-center
+    # broadcast endpoint. We send tiny in-app-only (no SMS) to leads to avoid noise.
+    # Audience "leads" requires at least 1 lead — fine in this env.
+    # If creation fails due to schema differences, we just test what's there.
+    for i in range(7):
+        try:
+            requests.post(
+                f"{BASE}/admin/notifications/broadcast",
+                headers=H,
+                json={
+                    "message": f"NB pagination seed {i} {uuid.uuid4().hex[:5]}",
+                    "audience": {"type": "leads"},
+                    "channels": {"in_app": True, "sms": False},
+                },
+                timeout=30,
+            )
+        except Exception:
+            pass
+
+    # 1) Default call shape
+    r = requests.get(f"{BASE}/admin/notifications/broadcasts", headers=H, timeout=30)
+    b = r.json() if r.status_code == 200 else {}
+    required = {"items", "page", "page_size", "total", "has_more"}
+    shape_ok = r.status_code == 200 and required.issubset(b.keys()) and b.get("page") == 1 and b.get("page_size") == 20
+    rec("1) Default call: page=1, page_size=20, response shape ok",
+        shape_ok,
+        f"status={r.status_code} keys={list(b.keys())[:8]} page={b.get('page')} size={b.get('page_size')}")
+
+    total = b.get("total", 0)
+
+    # 2) page_size=5 → items.length <= 5
+    r = requests.get(
+        f"{BASE}/admin/notifications/broadcasts",
+        headers=H, params={"page": 1, "page_size": 5}, timeout=30,
+    )
+    b1 = r.json() if r.status_code == 200 else {}
+    items1 = b1.get("items", [])
+    rec("2) page_size=5 → items.length <= 5",
+        r.status_code == 200 and len(items1) <= 5,
+        f"len={len(items1)} total={total}")
+
+    # 3) page=2 → no overlap with page=1
+    r = requests.get(
+        f"{BASE}/admin/notifications/broadcasts",
+        headers=H, params={"page": 2, "page_size": 5}, timeout=30,
+    )
+    b2 = r.json() if r.status_code == 200 else {}
+    items2 = b2.get("items", [])
+    ids1 = {it.get("id") for it in items1}
+    ids2 = {it.get("id") for it in items2}
+    overlap = ids1 & ids2
+    rec("3) page=2 → no overlap with page=1",
+        r.status_code == 200 and not overlap,
+        f"len2={len(items2)} overlap={list(overlap)[:3]}")
+
+    # 4) has_more correctness
+    # On page=1 page_size=1: has_more should be true iff total > 1
+    r = requests.get(
+        f"{BASE}/admin/notifications/broadcasts",
+        headers=H, params={"page": 1, "page_size": 1}, timeout=30,
+    )
+    bx = r.json() if r.status_code == 200 else {}
+    has_more = bx.get("has_more")
+    expected_has_more = (bx.get("total", 0) > 1)
+    case_a = (has_more is expected_has_more)
+    # Last page: page = ceil(total / page_size) with size 5
+    if total > 0:
+        import math
+        last_page = max(1, math.ceil(total / 5))
+        r = requests.get(
+            f"{BASE}/admin/notifications/broadcasts",
+            headers=H, params={"page": last_page, "page_size": 5}, timeout=30,
+        )
+        bl = r.json() if r.status_code == 200 else {}
+        case_b = (bl.get("has_more") is False)
+    else:
+        case_b = True
+    rec("4) has_more true when more pages exist, false on last page",
+        case_a and case_b,
+        f"case_a(page1size1)={case_a} expected={expected_has_more} got={has_more}; case_b(lastpage)={case_b}")
+
+    # 5) Sort DESC by sent_at
+    r = requests.get(
+        f"{BASE}/admin/notifications/broadcasts",
+        headers=H, params={"page": 1, "page_size": 20}, timeout=30,
+    )
+    bs = r.json() if r.status_code == 200 else {}
+    items = bs.get("items", [])
+    sort_ok = True
+    if len(items) >= 2:
+        if (items[0].get("sent_at") or "") < (items[-1].get("sent_at") or ""):
+            sort_ok = False
+    rec("5) items[0].sent_at >= items[last].sent_at",
+        sort_ok,
+        f"len={len(items)} first={items[0].get('sent_at') if items else None} last={items[-1].get('sent_at') if items else None}")
 
 
-# ---------- Final summary ----------
-failed = R.summary()
-exit(0 if failed == 0 else 1)
+# ====== main ======
+def main() -> int:
+    token = admin_login()
+    print(f"[setup] admin token acquired (len={len(token)})")
+    prior_mode = get_sms_mode(token)
+    print(f"[setup] prior sms_mode = {prior_mode}")
+    set_sms_mode(token, "mock")
+    try:
+        test_bulk_sms(token)
+        test_paginated_broadcasts(token)
+    finally:
+        # Restore prior mode if known.
+        if prior_mode in ("mock", "live"):
+            set_sms_mode(token, prior_mode)
+            print(f"[teardown] restored sms_mode = {prior_mode}")
+        else:
+            print("[teardown] could not restore prior sms_mode (unknown). Left as mock.")
+
+    passed = sum(1 for _, ok, _ in RESULTS if ok)
+    failed = sum(1 for _, ok, _ in RESULTS if not ok)
+    print("\n========================================")
+    print(f"TOTAL: {len(RESULTS)} | PASS: {passed} | FAIL: {failed}")
+    print("========================================")
+    if failed:
+        print("\nFailed cases:")
+        for n, ok, d in RESULTS:
+            if not ok:
+                print(f"  - {n} :: {d}")
+    return 0 if failed == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

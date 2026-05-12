@@ -56,6 +56,8 @@ export default function RootLayout() {
           <Stack.Screen name="group/[id]/dashboard" options={{ title: 'Lead Dashboard' }} />
           <Stack.Screen name="group/[id]/card" options={{ headerShown: false }} />
           <Stack.Screen name="join/[code]" options={{ title: 'Join Bill' }} />
+          {/* Inbox uses its own custom header — hide the auto stack header. */}
+          <Stack.Screen name="notifications" options={{ headerShown: false }} />
         </Stack>
         <ToastHost />
         <SessionGuard />

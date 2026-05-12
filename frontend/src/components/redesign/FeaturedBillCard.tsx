@@ -74,7 +74,9 @@ function IdleCard({ selfId, selfName, onSplit, onJoin, testID }: IdleProps) {
       style={styles.card}
       testID={testID}
     >
-      <View style={styles.accentLine} />
+      {/* Removed top accent line per UX request — kept the style block for
+          backwards-compatibility with any external consumers but the line
+          is no longer rendered. */}
 
       <View style={styles.headerRow}>
         <Text style={styles.titleMuted} numberOfLines={1}>NO ACTIVE BILL</Text>
@@ -169,7 +171,7 @@ function ActiveCard({
         end={{ x: 1, y: 1 }}
         style={styles.card}
       >
-        <View style={styles.accentLine} />
+        {/* Removed top accent line per UX request — see notes above. */}
 
         <View style={styles.headerRow}>
           <Text style={styles.title} numberOfLines={1}>{title.toUpperCase()}</Text>
@@ -180,7 +182,7 @@ function ActiveCard({
           </Text>
         </View>
         <Text style={styles.amountMeta}>
-          Your Share · Group Total ${groupTotal.toFixed(2)}
+          Your Share · Squad Total ${groupTotal.toFixed(2)}
         </Text>
 
         {/* Avatars + enabled + (routes to items) */}

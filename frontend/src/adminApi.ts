@@ -159,7 +159,7 @@ export const adminApi = {
       sms_sent: number;
       sms_failed: number;
     }>('/notifications/broadcast', { method: 'POST', body: JSON.stringify(body) }),
-  listBroadcasts: () =>
+  listBroadcasts: (page: number = 1, page_size: number = 20) =>
     request<{
       items: Array<{
         id: string;
@@ -173,7 +173,41 @@ export const adminApi = {
         sms_sent: number;
         sms_failed: number;
       }>;
-    }>('/notifications/broadcasts'),
+      page: number;
+      page_size: number;
+      total: number;
+      has_more: boolean;
+    }>(`/notifications/broadcasts?page=${page}&page_size=${page_size}`),
+  // June 2025 — Bulk SMS broadcaster (separate from Notification Center).
+  sendBulkSms: (body: {
+    message: string;
+    audience: 'all_users' | 'leads' | 'members' | 'groups' | 'numbers';
+    group_ids?: string[];
+    phone_numbers?: string[];
+  }) =>
+    request<{
+      id: string;
+      recipient_count: number;
+      sms_sent: number;
+      sms_failed: number;
+    }>('/bulk-sms/send', { method: 'POST', body: JSON.stringify(body) }),
+  listBulkSms: (page: number = 1, page_size: number = 20) =>
+    request<{
+      items: Array<{
+        id: string;
+        message: string;
+        audience: string;
+        group_ids: string[] | null;
+        recipient_count: number;
+        sms_sent: number;
+        sms_failed: number;
+        sent_at: string;
+      }>;
+      page: number;
+      page_size: number;
+      total: number;
+      has_more: boolean;
+    }>(`/bulk-sms/history?page=${page}&page_size=${page_size}`),
   createAdmin: (body: { email: string; password: string; name: string; role: AdminRole }) =>
     request<AdminProfile>('/admins', { method: 'POST', body: JSON.stringify(body) }),
   toggleAdmin: (id: string, is_active: boolean) =>

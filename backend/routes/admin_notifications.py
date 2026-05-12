@@ -224,10 +224,31 @@ def attach_admin_notifications_routes(api_router: APIRouter, db, get_current_adm
         }
 
     @router.get("/admin/notifications/broadcasts")
-    async def list_broadcasts(admin=Depends(get_current_admin)):
-        cursor = db.admin_broadcasts.find({}, {"_id": 0}).sort("sent_at", -1).limit(100)
+    async def list_broadcasts(
+        admin=Depends(get_current_admin),
+        page: int = 1,
+        page_size: int = 20,
+    ):
+        # Clamp inputs so a hostile admin client can't blow up memory.
+        page = max(1, int(page or 1))
+        page_size = max(1, min(100, int(page_size or 20)))
+        skip = (page - 1) * page_size
+        total = await db.admin_broadcasts.count_documents({})
+        cursor = (
+            db.admin_broadcasts
+            .find({}, {"_id": 0})
+            .sort("sent_at", -1)
+            .skip(skip)
+            .limit(page_size)
+        )
         items = [doc async for doc in cursor]
-        return {"items": items}
+        return {
+            "items": items,
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "has_more": (skip + len(items)) < total,
+        }
 
     api_router.include_router(router)
 

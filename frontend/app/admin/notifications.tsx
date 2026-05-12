@@ -41,18 +41,23 @@ export default function AdminNotificationsScreen() {
   const [success, setSuccess] = useState<string | null>(null);
   const [history, setHistory] = useState<any[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
+  // Paginated history — keeps the admin scroll tame after months of broadcasts.
+  const [page, setPage] = useState(1);
+  const [totalBroadcasts, setTotalBroadcasts] = useState(0);
+  const HISTORY_PAGE_SIZE = 10;
 
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true);
     try {
-      const r = await adminApi.listBroadcasts();
+      const r = await adminApi.listBroadcasts(page, HISTORY_PAGE_SIZE);
       setHistory(r.items || []);
+      setTotalBroadcasts(r.total || 0);
     } catch (e: any) {
       // best-effort, ignore
     } finally {
       setLoadingHistory(false);
     }
-  }, []);
+  }, [page]);
 
   useEffect(() => { loadHistory(); }, [loadHistory]);
 
@@ -273,6 +278,31 @@ export default function AdminNotificationsScreen() {
             </View>
           ))
         )}
+        {totalBroadcasts > HISTORY_PAGE_SIZE ? (
+          <View style={styles.historyPager}>
+            <TouchableOpacity
+              onPress={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1 || loadingHistory}
+              style={[styles.pagerBtn, (page <= 1 || loadingHistory) && { opacity: 0.4 }]}
+              activeOpacity={0.85}
+              testID="admin-notif-page-prev"
+            >
+              <Text style={styles.pagerBtnText}>Prev</Text>
+            </TouchableOpacity>
+            <Text style={styles.pagerInfo}>
+              Page {page} of {Math.max(1, Math.ceil(totalBroadcasts / HISTORY_PAGE_SIZE))}
+            </Text>
+            <TouchableOpacity
+              onPress={() => setPage((p) => p + 1)}
+              disabled={page >= Math.ceil(totalBroadcasts / HISTORY_PAGE_SIZE) || loadingHistory}
+              style={[styles.pagerBtn, (page >= Math.ceil(totalBroadcasts / HISTORY_PAGE_SIZE) || loadingHistory) && { opacity: 0.4 }]}
+              activeOpacity={0.85}
+              testID="admin-notif-page-next"
+            >
+              <Text style={styles.pagerBtnText}>Next</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
       </ScrollView>
     </SafeAreaView>
   );
@@ -357,4 +387,23 @@ const styles = StyleSheet.create({
   histLink: { color: COLORS.primary, fontSize: FONT.sizes.xs, textDecorationLine: 'underline' },
   histStats: { flexDirection: 'row', gap: 12, marginTop: 4 },
   histStat: { color: COLORS.subtext, fontSize: FONT.sizes.xs },
+  historyPager: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.md,
+    paddingVertical: SPACING.md,
+  },
+  pagerBtn: {
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 8,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.surface,
+    minWidth: 70,
+    alignItems: 'center',
+  },
+  pagerBtnText: { color: COLORS.text, fontWeight: FONT.weights.semibold, fontSize: FONT.sizes.sm },
+  pagerInfo: { color: COLORS.subtext, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold },
 });

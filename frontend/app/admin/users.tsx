@@ -7,6 +7,8 @@ import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
 
 type FilterMode = 'all' | 'verified' | 'unverified' | 'blocked';
 
+const PAGE_SIZE = 25;
+
 export default function AdminUsersList() {
   const router = useRouter();
   const [items, setItems] = useState<AdminUserRow[]>([]);
@@ -14,11 +16,18 @@ export default function AdminUsersList() {
   const [busy, setBusy] = useState(true);
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState<FilterMode>('all');
+  // June 2025 deploy prep — paginate the users table. Backend already
+  // supports `skip`/`limit`; we just expose Prev/Next controls.
+  const [page, setPage] = useState(1);
 
   const load = useCallback(async () => {
     setBusy(true);
     try {
-      const params: any = { limit: 100, q: q || undefined };
+      const params: any = {
+        limit: PAGE_SIZE,
+        skip: (page - 1) * PAGE_SIZE,
+        q: q || undefined,
+      };
       if (filter === 'verified') params.verified = true;
       if (filter === 'unverified') params.verified = false;
       if (filter === 'blocked') params.blocked = true;
@@ -27,9 +36,13 @@ export default function AdminUsersList() {
       setTotal(r.total);
     } catch (e) { /* swallow; banner could be added */ }
     finally { setBusy(false); }
-  }, [q, filter]);
+  }, [q, filter, page]);
 
   useEffect(() => { load(); }, [load]);
+  // Reset to page 1 whenever the search/filter changes.
+  useEffect(() => { setPage(1); }, [q, filter]);
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
     <ScrollView contentContainerStyle={{ paddingBottom: 80 }}>
@@ -105,6 +118,33 @@ export default function AdminUsersList() {
           <ChevronRight size={16} color={COLORS.subtext} />
         </TouchableOpacity>
       ))}
+
+      {/* Pagination footer */}
+      {total > PAGE_SIZE ? (
+        <View style={styles.pagination} testID="admin-users-pagination">
+          <TouchableOpacity
+            onPress={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page <= 1 || busy}
+            style={[styles.pageBtn, (page <= 1 || busy) && styles.pageBtnDisabled]}
+            activeOpacity={0.85}
+            testID="admin-users-page-prev"
+          >
+            <Text style={styles.pageBtnText}>Prev</Text>
+          </TouchableOpacity>
+          <Text style={styles.pageInfo}>
+            Page {page} of {totalPages}
+          </Text>
+          <TouchableOpacity
+            onPress={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page >= totalPages || busy}
+            style={[styles.pageBtn, (page >= totalPages || busy) && styles.pageBtnDisabled]}
+            activeOpacity={0.85}
+            testID="admin-users-page-next"
+          >
+            <Text style={styles.pageBtnText}>Next</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
     </ScrollView>
   );
 }
@@ -129,4 +169,25 @@ const styles = StyleSheet.create({
   metaSmall: { fontSize: 11, color: COLORS.subtext, marginTop: 2 },
   blockedBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: COLORS.dangerLight, paddingHorizontal: 6, paddingVertical: 2, borderRadius: RADIUS.pill },
   blockedBadgeText: { fontSize: 10, color: COLORS.danger, fontWeight: FONT.weights.bold },
+  // Pagination footer — used on /admin/users, /admin/groups, /admin/notifications.
+  pagination: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.md,
+    paddingVertical: SPACING.md,
+  },
+  pageBtn: {
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 8,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.surface,
+    minWidth: 70,
+    alignItems: 'center',
+  },
+  pageBtnDisabled: { opacity: 0.4 },
+  pageBtnText: { color: COLORS.text, fontWeight: FONT.weights.semibold, fontSize: FONT.sizes.sm },
+  pageInfo: { color: COLORS.subtext, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold },
 });

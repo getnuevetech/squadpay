@@ -6308,3 +6308,226 @@ backend:
           new user_inbox + admin_broadcasts collections do NOT collide with
           existing collection names.
 
+
+
+backend:
+  - task: "Bulk SMS broadcaster — POST /api/admin/bulk-sms/send + GET /api/admin/bulk-sms/history (Batch June 2025)"
+    implemented: true
+    working: false
+    file: "/app/backend/routes/admin_bulk_sms.py + /app/backend/server.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          New SMS-only broadcaster designed for marketing pushes. Accepts
+          a `message` plus an `audience` of:
+            - all_users → every user with a phone number
+            - leads    → users who lead ≥1 group
+            - members  → users who joined ≥1 group as non-lead
+            - groups   → members + leads of given `group_ids`
+            - numbers  → arbitrary phone numbers (uploaded or typed)
+          Phone numbers from "numbers" mode are tolerant of formatting
+          (spaces, dashes, parens, missing/leading +) and are normalised
+          + deduped on the backend before SMS dispatch.
+
+          Cases to verify:
+           1) 401 when no admin token.
+           2) Empty `message` → 400.
+           3) `message` > 1000 chars → 400.
+           4) Audience "vip" → 400.
+           5) Audience "groups" with empty group_ids → 400 mentioning Squad.
+           6) Audience "numbers" with no usable numbers → 404
+              "No phone numbers resolved for that audience."
+           7) Audience "all_users" → recipient_count > 0 in a populated env.
+           8) Audience "leads"/"members"/"groups" — same subset behaviour as
+              the Notification Center (since both share the resolver shape).
+           9) Audience "numbers" with mixed formats (+12025550123,
+              2025550123, "(202) 555-0123") collapses to 1 unique number.
+          10) Mock SMS provider counts as sent → `sms_sent==recipient_count`,
+              `sms_failed==0`.
+          11) `GET /admin/bulk-sms/history?page=1&page_size=10` returns
+              {items, total, page, page_size, has_more}, sorted DESC by
+              sent_at.
+
+          Auth: admin@squadpay.us / Letmein@2007#ForReal.
+        -working: false
+        -agent: "testing"
+        -comment: |
+          Bulk SMS broadcaster tested end-to-end via /app/backend_test.py against
+          the live preview backend (https://joint-pay-1.preview.emergentagent.com/api).
+          Admin auth: admin@squadpay.us / Letmein@2007#ForReal.
+          SMS routing temporarily switched to "mock" for the duration of the test
+          and restored at teardown (final mode == "mock", which was the pre-test
+          value).
+
+          14/15 review-request assertions PASS. 1 CRITICAL BUG.
+
+          ✅ PASSING (per review-request numbering):
+            1) No admin bearer → 401 "Admin auth required". ✓
+            2) Empty message (whitespace) → 400 "Message text is required." ✓
+            3) Message length 1001 → 400 "Message is too long. Please keep it under
+               1000 characters." ✓
+            4) audience="vip" → 400 "Audience must be 'all_users', 'leads', 'members',
+               'groups', or 'numbers'." ✓
+            5) audience="groups" with group_ids=[] → 400 "Pick at least one Squad
+               when audience is 'groups'." (contains "Squad" ✓)
+            6) audience="numbers" with phone_numbers=[] → 404 "No phone numbers
+               resolved for that audience." ✓
+            7) audience="all_users" → 200, recipient_count=203 (seeded env),
+               sms_sent=203, sms_failed=0. ✓
+            8) audience="leads" → 200, recipient_count=88 ≤ 203. ✓
+            9) audience="members" → 200, recipient_count=80 ≤ 203. ✓
+           10) audience="groups" with a fresh group_id (1 lead + 2 fresh members,
+               all 3 with unique phones) → 200, recipient_count=3. ✓
+           12) Mock SMS counts toward sms_sent: groups audience returned
+               sms_sent=3 / sms_failed=0 (recipient_count=3); all_users returned
+               sms_sent=203 / sms_failed=0 (recipient_count=203). ✓
+           13) GET /admin/bulk-sms/history?page=1&page_size=20 →
+               keys {items, page, page_size, total, has_more} present, items sorted
+               DESC by sent_at, contains the broadcast we just sent. ✓
+           14) page_size=5 caps items.length at 5; page=2 has zero overlap with
+               page=1 (page=2 was empty because total=5, which is a valid no-overlap
+               result). ✓
+
+          ❌ FAILING — Case 11 (numbers audience dedup of formatted variants):
+
+            Input: phone_numbers = ["+12025550123", "2025550123", "(202) 555-0123"].
+            Expected per review request: recipient_count == 1.
+            Actual: recipient_count == 3.
+
+            Response: {"id":"bsms_f51e598176","recipient_count":3,"sms_sent":3,"sms_failed":0}
+            Confirmed by backend log — 3 SMS dispatched to:
+              +12025550123, 2025550123, 5550123  (the last is a fragment).
+
+            ROOT CAUSE
+            /app/backend/routes/admin_bulk_sms.py:122-130 — for audience="numbers"
+            the route does:
+                for s in raw:
+                    flat.extend(re.split(r"[,\\s;]+", s or ""))   # splits on \\s !
+
+            The `\\s` in that regex causes the input "(202) 555-0123" to be split on
+            the space INSIDE the formatted phone number, yielding two tokens
+            "(202)" and "555-0123". After _normalize_phone:
+              - "+12025550123" → "+12025550123" (E.164, kept)
+              - "2025550123"   → "2025550123"   (10-digit local, kept)
+              - "(202)"        → "202" → None   (< 7 digits, dropped)
+              - "555-0123"     → "5550123"      (7 digits, kept as a phantom!)
+
+            Three distinct normalized values land in the `phones` set, so
+            recipient_count == 3.
+
+            Additionally, "+12025550123" and "2025550123" are NOT recognised as the
+            same phone (one has the +1 country code, the other does not) — even if
+            the whitespace split is fixed, the spec's "collapse to 1 unique number"
+            still requires the normalizer to canonicalise the local US format to
+            E.164 with a default +1 country code. Today _normalize_phone only
+            preserves the leading + if present; otherwise it leaves bare digits
+            alone (admin_bulk_sms.py line 71 comment: "the SMS provider will
+            normalize further").
+
+            IMPACT (real, not theoretical)
+            - Marketing pushes that upload phone numbers in human-readable
+              formats (e.g. CSV containing "(202) 555-0123") will fan-out to
+              phantom numbers like "5550123". Mock mode happily "delivers" to
+              them; live SignalWire/Twilio will return delivery failures and may
+              still be billed for the API attempt.
+            - Numbers entered with the country code AND without it will be sent
+              to twice in the same broadcast, double-billing the customer for the
+              same recipient.
+
+            SUGGESTED FIX (in /app/backend/routes/admin_bulk_sms.py)
+            1) Tighten the splitter so it does NOT split on whitespace inside a
+               single phone string. Only split on commas, semicolons, newlines:
+                   re.split(r"[,\\n;]+", s or "")
+               …or, equivalently, accept each list element as a single phone
+               unless it contains a comma/semicolon/newline.
+
+            2) Inside _normalize_phone, after stripping non-digit/+:
+                 • starts with "+" → keep as-is.
+                 • 11 digits starting with "1" → return "+" + value (US/CA E.164).
+                 • 10 digits → return "+1" + value (US default).
+                 • otherwise → return None or keep bare digits as today.
+               After this, "+12025550123" / "2025550123" / "(202) 555-0123"
+               all canonicalise to "+12025550123" and dedupe to 1.
+
+          Until both fixes land, audience="numbers" is unreliable for any
+          real-world phone-list input. The other 14 cases all PASS.
+
+  - task: "GET /api/admin/notifications/broadcasts — paginated history"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/admin_notifications.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Replaced the previous "return up to 100" list with a paginated
+          variant accepting `page` and `page_size` query params (defaults
+          page=1, page_size=20, max 100). Response shape changed from
+          { items: [...] } to { items, page, page_size, total, has_more }.
+
+          Cases to verify:
+           1) Default call returns page=1, page_size=20, total >= items.length.
+           2) page=2 returns the next slice (no overlap with page=1).
+           3) page_size=5 caps items.length at 5.
+           4) Invalid (negative) page is clamped to 1.
+           5) `has_more` is true when more pages exist, false otherwise.
+           6) Sort: items[0].sent_at >= items[last].sent_at.
+        -working: true
+        -agent: "testing"
+        -comment: |
+          Paginated /admin/notifications/broadcasts tested via /app/backend_test.py
+          against the live preview backend. 5/5 review-request cases PASS.
+
+          Seeded 7 extra broadcast docs (audience=leads, in_app=true, sms=false)
+          via the Notification Center route to ensure paging was meaningful, then:
+
+          ✅ 1) Default call (no params):
+                status=200, response keys = {items, page, page_size, total, has_more},
+                page==1, page_size==20.
+          ✅ 2) page_size=5: items.length == 5 (≤5).
+          ✅ 3) page=2 with page_size=5: zero overlap with page=1 (set
+                intersection of item ids was empty; len(page2)=5).
+          ✅ 4) has_more semantics:
+                - page=1 page_size=1 with total=14 → has_more=true.
+                - last page (page=ceil(14/5)=3 with page_size=5) → has_more=false.
+          ✅ 5) Sort DESC: items[0].sent_at (2026-05-12T09:43:25.123+00:00) >=
+                items[last].sent_at (2026-05-12T09:01:57.951+00:00) on a 14-row
+                response.
+
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+      Backend testing complete for the two new endpoints.
+
+      ✅ GET /api/admin/notifications/broadcasts (paginated) — ALL 5/5 cases PASS.
+         Response shape, page/page_size, no-overlap pagination, has_more semantics,
+         and DESC sort by sent_at all behave as specified.
+
+      ❌ POST /api/admin/bulk-sms/send — 14/15 cases PASS, but case 11 FAILS
+         (audience="numbers" with mixed formats). Bug is in
+         /app/backend/routes/admin_bulk_sms.py:
+           a) The splitter `re.split(r"[,\\s;]+", s)` (line 126) splits inputs on
+              whitespace — so "(202) 555-0123" becomes ["(202)", "555-0123"], and
+              the second token normalises to a phantom "5550123" recipient.
+              Confirmed by backend log dispatching SMS to "+12025550123",
+              "2025550123", AND "5550123" for a single 3-item input.
+           b) _normalize_phone (line 60-74) does NOT canonicalise US 10-digit
+              numbers to E.164, so "+12025550123" and "2025550123" remain distinct
+              even after the whitespace split is fixed. Need to map 10-digit → +1...
+              and 11-digit starting with 1 → +1... to dedupe properly.
+         Fix is small and localized — do NOT touch other parts of the file.
+
+      All other review-request cases (auth gating, validation errors, audience
+      resolvers for all_users/leads/members/groups, mock SMS counting, history
+      shape + pagination + DESC sort) PASS. Test harness at /app/backend_test.py
+      is idempotent (uses fresh phones + ts-based names + restores SMS mode).
+
+          Backend log clean, no 5xx. Marking working=true.

@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from admin import write_audit, require_role
+from admin_modules import require_module
 from reconciliation import (
     ensure_reconciliation_settings,
     get_reconciliation_settings,
@@ -53,7 +54,7 @@ def attach_reconciliation_routes(router: APIRouter, db, attach_admin):
         group_id: str,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin", "manager")),
+        _check=Depends(require_module("reconciliations")),
     ):
         try:
             rec = await reconcile_group(db, group_id, source="manual", actor_email=admin["email"])
@@ -95,7 +96,7 @@ def attach_reconciliation_routes(router: APIRouter, db, attach_admin):
         body: ReconciliationSettingsIn,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin")),
+        _check=Depends(require_module("reconciliations")),
     ):
         await ensure_reconciliation_settings(db)
         cur = await get_reconciliation_settings(db)

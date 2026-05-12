@@ -17,6 +17,7 @@ from admin import (
     write_audit,
     ensure_seed_admin,
 )
+from admin_modules import require_module
 
 
 def _strip(admin: dict) -> dict:
@@ -293,7 +294,7 @@ def build_admin_router(db):
     @router.get("/admins", response_model=List[AdminOut])
     async def list_admins(
         admin=Depends(_attach_admin),
-        _check=Depends(require_role("super_admin")),
+        _check=Depends(require_module("admins")),
     ):
         rows = await db.admins.find({}, {"_id": 0}).to_list(length=None)
         return [_strip(a) for a in rows]
@@ -303,7 +304,7 @@ def build_admin_router(db):
         body: AdminCreateIn,
         request: Request,
         admin=Depends(_attach_admin),
-        _check=Depends(require_role("super_admin")),
+        _check=Depends(require_module("admins")),
     ):
         existing = await db.admins.find_one({"email": body.email.lower()})
         if existing:
@@ -340,7 +341,7 @@ def build_admin_router(db):
         body: TogglePayload,
         request: Request,
         admin=Depends(_attach_admin),
-        _check=Depends(require_role("super_admin")),
+        _check=Depends(require_module("admins")),
     ):
         target = await db.admins.find_one({"id": admin_id}, {"_id": 0})
         if not target:
@@ -408,6 +409,15 @@ def get_current_admin_factory_sync(db):
         admin = await db.admins.find_one({"id": payload["sub"]}, {"_id": 0})
         if not admin or not admin.get("is_active", True):
             raise HTTPException(401, "Account inactive or not found")
+        # Make the admin doc visible to downstream `require_role` /
+        # `require_module` dependencies that read from `request.state.admin`.
+        # Without this, standalone routers (those wired via
+        # attach_*_routes(api_router, db, require_admin)) couldn't use
+        # require_module since they don't go through admin_routes._attach_admin.
+        try:
+            request.state.admin = admin
+        except Exception:
+            pass
         return admin
 
     return _runtime

@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
 
 from admin import require_role, write_audit
+from admin_modules import require_module
 from admin_password_reset import (
     COLL as RESET_TOKENS_COLL,
     TOKEN_LIFETIME_MIN,
@@ -69,7 +70,7 @@ def attach_admin_actions_routes(router: APIRouter, db, _attach_admin):
         body: PushPasswordResetIn,
         request: Request,
         actor=Depends(_attach_admin),
-        _check=Depends(require_role("super_admin")),
+        _check=Depends(require_module("admins")),
     ):
         target = await db.admins.find_one({"id": admin_id}, {"_id": 0, "password_hash": 0})
         if not target:
@@ -153,7 +154,7 @@ def attach_admin_actions_routes(router: APIRouter, db, _attach_admin):
         body: ChangeRoleIn,
         request: Request,
         actor=Depends(_attach_admin),
-        _check=Depends(require_role("super_admin")),
+        _check=Depends(require_module("admins")),
     ):
         new_role = (body.role or "").strip().lower()
         if new_role not in ALLOWED_ROLES:

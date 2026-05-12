@@ -8,7 +8,8 @@ Routes (all under /api/admin):
 """
 from fastapi import APIRouter, Depends, Request
 
-from admin import write_audit, require_role
+from admin import write_audit, require_role  # noqa: F401  (kept for back-compat)
+from admin_modules import require_module
 import crypto_kms
 
 
@@ -37,7 +38,7 @@ def attach_security_routes(router: APIRouter, db, attach_admin):
     async def admin_kms_reload(
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin")),
+        _check=Depends(require_module("security")),
     ):
         before = crypto_kms.kms_status()
         after = crypto_kms.reload_keys()
@@ -60,7 +61,7 @@ def attach_security_routes(router: APIRouter, db, attach_admin):
     async def admin_kms_rotate(
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin")),
+        _check=Depends(require_module("security")),
     ):
         # Re-encrypt all *_enc fields in app_settings with the current primary key.
         # Safe to run with KMS_PREVIOUS_KEYS set (MultiFernet decrypts old then re-encrypts new).

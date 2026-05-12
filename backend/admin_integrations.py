@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from admin import write_audit, require_role
+from admin_modules import require_module
 from integrations import (
     encrypt_secret,
     get_integrations_doc,
@@ -94,7 +95,7 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
         body: StripeSettingsIn,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin")),
+        _check=Depends(require_module("integrations")),
     ):
         rec = await get_integrations_doc(db)
         s = dict(rec.get("stripe") or {})
@@ -136,7 +137,7 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
         body: TwilioSettingsIn,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin")),
+        _check=Depends(require_module("integrations")),
     ):
         rec = await get_integrations_doc(db)
         t = dict(rec.get("twilio") or {})
@@ -175,7 +176,7 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
         body: TestSmsIn,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin", "manager")),
+        _check=Depends(require_module("integrations")),
     ):
         msg = body.body or f"SquadPay Admin test SMS at {_now()}"
         sent_real, info = await send_sms_via_twilio(db, body.to_number, msg)
@@ -197,7 +198,7 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
         body: SignalWireSettingsIn,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin")),
+        _check=Depends(require_module("integrations")),
     ):
         rec = await get_integrations_doc(db)
         sw = dict(rec.get("signalwire") or {})
@@ -258,7 +259,7 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
         body: TestSmsIn,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin", "manager")),
+        _check=Depends(require_module("integrations")),
     ):
         msg = body.body or f"SquadPay SignalWire test SMS at {_now()}"
         from sms_providers import _send_via_signalwire
@@ -291,7 +292,7 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
         body: SmsRoutingIn,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin")),
+        _check=Depends(require_module("integrations")),
     ):
         rec = await get_integrations_doc(db)
         routing = dict(rec.get("sms_routing") or {})
@@ -322,7 +323,7 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
         body: SmsModeIn,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin")),
+        _check=Depends(require_module("integrations")),
     ):
         """Toggle the global SMS kill-switch.
 
@@ -360,7 +361,7 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
         body: ReminderSettingsIn,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin", "manager")),
+        _check=Depends(require_module("integrations")),
     ):
         # Validate schedule_hours
         sched = sorted({int(h) for h in body.schedule_hours if int(h) > 0})[:10]
@@ -394,7 +395,7 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
     async def reminders_run_now(
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin", "manager")),
+        _check=Depends(require_module("integrations")),
     ):
         from reminders import run_reminder_pass
         result = await run_reminder_pass(db, force=True)
@@ -424,7 +425,7 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
         body: IssuingSettingsIn,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin")),
+        _check=Depends(require_module("integrations")),
     ):
         from issuing import set_issuing_settings
         patch = {k: v for k, v in body.dict().items() if v is not None}
@@ -446,7 +447,7 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
         group_id: str,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin", "manager")),
+        _check=Depends(require_module("integrations")),
     ):
         from issuing import disable_group_card
         try:
@@ -482,7 +483,7 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
         body: ReassignLeadIn,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin")),
+        _check=Depends(require_module("integrations")),
     ):
         group = await db.groups.find_one({"id": group_id})
         if not group:
@@ -540,7 +541,7 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
         body: FeatureTogglesIn,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin")),
+        _check=Depends(require_module("integrations")),
     ):
         patch = {k: v for k, v in body.dict().items() if v is not None}
         patch["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()

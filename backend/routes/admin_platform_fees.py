@@ -61,16 +61,25 @@ def attach_platform_fees_routes(api_router: APIRouter, db, require_admin):
     """Attach admin platform-fees CRUD endpoints to the main router."""
     # Lazy import so this module doesn't import the heavy core graph at load time
     from core import set_extra_fees_cache  # type: ignore
+    from admin_modules import require_module
+    _gate = require_module("platform_fees")
 
     async def _refresh_cache():
         set_extra_fees_cache(await load_fees_config(db))
 
     @api_router.get("/admin/platform-fees")
-    async def get_platform_fees(_admin=Depends(require_admin)):
+    async def get_platform_fees(
+        _admin=Depends(require_admin),
+        _check=Depends(_gate),
+    ):
         return {"fees": await load_fees_config(db)}
 
     @api_router.put("/admin/platform-fees")
-    async def update_platform_fees(payload: FeesPayload, _admin=Depends(require_admin)):
+    async def update_platform_fees(
+        payload: FeesPayload,
+        _admin=Depends(require_admin),
+        _check=Depends(_gate),
+    ):
         allowed_ids = {f["id"] for f in DEFAULT_FEES}
         cleaned: List[dict] = []
         seen = set()

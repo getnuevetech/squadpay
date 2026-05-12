@@ -121,10 +121,13 @@ def _contribution_rows(group: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def attach_income_fees_routes(api_router: APIRouter, db, require_admin):
     """Register admin endpoints under /api/admin/income-fees."""
+    from admin_modules import require_module
+    _gate = require_module("income_fees")
 
     @api_router.get("/admin/income-fees")
     async def income_fees(
         _admin=Depends(require_admin),
+        _check=Depends(_gate),
         # Filter by bill status — defaults to *all* so admins see ongoing income too.
         status: Optional[str] = Query(default=None, description="open | funded | paid | …"),
         # Time window (UTC, ISO-8601). Defaults to no filter.

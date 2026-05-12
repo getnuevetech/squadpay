@@ -151,27 +151,55 @@ def admin_accessible_modules(admin: Dict) -> List[Dict]:
 # FastAPI dependency
 # -----------------------------------------------------------------------------
 
-def require_module(get_current_admin, module_key: str):
-    """Build a FastAPI dependency that asserts the caller has the given module.
+def require_module(module_key: str):
+    """FastAPI dependency that asserts the caller has access to the given module.
+
+    Reads the admin from `request.state.admin`, which is populated by:
+      • `_attach_admin` inside `build_admin_router` for legacy admin routes
+      • `get_current_admin_factory_sync(db)` for standalone-router routes
+        (its returned `_runtime` writes `request.state.admin = admin` itself)
 
     Usage:
-        from admin_modules import require_module
-        from admin_routes import get_current_admin_factory_sync
-        gca = get_current_admin_factory_sync(db)
-
-        @router.get("/platform-fees")
-        async def list_fees(_=Depends(require_module(gca, "platform_fees"))):
+        @router.get("/foo")
+        async def foo(
+            _admin=Depends(require_admin),        # populates request.state.admin
+            _check=Depends(require_module("k")),  # asserts module access
+        ):
             ...
     """
     if module_key not in VALID_KEYS:
         raise ValueError(f"unknown module_key: {module_key}")
 
-    async def _dep(admin=Depends(get_current_admin)):
+    from fastapi import Request
+
+    def _check(request: Request):
+        admin = getattr(request.state, "admin", None)
+        if not admin:
+            raise HTTPException(401, "Admin auth required")
         if not admin_has_module(admin, module_key):
             raise HTTPException(
                 403,
                 f"Your role does not have access to the '{module_key}' module. "
                 "Ask a super_admin to grant it via Access Control.",
+            )
+        return admin
+
+    return _check
+
+
+# Legacy factory kept for compatibility — internally delegates to require_module.
+def require_module_legacy(get_current_admin, module_key: str):
+    """Deprecated. Use require_module(module_key) directly. Kept for callers
+    that explicitly wire get_current_admin into the dependency tree."""
+    from fastapi import Depends as _D
+    if module_key not in VALID_KEYS:
+        raise ValueError(f"unknown module_key: {module_key}")
+
+    async def _dep(admin=_D(get_current_admin)):
+        if not admin_has_module(admin, module_key):
+            raise HTTPException(
+                403,
+                f"Your role does not have access to the '{module_key}' module.",
             )
         return admin
 

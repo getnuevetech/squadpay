@@ -81,13 +81,21 @@ def _residual_for_group(group: Dict[str, Any]) -> Dict[str, float]:
 
 
 def attach_master_account_routes(api_router: APIRouter, db, require_admin):
+    # Gate every endpoint in this file behind the "master_account" module so
+    # super_admin grant/deny overrides take effect (see admin_modules.py).
+    from admin_modules import require_module
+    _gate = require_module("master_account")
+
     # NOTE: The /admin/master-account ledger endpoint is owned by the older
     # admin_reconciliation.py module which has a richer master_account_ledger
     # collection model. We deliberately do NOT register a competing GET here.
     # This module ONLY adds the new Master Virtual Card issuance endpoint.
 
     @api_router.post("/admin/master-card/issue")
-    async def issue_master_card(_admin=Depends(require_admin)):
+    async def issue_master_card(
+        _admin=Depends(require_admin),
+        _check=Depends(_gate),
+    ):
         """Idempotently issue the platform's Master Virtual Card via Stripe Issuing.
 
         STATUS: stub. Real wiring is one Stripe API call away — see comment.
@@ -128,7 +136,10 @@ def attach_master_account_routes(api_router: APIRouter, db, require_admin):
         return {"ok": True, "card": stub, "created": True}
 
     @api_router.get("/admin/master-card")
-    async def get_master_card(_admin=Depends(require_admin)):
+    async def get_master_card(
+        _admin=Depends(require_admin),
+        _check=Depends(_gate),
+    ):
         """Return current Master Virtual Card state (null if not yet issued)."""
         doc = await db.platform_config.find_one({"_id": MASTER_ACCOUNT_ID}) or {}
         return {"card": doc.get("master_card")}

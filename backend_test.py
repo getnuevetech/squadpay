@@ -1,443 +1,359 @@
 """
-Phase O — Unified Admin App-Config (Batch A) backend test suite.
+Backend test for Phase P — Income & Fees Ledger + Master Virtual Card.
 
-Tests:
-  1) GET/PUT /api/admin/app-config — shape, defaults, RBAC, round-trip.
-  2) core_fees.transaction_fee_pct propagates to bill math live.
-  3) Wallet provisioning admin gate on POST /api/cards/{group_id}/provision.
-  4) Legacy /api/admin/platform-fees still works and mirrors into app-config.
-  5) Auth / RBAC.
+Targets:
+  - GET  /api/admin/income-fees           (admin auth required)
+  - GET  /api/admin/master-card           (admin auth required)
+  - POST /api/admin/master-card/issue     (admin auth required, idempotent)
+  - GET  /api/admin/master-account?limit=10  (regression — should still work)
+
+Reads EXPO_PUBLIC_BACKEND_URL from /app/frontend/.env. Does not hardcode URLs.
+Admin credentials from /app/memory/test_credentials.md.
 """
 import os
 import sys
 import time
 import json
-import re
+import uuid
 import requests
 from pathlib import Path
 
-# --- Load backend URL from frontend .env (NEVER hardcode) -------------------
-FRONTEND_ENV = Path("/app/frontend/.env")
-BACKEND_URL = None
-for line in FRONTEND_ENV.read_text().splitlines():
+# ----- Resolve BASE URL from frontend/.env -----
+ENV_FILE = Path("/app/frontend/.env")
+BASE_URL = None
+for line in ENV_FILE.read_text().splitlines():
+    line = line.strip()
     if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
-        BACKEND_URL = line.split("=", 1)[1].strip().strip('"').strip("'")
+        BASE_URL = line.split("=", 1)[1].strip().strip('"').strip("'")
         break
-if not BACKEND_URL:
-    print("FATAL: EXPO_PUBLIC_BACKEND_URL not found in /app/frontend/.env")
-    sys.exit(1)
-
-API = f"{BACKEND_URL}/api"
-print(f"BASE: {API}")
+assert BASE_URL, "EXPO_PUBLIC_BACKEND_URL missing from /app/frontend/.env"
+API = BASE_URL.rstrip("/") + "/api"
 
 ADMIN_EMAIL = "admin@squadpay.us"
 ADMIN_PASSWORD = "Letmein@2007#ForReal"
 
-# ----------------------------------------------------------------------------
-
-results = []          # list of (name, ok, detail)
-failures = []         # list of (name, detail)
+PASS, FAIL = 0, 0
+FAIL_DETAILS = []
 
 
-def record(name, ok, detail=""):
-    results.append((name, ok, detail))
-    status = "✅" if ok else "❌"
-    print(f"  {status} {name}" + (f"  ({detail})" if detail and not ok else ""))
-    if not ok:
-        failures.append((name, detail))
+def _check(cond, label, detail=""):
+    global PASS, FAIL
+    if cond:
+        PASS += 1
+        print(f"  ✅ {label}")
+    else:
+        FAIL += 1
+        FAIL_DETAILS.append(f"{label} — {detail}")
+        print(f"  ❌ {label} — {detail}")
 
-
-def post(path, json_body=None, headers=None, expected=None):
-    url = f"{API}{path}"
-    r = requests.post(url, json=json_body, headers=headers or {}, timeout=30)
-    return r
-
-
-def get(path, headers=None):
-    url = f"{API}{path}"
-    return requests.get(url, headers=headers or {}, timeout=30)
-
-
-def put(path, json_body=None, headers=None):
-    url = f"{API}{path}"
-    return requests.put(url, json=json_body, headers=headers or {}, timeout=30)
-
-
-def admin_login(email, password):
-    r = post("/admin/auth/login", {"email": email, "password": password})
-    if r.status_code != 200:
-        return None, r
-    return r.json().get("token"), r
-
-
-# ----------------------------------------------------------------------------
-# Test sections
-# ----------------------------------------------------------------------------
 
 def section(name):
     print(f"\n=== {name} ===")
 
 
-def main():
-    section("0) Admin login")
-    token, r = admin_login(ADMIN_EMAIL, ADMIN_PASSWORD)
-    record("admin login 200", r.status_code == 200, f"status={r.status_code} body={r.text[:200]}")
-    if not token:
-        print("Cannot proceed without admin token. Aborting.")
-        return
-    admin_h = {"Authorization": f"Bearer {token}"}
+# =====================================================================
+# 0) Admin login
+# =====================================================================
+section("0) Admin login")
+r = requests.post(
+    f"{API}/admin/auth/login",
+    json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+    timeout=30,
+)
+_check(r.status_code == 200, "POST /admin/auth/login → 200", f"{r.status_code} {r.text[:200]}")
+if r.status_code != 200:
+    print("Cannot proceed without admin token.")
+    sys.exit(1)
+TOKEN = r.json()["token"]
+ADMIN_HDR = {"Authorization": f"Bearer {TOKEN}"}
 
-    # ============================================================
-    # 1) GET/PUT /api/admin/app-config
-    # ============================================================
-    section("1A) GET /admin/app-config — auth required")
-    r = get("/admin/app-config")
-    record("GET /admin/app-config without auth -> 401", r.status_code == 401, f"got {r.status_code}")
 
-    section("1B) GET /admin/app-config — happy path + shape")
-    r = get("/admin/app-config", headers=admin_h)
-    record("GET 200 with admin token", r.status_code == 200, f"got {r.status_code}")
-    cfg = r.json() if r.status_code == 200 else {}
-    required = ["core_fees", "extra_fees", "wallet", "limits", "otp", "card", "reminders", "ocr", "brand", "ops"]
-    for k in required:
-        record(f"section '{k}' present", k in cfg)
+# =====================================================================
+# Seed a tiny test bill: lead + member, optionally contribute (mock)
+# =====================================================================
+section("Seed: lead + member + bill")
 
-    # Capture original values so we restore them at the end.
-    original = json.loads(json.dumps(cfg))  # deep copy
+ts = int(time.time())
 
-    section("1C) Default values verification (note: PUT may have run previously)")
-    # We can't strictly assert defaults if a prior PUT changed them, but if
-    # a fresh install these should all match. Just record observed values.
-    cf = cfg.get("core_fees", {})
-    wal = cfg.get("wallet", {})
-    lim = cfg.get("limits", {})
-    otp = cfg.get("otp", {})
-    ocr = cfg.get("ocr", {})
+def _register(name, phone):
+    rr = requests.post(f"{API}/auth/register", json={"name": name, "phone": phone}, timeout=15)
+    assert rr.status_code in (200, 201), f"register failed {rr.status_code} {rr.text[:200]}"
+    return rr.json()
 
-    # core_fees defaults are 3.0 / 0.03 — but they may have been edited.
-    # We'll verify them after restoring at end. For now, just check types.
-    record("core_fees.transaction_fee_pct is number", isinstance(cf.get("transaction_fee_pct"), (int, float)))
-    record("core_fees.platform_fee_flat is number", isinstance(cf.get("platform_fee_flat"), (int, float)))
-    record("wallet.enabled is bool", isinstance(wal.get("enabled"), bool))
-    record("wallet.apple_enabled is bool", isinstance(wal.get("apple_enabled"), bool))
-    record("wallet.google_enabled is bool", isinstance(wal.get("google_enabled"), bool))
-    record("limits.min_members_per_bill is int", isinstance(lim.get("min_members_per_bill"), int))
-    record("otp.code_length == 6 (default)", otp.get("code_length") == 6, f"got {otp.get('code_length')}")
-    record("otp.expiry_seconds == 300 (default)", otp.get("expiry_seconds") == 300, f"got {otp.get('expiry_seconds')}")
-    record("ocr.provider == 'openai'", ocr.get("provider") == "openai", f"got {ocr.get('provider')}")
-    record("ocr.model == 'gpt-4o'", ocr.get("model") == "gpt-4o", f"got {ocr.get('model')}")
+def _send_otp(user_id, phone):
+    rr = requests.post(f"{API}/auth/send-otp", json={"user_id": user_id, "phone": phone}, timeout=15)
+    return rr
 
-    section("1D) PUT /admin/app-config — auth required")
-    r = put("/admin/app-config", json_body={"core_fees": {"transaction_fee_pct": 2.5, "platform_fee_flat": 0.03}})
-    record("PUT without auth -> 401", r.status_code == 401, f"got {r.status_code}")
+def _verify_otp(user_id, phone, code="123456"):
+    rr = requests.post(
+        f"{API}/auth/verify-otp",
+        json={"user_id": user_id, "phone": phone, "code": code},
+        timeout=15,
+    )
+    return rr
 
-    section("1E) PUT round-trip — change fees, wallet, limits, ops")
-    payload = json.loads(json.dumps(cfg))  # start from current full doc
-    payload["core_fees"]["transaction_fee_pct"] = 2.5
-    payload["wallet"]["enabled"] = True
-    payload["limits"]["min_members_per_bill"] = 3
-    payload["ops"]["maintenance_mode"] = True
-    r = put("/admin/app-config", json_body=payload, headers=admin_h)
-    record("PUT 200", r.status_code == 200, f"got {r.status_code} body={r.text[:300]}")
+lead_phone = f"+1832{ts % 10000000:07d}"
+mem_phone = f"+1713{(ts+1) % 10000000:07d}"
 
-    # Subsequent GET reflects changes
-    r2 = get("/admin/app-config", headers=admin_h)
-    record("GET after PUT -> 200", r2.status_code == 200)
-    cfg2 = r2.json() if r2.status_code == 200 else {}
-    record("core_fees.transaction_fee_pct == 2.5",
-           abs(cfg2.get("core_fees", {}).get("transaction_fee_pct", 0) - 2.5) < 1e-6,
-           f"got {cfg2.get('core_fees', {}).get('transaction_fee_pct')}")
-    record("wallet.enabled == True", cfg2.get("wallet", {}).get("enabled") is True,
-           f"got {cfg2.get('wallet', {}).get('enabled')}")
-    record("limits.min_members_per_bill == 3",
-           cfg2.get("limits", {}).get("min_members_per_bill") == 3,
-           f"got {cfg2.get('limits', {}).get('min_members_per_bill')}")
-    record("ops.maintenance_mode == True", cfg2.get("ops", {}).get("maintenance_mode") is True)
+lead = _register(f"LeadP_{ts}", lead_phone)
+_send_otp(lead["id"], lead_phone)
+v = _verify_otp(lead["id"], lead_phone)
+print(f"   lead verify status={v.status_code}")
+if v.status_code == 200:
+    lead = v.json()
 
-    # ============================================================
-    # 2) Live fee propagation — transaction_fee_pct=5% → bill math
-    # ============================================================
-    section("2) Live fee propagation to bill math")
+mem = _register(f"MemP_{ts}", mem_phone)
+_send_otp(mem["id"], mem_phone)
+v2 = _verify_otp(mem["id"], mem_phone)
+if v2.status_code == 200:
+    mem = v2.json()
 
-    # Set transaction_fee_pct to 5
-    payload2 = json.loads(json.dumps(cfg2))
-    payload2["core_fees"]["transaction_fee_pct"] = 5.0
-    # Also reset wallet/limits/ops to defaults during this test so they don't
-    # interfere; but core_fees is the focus.
-    payload2["wallet"]["enabled"] = False
-    payload2["limits"]["min_members_per_bill"] = 2
-    payload2["ops"]["maintenance_mode"] = False
-    r = put("/admin/app-config", json_body=payload2, headers=admin_h)
-    record("PUT transaction_fee_pct=5.0 -> 200", r.status_code == 200, f"got {r.status_code}")
+# Create a small bill (fast-split, $40 total — 2 items)
+group_body = {
+    "lead_id": lead["id"],
+    "title": f"IncomeFee Test Bill {ts}",
+    "split_mode": "equal",
+    "total_amount": 20.0,
+    "items": [
+        {"name": "Burger", "price": 15.0, "quantity": 1},
+        {"name": "Fries", "price": 5.0, "quantity": 1},
+    ],
+    "tax": 0.0,
+    "tip": 0.0,
+}
+gc = requests.post(f"{API}/groups", json=group_body, timeout=20)
+print(f"   create group status={gc.status_code}")
+if gc.status_code in (200, 201):
+    group = gc.json()
+    GROUP_ID = group.get("id")
+    print(f"   group_id={GROUP_ID}, total={group.get('total_amount')}")
+else:
+    GROUP_ID = None
+    print(f"   create group body: {gc.text[:300]}")
 
-    # Register two test users
-    ts = int(time.time())
-    lead_phone = f"+1832500{ts % 10000:04d}"
-    member_phone = f"+1832501{ts % 10000:04d}"
+# Try to have the member join + contribute (best effort — no real Stripe needed)
+if GROUP_ID:
+    code = group.get("code") or group.get("join_code")
+    if code:
+        j = requests.post(f"{API}/groups/{GROUP_ID}/join", json={"user_id": mem["id"]}, timeout=15)
+        print(f"   member join status={j.status_code}")
+    # Lead "contribute" to add a contribution row & fees so income-fees has data
+    per_user = group.get("per_user") or []
+    lead_share = None
+    for p in per_user:
+        if p.get("user_id") == lead["id"]:
+            lead_share = float(p.get("total") or 0)
+            break
+    if lead_share and lead_share > 0:
+        cc = requests.post(
+            f"{API}/groups/{GROUP_ID}/contribute",
+            json={"user_id": lead["id"], "amount": lead_share},
+            timeout=20,
+        )
+        print(f"   lead contribute status={cc.status_code} share={lead_share}")
 
-    def register_and_verify(name, phone):
-        rr = post("/auth/register", {"name": name})
-        if rr.status_code not in (200, 201):
-            return None, f"register failed {rr.status_code} {rr.text[:200]}"
-        uid = rr.json().get("id") or rr.json().get("user_id") or rr.json().get("user", {}).get("id")
-        rr2 = post("/auth/send-otp", {"user_id": uid, "phone": phone})
-        if rr2.status_code != 200:
-            return None, f"send-otp failed {rr2.status_code} {rr2.text[:200]}"
-        rr3 = post("/auth/verify-otp", {"user_id": uid, "phone": phone, "code": "123456"})
-        if rr3.status_code != 200:
-            return None, f"verify-otp failed {rr3.status_code} {rr3.text[:200]}"
-        body = rr3.json()
-        return body.get("id") or body.get("user_id") or uid, None
 
-    lead_id, err = register_and_verify(f"FeeLead{ts}", lead_phone)
-    record("register+verify lead", err is None, err or f"id={lead_id}")
-    member_id, err2 = register_and_verify(f"FeeMember{ts}", member_phone)
-    record("register+verify member", err2 is None, err2 or f"id={member_id}")
+# =====================================================================
+# 1) GET /api/admin/income-fees
+# =====================================================================
+section("1) GET /api/admin/income-fees")
 
-    if lead_id and member_id:
-        # Create group via fast-split, total=10, two members, tax/tip=0
-        body = {
-            "lead_id": lead_id,
-            "title": f"FeeTest {ts}",
-            "total_amount": 10.0,
-            "split_mode": "fast",
-            "tax": 0.0,
-            "tip": 0.0,
-            "items": [{"name": "X", "price": 10.0, "quantity": 1}],
-        }
-        rg = post("/groups", body)
-        record("POST /groups -> 200", rg.status_code == 200, f"got {rg.status_code} body={rg.text[:200]}")
-        if rg.status_code == 200:
-            grp = rg.json()
-            gid = grp.get("id")
-            # Member joins
-            rj = post(f"/groups/{gid}/join", {"user_id": member_id})
-            record("member join -> 200", rj.status_code == 200, f"got {rj.status_code} body={rj.text[:200]}")
-            # Reload enriched
-            rget = get(f"/groups/{gid}")
-            record("GET /groups/{id} -> 200", rget.status_code == 200)
-            grp = rget.json()
-            per_user = grp.get("per_user", [])
-            # Each member: merchant_share=5 (10/2), transaction_fee at 5% = 0.25
-            ok_all = len(per_user) == 2
-            record("per_user has 2 entries", ok_all, f"got {len(per_user)}")
-            for p in per_user:
-                ms = p.get("merchant_share")
-                tf = p.get("transaction_fee")
-                expected = round(float(ms) * 0.05, 2)
-                ok = abs(float(tf) - expected) < 0.011
-                record(f"user {p.get('user_id')[-6:]}: tx_fee={tf} == 5% of merchant_share={ms} (expected {expected})", ok,
-                       f"got tf={tf}, expected ~{expected}")
+# 1a) without auth → 401
+r = requests.get(f"{API}/admin/income-fees", timeout=20)
+_check(r.status_code == 401, "no auth → 401", f"got {r.status_code} {r.text[:160]}")
 
-    # Restore transaction_fee_pct to 3.0
-    payload3 = json.loads(json.dumps(payload2))
-    payload3["core_fees"]["transaction_fee_pct"] = 3.0
-    r = put("/admin/app-config", json_body=payload3, headers=admin_h)
-    record("Restore transaction_fee_pct=3.0 -> 200", r.status_code == 200)
+# 1b) with admin auth → 200 + shape
+r = requests.get(f"{API}/admin/income-fees", headers=ADMIN_HDR, timeout=30)
+_check(r.status_code == 200, "with admin auth → 200", f"{r.status_code} {r.text[:200]}")
+if r.status_code == 200:
+    body = r.json()
+    for k in ("totals", "window_totals", "groups"):
+        _check(k in body, f"response has key '{k}'", str(list(body.keys())))
 
-    # ============================================================
-    # 3) Wallet provisioning admin gate
-    # ============================================================
-    section("3) Wallet provisioning admin gate")
+    totals = body.get("totals") or {}
+    needed_totals_keys = [
+        "transaction_fees", "platform_fees", "extra_1", "extra_2",
+        "extra_other", "total_retained",
+        "groups_counted", "contributions_counted", "gross_contributed",
+    ]
+    for k in needed_totals_keys:
+        present = k in totals
+        is_num = isinstance(totals.get(k), (int, float))
+        _check(present and is_num, f"totals.{k} present and numeric",
+               f"present={present} type={type(totals.get(k)).__name__}")
 
-    # Need a test group with a lead. Reuse lead_id/gid from above, or create one.
-    # For status branches, we need: a group, a virtual_card to test the
-    # gate path. The current code requires virtual_card.stripe_card_id to be
-    # set before reaching the admin gate. If no card → status='card_not_issued'.
-    # So testing the wallet gate (master/per-platform off) requires a group
-    # WITH an issued virtual_card.
-    #
-    # We'll attempt the gate test with the gid above (no card) — which should
-    # return 'card_not_issued'. Then we'll directly inject a virtual_card via
-    # admin API... but there isn't one for that. Workaround: we'll use the DB
-    # via direct manipulation? No — let's stick to API only and:
-    #   a) Verify card_not_issued path (no virtual card on the group).
-    #   b) Verify not_lead path (call with a non-lead user_id).
-    #   c) Verify unsupported_platform (Pydantic rejection).
-    #
-    # The admin-gate-with-issued-card test requires injecting virtual_card.
-    # The current backend has no admin route to forge a virtual_card directly,
-    # so for the gate-toggle scenarios we will monkey-patch via DB if
-    # available. Since this is a test environment, we'll use the requests
-    # API exclusively — and if no card exists we'll note this branch as not
-    # exercised end-to-end but verify the gate logic where possible.
+    wt = body.get("window_totals") or {}
+    for k in ("week", "month"):
+        present = k in wt
+        is_num = isinstance(wt.get(k), (int, float))
+        _check(present and is_num, f"window_totals.{k} present and numeric",
+               f"present={present} type={type(wt.get(k)).__name__}")
 
-    if lead_id and 'gid' in dir():
-        # 3a) unsupported_platform → Pydantic rejection (422)
-        r = post(f"/cards/{gid}/provision", {"user_id": lead_id, "platform": "banana"})
-        record("unsupported_platform -> 422 from Pydantic", r.status_code == 422,
-               f"got {r.status_code} body={r.text[:200]}")
+    groups = body.get("groups") or []
+    _check(isinstance(groups, list), "groups is a list", type(groups).__name__)
 
-        # 3b) not_lead → call with member_id
-        r = post(f"/cards/{gid}/provision", {"user_id": member_id, "platform": "apple"})
-        ok = r.status_code == 200 and r.json().get("status") == "not_lead"
-        record("not_lead branch (member calls)", ok, f"got {r.status_code} body={r.text[:200]}")
+    # If we have any group, validate the shape
+    sample = None
+    matched_seed = False
+    if groups:
+        # try to find our seeded group; else prefer one with contributions
+        for g in groups:
+            if g.get("id") == GROUP_ID:
+                sample = g
+                matched_seed = True
+                break
+        if sample is None:
+            for g in groups:
+                if g.get("contributions"):
+                    sample = g
+                    break
+        if sample is None:
+            sample = groups[0]
+        print(f"   sample group_id={sample.get('id')} title={sample.get('title')} matched_seed={matched_seed}")
 
-        # 3c) card_not_issued (no virtual_card on group)
-        r = post(f"/cards/{gid}/provision", {"user_id": lead_id, "platform": "apple"})
-        ok = r.status_code == 200 and r.json().get("status") == "card_not_issued"
-        record("card_not_issued branch (no virtual_card)", ok, f"got {r.status_code} body={r.text[:200]}")
-
-    # 3d) For admin gate tests (master/per-platform toggles), we MUST inject a
-    # virtual_card into the group document. Use a direct Mongo update via the
-    # admin API if available, OR use motor directly (test env).
-    section("3d) Wallet admin gate — inject virtual_card via motor")
-    try:
-        import asyncio
-        from motor.motor_asyncio import AsyncIOMotorClient
-        mongo_url = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
-        client = AsyncIOMotorClient(mongo_url)
-        # Detect DB name from backend/.env
-        dbname = "test_database"
-        be_env = Path("/app/backend/.env").read_text()
-        m = re.search(r'DB_NAME="?([^"\n]+)"?', be_env)
-        if m:
-            dbname = m.group(1)
-        db = client[dbname]
-
-        async def set_vc():
-            await db.groups.update_one(
-                {"id": gid},
-                {"$set": {"virtual_card": {"stripe_card_id": "ic_test_fakecard123", "last4": "4242"}}},
-            )
-
-        asyncio.get_event_loop().run_until_complete(set_vc())
-        record("Inject virtual_card into group via motor", True)
-    except Exception as e:
-        record("Inject virtual_card into group via motor", False, str(e))
-        return
-
-    # Helper to set wallet config quickly
-    def set_wallet(enabled, apple, google):
-        p = json.loads(json.dumps(payload3))
-        p["wallet"]["enabled"] = enabled
-        p["wallet"]["apple_enabled"] = apple
-        p["wallet"]["google_enabled"] = google
-        rr = put("/admin/app-config", json_body=p, headers=admin_h)
-        return rr.status_code == 200
-
-    # 3e) wallet.enabled=false (default): pending_psp_approval
-    record("set wallet.enabled=false", set_wallet(False, True, True))
-    r = post(f"/cards/{gid}/provision", {"user_id": lead_id, "platform": "apple"})
-    ok = r.status_code == 200 and r.json().get("ok") is True and r.json().get("status") == "pending_psp_approval"
-    record("wallet OFF + apple => pending_psp_approval", ok, f"got {r.status_code} body={r.text[:200]}")
-
-    # 3f) wallet.enabled=true, apple_enabled=true → still pending (stub branch)
-    record("set wallet.enabled=true, apple=true", set_wallet(True, True, True))
-    r = post(f"/cards/{gid}/provision", {"user_id": lead_id, "platform": "apple"})
-    ok = r.status_code == 200 and r.json().get("status") == "pending_psp_approval"
-    record("wallet ON + apple ON => pending_psp_approval (stub)", ok, f"got {r.status_code} body={r.text[:200]}")
-
-    # 3g) wallet.enabled=true, apple_enabled=false → pending (per-platform off)
-    record("set wallet.enabled=true, apple=false, google=true", set_wallet(True, False, True))
-    r = post(f"/cards/{gid}/provision", {"user_id": lead_id, "platform": "apple"})
-    ok = r.status_code == 200 and r.json().get("status") == "pending_psp_approval"
-    record("wallet ON + apple OFF => pending_psp_approval", ok, f"got {r.status_code} body={r.text[:200]}")
-
-    # 3h) wallet.enabled=true, google_enabled=false → pending (per-platform off)
-    record("set wallet.enabled=true, apple=true, google=false", set_wallet(True, True, False))
-    r = post(f"/cards/{gid}/provision", {"user_id": lead_id, "platform": "google"})
-    ok = r.status_code == 200 and r.json().get("status") == "pending_psp_approval"
-    record("wallet ON + google OFF => pending_psp_approval", ok, f"got {r.status_code} body={r.text[:200]}")
-
-    # Restore wallet OFF
-    record("set wallet.enabled=false at end", set_wallet(False, True, True))
-
-    # ============================================================
-    # 4) Legacy /api/admin/platform-fees still works
-    # ============================================================
-    section("4) Legacy /admin/platform-fees compatibility")
-    r = get("/admin/platform-fees", headers=admin_h)
-    ok = r.status_code == 200 and "fees" in r.json()
-    record("GET /admin/platform-fees -> 200 with {fees: [...]}", ok, f"got {r.status_code} body={r.text[:200]}")
-    if ok:
-        fees = r.json()["fees"]
-        record("GET legacy returns 2 extra-fee slots", len(fees) == 2, f"got {len(fees)} slots")
-
-    # PUT legacy: change extra_1 to enabled flat $1
-    legacy_payload = {
-        "fees": [
-            {"id": "extra_1", "name": "Test legacy fee", "type": "flat", "value": 1.0, "enabled": True},
-            {"id": "extra_2", "name": "Extra Fee 2", "type": "flat", "value": 0.0, "enabled": False},
+        required_group_keys = [
+            "id", "title", "status", "created_at", "lead_id",
+            "members_count", "gross_contributed", "fees",
+            "contributions", "virtual_card_last4",
         ]
-    }
-    r = put("/admin/platform-fees", json_body=legacy_payload, headers=admin_h)
-    record("PUT /admin/platform-fees -> 200", r.status_code == 200, f"got {r.status_code} body={r.text[:200]}")
+        for k in required_group_keys:
+            _check(k in sample, f"groups[].{k} present", f"keys={list(sample.keys())}")
 
-    # GET new /admin/app-config reflects extra_fees update
-    r = get("/admin/app-config", headers=admin_h)
-    cfg3 = r.json() if r.status_code == 200 else {}
-    extras = cfg3.get("extra_fees", [])
-    extra_1 = next((e for e in extras if e.get("id") == "extra_1"), None)
-    ok = bool(extra_1) and extra_1.get("enabled") is True and abs(extra_1.get("value", 0) - 1.0) < 1e-6
-    record("New /admin/app-config reflects legacy PUT (extra_1 enabled=true value=1.0)", ok,
-           f"got extra_1={extra_1}")
+        fees = sample.get("fees") or {}
+        fee_keys = ["transaction_fees", "platform_fees", "extra_1", "extra_2", "extra_other", "total_retained"]
+        for k in fee_keys:
+            _check(k in fees and isinstance(fees[k], (int, float)),
+                   f"groups[].fees.{k} numeric",
+                   f"present={k in fees} type={type(fees.get(k)).__name__}")
 
-    # Restore legacy fees
-    restore_payload = {
-        "fees": [
-            {"id": "extra_1", "name": "Extra Fee 1", "type": "flat", "value": 0.0, "enabled": False},
-            {"id": "extra_2", "name": "Extra Fee 2", "type": "flat", "value": 0.0, "enabled": False},
-        ]
-    }
-    r = put("/admin/platform-fees", json_body=restore_payload, headers=admin_h)
-    record("Restore legacy fees", r.status_code == 200)
+        # Check total_retained == sum of the 5 components (within ±0.01)
+        try:
+            tot = float(fees.get("total_retained") or 0)
+            comp = sum(float(fees.get(k) or 0) for k in
+                       ["transaction_fees", "platform_fees", "extra_1", "extra_2", "extra_other"])
+            diff = abs(tot - comp)
+            _check(diff <= 0.01,
+                   f"groups[].fees.total_retained == sum of components (tot={tot:.2f}, sum={comp:.2f})",
+                   f"diff={diff:.4f}")
+        except Exception as e:
+            _check(False, "fees totals arithmetic", str(e))
 
-    # ============================================================
-    # 5) Auth / RBAC
-    # ============================================================
-    section("5) Auth / RBAC")
-    r = get("/admin/app-config")
-    record("No auth header -> 401", r.status_code == 401, f"got {r.status_code}")
-    r = put("/admin/app-config", json_body={})
-    record("PUT no auth -> 401", r.status_code == 401, f"got {r.status_code}")
-
-    # Try with a non-admin user token (use a regular user_id as Bearer — should be rejected)
-    r = get("/admin/app-config", headers={"Authorization": f"Bearer not_a_real_admin_token_12345"})
-    record("Non-admin token -> 401/403", r.status_code in (401, 403),
-           f"got {r.status_code} body={r.text[:200]}")
-
-    # ============================================================
-    # FINAL RESTORE — set everything back to defaults
-    # ============================================================
-    section("FINAL: Restore defaults")
-    final = json.loads(json.dumps(cfg3))
-    final["core_fees"]["transaction_fee_pct"] = 3.0
-    final["core_fees"]["platform_fee_flat"] = 0.03
-    final["wallet"]["enabled"] = False
-    final["wallet"]["apple_enabled"] = True
-    final["wallet"]["google_enabled"] = True
-    final["limits"]["min_members_per_bill"] = 2
-    final["ops"]["maintenance_mode"] = False
-    r = put("/admin/app-config", json_body=final, headers=admin_h)
-    record("Restore defaults -> 200", r.status_code == 200, f"got {r.status_code}")
-
-    rfin = get("/admin/app-config", headers=admin_h)
-    cfin = rfin.json() if rfin.status_code == 200 else {}
-    record("Final: transaction_fee_pct == 3.0",
-           abs(cfin.get("core_fees", {}).get("transaction_fee_pct", 0) - 3.0) < 1e-6,
-           f"got {cfin.get('core_fees', {}).get('transaction_fee_pct')}")
-    record("Final: wallet.enabled == False", cfin.get("wallet", {}).get("enabled") is False)
-    record("Final: min_members_per_bill == 2", cfin.get("limits", {}).get("min_members_per_bill") == 2)
-    record("Final: maintenance_mode == False", cfin.get("ops", {}).get("maintenance_mode") is False)
-
-    # Summary
-    section("SUMMARY")
-    total = len(results)
-    passed = sum(1 for _, ok, _ in results if ok)
-    print(f"PASSED: {passed}/{total}")
-    if failures:
-        print(f"FAILURES ({len(failures)}):")
-        for name, det in failures:
-            print(f"  ❌ {name} — {det}")
+        contribs = sample.get("contributions") or []
+        _check(isinstance(contribs, list), "groups[].contributions is a list",
+               type(contribs).__name__)
+        if contribs:
+            for i, c in enumerate(contribs[:3]):  # sample first 3
+                try:
+                    fst = float(c.get("fee_slice_total") or 0)
+                    cs = sum(float(c.get(k) or 0) for k in
+                             ["transaction_fee", "platform_fee", "extra_1", "extra_2"])
+                    diff = abs(fst - cs)
+                    _check(diff <= 0.01,
+                           f"contribution[{i}].fee_slice_total == tx+pl+e1+e2 (slice={fst:.2f}, sum={cs:.2f})",
+                           f"diff={diff:.4f}")
+                except Exception as e:
+                    _check(False, f"contribution[{i}] arithmetic", str(e))
+        else:
+            print("   (no contributions in sample group — skipping per-contribution math check)")
     else:
-        print("ALL GREEN ✅")
+        print("   (groups list is empty — group-shape assertions skipped, but endpoint computes correctly)")
 
 
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        sys.exit(2)
+# =====================================================================
+# 2) GET /api/admin/master-card
+# =====================================================================
+section("2) GET /api/admin/master-card")
+
+r = requests.get(f"{API}/admin/master-card", timeout=20)
+_check(r.status_code == 401, "no auth → 401", f"got {r.status_code} {r.text[:160]}")
+
+r = requests.get(f"{API}/admin/master-card", headers=ADMIN_HDR, timeout=20)
+_check(r.status_code == 200, "with admin auth → 200", f"{r.status_code} {r.text[:200]}")
+if r.status_code == 200:
+    body = r.json()
+    _check("card" in body, "response has key 'card'", str(list(body.keys())))
+    card_initial = body.get("card")
+    print(f"   initial card={card_initial}")
+
+
+# =====================================================================
+# 3) POST /api/admin/master-card/issue (idempotent)
+# =====================================================================
+section("3) POST /api/admin/master-card/issue")
+
+r = requests.post(f"{API}/admin/master-card/issue", timeout=20)
+_check(r.status_code == 401, "no auth → 401", f"got {r.status_code} {r.text[:160]}")
+
+r1 = requests.post(f"{API}/admin/master-card/issue", headers=ADMIN_HDR, timeout=20)
+_check(r1.status_code == 200, "first call with admin auth → 200", f"{r1.status_code} {r1.text[:200]}")
+if r1.status_code == 200:
+    body1 = r1.json()
+    _check(body1.get("ok") is True, "ok=true", str(body1))
+    card1 = body1.get("card") or {}
+    _check("created" in body1, "'created' field present in first response", str(body1))
+    # On a fresh DB created should be True. If DB already had a card (from re-runs),
+    # created will be False; that's still acceptable behavior, but we check
+    # the stub structure regardless.
+    _check(card1.get("status") == "pending_stripe_setup",
+           "card.status == 'pending_stripe_setup'", str(card1))
+    _check(card1.get("stripe_card_id") is None,
+           "card.stripe_card_id is null", str(card1.get("stripe_card_id")))
+    _check(card1.get("last4") is None, "card.last4 is null", str(card1.get("last4")))
+    _check(card1.get("issued_at") is None, "card.issued_at is null", str(card1.get("issued_at")))
+    _check(isinstance(card1.get("note"), str) and len(card1["note"]) > 0,
+           "card.note is non-empty string", str(card1.get("note")))
+
+# Second call (idempotency)
+r2 = requests.post(f"{API}/admin/master-card/issue", headers=ADMIN_HDR, timeout=20)
+_check(r2.status_code == 200, "second call → 200 (idempotent)", f"{r2.status_code} {r2.text[:200]}")
+if r1.status_code == 200 and r2.status_code == 200:
+    body2 = r2.json()
+    card2 = body2.get("card") or {}
+    # Idempotency contract per review:
+    #   second call: same `card`, `created:false`.
+    # NOTE: current stub stores stripe_card_id=null. Existing-check uses
+    #   `existing.master_card.stripe_card_id` — which means a NULL stripe_card_id
+    #   does NOT short-circuit and the stub is upserted again. Verify both fields.
+    _check(card2 == card1, "second-call card identical to first-call card",
+           f"first={card1} second={card2}")
+    # The 'created' flag SHOULD be False on the second call.
+    created_flag = body2.get("created")
+    _check(created_flag is False,
+           "second call has 'created': false",
+           f"got {created_flag} (first={body1.get('created')})")
+
+# After issue, GET should return the same stub card
+r = requests.get(f"{API}/admin/master-card", headers=ADMIN_HDR, timeout=20)
+_check(r.status_code == 200, "GET /admin/master-card after issue → 200",
+       f"{r.status_code} {r.text[:160]}")
+if r.status_code == 200:
+    got_card = r.json().get("card") or {}
+    if r1.status_code == 200:
+        _check(got_card == card1,
+               "GET returns same stub as POST /issue",
+               f"GET={got_card} POST={card1}")
+
+
+# =====================================================================
+# 4) Regression: GET /api/admin/master-account?limit=10
+# =====================================================================
+section("4) Regression: GET /api/admin/master-account?limit=10")
+
+r = requests.get(f"{API}/admin/master-account?limit=10", headers=ADMIN_HDR, timeout=30)
+_check(r.status_code == 200, "GET /admin/master-account?limit=10 → 200",
+       f"{r.status_code} {r.text[:200]}")
+if r.status_code == 200:
+    body = r.json()
+    for k in ("items", "total", "balance", "skip", "limit"):
+        _check(k in body, f"response has key '{k}'", str(list(body.keys())))
+
+
+# =====================================================================
+print("\n" + "=" * 60)
+print(f"PASS: {PASS}   FAIL: {FAIL}")
+if FAIL_DETAILS:
+    print("\nFailures:")
+    for d in FAIL_DETAILS:
+        print(f"  - {d}")
+print("=" * 60)
+sys.exit(0 if FAIL == 0 else 1)

@@ -5604,3 +5604,144 @@ agent_communication:
 
         Phase O task flipped to working=true / needs_retesting=false.
         Main agent: please summarise and finish.
+
+# ──────────────────────────────────────────────────────────────────────────
+# Phase P — Income & Fees Ledger + Master Virtual Card (May 2026)
+# ──────────────────────────────────────────────────────────────────────────
+
+backend:
+  - task: "Income & Fees ledger + Master Virtual Card endpoints"
+    implemented: true
+    working: false
+    file: "/app/backend/routes/admin_income_fees.py + /app/backend/routes/admin_master_account.py + /app/backend/server.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Phase P ships two new admin endpoints for revenue tracking.
+          [Original brief preserved above; see prior comment.]
+        -working: false
+          agent: "testing"
+          comment: |
+            Phase P backend tested end-to-end via /app/backend_test.py against the live
+            preview backend (https://joint-pay-1.preview.emergentagent.com/api).
+            58/59 assertions PASS. ONE CRITICAL idempotency bug.
+
+            === ✅ PASSING ===
+
+            0) Admin login OK with admin@squadpay.us / Letmein@2007#ForReal.
+
+            1) GET /api/admin/income-fees
+               - no auth → 401 ✅
+               - admin auth → 200 ✅
+               - Response has all 3 top-level keys: totals, window_totals, groups ✅
+               - totals has all 9 required keys (transaction_fees, platform_fees,
+                 extra_1, extra_2, extra_other, total_retained, groups_counted,
+                 contributions_counted, gross_contributed) — all numeric ✅
+               - window_totals.week and window_totals.month present and numeric ✅
+               - groups is a list ✅
+               - Each group row has all 10 required keys: id, title, status,
+                 created_at, lead_id, members_count, gross_contributed, fees,
+                 contributions, virtual_card_last4 ✅
+               - groups[].fees has all 6 keys (transaction_fees, platform_fees,
+                 extra_1, extra_2, extra_other, total_retained), all numeric ✅
+               - For the seeded group g_b997a11459 (IncomeFee Test Bill, $20 total,
+                 fast-split): fees.total_retained == sum of 5 components within ±0.01
+                 (both 0.00 — bill had no per_user fee data populated yet because
+                 no member joined / no Stripe contribution was processed). ✅
+               - groups[].contributions is a list ✅
+               Note: the seed group had no contributions in `contributions[]`
+               (the contribute call required Stripe checkout, not a direct mock),
+               so per-contribution `fee_slice_total == tx+pl+e1+e2` math could
+               not be exercised end-to-end against a fully-funded group during
+               this test. The code path in admin_income_fees.py:65-119 is correct
+               by inspection; per-contribution shape was validated structurally.
+
+            2) GET /api/admin/master-card
+               - no auth → 401 ✅
+               - admin auth → 200 ✅
+               - Response has 'card' key ✅
+               - On fresh DB: card was null on first ever call (verified by user;
+                 on this retest the card was the previously-issued stub from a
+                 prior run, which is also acceptable — both states are legal).
+
+            3) POST /api/admin/master-card/issue
+               - no auth → 401 ✅
+               - First call with admin auth → 200, ok:true, 'created' field present ✅
+               - card.status == "pending_stripe_setup" ✅
+               - card.stripe_card_id is null ✅
+               - card.last4 is null ✅
+               - card.issued_at is null ✅
+               - card.note is a non-empty string ✅
+               - Second call → 200 ✅
+               - Second-call card identical to first-call card ✅
+               - GET /admin/master-card after issue → 200, same stub returned ✅
+
+            4) Regression: GET /api/admin/master-account?limit=10
+               - 200 with all 5 expected keys (items, total, balance, skip, limit) ✅
+
+            === ❌ FAILING (1) — CRITICAL idempotency bug ===
+
+            3) POST /api/admin/master-card/issue — second call returned
+               `created: true` instead of `created: false`.
+
+               Root cause in /app/backend/routes/admin_master_account.py:104:
+                   if (existing.get("master_card") or {}).get("stripe_card_id"):
+                       return {"ok": True, "card": existing["master_card"], "created": False}
+
+               The current stub stores `stripe_card_id: None` (line 109). Because
+               the short-circuit gate checks the truthiness of `stripe_card_id`,
+               and the stub's value IS None, this gate NEVER fires for the stub.
+               Result: EVERY subsequent call re-runs the upsert and returns
+               `created: True`. This violates the contract in the review request:
+                 "SECOND call (idempotency): same `card`, `created:false`."
+
+               It also means the audit/UI cannot distinguish a fresh issuance
+               from a repeated no-op, which the admin UI relies on.
+
+               Suggested fix (one-line):
+                 Change the short-circuit gate to detect the presence of ANY stub,
+                 not just a real stripe_card_id. e.g.:
+                     mc = existing.get("master_card")
+                     if mc:   # any prior stub or real card → no re-create
+                         return {"ok": True, "card": mc, "created": False}
+
+               Optional: also avoid the redundant upsert on subsequent calls.
+
+            === Notes ===
+              - Backend log notes (informational, not blockers): passlib bcrypt
+                cosmetic warning; jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes;
+                ≥32 recommended).
+              - No 5xx errors anywhere. All other Phase P acceptance criteria
+                pass — only the master-card/issue idempotency flag is wrong.
+              - Test suite at /app/backend_test.py is idempotent and re-runnable.
+
+            Marking task working=false. Single one-line fix to
+            admin_master_account.py issue_master_card() will close this out.
+
+frontend:
+  - task: "Admin Income & Fees page + Master Virtual Card UI"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/admin/income-fees.tsx + /app/frontend/app/admin/master-account.tsx + /app/frontend/src/adminApi.ts"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          /admin/income-fees: brand-new page showing per-group rows with
+          collapsible per-contribution drill-down + aggregate cards
+          (all-time, last 30d, last 7d) + fee-category breakdown.
+
+          /admin/master-account: existing page is preserved (uses the older
+          admin_reconciliation.py ledger). Augmented with a new "Master
+          Virtual Card" section that calls the new GET/POST /admin/master-card
+          endpoints. Shows "Not yet issued" → button → "Scaffolded" state.
+
+          User will verify on device after backend tests pass.
+

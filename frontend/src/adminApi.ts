@@ -363,6 +363,72 @@ export const adminApi = {
   getAppConfig: () => request<AppConfig>('/app-config'),
   updateAppConfig: (cfg: AppConfig) =>
     request<AppConfig>('/app-config', { method: 'PUT', body: JSON.stringify(cfg) }),
+
+  // -------- Income & Fees ledger (Batch B) --------
+  getIncomeFees: () => request<IncomeFeesResponse>('/income-fees'),
+
+  // -------- Master Virtual Card (Batch C — new; existing /master-account ledger lives at adminApi.getMasterAccount above) --------
+  getMasterCard: () => request<{ card: MasterCard | null }>('/master-card'),
+  issueMasterCard: () =>
+    request<{ ok: boolean; card: MasterCard; created: boolean }>('/master-card/issue', {
+      method: 'POST',
+    }),
+};
+
+export type IncomeFeesGroup = {
+  id: string;
+  title: string;
+  status: string;
+  created_at: string | null;
+  settled_at: string | null;
+  lead_id: string;
+  members_count: number;
+  gross_contributed: number;
+  fees: {
+    transaction_fees: number;
+    platform_fees: number;
+    extra_1: number;
+    extra_2: number;
+    extra_other: number;
+    total_retained: number;
+  };
+  contributions: Array<{
+    user_id: string;
+    user_name: string;
+    amount: number;
+    stripe_pi: string | null;
+    ts: string | null;
+    transaction_fee: number;
+    platform_fee: number;
+    extra_1: number;
+    extra_2: number;
+    fee_slice_total: number;
+  }>;
+  virtual_card_last4: string | null;
+};
+
+export type IncomeFeesResponse = {
+  totals: {
+    transaction_fees: number;
+    platform_fees: number;
+    extra_1: number;
+    extra_2: number;
+    extra_other: number;
+    total_retained: number;
+    groups_counted: number;
+    contributions_counted: number;
+    gross_contributed: number;
+  };
+  window_totals: { week: number; month: number };
+  groups: IncomeFeesGroup[];
+};
+
+export type MasterCard = {
+  stripe_card_id: string | null;
+  last4: string | null;
+  status: string;
+  issued_at: string | null;
+  note?: string;
 };
 
 export type AppConfig = {

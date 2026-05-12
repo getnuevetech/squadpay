@@ -125,6 +125,22 @@ except Exception as _e:
     print("[startup] admin app-config attach failed:", _e)
 
 
+# ---------- Admin: Income & Fees ledger (Batch B) ----------
+try:
+    from routes.admin_income_fees import attach_income_fees_routes
+    attach_income_fees_routes(api_router, db, _adm_factory(db))
+except Exception as _e:
+    print("[startup] admin income-fees attach failed:", _e)
+
+
+# ---------- Admin: Master Account + Master Virtual Card (Batch C) ----------
+try:
+    from routes.admin_master_account import attach_master_account_routes
+    attach_master_account_routes(api_router, db, _adm_factory(db))
+except Exception as _e:
+    print("[startup] admin master-account attach failed:", _e)
+
+
 # ---------- Stripe payment routes (Phase E) ----------
 try:
     from payments import attach_payment_routes

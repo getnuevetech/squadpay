@@ -58,6 +58,13 @@ class BulkSmsIn(BaseModel):
 _RX_NUM = re.compile(r"[^0-9+]")
 
 def _normalize_phone(raw: str) -> Optional[str]:
+    """Normalise a phone string to E.164. Returns None when nothing usable
+    remains. Heuristics for US numbers (the most common audience):
+       11 digits starting with "1"  → "+1" + last 10
+       10 digits                    → "+1" + value
+       anything starting with "+"   → kept verbatim
+    Outside-US users should always include their country code prefix.
+    """
     if not raw:
         return None
     s = _RX_NUM.sub("", raw.strip())
@@ -68,10 +75,16 @@ def _normalize_phone(raw: str) -> Optional[str]:
         if not digits.isdigit() or len(digits) < 7 or len(digits) > 15:
             return None
         return "+" + digits
-    # Plain digits: leave as-is; the SMS provider will normalize further.
-    if len(s) < 7 or len(s) > 15:
-        return None
-    return s
+    # Plain digits: try the US heuristics first so the same human-entered
+    # number in any common format collapses to one canonical row.
+    if s.isdigit():
+        if len(s) == 11 and s.startswith("1"):
+            return "+" + s
+        if len(s) == 10:
+            return "+1" + s
+        if 7 <= len(s) <= 15:
+            return "+" + s
+    return None
 
 
 async def _resolve_targets(db, body: BulkSmsIn) -> List[str]:
@@ -120,10 +133,13 @@ async def _resolve_targets(db, body: BulkSmsIn) -> List[str]:
 
     if a == "numbers":
         raw = body.phone_numbers or []
-        # Allow callers to send a single newline/comma blob too, just in case.
+        # Allow a single newline/comma blob in each element, but DO NOT split
+        # on whitespace — admins commonly paste numbers like "(202) 555-0123"
+        # where the inner space is part of the human formatting, not a
+        # delimiter.
         flat: List[str] = []
         for s in raw:
-            flat.extend(re.split(r"[,\s;]+", s or ""))
+            flat.extend(re.split(r"[,;\n\r]+", s or ""))
         for s in flat:
             p = _normalize_phone(s)
             if p:

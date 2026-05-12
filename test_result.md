@@ -6313,12 +6313,36 @@ backend:
 backend:
   - task: "Bulk SMS broadcaster — POST /api/admin/bulk-sms/send + GET /api/admin/bulk-sms/history (Batch June 2025)"
     implemented: true
-    working: false
+    working: true
     file: "/app/backend/routes/admin_bulk_sms.py + /app/backend/server.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+          Re-tested ONLY the phone-normalization fix per review request via
+          /app/backend_test.py against the live preview backend. 4/4 PASS.
+
+          1) POST /api/admin/bulk-sms/send with audience='numbers' and
+             phone_numbers=["+12025550123", "2025550123", "(202) 555-0123"]
+             → 200, recipient_count == 1 (was 3 before). sms_sent=1, sms_failed=0.
+             Confirms both fixes: splitter now uses [,;\n\r]+ (so the inner
+             space in "(202) 555-0123" is NOT a delimiter) and _normalize_phone
+             canonicalises plain 10-digit US "2025550123" → "+12025550123"
+             and "(202) 555-0123" → "+12025550123", so the set() dedup
+             collapses all three rows to one. ✅
+          2) Sanity: audience='all_users' broadcast → 200, recipient_count=203,
+             sms_sent=203, sms_failed=0 (sms_routing.mode forced to 'mock'
+             before the run so no real SMS dispatched). ✅
+          3a) Empty message ("   ") → 400 "Message text is required." ✅
+          3b) No Authorization header → 401 "Admin auth required". ✅
+
+          Paginated /admin/bulk-sms/history endpoints were NOT re-tested per
+          the explicit scope of the review request (already green).
+
+          Marking working=true; needs_retesting=false; stuck_count reset to 0.
         -working: "NA"
         -agent: "main"
         -comment: |

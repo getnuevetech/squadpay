@@ -6102,11 +6102,11 @@ frontend:
 backend:
   - task: "POST /api/groups/{group_id}/split-mode — Lead switches the bill's split mode mid-flight"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/backend/routes/groups_routes.py + /app/backend/core.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         -working: "NA"
         -agent: "main"
@@ -6114,6 +6114,17 @@ backend:
           New endpoint POST /api/groups/{group_id}/split-mode lets the bill
           lead toggle between "fast" (equal split) and "itemized" (per-item
           claims). Request body: SetSplitModeIn { user_id, split_mode }.
+        -working: false
+        -agent: "testing"
+        -comment: |
+          18/20 pass. Rule 5 broken — funding aggregate is not persisted,
+          so post-contribution flip slipped through (200 instead of 400).
+        -working: true
+        -agent: "main"
+        -comment: |
+          Fix: sum `group["contributions"]` and `group["repayments"]`
+          directly from the raw mongo doc instead of reading the synthesised
+          `funding` aggregate. Retest confirms Rule 5 + happy-path both pass.
 
           Validation rules to verify:
             1) split_mode must be one of {"fast","itemized"}. Anything else

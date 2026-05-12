@@ -5612,11 +5612,11 @@ agent_communication:
 backend:
   - task: "Income & Fees ledger + Master Virtual Card endpoints"
     implemented: true
-    working: false
+    working: true
     file: "/app/backend/routes/admin_income_fees.py + /app/backend/routes/admin_master_account.py + /app/backend/server.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         -working: "NA"
         -agent: "main"
@@ -5721,6 +5721,34 @@ backend:
 
             Marking task working=false. Single one-line fix to
             admin_master_account.py issue_master_card() will close this out.
+        -working: true
+          agent: "testing"
+          comment: |
+            RETEST after fix at /app/backend/routes/admin_master_account.py:108
+            (gate now checks `existing.get("master_card") is not None` instead
+            of truthy stripe_card_id). Verified against live preview backend
+            (https://joint-pay-1.preview.emergentagent.com/api).
+
+            Steps executed:
+              1) POST /api/admin/auth/login {admin@squadpay.us / Letmein@2007#ForReal}
+                 → 200, super_admin token issued. ✅
+              2) POST /api/admin/master-card/issue (Bearer admin) → 200
+                 ok:true, card.status="pending_stripe_setup",
+                 stripe_card_id=null, last4=null, issued_at=null, note present,
+                 created=false (because a stub was already persisted from the
+                 prior failing run — which is exactly the behaviour the fix
+                 guarantees). ✅
+              3) POST /api/admin/master-card/issue again → 200
+                 ok:true, created=false, card object byte-for-byte identical to
+                 step 2 (deep-equal comparison passed). ✅
+
+            Idempotency contract now holds: any prior master_card stub blocks
+            re-creation, returns the existing stub, and reports created=false.
+            No 5xx, no duplicate upsert side-effects in backend logs (only the
+            two expected 200s on POST /api/admin/master-card/issue).
+
+            Marking working=true, needs_retesting=false, stuck_count=0.
+            No further action required for this task.
 
 frontend:
   - task: "Admin Income & Fees page + Master Virtual Card UI"

@@ -101,7 +101,11 @@ def attach_master_account_routes(api_router: APIRouter, db, require_admin):
             )
         """
         existing = await db.platform_config.find_one({"_id": MASTER_ACCOUNT_ID}) or {}
-        if (existing.get("master_card") or {}).get("stripe_card_id"):
+        # Idempotency: if ANY master_card record already exists (even a stub
+        # with stripe_card_id=None), don't re-create. The previous check
+        # gated only on `stripe_card_id` truthiness, which made stub creation
+        # repeatable — fixed now.
+        if existing.get("master_card") is not None:
             return {"ok": True, "card": existing["master_card"], "created": False}
 
         # STUB — replace with the Stripe Issuing call once approvals/cardholder are set up.

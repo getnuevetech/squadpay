@@ -5233,12 +5233,52 @@ agent_communication:
 backend:
   - task: "Unified admin app-config endpoints + cache wiring"
     implemented: true
-    working: false
+    working: true
     file: "/app/backend/routes/admin_app_config.py + /app/backend/core.py + /app/backend/server.py + /app/backend/routes/wallet_routes.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Phase O retest (2026-05-12) — BOTH previously-flagged bugs are FIXED.
+            Verified via /app/phase_o_retest.py against the live preview backend
+            (https://joint-pay-1.preview.emergentagent.com/api). admin login OK.
+
+            ✅ BUG 1 FIXED — POST /api/cards/{group_id}/provision card_not_issued branch
+              Setup: registered fresh lead (PhaseORetest<ts>) → verify OTP →
+              created fast-split group total $20 (virtual_card=None at creation).
+              Call: POST /api/cards/{g}/provision {user_id=lead_id, platform="apple"}
+              Result: HTTP 200, body =
+                {"ok":false,"status":"card_not_issued","payload":null,
+                 "message":"The virtual card hasn't been issued yet. Fully fund the bill first."}
+              NO 500. Backend log shows clean 200 for this call. The one-line fix
+              `(group.get("virtual_card") or {}).get("stripe_card_id")` at
+              wallet_routes.py:84 correctly handles the explicit None case.
+
+            ✅ BUG 2 FIXED — Legacy PUT /api/admin/platform-fees mirrors into extra_fees
+              Step 1: PUT /api/admin/platform-fees with
+                {"fees":[{"id":"extra_1","name":"Mirror Test","type":"flat",
+                         "value":1.23,"enabled":true},
+                        {"id":"extra_2","name":"Other","type":"flat",
+                         "value":0,"enabled":false}]}  → 200
+              Step 2: GET /api/admin/app-config → 200
+                extra_fees[0] = {"id":"extra_1","name":"Mirror Test","type":"flat",
+                                 "value":1.23,"enabled":true}
+                extra_fees[1] = {"id":"extra_2","name":"Other","type":"flat",
+                                 "value":0.0,"enabled":false}
+              Asserted: name == "Mirror Test" ✓, value == 1.23 ✓, enabled is True ✓.
+              The `$set: {"fees": cleaned, "extra_fees": cleaned}` patch in
+              admin_platform_fees.py is now in lockstep — legacy writes propagate
+              to the new endpoint.
+
+            Cleanup: restored both extras to defaults (name="Extra Fee 1/2",
+            type="flat", value=0, enabled=false) via legacy PUT → confirmed via
+            GET /admin/app-config that extra_fees now show value=0, enabled=false.
+
+            Marking task working=true / needs_retesting=false. Phase O is done.
+
         - working: false
           agent: "testing"
           comment: |
@@ -5541,3 +5581,26 @@ agent_communication:
              `fees` and `extra_fees` keys.
           3) Re-test ONLY the two failing scenarios (provision card_not_issued
              branch + legacy→new mirror) after fix.
+
+    - agent: "testing"
+      message: |
+        PHASE O RETEST (2026-05-12) — BOTH BUGS FIXED ✅✅
+
+        Bug 1 retest (provision card_not_issued branch):
+          • Created fresh group with virtual_card=None.
+          • POST /api/cards/{g}/provision {user_id=lead, platform="apple"} →
+            HTTP 200, body {"ok":false,"status":"card_not_issued", ...}.
+          • Zero 500s. wallet_routes.py:84 fix verified.
+
+        Bug 2 retest (legacy → new mirror):
+          • PUT /api/admin/platform-fees with extra_1 name="Mirror Test"
+            value=1.23 enabled=true → 200.
+          • GET /api/admin/app-config → extra_fees[0] correctly reflects
+            name="Mirror Test", value=1.23, enabled=true.
+          • admin_platform_fees.py $set mirror verified.
+
+        Cleanup done: extras restored to defaults (both disabled, value 0)
+        via legacy PUT, confirmed via subsequent GET /admin/app-config.
+
+        Phase O task flipped to working=true / needs_retesting=false.
+        Main agent: please summarise and finish.

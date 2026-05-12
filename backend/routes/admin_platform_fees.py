@@ -94,7 +94,12 @@ def attach_platform_fees_routes(api_router: APIRouter, db, require_admin):
                 cleaned.append(default)
         await db.platform_config.update_one(
             {"_id": CONFIG_ID},
-            {"$set": {"fees": cleaned}},
+            # Mirror to BOTH `fees` (legacy) and `extra_fees` (new). The new
+            # admin app-config endpoint reads `extra_fees or fees`, so without
+            # the mirror, a legacy PUT silently fails to propagate once the
+            # new endpoint has ever been written. Keeping them in lockstep
+            # is the cheapest path to consistency.
+            {"$set": {"fees": cleaned, "extra_fees": cleaned}},
             upsert=True,
         )
         await _refresh_cache()

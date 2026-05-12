@@ -81,7 +81,7 @@ async def provision_card_to_wallet(group_id: str, body: ProvisionRequest):
             message="Only the bill lead can add the SquadPay card to a wallet.",
         )
 
-    if not group.get("virtual_card", {}).get("stripe_card_id"):
+    if not (group.get("virtual_card") or {}).get("stripe_card_id"):
         return ProvisionResponse(
             ok=False,
             status="card_not_issued",

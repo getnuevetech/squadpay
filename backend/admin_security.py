@@ -16,7 +16,10 @@ import crypto_kms
 def attach_security_routes(router: APIRouter, db, attach_admin):
 
     @router.get("/security/kms-status")
-    async def admin_kms_status(admin=Depends(attach_admin)):
+    async def admin_kms_status(
+        admin=Depends(attach_admin),
+        _check=Depends(require_module("security")),
+    ):
         st = crypto_kms.kms_status()
         # Add a count of encrypted fields currently stored, for the UI banner.
         # (Quick scan of app_settings — single small doc).

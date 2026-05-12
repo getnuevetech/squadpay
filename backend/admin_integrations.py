@@ -84,7 +84,10 @@ class TestSmsIn(BaseModel):
 def attach_integrations_routes(router: APIRouter, db, attach_admin):
 
     @router.get("/integrations")
-    async def get_integrations(admin=Depends(attach_admin)):
+    async def get_integrations(
+        admin=Depends(attach_admin),
+        _check=Depends(require_module("integrations")),
+    ):
         rec = await get_integrations_doc(db)
         from sms_providers import project_sms_for_admin
         return {**project_integrations_for_admin(rec), **project_sms_for_admin(rec)}
@@ -413,7 +416,10 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
 
     # ===== ISSUING (Phase F1) =====
     @router.get("/integrations/issuing")
-    async def get_issuing(admin=Depends(attach_admin)):
+    async def get_issuing(
+        admin=Depends(attach_admin),
+        _check=Depends(require_module("integrations")),
+    ):
         from issuing import get_issuing_settings
         s = await get_issuing_settings(db)
         # Never return the raw encrypted blob to the client

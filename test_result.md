@@ -7722,12 +7722,77 @@ agent_communication:
 
   - task: "Sensitive admin routes migrated to require_module() (June 2025)"
     implemented: true
-    working: false
+    working: true
     file: "/app/backend/admin_security.py + /app/backend/admin_actions.py + /app/backend/admin_integrations.py + /app/backend/admin_reconciliation.py + /app/backend/admin_routes.py + /app/backend/routes/admin_platform_fees.py + /app/backend/routes/admin_master_account.py + /app/backend/routes/admin_income_fees.py + /app/backend/admin_modules.py + /app/backend/admin_routes.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
     needs_retesting: false
     status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+          R1–R5 FOCUSED RE-TEST after main agent's 3 fixes — 25/25 assertions PASS.
+          Test harness: /app/backend_test.py. Endpoint: http://localhost:8001/api.
+
+          R1 — F2 kms-status fix ✅
+            GET /admin/security/kms-status as manager (overrides={}) → 403
+            detail: "Your role does not have access to the 'security' module. Ask a
+            super_admin to grant it via Access Control." Previously returned 200.
+
+          R2 — F5 reconciliations deny override fix ✅ (4 legs)
+            • PUT mgr {module_overrides:{reconciliations:deny}} → 200
+            • GET /admin/reconciliations as manager → 403 ("...'reconciliations' module...")
+              (previously 200)
+            • GET /admin/reconciliations/anyid as manager → 403 (gate fires BEFORE 404)
+              — new coverage confirms order of dependencies is correct.
+            • GET /admin/reconciliation-settings as manager → 403 — new coverage.
+            • PUT mgr {module_overrides:{}} (clear) → 200
+            • Re-GET /admin/reconciliations as manager → 200 (default access restored;
+              real rec event "rcn_b8bc6affb7" returned).
+
+          R3 — Integrations GETs now gated ✅
+            With overrides={}, GET /admin/integrations → 403 (integrations is
+            super_admin only; manager has no default grant).
+            GET /admin/integrations/issuing → 403.
+            PUT mgr {module_overrides:{integrations:grant}} → 200.
+            Re-GET /admin/integrations → 200 (Stripe/Twilio/SignalWire/reminders/etc
+            projection returned).
+            Re-GET /admin/integrations/issuing → 200 (Stripe cardholder
+            ich_1TTtU7Juc7vKWKrLBERS0kCC visible — definitely not 403).
+
+          R4 — Master account GET is its own module ✅
+            With overrides={}, GET /admin/master-account → 403
+            ("...'master_account' module..."). Confirms admin_reconciliation.py:86 uses
+            require_module("master_account") (NOT "reconciliations"), so master-account
+            access is independent from reconciliations.
+            PUT mgr {module_overrides:{master_account:grant}} → 200.
+            Re-GET /admin/master-account → 200 {items:[], total:0, balance:0}.
+
+          R5 — Super admin still has full access ✅ (7 GETs)
+            With super_admin token:
+              • GET /admin/security/kms-status        → 200
+              • GET /admin/reconciliations            → 200
+              • GET /admin/reconciliation-settings    → 200
+              • GET /admin/integrations               → 200
+              • GET /admin/integrations/issuing       → 200
+              • GET /admin/master-account             → 200
+              • GET /admin/reconciliations/anyid      → 404 (gate passed, route fired the
+                natural "Reconciliation not found")
+
+          CLEANUP — manager (g1mgr1778059029@kwiktech.net, id ad_db06bc30f5) has
+          module_overrides={} restored at end of run. Verified via final PUT 200 response.
+
+          All three migration gaps from the previous report are now closed:
+            • admin_security.py        GET /security/kms-status        ✅ gated
+            • admin_reconciliation.py  GET /reconciliations            ✅ gated
+            • admin_reconciliation.py  GET /reconciliations/{rec_id}   ✅ gated
+            • admin_reconciliation.py  GET /master-account             ✅ gated (master_account module)
+            • admin_reconciliation.py  GET /reconciliation-settings    ✅ gated
+            • admin_integrations.py    GET /integrations               ✅ gated
+            • admin_integrations.py    GET /integrations/issuing       ✅ gated
+
+          Marking task working=true, stuck_count=0, needs_retesting=false. No backend
+          changes required. Main agent: please summarise and finish.
         -working: "NA"
         -agent: "main"
         -comment: |
@@ -7885,3 +7950,24 @@ agent_communication:
       ManagerTemp!2026Aa per the prior test report).
 
       Don't retest Account Deletion / Contact Us / Bulk SMS / Credit Rules.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+      R1–R5 FOCUSED RE-TEST PASSED — 25/25 assertions ✅. Fixes in admin_security.py,
+      admin_reconciliation.py, and admin_integrations.py are all confirmed working.
+
+      All previously-failing legs now return correct 403s with "module" in the body,
+      and all positive-grant paths return 200 (or 404 in the case of the
+      reconciliations/anyid super_admin path — gate correctly passed through to the
+      natural "Reconciliation not found"). Super admin retains full access on every
+      migrated endpoint. Master account is correctly gated by its own module key
+      ("master_account") and is independent from "reconciliations".
+
+      Task "Sensitive admin routes migrated to require_module() (June 2025)" flipped
+      to working=true, stuck_count=0, needs_retesting=false.
+
+      Cleanup: manager (g1mgr1778059029@kwiktech.net, ad_db06bc30f5) module_overrides
+      restored to {} at end of run.
+
+      Main agent: please summarise and finish.

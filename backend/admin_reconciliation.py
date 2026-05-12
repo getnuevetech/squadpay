@@ -39,11 +39,16 @@ def attach_reconciliation_routes(router: APIRouter, db, attach_admin):
         limit: int = 50,
         skip: int = 0,
         admin=Depends(attach_admin),
+        _check=Depends(require_module("reconciliations")),
     ):
         return await list_reconciliations(db, q=q, action=action, limit=limit, skip=skip)
 
     @router.get("/reconciliations/{rec_id}")
-    async def admin_get_reconciliation(rec_id: str, admin=Depends(attach_admin)):
+    async def admin_get_reconciliation(
+        rec_id: str,
+        admin=Depends(attach_admin),
+        _check=Depends(require_module("reconciliations")),
+    ):
         rec = await get_reconciliation_detail(db, rec_id)
         if not rec:
             raise HTTPException(404, "Reconciliation not found")
@@ -83,11 +88,15 @@ def attach_reconciliation_routes(router: APIRouter, db, attach_admin):
         limit: int = 100,
         skip: int = 0,
         admin=Depends(attach_admin),
+        _check=Depends(require_module("master_account")),
     ):
         return await list_master_account(db, limit=limit, skip=skip)
 
     @router.get("/reconciliation-settings")
-    async def admin_get_reconciliation_settings(admin=Depends(attach_admin)):
+    async def admin_get_reconciliation_settings(
+        admin=Depends(attach_admin),
+        _check=Depends(require_module("reconciliations")),
+    ):
         await ensure_reconciliation_settings(db)
         return await get_reconciliation_settings(db)
 

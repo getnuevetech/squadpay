@@ -6918,12 +6918,72 @@ agent_communication:
 
   - task: "Account deletion (App Store Guideline 5.1.1(v)) — soft delete with 30‑day grace"
     implemented: true
-    working: false
+    working: true
     file: "/app/backend/routes/account_deletion_routes.py + /app/backend/routes/auth_routes.py + /app/backend/server.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
+        -working: true
+        -agent: "testing"
+        -comment: |
+          FOCUSED RE-TEST after main-agent fix — 33/33 assertions PASS.
+          Harness: /app/backend_test_retest.py (targeted only the 4 previously-
+          failing cases per review request). Live preview backend
+          https://joint-pay-1.preview.emergentagent.com/api, SMS forced to
+          mock mode, admin auth via POST /api/admin/auth/login.
+
+          ✅ B3 — Idempotent double-delete:
+            1st POST /api/users/me/delete → 200 ok=true (no already_pending).
+            2nd POST same body (same user_id + same session_id) → **200**
+              with {ok:true, already_pending:true, deleted_at, scheduled_purge_at,
+              grace_days:30, message:"Your account is already marked for
+              deletion."}. The 401 "Invalid session" bug is gone — the
+              is_deleted idempotency branch now runs BEFORE _verify_session
+              (account_deletion_routes.py lines 82–97).
+
+          ✅ A5 — GET /api/admin/users/deleted (admin Bearer):
+            Returns **200** with {items:[…], count:4, grace_days:30}. The
+            newly-deleted user_a is present in items. Items are sorted by
+            deleted_at desc (verified: ['2026-05-12T13:23:46Z',
+            '2026-05-12T13:20:22Z', '2026-05-12T13:17:55Z']). The route
+            shadowing bug is gone — server.py lines 93–98 attach
+            account_deletion_routes BEFORE line 103
+            api_router.include_router(build_admin_router(db)), so the literal
+            "/admin/users/deleted" wins over "/admin/users/{user_id}".
+
+          ✅ D1 — After admin restore, user disappears from /admin/users/deleted:
+            POST /api/admin/users/{uid}/restore → 200 restored:true.
+            GET /api/admin/users/deleted no longer contains uid_a.
+            GET /api/admin/users/{uid_a} returns is_deleted=None (i.e. false).
+
+          ✅ D2/D3 — Purge & list:
+            After redelete (fresh session via send-otp+verify-otp + collapse
+            on the same phone) and POST /api/admin/users/{uid}/purge → 200
+            purged:true. GET /api/admin/users/deleted now shows the purged
+            user with:
+              • name = "Deleted User (2671ad)" — last-6 suffix of uid ✓
+              • phone = null ✓
+              • is_purged = true ✓
+            count = 4 (≥ 1 ✓).
+
+          Both backend fixes are correctly in place:
+            (1) server.py L93–98: attach_account_deletion_routes(api_router,
+                db, _adm_factory_early(db)) called BEFORE
+                api_router.include_router(build_admin_router(db)) at L103.
+            (2) account_deletion_routes.py L82–97: delete_account fetches the
+                user first, returns the idempotent {already_pending:true}
+                response if is_deleted=true, and only THEN calls
+                _verify_session for active accounts.
+
+          Backend log spot-check during the run shows no 5xx and confirms the
+          new route ordering ("GET /api/admin/users/deleted HTTP/1.1 200").
+          Earlier 404s in the log are from before the main-agent fix landed.
+
+          Per the review request, A1–A4, A5b, A6, B1, B2, B4, C, and
+          D1-first-half were NOT re-tested. Marking task working=true,
+          stuck_count=0, needs_retesting=false. No further action required
+          from main agent.
         -working: false
         -agent: "testing"
         -comment: |
@@ -7331,3 +7391,41 @@ agent_communication:
         1) Fix BUG #1 (re-order attach_account_deletion_routes call).
         2) Fix BUG #2 (re-order is_deleted check vs session check).
         3) Re-test only the 4 failing assertions in /app/backend_test.py.
+
+
+    -agent: "testing"
+    -message: |
+      Account Deletion (App Store 5.1.1(v)) — focused RE-TEST after main-agent
+      fixes. Harness /app/backend_test_retest.py against live preview backend.
+      **33/33 assertions PASS** — both backend bugs from the previous run are
+      fully resolved.
+
+      ✅ A5 / D-list — GET /api/admin/users/deleted with valid admin Bearer
+         returns 200 with {items:[…], count:4, grace_days:30}. Items are sorted
+         by deleted_at desc. Route shadowing is gone: server.py L93–98 now
+         attaches account_deletion_routes BEFORE
+         api_router.include_router(build_admin_router(db)) at L103, so the
+         literal "/admin/users/deleted" wins over "/admin/users/{user_id}".
+
+      ✅ B3 — Idempotent double-delete: 2nd POST /api/users/me/delete with
+         the same user_id + same session_id now returns 200 with
+         {ok:true, already_pending:true, deleted_at, scheduled_purge_at,
+         grace_days:30, message:"Your account is already marked for
+         deletion."}. The is_deleted early-return branch in
+         account_deletion_routes.py L82–97 now runs BEFORE _verify_session.
+
+      ✅ D1 — After POST /api/admin/users/{uid}/restore, GET
+         /api/admin/users/deleted no longer contains the restored user, and
+         GET /api/admin/users/{uid} returns is_deleted=None (i.e. false).
+
+      ✅ D2/D3 — After admin purge, GET /api/admin/users/deleted includes the
+         purged user with name="Deleted User (xxxxxx)" (last-6 uid suffix),
+         phone=null, is_purged=true. count = 4 (≥ 1).
+
+      Test infra notes:
+        - Admin login is at /api/admin/auth/login (verified).
+        - /auth/send-otp rate-limited to 5/min/IP — harness back-offs 15s.
+        - Harness self-cleans any stale users on its test phones.
+
+      No further backend action required for this task.
+      Main agent: please summarise and finish.

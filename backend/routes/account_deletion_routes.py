@@ -81,18 +81,23 @@ def attach_account_deletion_routes(router: APIRouter, db, admin_dep):
     # ───────────────────── User endpoints ─────────────────────
     @router.post("/users/me/delete")
     async def delete_account(body: DeleteAccountIn):
-        user = await _verify_session(db, body.user_id, body.session_id)
-
-        # Idempotent: if already pending deletion just return current status.
-        if user.get("is_deleted"):
+        # Idempotency FIRST — if already pending deletion, don't 401 on the
+        # session check (the first delete cleared current_session_id).
+        existing = await db.users.find_one({"id": body.user_id}, {"_id": 0})
+        if not existing:
+            raise HTTPException(404, "User not found")
+        if existing.get("is_deleted"):
             return {
                 "ok": True,
                 "already_pending": True,
-                "deleted_at": user.get("deleted_at"),
-                "scheduled_purge_at": user.get("deletion_scheduled_at"),
+                "deleted_at": existing.get("deleted_at"),
+                "scheduled_purge_at": existing.get("deletion_scheduled_at"),
                 "grace_days": GRACE_PERIOD_DAYS,
                 "message": "Your account is already marked for deletion.",
             }
+
+        # Active account → enforce session.
+        user = await _verify_session(db, body.user_id, body.session_id)
 
         deleted_at = now_iso()
         scheduled_at = _scheduled_at()

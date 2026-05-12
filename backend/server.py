@@ -86,6 +86,18 @@ except Exception as _e:
     print("[startup] refund routes attach failed:", _e)
 
 
+# ---------- Account deletion (App Store Guideline 5.1.1(v)) ----------
+# IMPORTANT: must be attached BEFORE build_admin_router() so that
+# /api/admin/users/deleted is registered before /api/admin/users/{user_id}
+# (otherwise FastAPI's router treats "deleted" as a user_id and returns 404).
+try:
+    from routes.account_deletion_routes import attach_account_deletion_routes
+    from admin_routes import get_current_admin_factory_sync as _adm_factory_early
+    attach_account_deletion_routes(api_router, db, _adm_factory_early(db))
+except Exception as _e:
+    print("[startup] account deletion routes attach failed:", _e)
+
+
 # ---------- Admin dashboard ----------
 from admin_routes import build_admin_router  # noqa: E402
 api_router.include_router(build_admin_router(db))

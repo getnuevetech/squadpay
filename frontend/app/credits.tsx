@@ -1,167 +1,186 @@
-import { useEffect, useState, useCallback } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
+/**
+ * User-side Credits screen (June 2025).
+ *
+ * Surfaces:
+ *   - Available balance (auto-applied on the next contribution)
+ *   - Pending balance (waiting for the source Squad to settle)
+ *   - Ledger (last 50 entries)
+ *
+ * Linked from Settings -> Credits.
+ */
+import { useCallback, useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  FlatList,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { ArrowLeft, Wallet, Gift, ShieldOff, CheckCircle2, Crown } from 'lucide-react-native';
+import { ArrowLeft, Coins, Clock, CheckCircle2, XCircle } from 'lucide-react-native';
 import { api } from '../src/api';
 import { loadUser } from '../src/session';
-import { COLORS, FONT, RADIUS, SPACING, SHADOW } from '../src/theme';
-import { Skeleton } from '../src/components/Skeleton';
-
-type CreditRow = {
-  id: string;
-  amount: number;
-  consumed_amount: number;
-  remaining: number;
-  kind: string;
-  status: string;
-  note?: string | null;
-  created_at: string;
-  last_consumed_at?: string;
-};
-
-type CreditWallet = {
-  user_id: string;
-  balance: number;
-  items: CreditRow[];
-  lead_auto_discount?: { type: 'flat' | 'percent'; value: number; note?: string | null } | null;
-};
-
-const KIND_LABEL: Record<string, string> = {
-  admin_grant: 'Admin grant',
-  referral_referrer: 'Referral reward',
-  referral_referee: 'Welcome bonus',
-};
-
-function StatusIcon({ status }: { status: string }) {
-  if (status === 'active') return <CheckCircle2 size={12} color={COLORS.success} />;
-  if (status === 'consumed') return <Wallet size={12} color={COLORS.subtext} />;
-  if (status === 'revoked') return <ShieldOff size={12} color={COLORS.danger} />;
-  return <Wallet size={12} color={COLORS.subtext} />;
-}
+import { COLORS, FONT, RADIUS, SPACING } from '../src/theme';
+import { formatSid } from '../src/ids';
+import { friendlyError } from '../src/errors';
+import { toast } from '../src/components/Toast';
 
 export default function CreditsScreen() {
   const router = useRouter();
-  const [user, setUser] = useState<Awaited<ReturnType<typeof loadUser>>>(null);
-  const [wallet, setWallet] = useState<CreditWallet | null>(null);
-  const [busy, setBusy] = useState(true);
+  const [summary, setSummary] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
-    setBusy(true);
+    const u = await loadUser();
+    if (!u) { router.replace('/auth'); return; }
     try {
-      const u = await loadUser();
-      setUser(u);
-      if (u) {
-        const r = await fetch(`${process.env.EXPO_PUBLIC_BACKEND_URL}/api/users/${u.id}/credits`).then((x) => x.json());
-        setWallet(r);
-      }
-    } catch (e) { /* swallow */ }
-    finally { setBusy(false); }
-  }, []);
+      const r = await api.getCreditsSummary(u.id);
+      setSummary(r);
+    } catch (e: any) {
+      toast.error(friendlyError(e, "We couldn't load your credits."));
+    } finally {
+      setLoading(false);
+    }
+  }, [router]);
+
   useEffect(() => { load(); }, [load]);
 
-  if (busy || !user) return <SafeAreaView style={styles.center}><ActivityIndicator color={COLORS.primary} /></SafeAreaView>;
+  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
-  const items = wallet?.items || [];
-  const active = items.filter((c) => c.status === 'active');
-  const consumed = items.filter((c) => c.status === 'consumed');
-  const revoked = items.filter((c) => c.status === 'revoked');
+  const statusBadge = (status: string) => {
+    if (status === 'active') return { label: 'Available', color: COLORS.success, bg: COLORS.successLight, icon: CheckCircle2 };
+    if (status === 'pending') return { label: 'Pending', color: COLORS.warning, bg: COLORS.warningLight, icon: Clock };
+    if (status === 'consumed') return { label: 'Used', color: COLORS.subtext, bg: COLORS.disabledBg, icon: CheckCircle2 };
+    if (status === 'forfeited') return { label: 'Forfeited', color: COLORS.danger, bg: COLORS.dangerLight, icon: XCircle };
+    if (status === 'expired') return { label: 'Expired', color: COLORS.subtext, bg: COLORS.disabledBg, icon: XCircle };
+    return { label: status, color: COLORS.subtext, bg: COLORS.disabledBg, icon: Clock };
+  };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView contentContainerStyle={{ padding: SPACING.md, paddingBottom: SPACING.xxl }}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} activeOpacity={0.7} testID="credits-back">
-          <ArrowLeft size={18} color={COLORS.text} />
-          <Text style={styles.backText}>Back</Text>
+    <SafeAreaView edges={['top', 'bottom']} style={{ flex: 1, backgroundColor: COLORS.bg }}>
+      <View style={styles.header}>
+        <TouchableOpacity
+          onPress={() => router.canGoBack() ? router.back() : router.replace('/settings')}
+          style={styles.backBtn}
+          activeOpacity={0.7}
+          testID="credits-back-btn"
+        >
+          <ArrowLeft size={20} color={COLORS.text} />
         </TouchableOpacity>
+        <Text style={styles.title}>Credits</Text>
+        <View style={{ width: 40 }} />
+      </View>
 
-        <View style={styles.heroCard}>
-          <View style={styles.heroIcon}><Wallet size={26} color="#fff" /></View>
-          <Text style={styles.heroLabel}>YOUR CREDIT BALANCE</Text>
-          <Text style={styles.heroBalance} testID="credits-balance">${(wallet?.balance ?? 0).toFixed(2)}</Text>
-          <Text style={styles.heroSub}>Auto-applied to your share when you contribute to a bill.</Text>
-        </View>
-
-        {wallet?.lead_auto_discount ? (
-          <View style={styles.leadCard}>
-            <Crown size={14} color={COLORS.warning} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.leadTitle}>Lead VIP discount</Text>
-              <Text style={styles.leadSub}>
-                Every group you create gets {wallet.lead_auto_discount.type === 'percent' ? `${wallet.lead_auto_discount.value}%` : `$${wallet.lead_auto_discount.value.toFixed(2)}`} off automatically.
+      {loading ? (
+        <View style={styles.center}><ActivityIndicator color={COLORS.primary} /></View>
+      ) : (
+        <FlatList
+          data={summary?.items || []}
+          keyExtractor={(it) => it.id}
+          contentContainerStyle={{ padding: SPACING.md, gap: SPACING.sm }}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />
+          }
+          ListHeaderComponent={
+            <View>
+              <View style={styles.summaryRow}>
+                <View style={[styles.summaryTile, { backgroundColor: COLORS.successLight }]}>
+                  <Coins size={18} color={COLORS.success} />
+                  <Text style={styles.summaryLabel}>Available</Text>
+                  <Text style={[styles.summaryAmt, { color: COLORS.success }]} testID="credits-available">
+                    ${(summary?.available || 0).toFixed(2)}
+                  </Text>
+                </View>
+                <View style={[styles.summaryTile, { backgroundColor: COLORS.warningLight }]}>
+                  <Clock size={18} color={COLORS.warning} />
+                  <Text style={styles.summaryLabel}>Pending</Text>
+                  <Text style={[styles.summaryAmt, { color: COLORS.warning }]} testID="credits-pending">
+                    ${(summary?.pending || 0).toFixed(2)}
+                  </Text>
+                </View>
+              </View>
+              <Text style={styles.subtitle}>
+                Available credits are auto-applied to your next contribution.
+                Pending credits unlock once their source Squad is paid off.
+              </Text>
+              <Text style={styles.sectionTitle}>Ledger</Text>
+            </View>
+          }
+          ListEmptyComponent={
+            <View style={styles.empty}>
+              <Coins size={48} color={COLORS.border} />
+              <Text style={styles.emptyTitle}>No credits yet</Text>
+              <Text style={styles.emptySub}>
+                You'll earn credits when SquadPay promotions trigger on your contributions.
               </Text>
             </View>
-          </View>
-        ) : null}
-
-        <View style={styles.statsRow}>
-          <View style={styles.statBox}><Text style={[styles.statValue, { color: COLORS.success }]}>{active.length}</Text><Text style={styles.statLabel}>Active</Text></View>
-          <View style={styles.statBox}><Text style={styles.statValue}>{consumed.length}</Text><Text style={styles.statLabel}>Used</Text></View>
-          <View style={styles.statBox}><Text style={[styles.statValue, { color: COLORS.danger }]}>{revoked.length}</Text><Text style={styles.statLabel}>Revoked</Text></View>
-        </View>
-
-        <Text style={styles.sectionTitle}>Credit history ({items.length})</Text>
-        {items.length === 0 ? (
-          <View style={styles.empty}>
-            <Gift size={28} color={COLORS.subtext} />
-            <Text style={styles.emptyTxt}>No credits yet</Text>
-            <Text style={styles.emptySub}>Earn credits by inviting friends or wait for a promo.</Text>
-          </View>
-        ) : (
-          items.map((c) => (
-            <View key={c.id} style={[styles.row, c.status === 'revoked' && { opacity: 0.55 }]} testID={`credits-row-${c.id}`}>
-              <View style={styles.rowLeft}>
-                <Text style={styles.rowAmt}>${Number(c.amount || 0).toFixed(2)}</Text>
-                <Text style={styles.rowKind}>{KIND_LABEL[c.kind] || c.kind}</Text>
-              </View>
-              <View style={{ flex: 1 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-                  <StatusIcon status={c.status} />
-                  <Text style={[styles.rowStatus,
-                    c.status === 'active' && { color: COLORS.success },
-                    c.status === 'consumed' && { color: COLORS.subtext },
-                    c.status === 'revoked' && { color: COLORS.danger },
-                  ]}>{c.status}</Text>
-                  {c.consumed_amount > 0 && c.status === 'consumed' ? <Text style={styles.metaSmall}>fully used</Text> : null}
-                  {c.consumed_amount > 0 && c.status === 'active' ? <Text style={styles.metaSmall}>${Number(c.amount - c.consumed_amount).toFixed(2)} remaining</Text> : null}
+          }
+          renderItem={({ item }) => {
+            const remaining = Math.max(0, (item.amount || 0) - (item.consumed_amount || 0));
+            const b = statusBadge(item.status);
+            const Icon = b.icon;
+            return (
+              <View style={styles.entry} testID={`credit-entry-${item.id}`}>
+                <View style={[styles.statusPill, { backgroundColor: b.bg }]}>
+                  <Icon size={12} color={b.color} />
+                  <Text style={[styles.statusPillText, { color: b.color }]}>{b.label}</Text>
                 </View>
-                {c.note ? <Text style={styles.rowNote} numberOfLines={2}>{c.note}</Text> : null}
-                <Text style={styles.metaSmall}>{new Date(c.created_at).toLocaleDateString()}</Text>
+                <Text style={styles.entryTitle}>{item.rule_name || 'Credit'}</Text>
+                {item.rule_message ? (
+                  <Text style={styles.entryMsg} numberOfLines={2}>{item.rule_message}</Text>
+                ) : null}
+                <View style={styles.entryFoot}>
+                  <Text style={styles.entryDate}>
+                    {new Date(item.created_at).toLocaleDateString()}
+                    {item.source_group_id ? " \u00b7 " + formatSid(item.source_group_id) : ''}
+                  </Text>
+                  <Text style={styles.entryAmt}>${remaining.toFixed(2)}</Text>
+                </View>
               </View>
-            </View>
-          ))
-        )}
-      </ScrollView>
+            );
+          }}
+        />
+      )}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.bg },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.bg },
-  backBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: SPACING.md },
-  backText: { color: COLORS.text, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold },
-  heroCard: { padding: SPACING.lg, backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, alignItems: 'center', marginBottom: SPACING.md },
-  heroIcon: { width: 56, height: 56, borderRadius: 28, backgroundColor: 'rgba(255,255,255,0.18)', alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.sm },
-  heroLabel: { fontSize: 11, color: 'rgba(255,255,255,0.7)', fontWeight: FONT.weights.bold, letterSpacing: 1 },
-  heroBalance: { fontSize: 44, fontWeight: FONT.weights.heavy, color: '#fff', marginVertical: 6 },
-  heroSub: { fontSize: FONT.sizes.xs, color: 'rgba(255,255,255,0.85)', textAlign: 'center' },
-  leadCard: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm, padding: SPACING.md, backgroundColor: COLORS.warningLight, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.warning, marginBottom: SPACING.md },
-  leadTitle: { fontSize: FONT.sizes.sm, fontWeight: FONT.weights.bold, color: COLORS.warning },
-  leadSub: { fontSize: FONT.sizes.xs, color: COLORS.text, marginTop: 2 },
-  statsRow: { flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.lg },
-  statBox: { flex: 1, padding: SPACING.md, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS.md, alignItems: 'center' },
-  statValue: { fontSize: FONT.sizes.xl, fontWeight: FONT.weights.bold, color: COLORS.text },
-  statLabel: { fontSize: 11, color: COLORS.subtext, marginTop: 2 },
-  sectionTitle: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text, marginBottom: SPACING.sm },
-  empty: { padding: SPACING.lg, alignItems: 'center' },
-  emptyTxt: { fontSize: FONT.sizes.sm, color: COLORS.subtext, fontWeight: FONT.weights.semibold, marginTop: 8 },
-  emptySub: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 4, textAlign: 'center' },
-  row: { flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.md, padding: SPACING.md, backgroundColor: COLORS.surface, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, marginBottom: 8 },
-  rowLeft: { width: 80, alignItems: 'flex-start' },
-  rowAmt: { fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold, color: COLORS.text },
-  rowKind: { fontSize: 10, color: COLORS.subtext, fontWeight: FONT.weights.semibold, textTransform: 'uppercase', marginTop: 2 },
-  rowStatus: { fontSize: 11, fontWeight: FONT.weights.bold, textTransform: 'uppercase' },
-  rowNote: { fontSize: FONT.sizes.xs, color: COLORS.text, marginTop: 4, fontStyle: 'italic' },
-  metaSmall: { fontSize: 11, color: COLORS.subtext, marginTop: 2 },
+  header: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm,
+    borderBottomWidth: 1, borderBottomColor: COLORS.border, backgroundColor: COLORS.surface,
+  },
+  backBtn: {
+    width: 40, height: 40, borderRadius: 20, backgroundColor: COLORS.bg,
+    alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border,
+  },
+  title: { fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold, color: COLORS.text },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  summaryRow: { flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.md },
+  summaryTile: {
+    flex: 1, borderRadius: RADIUS.lg, padding: SPACING.md, gap: 4,
+  },
+  summaryLabel: { color: COLORS.subtext, fontSize: FONT.sizes.xs, fontWeight: FONT.weights.semibold, textTransform: 'uppercase', letterSpacing: 1 },
+  summaryAmt: { fontSize: 22, fontWeight: FONT.weights.heavy, letterSpacing: -0.5 },
+  subtitle: { color: COLORS.subtext, fontSize: FONT.sizes.sm, lineHeight: 20, marginBottom: SPACING.md },
+  sectionTitle: { fontSize: FONT.sizes.xs, color: COLORS.subtext, fontWeight: FONT.weights.semibold, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 },
+  empty: { alignItems: 'center', padding: SPACING.lg, gap: SPACING.sm },
+  emptyTitle: { fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold, color: COLORS.text },
+  emptySub: { color: COLORS.subtext, fontSize: FONT.sizes.sm, textAlign: 'center' },
+  entry: {
+    backgroundColor: COLORS.surface, borderRadius: RADIUS.md, borderWidth: 1,
+    borderColor: COLORS.border, padding: SPACING.md, gap: 4,
+  },
+  statusPill: { flexDirection: 'row', alignSelf: 'flex-start', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 2, borderRadius: RADIUS.pill },
+  statusPillText: { fontSize: 10, fontWeight: FONT.weights.bold, textTransform: 'uppercase', letterSpacing: 0.5 },
+  entryTitle: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text, marginTop: 4 },
+  entryMsg: { fontSize: FONT.sizes.sm, color: COLORS.subtext },
+  entryFoot: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 },
+  entryDate: { fontSize: FONT.sizes.xs, color: COLORS.subtext },
+  entryAmt: { fontSize: 16, fontWeight: FONT.weights.heavy, color: COLORS.text },
 });

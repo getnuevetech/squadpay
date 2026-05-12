@@ -6529,6 +6529,16 @@ backend:
 agent_communication:
     -agent: "testing"
     -message: |
+      Credit Rules engine — 19/20 PASS. One reproducible 500 on the happy-path
+      POST /api/admin/credit-rules due to `_id` ObjectId leak in the return doc
+      (see status_history). Minimal fix: pop `_id` after insert_one in
+      /app/backend/routes/admin_credit_rules.py::create_rule (or set a
+      response_model). All engine behaviour (first_time / pct cap / stacking /
+      pause / settle-promotion / refund-forfeit / summary shape /
+      /contribute/status field) verified end-to-end against the preview backend.
+      Test artefact: /app/backend_test.py.
+
+    -message: |
       Backend testing complete for the two new endpoints.
 
       ✅ GET /api/admin/notifications/broadcasts (paginated) — ALL 5/5 cases PASS.
@@ -6554,4 +6564,114 @@ agent_communication:
       shape + pagination + DESC sort) PASS. Test harness at /app/backend_test.py
       is idempotent (uses fresh phones + ts-based names + restores SMS mode).
 
+
+
+backend:
+  - task: "Credit Rules engine — CRUD + evaluator + lifecycle hooks (Batch June 2025)"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/routes/admin_credit_rules.py + hooks in contribute_routes.py / refund_routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Implements admin-defined credit rules awarded automatically at
+          contribute time.
+
+          Endpoints to verify:
+            * GET  /api/admin/credit-rules                      (admin auth)
+            * POST /api/admin/credit-rules                      (admin auth)
+            * PATCH /api/admin/credit-rules/{rule_id}           (admin auth)
+            * DELETE /api/admin/credit-rules/{rule_id}          (admin auth)
+            * GET  /api/users/{user_id}/credits-summary          (public — user-scoped)
+
+          Validation:
+           1) Auth: 401 without admin token for POST/PATCH/DELETE/GET-list.
+           2) POST with empty name → 400.
+           3) POST with empty message → 400.
+           4) POST with criteria.type="vip" → 400.
+           5) POST with criteria.type="nth_contribution" but no n → 400.
+           6) POST with reward.type="fixed" and value <= 0 → 400.
+           7) POST with reward.type="pct_user_no_fees" and value > 100 → 400.
+           8) POST with valid first_time rule → 200, returned doc has id.
+           9) PATCH active=false flips status, GET reflects.
+          10) DELETE removes the rule, subsequent GET excludes it.
+
+          Engine (called from contribute_routes.py):
+          Behaviour to verify by end-to-end test (drive via POST /api/groups/{id}/contribute):
+          11) Active rule of type "first_time" awards a $X credit on the
+              user's first-ever contribution. db.credits document has
+              status="pending" + source_group_id set.
+          12) Same rule does NOT re-award on the user's 2nd contribution.
+          13) Inactive rule (active=false) does NOT award.
+          14) Rule with reward.type=pct_user_no_fees value=10 awards
+              0.10 * contribution_amount (capped at reward.cap if set).
+          15) Rule with reward.cap=5 caps a 10% reward at $5.
+          16) Two rules both matching the same contribution:
+                * default (no stackable_with) → only the first matching
+                  rule (by created_at asc) awards.
+                * Both list each other in stackable_with → both award.
+          17) Lifecycle: when the contributing closes a group (group hits
+              status="paid"), all that user's pending credits for that
+              group flip to status="active".
+          18) Refund: POST /api/groups/{group_id}/refund-overpayment for a
+              user that earned a credit on that squad → that credit's
+              status becomes "forfeited" (regardless of whether it was
+              consumed yet).
+          19) GET /api/users/{user_id}/credits-summary returns:
+                { pending: float, available: float, consumed_lifetime: float,
+                  items: [...] } reflecting the latest state.
+          20) The contribute endpoint response includes
+              `awarded_credits: [{id, amount, message, ...}]` for the
+              credit-only path; the /contribute/status endpoint returns
+              the same field for the Stripe-success path.
+
+          Auth credentials for admin tests: admin@squadpay.us / Letmein@2007#ForReal.
+
+          Side effects to spot-check (not strict failures, just log if missing):
+            - When a credit is awarded, a row appears in db.user_inbox for
+              that user with `link_url=/legal/terms?section=credits` and a
+              message containing "Terms & Conditions Applied".
+            - For users with a phone on file, a mock SMS is dispatched
+              (sms_providers logs "send_sms ... provider=mock").
+
           Backend log clean, no 5xx. Marking working=true.
+        -working: false
+        -agent: "testing"
+        -comment: |
+          Ran /app/backend_test.py (20 cases) against the live preview backend.
+          PASS: 19/20 — auth gating, all 6 validation cases (2-7), PATCH/DELETE,
+          first_time awarding (Case 11), no-reaward on subsequent contributions
+          (Case 12), paused-rule no-award (Case 13), pct_user_no_fees + cap
+          (Cases 14/15), stacking default-vs-bidirectional (Case 16),
+          settle promotes pending→active (Case 17), refund-overpayment forfeits
+          credits (Case 18, refund route returns `credits_forfeited` and the
+          credit doc flips to status='forfeited'), credits-summary shape
+          (Case 19), and /contribute/status returns `awarded_credits` (Case 20).
+          
+          FAIL: Case 8 — POST /api/admin/credit-rules returns **500 Internal
+          Server Error** on the happy path despite the rule being inserted in
+          the DB. Backend stacktrace:
+            File "fastapi/routing.py", serialize_response
+            → ValueError: [TypeError("'ObjectId' object is not iterable"),
+                           TypeError('vars() argument must have __dict__ attribute')]
+          Root cause: in /app/backend/routes/admin_credit_rules.py
+          `create_rule(...)`, `await db.credit_rules.insert_one(doc)` mutates
+          `doc` to add `_id` (a bson.ObjectId). The handler then `return doc`,
+          which FastAPI's jsonable_encoder cannot serialize. Same insert-then-
+          return pattern works in PATCH because that handler uses find_one with
+          a `{"_id": 0}` projection.
+          Minimal fix: after `insert_one`, do `doc.pop("_id", None)` (or insert
+          a copy and return the pre-insert doc; or add `response_model=RuleOut`).
+          Once fixed, Case 8 should pass — the rule IS already being inserted
+          correctly (validated via subsequent GET listing, PATCH, DELETE which
+          all succeeded for the inserted doc with id starting `cr_rule_`).
+          
+          Marking working=false because POST → 500 is user-visible (admin UI
+          will display an error on every successful rule creation). All other
+          functional behaviour of the engine is correct.
+          Test artefact: /app/backend_test.py (idempotent — uses ts-based
+          phones and cleans up rules between sub-cases).

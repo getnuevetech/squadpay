@@ -208,6 +208,30 @@ export const adminApi = {
       total: number;
       has_more: boolean;
     }>(`/bulk-sms/history?page=${page}&page_size=${page_size}`),
+  // June 2025 — Credit Rules engine.
+  listCreditRules: () =>
+    request<{
+      items: Array<{
+        id: string;
+        name: string;
+        active: boolean;
+        message: string;
+        criteria: any;
+        reward: { type: string; value: number; cap: number | null };
+        expiry_days: number | null;
+        stackable_with: string[];
+        created_at: string;
+        match_count: number;
+        total_paid_out: number;
+      }>;
+      total: number;
+    }>('/credit-rules'),
+  createCreditRule: (body: any) =>
+    request<any>('/credit-rules', { method: 'POST', body: JSON.stringify(body) }),
+  patchCreditRule: (id: string, body: any) =>
+    request<any>(`/credit-rules/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteCreditRule: (id: string) =>
+    request<any>(`/credit-rules/${id}`, { method: 'DELETE' }),
   createAdmin: (body: { email: string; password: string; name: string; role: AdminRole }) =>
     request<AdminProfile>('/admins', { method: 'POST', body: JSON.stringify(body) }),
   toggleAdmin: (id: string, is_active: boolean) =>

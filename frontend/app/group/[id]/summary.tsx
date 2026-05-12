@@ -41,7 +41,7 @@ export default function SummaryScreen() {
     try {
       const g = await api.getGroup(id);
       // Strict role guard: the lead always sees the Lead Dashboard.
-      // Members stay on the User Dashboard (this screen).
+      // Members stay on the Squad Dashboard (this screen).
       if (g.lead_id === u.id) {
         router.replace(`/group/${id}/dashboard`);
         return;
@@ -178,7 +178,7 @@ export default function SummaryScreen() {
         {/* Hero card — shared with Lead Dashboard so the two stay identical */}
         <HeroCard
           group={group}
-          subLabel="User Dashboard"
+          subLabel="Squad Dashboard"
           myShare={myShare}
           grandTotal={grandTotal}
           collectedAmount={funding.total_contributed}

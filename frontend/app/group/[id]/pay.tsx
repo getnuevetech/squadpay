@@ -179,6 +179,9 @@ export default function PayScreen() {
         if (r.payment_status === 'paid' || r.applied) {
           setStripeBanner('✅ Contribution confirmed via Stripe.');
           try { setGroup(await api.getGroup(id)); } catch {}
+          try {
+            (globalThis as any).__SQUADPAY_AWARDED_CREDITS__ = (r as any).awarded_credits || [];
+          } catch {}
           setTimeout(() => router.replace(`/group/${id}/success?amount=${((r.amount_total||0)/100).toFixed(2)}&kind=contribute&via=stripe`), 1200);
           return;
         }
@@ -471,7 +474,11 @@ export default function PayScreen() {
         }
         const r: any = await api.contribute(group.id, userId, amount, notifyOnSettled, origin, appReturnUrl);
         if (r.checkout_required === false) {
-          // Fully covered by credits — no Stripe needed
+          // Fully covered by credits — no Stripe needed. Stash awarded
+          // credits (if any) in a globalThis slot the success page reads.
+          try {
+            (globalThis as any).__SQUADPAY_AWARDED_CREDITS__ = r.awarded_credits || [];
+          } catch {}
           router.replace(
             `/group/${group.id}/success?amount=${amount.toFixed(2)}&kind=contribute&via=credit`,
           );

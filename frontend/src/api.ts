@@ -347,6 +347,25 @@ export const api = {
       `/users/${user_id}/inbox/read-all`,
       { method: 'POST', body: JSON.stringify({}) },
     ),
+  // June 2025 — Credit-rules summary used by Settings & profile.
+  getCreditsSummary: (user_id: string) =>
+    request<{
+      pending: number;
+      available: number;
+      consumed_lifetime: number;
+      items: Array<{
+        id: string;
+        amount: number;
+        consumed_amount: number;
+        status: string;
+        created_at: string;
+        rule_id?: string;
+        rule_name?: string;
+        rule_message?: string;
+        source_group_id?: string;
+        expires_at?: string | null;
+      }>;
+    }>(`/users/${user_id}/credits-summary`),
   updateGroupMeta: (
     id: string,
     user_id: string,

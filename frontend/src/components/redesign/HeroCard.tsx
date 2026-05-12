@@ -20,6 +20,7 @@ import type { Group } from '../../api';
 import { COLORS, FONT } from '../../theme';
 import { StatusBadge } from '../../StatusBadge';
 import { AvatarRing } from '../AvatarRing';
+import { formatSid } from '../../ids';
 
 interface HeroCardProps {
   group: Group;
@@ -60,6 +61,14 @@ export function HeroCard({
             {(group as any).title || (group as any).name || 'Bill'}
           </Text>
           <Text style={styles.heroV2SubLabel}>{subLabel}</Text>
+          {/* Customer-service-friendly Squad ID — selectable for copy/paste. */}
+          <Text
+            style={styles.heroV2SidLabel}
+            selectable
+            testID={`${testIDPrefix}-sid`}
+          >
+            {formatSid(group.id)}
+          </Text>
         </View>
         <StatusBadge
           status={(group as any).derived_status}
@@ -143,6 +152,12 @@ const styles = StyleSheet.create({
     fontWeight: FONT.weights.semibold,
     letterSpacing: 1,
     textTransform: 'uppercase',
+    marginTop: 4,
+  },
+  heroV2SidLabel: {
+    color: 'rgba(255,255,255,0.55)',
+    fontSize: 10,
+    letterSpacing: 0.8,
     marginTop: 4,
   },
   heroV2AmountCol: { marginTop: 8, alignItems: 'flex-end' },

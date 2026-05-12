@@ -416,7 +416,7 @@ export default function GroupLobbyScreen() {
           />
         ) : (
           <Button
-            title="User Dashboard"
+            title="Squad Dashboard"
             testID="lobby-continue-btn"
             onPress={() => router.replace(`/group/${group.id}/summary`)}
           />

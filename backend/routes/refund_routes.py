@@ -207,6 +207,15 @@ def make_refund_router(db) -> APIRouter:
         except Exception as e:
             logger.warning(f"[refund] audit insert failed: {e}")
 
+        # Forfeit any credits earned from this squad (per spec: credits
+        # cannot be returned as cash when the source bill is refunded).
+        forfeit_count = 0
+        try:
+            from routes.admin_credit_rules import forfeit_credits_on_refund
+            forfeit_count = await forfeit_credits_on_refund(db, group_id, body.user_id)
+        except Exception as e:
+            logger.warning(f"[refund.credits] forfeit failed for {group_id}/{body.user_id}: {e}")
+
         # Refresh + return new state
         refreshed = await db.groups.find_one({"id": group_id}, {"_id": 0})
         projected_after = await apply_calculations(refreshed)
@@ -215,6 +224,7 @@ def make_refund_router(db) -> APIRouter:
             "ok": True,
             "refunded": actually_refunded,
             "breakdown": breakdown,
+            "credits_forfeited": forfeit_count,
             "remaining_overpaid": round(max(0.0, overpaid - actually_refunded), 2),
             "group": projected_after,
             "info": "; ".join(info_msgs) if info_msgs else "",

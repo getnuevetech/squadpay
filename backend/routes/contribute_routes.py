@@ -96,9 +96,34 @@ def attach_contribute_routes(router: APIRouter, db):
                     await issue_group_card(db, refreshed)
                 except Exception as e:
                     logger.warning(f"[contribute] auto-issue card failed for {group_id}: {e}")
+            # Credit-rules engine — evaluate post-insert. Awarded credits
+            # start `pending` and are surfaced to the client so the
+            # success page can show a celebratory badge.
+            awarded_credits: list = []
+            try:
+                from routes.admin_credit_rules import evaluate_and_award
+                net_user = round(amount, 2)
+                net_group = sum(float(c.get("amount") or 0) for c in contributions)
+                fresh = await db.groups.find_one({"id": group_id}, {"_id": 0})
+                fresh_user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
+                awarded_credits = await evaluate_and_award(
+                    db,
+                    user=fresh_user or user,
+                    group=fresh or group,
+                    contribution=contributions[-1],
+                    net_contribution_amount=net_user,
+                    net_group_total=net_group,
+                )
+                # If the bill just settled, promote any pending credits now.
+                if update_doc.get("status") == "paid":
+                    from routes.admin_credit_rules import mark_credits_available
+                    await mark_credits_available(db, group_id)
+            except Exception as e:
+                logger.warning(f"[contribute.credits] evaluator failed for {group_id}: {e}")
             result = await _load_group_enriched(db, group_id)
             return {"checkout_required": False, "credit_only": True, "amount": round(amount, 2),
-                    "credit_applied": round(float(credit_applied), 2), "group": result}
+                    "credit_applied": round(float(credit_applied), 2),
+                    "awarded_credits": awarded_credits, "group": result}
 
         # ---- Path B: Cash needed
         origin = (body.origin_url or "").rstrip("/") if hasattr(body, "origin_url") else ""
@@ -262,9 +287,41 @@ def attach_contribute_routes(router: APIRouter, db):
                     except Exception as e:
                         logger.warning(f"[contribute.status] auto-issue card failed for {group_id}: {e}")
 
+                # Credit-rules engine — same hook as the credit-only path
+                # above. Awarded credits flow back to the client via the
+                # payment_transactions doc so the success screen can read
+                # them on resume.
+                awarded_credits: list = []
+                try:
+                    from routes.admin_credit_rules import evaluate_and_award, mark_credits_available
+                    net_user = round(actual_amount, 2)
+                    net_group = sum(float(c.get("amount") or 0) for c in contributions)
+                    fresh = await db.groups.find_one({"id": group_id}, {"_id": 0})
+                    fresh_user = await db.users.find_one({"id": user_id}, {"_id": 0})
+                    if fresh_user and fresh:
+                        awarded_credits = await evaluate_and_award(
+                            db,
+                            user=fresh_user,
+                            group=fresh,
+                            contribution=contributions[-1],
+                            net_contribution_amount=net_user,
+                            net_group_total=net_group,
+                        )
+                    if update_doc.get("status") == "paid":
+                        await mark_credits_available(db, group_id)
+                except Exception as e:
+                    logger.warning(f"[contribute.status.credits] eval failed for {group_id}: {e}")
+                # Persist awarded credits on the payment_transactions doc so
+                # subsequent /status calls (on success page mount) return
+                # them.
+                update["awarded_credits"] = awarded_credits
+
             update["applied"] = True
 
         await db.payment_transactions.update_one({"session_id": session_id}, {"$set": update})
+        # Re-read the tx so a polling client can still see awarded_credits
+        # after the row is marked `applied`.
+        tx_after = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0}) or {}
         return {
             "session_id": session_id,
             "status": sess_status,
@@ -273,4 +330,5 @@ def attach_contribute_routes(router: APIRouter, db):
             "currency": getattr(s, "currency", None),
             "applied": bool(update.get("applied") or tx.get("applied")),
             "group_id": tx.get("group_id"),
+            "awarded_credits": tx_after.get("awarded_credits") or [],
         }

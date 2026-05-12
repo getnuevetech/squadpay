@@ -29,6 +29,7 @@ import {
 import { COLORS, FONT, RADIUS, SPACING } from '../src/theme';
 import { refreshUser, clearUser } from '../src/session';
 import { api } from '../src/api';
+import { formatUid } from '../src/ids';
 import { AvatarRing } from '../src/components/AvatarRing';
 import { BottomTabBar } from '../src/components/redesign/BottomTabBar';
 import { SquadPayMark } from '../src/components/redesign/SquadPayMark';
@@ -80,10 +81,11 @@ export default function SettingsScreen() {
     {
       key: 'credits',
       label: 'Credits & rewards',
-      sub: 'Earn and redeem SquadPay credits.',
+      sub: 'See your pending and available credits.',
       icon: Wallet,
-      onPress: () => router.push('/credits'),
-      hidden: !features.credits_enabled,
+      onPress: () => router.push('/credits' as any),
+      // June 2025 — always visible now that the credit-rules engine ships
+      // pending/available balances per user.
     },
     {
       key: 'invite',
@@ -149,6 +151,11 @@ export default function SettingsScreen() {
           <View style={{ flex: 1, marginLeft: 12 }}>
             <Text style={styles.profileName}>{user?.name || '—'}</Text>
             <Text style={styles.profileMeta}>{user?.phone || 'no phone on file'}</Text>
+            {user?.id ? (
+              <Text style={styles.profileUid} testID="settings-uid" selectable>
+                {formatUid(user.id)}
+              </Text>
+            ) : null}
             <Text style={[styles.profileBadge, user?.verified ? styles.verifiedOk : styles.verifiedNo]}>
               {user?.verified ? '● Verified' : '● Unverified'}
             </Text>
@@ -202,6 +209,13 @@ const styles = StyleSheet.create({
   },
   profileName: { fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold, color: COLORS.text },
   profileMeta: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
+  profileUid: {
+    fontSize: 11,
+    color: COLORS.subtext,
+    marginTop: 2,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    letterSpacing: 0.6,
+  },
   profileBadge: { fontSize: 11, fontWeight: FONT.weights.bold, marginTop: 4 },
   verifiedOk: { color: COLORS.success },
   verifiedNo: { color: COLORS.warning },

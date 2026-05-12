@@ -50,7 +50,7 @@ export default function RootLayout() {
           <Stack.Screen name="create" options={{ title: 'Start a Bill' }} />
           <Stack.Screen name="group/[id]/index" options={{ title: 'Group' }} />
           <Stack.Screen name="group/[id]/items" options={{ title: 'Assign Items' }} />
-          <Stack.Screen name="group/[id]/summary" options={{ title: 'User Dashboard' }} />
+          <Stack.Screen name="group/[id]/summary" options={{ title: 'Squad Dashboard' }} />
           <Stack.Screen name="group/[id]/pay" options={{ title: 'Pay', presentation: 'modal' }} />
           <Stack.Screen name="group/[id]/success" options={{ headerShown: false }} />
           <Stack.Screen name="group/[id]/dashboard" options={{ title: 'Lead Dashboard' }} />
@@ -58,6 +58,9 @@ export default function RootLayout() {
           <Stack.Screen name="join/[code]" options={{ title: 'Join Bill' }} />
           {/* Inbox uses its own custom header — hide the auto stack header. */}
           <Stack.Screen name="notifications" options={{ headerShown: false }} />
+          {/* Custom-headered screens — hide the auto stack header. */}
+          <Stack.Screen name="credits" options={{ headerShown: false }} />
+          <Stack.Screen name="legal/terms" options={{ headerShown: false }} />
         </Stack>
         <ToastHost />
         <SessionGuard />

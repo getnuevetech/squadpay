@@ -157,6 +157,14 @@ except Exception as _e:
     print("[startup] admin bulk-sms attach failed:", _e)
 
 
+# ---------- Admin: Credit Rules engine (Batch June 2025) ----------
+try:
+    from routes.admin_credit_rules import attach_credit_rules_routes
+    attach_credit_rules_routes(api_router, db, _adm_factory(db))
+except Exception as _e:
+    print("[startup] admin credit-rules attach failed:", _e)
+
+
 # ---------- Stripe payment routes (Phase E) ----------
 try:
     from payments import attach_payment_routes

@@ -157,8 +157,13 @@ def attach_admin_actions_routes(router: APIRouter, db, _attach_admin):
         _check=Depends(require_module("admins")),
     ):
         new_role = (body.role or "").strip().lower()
-        if new_role not in ALLOWED_ROLES:
-            raise HTTPException(400, f"role must be one of: {', '.join(ALLOWED_ROLES)}")
+        # Validate against db.roles (RBAC v2 — supports custom slugs).
+        from admin_modules import role_slug_exists
+        if not role_slug_exists(new_role):
+            raise HTTPException(
+                400,
+                f"Unknown role '{new_role}'. Create the role under Access Role Management first.",
+            )
 
         target = await db.admins.find_one({"id": admin_id}, {"_id": 0, "password_hash": 0})
         if not target:

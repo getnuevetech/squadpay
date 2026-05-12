@@ -7971,3 +7971,289 @@ agent_communication:
       restored to {} at end of run.
 
       Main agent: please summarise and finish.
+
+
+  - task: "Access Role Management v2 — role-centric RBAC (June 2025)"
+    implemented: true
+    working: false
+    file: "/app/backend/admin_modules.py + /app/backend/server.py + /app/backend/admin.py + /app/backend/admin_routes.py + /app/backend/admin_actions.py + /app/frontend/app/admin/access.tsx + /app/frontend/app/admin/admins.tsx + /app/frontend/src/adminApi.ts"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: false
+        -agent: "testing"
+        -comment: |
+          G1–G12 tested via /app/backend_test.py against the live preview backend
+          (https://joint-pay-1.preview.emergentagent.com/api).
+          36/38 assertions PASS, 2 FAIL — and both failures share a single root cause:
+          POST /api/admin/access/roles returns **500 Internal Server Error** instead
+          of the spec'd 201, even though the role IS persisted in mongo and
+          _ROLES_CACHE IS reloaded correctly (every downstream test that uses the
+          new role passes).
+
+          ❌ CRITICAL BUG — POST /admin/access/roles → 500 (ObjectId serialization)
+          ---------------------------------------------------------------------
+          File: /app/backend/admin_modules.py — create_role() lines 325–365.
+
+          Root cause (confirmed from /var/log/supervisor/backend.err.log):
+              ValueError: [TypeError("'ObjectId' object is not iterable"),
+                           TypeError('vars() argument must have __dict__ attribute')]
+              File "fastapi/encoders.py" jsonable_encoder()
+              ↑ raised from response serialization of create_role()
+
+          Mechanism: pymongo's `db.roles.insert_one(doc)` mutates the input dict by
+          appending `_id: ObjectId(...)`. The route then calls
+              return await _annotate(doc)
+          which spreads `doc` (including the ObjectId `_id`) into the response.
+          FastAPI's jsonable_encoder can't serialize ObjectId → 500.
+
+          Trivial fix (one of):
+            a) Pop the `_id` after insert:
+                 result = await db.roles.insert_one(doc)
+                 doc.pop("_id", None)
+                 return await _annotate(doc)
+            b) Build a fresh response dict without spreading `doc`.
+            c) Re-fetch with projection:
+                 fresh = await db.roles.find_one({"id": doc["id"]}, {"_id": 0})
+                 return await _annotate(fresh)
+
+          Important note: the role IS created in mongo AND _ROLES_CACHE IS reloaded
+          before the 500 is raised (insert_one + load_roles_cache run before
+          _annotate). That's why every other assertion downstream still passes — the
+          client just can't read the create response. Verified by listing roles
+          immediately after the 500: the new ops_lead doc is present with the right
+          modules + assigned_admin_count.
+
+          ✅ ALL OTHER G1–G12 ASSERTIONS PASS (36/38):
+
+          G1 — Super admin reads role list:
+            • super_admin login → token ✓
+            • GET /admin/access/roles → 200, exactly 3 items ✓
+            • All 3 have is_system: true ✓
+            • super_admin doc has modules.length === 19 ✓
+
+          G2 — Create a custom role:
+            • POST /admin/access/roles {Ops Lead, …, [dashboard, users, squads]}
+              → 500 (BUG — see above) ❌
+            • Persisted state verified by subsequent list call: slug='ops_lead',
+              modules length 3, assigned_admin_count=0 ✓
+
+          G3 — Duplicate:
+            • Re-POST same name → 409 "A role with slug 'ops_lead' already exists." ✓
+
+          G4 — Update modules:
+            • PUT /admin/access/roles/role_ops_lead {modules: 4 keys}
+              → 200, modules.length === 4 ✓
+            • PUT response shape is clean (no ObjectId leak — different code path
+              uses find_one with {"_id":0}).
+
+          G5 — super_admin immutability:
+            • PUT /admin/access/roles/role_super_admin {modules:[dashboard]}
+              → 400 "The super_admin role is immutable." ✓
+
+          G6 — Create an admin user with the custom role:
+            • POST /admin/admins {…, role:'ops_lead'} → 200 with role='ops_lead' ✓
+            • Validates against _ROLES_CACHE — confirms cache reload happened
+              despite the G2 500.
+
+          G7 — The new admin's modules reflect the role:
+            • opslead login → token ✓
+            • GET /admin/me/modules → 200, exactly 4 modules:
+              [analytics, dashboard, squads, users] ✓
+            • is_super_admin === false ✓
+            • role === 'ops_lead', role_name === 'Ops Lead' ✓
+            • GET /admin/platform-fees with ops_lead token → 403 with detail
+              "Your role does not have access to the 'platform_fees' module." ✓
+
+          G8 — Invalid role on PATCH:
+            • PATCH /admin/admins/{id}/role {role:'bogus_slug'}
+              → 400 "Unknown role 'bogus_slug'. Create the role under Access
+              Role Management first." ✓
+
+          G9 — Delete protected:
+            • DELETE /admin/access/roles/role_ops_lead
+              → 400 "Cannot delete role — 1 admin user(s) are assigned to it.
+              Reassign them to another role first." ✓
+
+          G10 — Reassign + delete:
+            • PATCH opslead role → 'support' → 200 ✓
+            • DELETE /admin/access/roles/role_ops_lead → 200, body
+              {"ok":true,"deleted":"role_ops_lead"} ✓
+            • GET /admin/access/roles → 3 items again ✓
+
+          G11 — Manager can't manage roles:
+            • Manager login (g1mgr1778059029@kwiktech.net / ManagerTemp!2026Aa) ✓
+            • GET /admin/access/roles → 403 "Only super_admin can manage
+              access roles." ✓
+            • GET /admin/access/roles/lookup → 200 (any admin) ✓
+
+          G12 — Cache reload effective for module add/remove mid-session:
+            • Re-create ops_lead with [dashboard, platform_fees]:
+              POST returns 500 (same bug) ❌, but role IS persisted with the
+              right modules (confirmed via list). Cache reloaded.
+            • PATCH opslead admin back to ops_lead → 200 ✓
+            • opslead re-login → token ✓
+            • GET /admin/platform-fees with new token → 200 ✓
+              (proves cache contains the new role's module set)
+            • PUT role to {modules:[dashboard]} (drop platform_fees) → 200 ✓
+            • Same opslead token GET /admin/platform-fees → 403 ✓
+              (proves _ROLES_CACHE is re-loaded after PUT and the gate
+              re-evaluates per-request without re-issuing the token)
+
+          Cleanup performed: opslead admin patched back to role='support',
+          the recreated ops_lead role deleted, opslead admin deactivated
+          (is_active=false). Final db.roles state = 3 system roles only.
+
+          SUMMARY:
+            • Logic is fully correct: role CRUD, cache reload, RBAC gating,
+              admin role validation, system-role immutability, delete-protection,
+              manager 403 / lookup 200, mid-session cache invalidation — all
+              behave per spec.
+            • The only bug is response serialization on POST
+              /api/admin/access/roles. The frontend Access Role Management page
+              will surface a generic 5xx toast even though the role was created;
+              after a manual refresh the new role will show up. Fix is one
+              line — see Trivial fix above.
+
+          Marking task working=false (5xx contract violation on a happy-path
+          POST) with stuck_count=1 and needs_retesting=false (until main agent
+          fixes the ObjectId leak).
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          Replaces v1 (hardcoded roles + per-admin module overrides) with a
+          full role-centric model.
+
+          Data model:
+            db.roles: { id, slug, name, description, modules: [keys],
+                        is_system, assigned_admin_count (computed),
+                        created_at, updated_at }
+            db.admins[].role = slug from db.roles
+
+          Seeded system roles on startup (idempotent in server.py via
+          admin_modules.seed_system_roles()):
+            • super_admin — all 19 modules, IMMUTABLE
+            • manager     — 11 modules, editable
+            • support     — 4  modules, editable
+
+          New endpoints (all under /api/admin/access):
+            GET    /admin/me/modules                     (every admin)
+            GET    /admin/access/registry                (super_admin)
+            GET    /admin/access/roles                   (super_admin)
+            POST   /admin/access/roles                   (super_admin)
+            PUT    /admin/access/roles/{id}              (super_admin)
+            DELETE /admin/access/roles/{id}              (super_admin)
+            GET    /admin/access/roles/lookup            (any admin — used by
+                                                          the Admin Users page
+                                                          role dropdown)
+
+          admin_has_module():
+            • super_admin → always True
+            • Otherwise → look up role.slug in _ROLES_CACHE; True iff module
+              key is in that role's module set
+            • Cache refreshed after every role CRUD mutation (load_roles_cache)
+            • Fallback to MODULES.default_roles only if cache is empty
+              (defensive — never lock everyone out at startup)
+
+          Admin creation:
+            • admin.py: Role type relaxed from Literal to str (supports custom
+              slugs)
+            • admin_routes.py POST /admins now calls
+              admin_modules.role_slug_exists() to validate body.role against
+              the registry — returns 400 if unknown role
+            • admin_actions.py PATCH /admins/{id}/role does the same check;
+              old ALLOWED_ROLES tuple no longer enforced
+
+          v1 deprecation:
+            • Per-admin module_overrides field is no longer read. If it
+              lingers on old admin docs it's silently ignored.
+            • /admin/access/admins endpoint (v1 admin matrix) removed —
+              replaced by role-CRUD endpoints.
+
+          Frontend:
+            • Sidebar label "Access Control" → "Access Role Management"
+              (changed in admin_modules.py MODULES — label propagates
+              automatically via /admin/me/modules).
+            • /admin/access — full rewrite. Two-pane layout: roles on left,
+              role editor on right. Module checklist grouped by category with
+              per-group select-all / clear-all toggles. super_admin is shown
+              but immutable (lock badge). Delete disabled when
+              assigned_admin_count > 0.
+            • /admin/admins — role picker (form + change-role modal) now
+              loads from /admin/access/roles/lookup so any custom role
+              created in Access Role Management appears automatically.
+            • adminApi.ts: AdminRole relaxed to `string`; new methods:
+              myModules, accessRegistry, listRoles, rolesLookup, createRole,
+              updateRole, deleteRole. Old myModules/accessAdmins/setAdminAccess
+              removed.
+
+          Smoke tests done locally via curl (super_admin token):
+            GET /admin/access/roles         → 200, items: 3 system roles
+            GET /admin/access/roles/lookup  → 200, items: 3 system roles
+            GET /admin/me/modules           → 200, modules.length === 19
+          Roles seeded at startup confirmed via mongo (3 docs in db.roles).
+
+          Suggested test cases:
+            (G1) Login as super_admin → GET /admin/access/roles → 200, exactly
+                 3 items, all is_system: true. super_admin doc has 19 modules.
+            (G2) POST /admin/access/roles {"name":"Ops Lead","modules":["dashboard","users","squads"]} → 201, returned slug == "ops_lead", assigned_admin_count == 0.
+            (G3) Re-POST with same name → 409 conflict.
+            (G4) PUT /admin/access/roles/{ops_lead_id} {"modules":["dashboard","users","squads","analytics"]} → 200, modules has 4 items, _ROLES_CACHE updated.
+            (G5) PUT super_admin role: try to change modules → 400 immutable.
+            (G6) POST /admin/admins with body.role="ops_lead" (a custom role) → 200 created.
+            (G7) Login as the newly-created Ops Lead admin → GET /admin/me/modules → returns only the 4 modules from G4. Specifically GET /admin/platform-fees with that token → 403 (Ops Lead doesn't include platform_fees).
+            (G8) PATCH /admin/admins/{id}/role {"role":"bogus_slug"} → 400 "Unknown role 'bogus_slug'".
+            (G9) DELETE /admin/access/roles/{ops_lead_id} → 400 "Cannot delete role — 1 admin user(s) are assigned to it."
+            (G10) PATCH the Ops Lead admin's role back to "support", then DELETE the ops_lead role → 200, role removed. Re-GET /admin/access/roles → 3 items only.
+            (G11) Non-super-admin (manager token) → GET /admin/access/roles → 403. GET /admin/access/roles/lookup → 200 (any admin can read for UI dropdown).
+            (G12) Sidebar route gating: as a custom-role admin without "platform_fees" module, GET /admin/platform-fees → 403. Grant the module to their role via PUT /admin/access/roles/{id} → re-GET → 200.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+      Tested G1–G12 for Access Role Management v2 against the live preview
+      backend. 36/38 assertions PASS. ALL role-centric RBAC logic is correct
+      (role CRUD, cache reload, RBAC gating, immutability of super_admin,
+      delete-protection, mid-session cache invalidation in G12).
+
+      ❌ ONE BUG to fix:
+         POST /api/admin/access/roles returns 500 (ObjectId serialization) instead
+         of the spec'd 201, EVEN THOUGH the role is fully persisted in mongo and
+         _ROLES_CACHE is reloaded. Cause: `db.roles.insert_one(doc)` mutates `doc`
+         to add an ObjectId `_id`, then `_annotate(doc)` spreads that ObjectId into
+         the response → FastAPI jsonable_encoder fails.
+
+         File: /app/backend/admin_modules.py — create_role() around line 354.
+         Fix (one line):
+             await db.roles.insert_one(doc)
+             doc.pop("_id", None)           # ← ADD THIS
+             ...
+             return await _annotate(doc)
+
+         (Or re-fetch with {"_id": 0} projection before _annotate.)
+
+         No other code change needed. Re-run G2 + G12 only after fix to confirm
+         201 contract.
+
+      Test harness: /app/backend_test.py (idempotent — pre-cleans leftover
+      non-system roles before G1). State at end of run: db.roles = 3 system
+      roles only, opslead admin deactivated.
+
+    -agent: "main"
+    -message: |
+      Major redesign: Access Control → Access Role Management. Pure role-centric
+      now (no per-admin overrides). Custom roles created in Access Role
+      Management appear automatically in the Admin Users role dropdown.
+
+      REQUEST FOR TESTING: Run G1–G12 above. Auth: admin@squadpay.us /
+      Letmein@2007#ForReal. Local backend http://localhost:8001/api.
+
+      For G7/G11/G12 you'll need an Ops Lead admin token. Create with
+      G6 (POST /admins email=opslead@squadpay.us password=Ops!2026Tst role=ops_lead).
+      Login via POST /admin/auth/login.
+
+      Cleanup at end of run: leave the system in a clean state by running G10.
+
+      Don't retest Account Deletion / Contact Us / Bulk SMS / Credit Rules /
+      previous batches.

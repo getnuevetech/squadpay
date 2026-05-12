@@ -310,6 +310,13 @@ async def _on_startup():
     except Exception as e:
         print("[startup] reconciliation settings failed:", e)
 
+    # June 2025: seed RBAC roles + warm the in-memory roles cache.
+    try:
+        from admin_modules import seed_system_roles
+        await seed_system_roles(db)
+    except Exception as e:
+        print("[startup] seed roles failed:", e)
+
 
 @app.on_event("shutdown")
 async def _on_shutdown():

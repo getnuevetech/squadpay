@@ -309,6 +309,14 @@ def build_admin_router(db):
         existing = await db.admins.find_one({"email": body.email.lower()})
         if existing:
             raise HTTPException(409, "Admin with that email already exists")
+        # Validate the role slug exists in db.roles (RBAC v2). super_admin is
+        # always valid even before seeding finishes.
+        from admin_modules import role_slug_exists
+        if not role_slug_exists(body.role):
+            raise HTTPException(
+                400,
+                f"Unknown role '{body.role}'. Create the role under Access Role Management first.",
+            )
         rec = {
             "id": "ad_" + uuid_short(),
             "email": body.email.lower(),

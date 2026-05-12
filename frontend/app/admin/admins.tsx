@@ -1,20 +1,21 @@
 import { useEffect, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, TextInput, StyleSheet, Alert, ActivityIndicator, Modal, Platform } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import { adminApi, AdminProfile, AdminRole } from '../../src/adminApi';
+import { adminApi, AdminProfile } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
-import { Plus, Power, KeyRound, UserCog } from 'lucide-react-native';
+import { Plus, Power, KeyRound, UserCog, ShieldCheck } from 'lucide-react-native';
 
-const ROLES: AdminRole[] = ['super_admin', 'manager', 'support'];
+type RoleOption = { id: string; slug: string; name: string; description: string | null; is_system: boolean };
 
 export default function AdminUsers() {
   const [admins, setAdmins] = useState<AdminProfile[]>([]);
+  const [roles, setRoles] = useState<RoleOption[]>([]);
   const [busy, setBusy] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState<AdminRole>('support');
+  const [role, setRole] = useState<string>('support');
 
   // Push-reset modal state
   const [resetTarget, setResetTarget] = useState<AdminProfile | null>(null);
@@ -23,17 +24,30 @@ export default function AdminUsers() {
 
   // Change-role modal state
   const [roleTarget, setRoleTarget] = useState<AdminProfile | null>(null);
-  const [pendingRole, setPendingRole] = useState<AdminRole>('support');
+  const [pendingRole, setPendingRole] = useState<string>('support');
   const [roleBusy, setRoleBusy] = useState(false);
 
-  const load = async () => { setBusy(true); try { setAdmins(await adminApi.listAdmins()); } finally { setBusy(false); } };
+  const load = async () => {
+    setBusy(true);
+    try {
+      const [adm, lookup] = await Promise.all([adminApi.listAdmins(), adminApi.rolesLookup()]);
+      setAdmins(adm);
+      setRoles(lookup.items);
+      // Default the create-form role to first non-super_admin role.
+      const fallback = lookup.items.find((r) => r.slug !== 'super_admin') || lookup.items[0];
+      if (fallback) setRole((cur) => cur === 'support' ? fallback.slug : cur);
+    } finally {
+      setBusy(false);
+    }
+  };
   useEffect(() => { load(); }, []);
 
   const submit = async () => {
     if (!name.trim() || !email.trim() || password.length < 8) { Alert.alert('Missing/invalid', 'Name, email, and 8+ char password required.'); return; }
+    if (!role) { Alert.alert('Pick a role', 'A role is required for every admin user.'); return; }
     try {
       await adminApi.createAdmin({ name: name.trim(), email: email.trim().toLowerCase(), password, role });
-      setShowForm(false); setName(''); setEmail(''); setPassword(''); setRole('support');
+      setShowForm(false); setName(''); setEmail(''); setPassword('');
       await load();
     } catch (e: any) { Alert.alert('Could not create admin', e?.message || ''); }
   };
@@ -45,6 +59,11 @@ export default function AdminUsers() {
   const openPushReset = (a: AdminProfile) => {
     setResetTarget(a);
     setAltEmail('');
+  };
+
+  const roleLabel = (slug: string): string => {
+    const r = roles.find((x) => x.slug === slug);
+    return r?.name || slug;
   };
 
   const submitPushReset = async (returnLink: boolean) => {
@@ -108,13 +127,21 @@ export default function AdminUsers() {
           <Text style={styles.label}>Email</Text><TextInput style={styles.input} value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" placeholder="[email protected]" placeholderTextColor={COLORS.disabledText} testID="admin-create-email" />
           <Text style={styles.label}>Password</Text><TextInput style={styles.input} value={password} onChangeText={setPassword} secureTextEntry placeholder="min 8 chars" placeholderTextColor={COLORS.disabledText} testID="admin-create-password" />
           <Text style={styles.label}>Role</Text>
-          <View style={{ flexDirection: 'row', gap: 8 }}>
-            {ROLES.map((r) => (
-              <TouchableOpacity key={r} onPress={() => setRole(r)} style={[styles.roleChip, role === r && styles.roleChipActive]} activeOpacity={0.85} testID={`admin-create-role-${r}`}>
-                <Text style={[styles.roleChipText, role === r && { color: '#fff' }]}>{r}</Text>
+          <View style={styles.rolePickerWrap} testID="admin-create-role-wrap">
+            {roles.map((r) => (
+              <TouchableOpacity
+                key={r.slug}
+                onPress={() => setRole(r.slug)}
+                style={[styles.roleChip, role === r.slug && styles.roleChipActive]}
+                activeOpacity={0.85}
+                testID={`admin-create-role-${r.slug}`}
+              >
+                {r.is_system ? <ShieldCheck size={11} color={role === r.slug ? '#fff' : COLORS.success} /> : null}
+                <Text style={[styles.roleChipText, role === r.slug && { color: '#fff' }]}>{r.name}</Text>
               </TouchableOpacity>
             ))}
           </View>
+          <Text style={styles.helperTxt}>Roles are defined in Access Role Management. Each role decides which modules the new admin sees.</Text>
           <TouchableOpacity onPress={submit} style={styles.submitBtn} activeOpacity={0.85} testID="admin-create-submit"><Text style={{ color: '#fff', fontWeight: FONT.weights.bold }}>Create admin</Text></TouchableOpacity>
         </View>
       ) : null}
@@ -122,7 +149,7 @@ export default function AdminUsers() {
       {admins.map((a) => (
         <View key={a.id} style={styles.row} testID={`admin-row-${a.id}`}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.name}>{a.name} <Text style={styles.role}>{a.role}</Text></Text>
+            <Text style={styles.name}>{a.name} <Text style={styles.role}>{roleLabel(a.role)}</Text></Text>
             <Text style={styles.metaTxt}>{a.email}</Text>
             <Text style={styles.metaTxt}>last login: {a.last_login_at ? new Date(a.last_login_at).toLocaleString() : 'never'}</Text>
             <View style={styles.rowActions}>
@@ -208,16 +235,17 @@ export default function AdminUsers() {
             {roleTarget ? (
               <Text style={styles.modalSub}>{roleTarget.name} ({roleTarget.email})</Text>
             ) : null}
-            <View style={{ flexDirection: 'row', gap: 8, marginTop: SPACING.sm }}>
-              {ROLES.map((r) => (
+            <View style={[styles.rolePickerWrap, { marginTop: SPACING.sm }]}>
+              {roles.map((r) => (
                 <TouchableOpacity
-                  key={r}
-                  onPress={() => setPendingRole(r)}
-                  style={[styles.roleChip, pendingRole === r && styles.roleChipActive]}
+                  key={r.slug}
+                  onPress={() => setPendingRole(r.slug)}
+                  style={[styles.roleChip, pendingRole === r.slug && styles.roleChipActive]}
                   activeOpacity={0.85}
-                  testID={`admin-change-role-chip-${r}`}
+                  testID={`admin-change-role-chip-${r.slug}`}
                 >
-                  <Text style={[styles.roleChipText, pendingRole === r && { color: '#fff' }]}>{r}</Text>
+                  {r.is_system ? <ShieldCheck size={11} color={pendingRole === r.slug ? '#fff' : COLORS.success} /> : null}
+                  <Text style={[styles.roleChipText, pendingRole === r.slug && { color: '#fff' }]}>{r.name}</Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -249,9 +277,10 @@ const styles = StyleSheet.create({
   form: { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS.md, padding: SPACING.md, marginBottom: SPACING.md, gap: 4 },
   label: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: SPACING.sm, marginBottom: 4 },
   input: { height: 40, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, paddingHorizontal: SPACING.md, color: COLORS.text, backgroundColor: COLORS.bg },
-  roleChip: { paddingHorizontal: SPACING.md, paddingVertical: 8, borderRadius: RADIUS.pill, borderWidth: 1, borderColor: COLORS.border },
+  roleChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: SPACING.md, paddingVertical: 8, borderRadius: RADIUS.pill, borderWidth: 1, borderColor: COLORS.border },
   roleChipActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
   roleChipText: { color: COLORS.subtext, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold },
+  rolePickerWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 },
   submitBtn: { marginTop: SPACING.md, height: 42, borderRadius: RADIUS.md, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center' },
   row: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: SPACING.md, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   name: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, color: COLORS.text },

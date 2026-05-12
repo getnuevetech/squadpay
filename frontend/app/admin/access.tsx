@@ -1,160 +1,116 @@
 /**
- * /admin/access — Access Control center (super_admin only).
+ * /admin/access — Access Role Management (super_admin only).
  *
- * Lets a super_admin:
- *   • See every admin and the role they currently hold.
- *   • Switch any admin's role (super_admin / manager / support).
- *   • Toggle per-admin module overrides (grant/deny) without changing role.
- *   • Spot sensitive modules (those marked sensitive=true get a warning badge).
+ * Manages ROLES (not individual admins). Each role declares which modules
+ * are visible to any admin assigned to it. Admin user assignments are managed
+ * in /admin/admins where a role dropdown picks from this registry.
  *
- * The matrix UI is a {admin × module} table — admins on rows, modules on
- * columns grouped by module.group. Each cell is a 3-state chip:
- *
- *   default  → admin inherits from their role's default_roles
- *   grant    → admin has explicit grant (override)
- *   deny     → admin has explicit deny  (override)
- *
- * Saving an admin's row only sends the fields that changed.
+ *   ┌─────────────────────────────────────────────────────────────────┐
+ *   │  Role list  (left)                                              │
+ *   │   ┌─ Super Admin       (system, immutable)                      │
+ *   │   ├─ Manager           (8 admins)                               │
+ *   │   ├─ Support           (3 admins)                               │
+ *   │   └─ + New role                                                 │
+ *   │                                                                 │
+ *   │  Role editor (right)                                            │
+ *   │   ▢ Name                                                        │
+ *   │   ▢ Description                                                 │
+ *   │   ▢ Modules — grouped checkboxes                                │
+ *   │   [Save]  [Delete]                                              │
+ *   └─────────────────────────────────────────────────────────────────┘
  */
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import {
-  View, Text, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator, Alert,
+  View, Text, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator,
+  Alert, TextInput, Platform,
 } from 'react-native';
-import { useRouter } from 'expo-router';
-import { ShieldAlert, ChevronDown, Check, Lock } from 'lucide-react-native';
-import { adminApi, AdminRole, getProfile, AdminProfile } from '../../src/adminApi';
+import { Plus, Save, Trash2, ShieldAlert, ShieldCheck, Lock, Users, Check } from 'lucide-react-native';
+import { adminApi, getProfile, AdminProfile } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
-import { formatUid } from '../../src/ids';
 
-type Module = {
-  key: string; label: string; group: string; path: string;
-  default_roles: AdminRole[]; sensitive: boolean;
-};
-
-type AdminRow = {
+type Module = { key: string; label: string; group: string; path: string; sensitive: boolean };
+type Role = {
   id: string;
-  email: string;
+  slug: string;
   name: string;
-  role: AdminRole;
-  is_active: boolean;
-  module_overrides: Record<string, 'grant' | 'deny'>;
-  accessible_modules: string[];
-  last_login_at: string | null;
+  description: string | null;
+  modules: string[];
+  is_system: boolean;
+  assigned_admin_count: number;
+  created_at?: string;
+  updated_at?: string;
 };
 
-const ROLE_OPTIONS: AdminRole[] = ['super_admin', 'manager', 'support'];
+const SUPER_ADMIN_SLUG = 'super_admin';
 
-export default function AccessControlPage() {
-  const router = useRouter();
+export default function AccessRoleManagementPage() {
   const [me, setMe] = useState<AdminProfile | null>(null);
-  const [registry, setRegistry] = useState<{ modules: Module[]; group_order: string[] } | null>(null);
-  const [admins, setAdmins] = useState<AdminRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [savingId, setSavingId] = useState<string | null>(null);
-  const [dirty, setDirty] = useState<Record<string, AdminRow>>({});
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [registry, setRegistry] = useState<{ modules: Module[]; group_order: string[] } | null>(null);
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Working edits (only meaningful while a role is selected).
+  const [draft, setDraft] = useState<{
+    name: string;
+    description: string;
+    modules: Set<string>;
+  }>({ name: '', description: '', modules: new Set() });
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [reg, adm, profile] = await Promise.all([
+      const [reg, list, profile] = await Promise.all([
         adminApi.accessRegistry(),
-        adminApi.accessAdmins(),
+        adminApi.listRoles(),
         getProfile(),
       ]);
       setRegistry({ modules: reg.modules, group_order: reg.group_order });
-      setAdmins(adm.items);
+      setRoles(list.items);
       setMe(profile);
-      setDirty({});
+      // Auto-select the first non-super_admin role on first load so the editor
+      // isn't blank. Falls back to super_admin if it's the only thing.
+      if (!selectedId) {
+        const first = list.items.find((r) => r.slug !== SUPER_ADMIN_SLUG) || list.items[0];
+        if (first) selectInto(first);
+      } else {
+        const refreshed = list.items.find((r) => r.id === selectedId);
+        if (refreshed) selectInto(refreshed);
+      }
     } catch (e: any) {
-      Alert.alert('Failed to load', e?.message || 'Could not load access settings.');
+      Alert.alert('Failed to load', e?.message || 'Could not load Access Roles.');
     } finally {
       setLoading(false);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
-  const isSuper = (me?.role || '').toLowerCase() === 'super_admin';
-
-  /** Returns the working copy of the admin (dirty overrides original). */
-  const current = (a: AdminRow): AdminRow => dirty[a.id] ?? a;
-
-  const setOverride = (admin: AdminRow, moduleKey: string, next: 'default' | 'grant' | 'deny') => {
-    const working: AdminRow = JSON.parse(JSON.stringify(current(admin)));
-    const overrides = { ...(working.module_overrides || {}) };
-    if (next === 'default') delete overrides[moduleKey];
-    else overrides[moduleKey] = next;
-    working.module_overrides = overrides;
-    setDirty((d) => ({ ...d, [admin.id]: working }));
+  const selectInto = (role: Role) => {
+    setSelectedId(role.id);
+    setDraft({
+      name: role.name,
+      description: role.description || '',
+      modules: new Set(role.modules || []),
+    });
   };
 
-  const setRole = (admin: AdminRow, role: AdminRole) => {
-    const working: AdminRow = { ...current(admin), role };
-    setDirty((d) => ({ ...d, [admin.id]: working }));
-  };
+  const selected = useMemo(() => roles.find((r) => r.id === selectedId) || null, [roles, selectedId]);
+  const isSuper = (me?.role || '').toLowerCase() === SUPER_ADMIN_SLUG;
+  const isLocked = !!selected && selected.slug === SUPER_ADMIN_SLUG;
+  const isDirty = useMemo(() => {
+    if (!selected) return false;
+    return (
+      draft.name !== selected.name ||
+      (draft.description || '') !== (selected.description || '') ||
+      !setsEqual(draft.modules, new Set(selected.modules))
+    );
+  }, [draft, selected]);
 
-  const cancelEdit = (id: string) => {
-    setDirty((d) => { const next = { ...d }; delete next[id]; return next; });
-  };
-
-  const saveAdmin = async (admin: AdminRow) => {
-    const working = current(admin);
-    const body: any = {};
-    if (working.role !== admin.role) body.role = working.role;
-    if (JSON.stringify(working.module_overrides || {}) !== JSON.stringify(admin.module_overrides || {})) {
-      body.module_overrides = working.module_overrides || {};
-    }
-    if (Object.keys(body).length === 0) {
-      cancelEdit(admin.id);
-      return;
-    }
-    setSavingId(admin.id);
-    try {
-      const res = await adminApi.setAdminAccess(admin.id, body);
-      if (res.admin) {
-        setAdmins((prev) => prev.map((a) => (a.id === admin.id ? { ...a, ...res.admin } : a)));
-      }
-      cancelEdit(admin.id);
-    } catch (e: any) {
-      Alert.alert('Save failed', e?.message || 'Could not save access changes.');
-    } finally {
-      setSavingId(null);
-    }
-  };
-
-  /** State of a cell: default / grant / deny. */
-  const cellState = (admin: AdminRow, m: Module): 'default' | 'grant' | 'deny' => {
-    const ov = (current(admin).module_overrides || {})[m.key];
-    if (ov === 'grant') return 'grant';
-    if (ov === 'deny') return 'deny';
-    return 'default';
-  };
-
-  /** Is the user effectively able to access this module right now (in working state)? */
-  const effectiveAccess = (admin: AdminRow, m: Module): boolean => {
-    const working = current(admin);
-    if (working.role === 'super_admin') return true;
-    const ov = (working.module_overrides || {})[m.key];
-    if (ov === 'grant') return true;
-    if (ov === 'deny') return false;
-    return m.default_roles.includes(working.role);
-  };
-
-  const cycleCell = (admin: AdminRow, m: Module) => {
-    const s = cellState(admin, m);
-    if (current(admin).role === 'super_admin') {
-      Alert.alert('Super admin', 'super_admin always has access to every module. Demote first to apply overrides.');
-      return;
-    }
-    const next: 'default' | 'grant' | 'deny' =
-      s === 'default' ? (m.default_roles.includes(current(admin).role) ? 'deny' : 'grant')
-      : s === 'grant' ? 'deny'
-      : 'default';
-    setOverride(admin, m.key, next);
-  };
-
-  const grouped = useMemo(() => {
+  const groupedModules = useMemo(() => {
     if (!registry) return {} as Record<string, Module[]>;
     const out: Record<string, Module[]> = {};
     for (const g of registry.group_order) out[g] = [];
@@ -165,12 +121,122 @@ export default function AccessControlPage() {
     return out;
   }, [registry]);
 
+  const toggleModule = (key: string) => {
+    if (isLocked) return;
+    setDraft((d) => {
+      const next = new Set(d.modules);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return { ...d, modules: next };
+    });
+  };
+
+  const toggleGroup = (groupKey: string, value: boolean) => {
+    if (isLocked || !registry) return;
+    const keys = (groupedModules[groupKey] || []).map((m) => m.key);
+    setDraft((d) => {
+      const next = new Set(d.modules);
+      for (const k of keys) {
+        if (value) next.add(k); else next.delete(k);
+      }
+      return { ...d, modules: next };
+    });
+  };
+
+  const onCreateRole = () => {
+    const promptText = 'Name of the new role (e.g. "Operations Lead")';
+    const askName = async (initial = '') => {
+      if (Platform.OS === 'web') {
+        // eslint-disable-next-line no-alert
+        const v = window.prompt(promptText, initial);
+        return v;
+      }
+      // RN doesn't have a prompt — fall back to Alert with a single confirm.
+      return new Promise<string | null>((resolve) => {
+        Alert.alert('New role', promptText, [
+          { text: 'Cancel', style: 'cancel', onPress: () => resolve(null) },
+          { text: 'Create', onPress: () => resolve('New role') },
+        ]);
+      });
+    };
+    askName().then(async (name) => {
+      if (!name || !name.trim()) return;
+      setCreating(true);
+      try {
+        const newRole = await adminApi.createRole({
+          name: name.trim(),
+          description: '',
+          modules: ['dashboard'], // sensible default — every role can see Dashboard
+        });
+        await load();
+        // Select the new role.
+        setTimeout(() => {
+          setSelectedId(newRole.id);
+          setDraft({
+            name: newRole.name,
+            description: newRole.description || '',
+            modules: new Set(newRole.modules),
+          });
+        }, 50);
+      } catch (e: any) {
+        Alert.alert('Could not create role', e?.message || 'Unknown error');
+      } finally {
+        setCreating(false);
+      }
+    });
+  };
+
+  const onSave = async () => {
+    if (!selected) return;
+    setSaving(true);
+    try {
+      const updated = await adminApi.updateRole(selected.id, {
+        name: draft.name.trim(),
+        description: draft.description.trim(),
+        modules: Array.from(draft.modules),
+      });
+      setRoles((prev) => prev.map((r) => (r.id === updated.id ? { ...r, ...updated } : r)));
+      selectInto({ ...selected, ...updated });
+    } catch (e: any) {
+      Alert.alert('Save failed', e?.message || 'Could not save.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onDelete = async () => {
+    if (!selected || selected.is_system) return;
+    if (selected.assigned_admin_count > 0) {
+      Alert.alert(
+        'Cannot delete',
+        `${selected.assigned_admin_count} admin user(s) are assigned to this role. Reassign them to another role first.`,
+      );
+      return;
+    }
+    const doDelete = async () => {
+      setDeleting(true);
+      try {
+        await adminApi.deleteRole(selected.id);
+        setRoles((prev) => prev.filter((r) => r.id !== selected.id));
+        setSelectedId(null);
+      } catch (e: any) {
+        Alert.alert('Delete failed', e?.message || 'Could not delete role.');
+      } finally {
+        setDeleting(false);
+      }
+    };
+    if (Platform.OS === 'web') {
+      // eslint-disable-next-line no-alert
+      if (window.confirm(`Delete role "${selected.name}"? This can't be undone.`)) doDelete();
+    } else {
+      Alert.alert('Delete role?', `"${selected.name}" will be removed.`, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: doDelete },
+      ]);
+    }
+  };
+
   if (loading || !registry) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator color={COLORS.primary} />
-      </View>
-    );
+    return <View style={styles.center}><ActivityIndicator color={COLORS.primary} /></View>;
   }
 
   if (!isSuper) {
@@ -179,214 +245,267 @@ export default function AccessControlPage() {
         <Lock size={32} color={COLORS.subtext} />
         <Text style={styles.gateTitle}>Super admin only</Text>
         <Text style={styles.gateBody}>
-          Only super_admin accounts can manage Access Control. Ask a super_admin
-          to grant you the role you need.
+          Only super_admin accounts can manage Access Roles.
         </Text>
       </View>
     );
   }
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.container}>
-      <Text style={styles.h1}>Access Control</Text>
-      <Text style={styles.sub}>
-        Manage which admin can open which module. Roles set baseline access;
-        per-admin overrides flip individual modules.
-      </Text>
+    <View style={styles.root}>
+      {/* LEFT: role list */}
+      <ScrollView style={styles.left} contentContainerStyle={{ padding: SPACING.md, gap: SPACING.sm }}>
+        <Text style={styles.h1}>Access Role Management</Text>
+        <Text style={styles.sub}>Create roles, pick the modules each role can see, then assign roles to admin users from the Admin Users page.</Text>
 
-      <View style={styles.legendRow}>
-        <View style={[styles.chipDot, { backgroundColor: COLORS.surface, borderColor: COLORS.border }]} />
-        <Text style={styles.legendText}>Default (inherits from role)</Text>
-        <View style={[styles.chipDot, { backgroundColor: COLORS.successLight || '#DCFCE7', borderColor: COLORS.success }]} />
-        <Text style={styles.legendText}>Grant</Text>
-        <View style={[styles.chipDot, { backgroundColor: COLORS.dangerLight || '#FEE2E2', borderColor: COLORS.danger }]} />
-        <Text style={styles.legendText}>Deny</Text>
-      </View>
+        <TouchableOpacity
+          style={styles.newRoleBtn}
+          activeOpacity={0.8}
+          onPress={onCreateRole}
+          disabled={creating}
+          testID="access-new-role"
+        >
+          {creating ? <ActivityIndicator color="#fff" /> : <Plus size={16} color="#fff" />}
+          <Text style={styles.newRoleText}>New role</Text>
+        </TouchableOpacity>
 
-      {admins.map((a) => {
-        const working = current(a);
-        const isDirty = !!dirty[a.id];
-        const open = expanded === a.id || isDirty;
-        return (
-          <View key={a.id} style={styles.adminCard} testID={`access-admin-${a.id}`}>
+        {roles.map((r) => {
+          const active = r.id === selectedId;
+          return (
             <TouchableOpacity
-              onPress={() => setExpanded(open ? null : a.id)}
+              key={r.id}
               activeOpacity={0.7}
-              style={styles.adminHeader}
+              style={[styles.roleCard, active && styles.roleCardActive]}
+              onPress={() => selectInto(r)}
+              testID={`access-role-card-${r.slug}`}
             >
               <View style={{ flex: 1 }}>
-                <Text style={styles.adminName} numberOfLines={1}>{a.name || a.email}</Text>
-                <Text style={styles.adminMeta}>{a.email}</Text>
-                <Text style={styles.adminUid} selectable>{formatUid(a.id)}</Text>
-              </View>
-              <View style={[
-                styles.roleBadge,
-                { backgroundColor: working.role === 'super_admin' ? '#7C3AED' : working.role === 'manager' ? COLORS.primary : COLORS.subtext },
-              ]}>
-                <Text style={styles.roleBadgeText}>{working.role}</Text>
-              </View>
-              <ChevronDown
-                size={18}
-                color={COLORS.subtext}
-                style={{ transform: [{ rotate: open ? '180deg' : '0deg' }] }}
-              />
-            </TouchableOpacity>
-
-            {open ? (
-              <View style={styles.adminBody}>
-                {/* Role picker */}
-                <Text style={styles.label}>Role</Text>
-                <View style={styles.roleRow}>
-                  {ROLE_OPTIONS.map((r) => {
-                    const active = working.role === r;
-                    const disabled = me?.id === a.id && r !== 'super_admin' && a.role === 'super_admin';
-                    return (
-                      <TouchableOpacity
-                        key={r}
-                        onPress={() => !disabled && setRole(a, r)}
-                        style={[styles.roleOption, active && styles.roleOptionActive, disabled && { opacity: 0.4 }]}
-                        activeOpacity={0.7}
-                        testID={`access-role-${a.id}-${r}`}
-                      >
-                        <Text style={[styles.roleOptionText, active && { color: '#fff' }]}>{r}</Text>
-                      </TouchableOpacity>
-                    );
-                  })}
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text style={[styles.roleName, active && { color: '#fff' }]} numberOfLines={1}>
+                    {r.name}
+                  </Text>
+                  {r.is_system ? (
+                    <ShieldCheck size={13} color={active ? '#fff' : COLORS.success} />
+                  ) : null}
                 </View>
+                <Text style={[styles.roleSub, active && { color: '#fff', opacity: 0.85 }]} numberOfLines={1}>
+                  {r.modules.length} module{r.modules.length === 1 ? '' : 's'} • {r.assigned_admin_count} admin{r.assigned_admin_count === 1 ? '' : 's'}
+                </Text>
+              </View>
+              <Users size={14} color={active ? '#fff' : COLORS.subtext} />
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
 
-                {/* Module matrix */}
-                {registry.group_order.map((g) => {
-                  const mods = grouped[g] || [];
-                  if (mods.length === 0) return null;
-                  return (
-                    <View key={g} style={{ marginTop: SPACING.md }}>
-                      <Text style={styles.groupTitle}>{g}</Text>
-                      <View style={styles.cellRow}>
-                        {mods.map((m) => {
-                          const s = cellState(a, m);
-                          const eff = effectiveAccess(a, m);
-                          const bg =
-                            s === 'grant' ? (COLORS.successLight || '#DCFCE7')
-                            : s === 'deny' ? (COLORS.dangerLight || '#FEE2E2')
-                            : COLORS.surface;
-                          const borderColor =
-                            s === 'grant' ? COLORS.success
-                            : s === 'deny' ? COLORS.danger
-                            : COLORS.border;
-                          return (
-                            <TouchableOpacity
-                              key={m.key}
-                              onPress={() => cycleCell(a, m)}
-                              activeOpacity={0.7}
-                              style={[styles.cell, { backgroundColor: bg, borderColor }]}
-                              testID={`access-cell-${a.id}-${m.key}`}
-                            >
-                              <Text style={[styles.cellLabel, !eff && { textDecorationLine: 'line-through', opacity: 0.6 }]} numberOfLines={1}>
-                                {m.label}
-                              </Text>
-                              {m.sensitive ? (
-                                <ShieldAlert size={10} color={COLORS.warning} style={{ marginLeft: 4 }} />
-                              ) : null}
-                              {s !== 'default' ? (
-                                <Text style={[styles.cellState, s === 'grant' ? { color: COLORS.success } : { color: COLORS.danger }]}>
-                                  {s.toUpperCase()}
-                                </Text>
-                              ) : null}
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    </View>
-                  );
-                })}
+      {/* RIGHT: editor */}
+      <ScrollView style={styles.right} contentContainerStyle={{ padding: SPACING.lg, gap: SPACING.md }}>
+        {!selected ? (
+          <View style={styles.center}>
+            <Text style={styles.sub}>Select a role on the left, or create a new one.</Text>
+          </View>
+        ) : (
+          <>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.h2}>{selected.name}</Text>
+                <Text style={styles.sub}>
+                  slug <Text style={{ fontFamily: 'monospace' }}>{selected.slug}</Text>
+                  {selected.is_system ? ' • system role' : ''}
+                  {' • '}
+                  {selected.assigned_admin_count} admin user{selected.assigned_admin_count === 1 ? '' : 's'} assigned
+                </Text>
+              </View>
+              {isLocked ? (
+                <View style={styles.lockBadge}>
+                  <Lock size={12} color={COLORS.warning} />
+                  <Text style={styles.lockText}>Immutable</Text>
+                </View>
+              ) : null}
+            </View>
 
-                {/* Save / cancel */}
-                {isDirty ? (
-                  <View style={styles.actionRow}>
+            <View>
+              <Text style={styles.label}>Display name</Text>
+              <TextInput
+                value={draft.name}
+                onChangeText={(t) => setDraft((d) => ({ ...d, name: t }))}
+                editable={!isLocked && !saving}
+                style={[styles.input, isLocked && { opacity: 0.6 }]}
+                placeholder="e.g. Operations Lead"
+                placeholderTextColor={COLORS.subtext}
+                testID="role-name-input"
+              />
+            </View>
+
+            <View>
+              <Text style={styles.label}>Description</Text>
+              <TextInput
+                value={draft.description}
+                onChangeText={(t) => setDraft((d) => ({ ...d, description: t }))}
+                editable={!isLocked && !saving}
+                multiline
+                style={[styles.input, styles.inputMulti, isLocked && { opacity: 0.6 }]}
+                placeholder="What does this role do?"
+                placeholderTextColor={COLORS.subtext}
+                maxLength={300}
+              />
+            </View>
+
+            <Text style={styles.label}>Modules ({draft.modules.size}/{registry.modules.length})</Text>
+            {registry.group_order.map((g) => {
+              const mods = groupedModules[g] || [];
+              if (mods.length === 0) return null;
+              const allOn = mods.every((m) => draft.modules.has(m.key));
+              return (
+                <View key={g} style={styles.groupBlock}>
+                  <View style={styles.groupHeader}>
+                    <Text style={styles.groupTitle}>{g}</Text>
                     <TouchableOpacity
-                      onPress={() => cancelEdit(a.id)}
-                      style={[styles.btn, styles.btnGhost]}
-                      activeOpacity={0.8}
+                      onPress={() => toggleGroup(g, !allOn)}
+                      activeOpacity={0.7}
+                      disabled={isLocked}
+                      style={styles.groupToggle}
+                      testID={`role-group-toggle-${g}`}
                     >
-                      <Text style={styles.btnGhostText}>Cancel</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      onPress={() => saveAdmin(a)}
-                      style={[styles.btn, styles.btnPrimary]}
-                      activeOpacity={0.8}
-                      disabled={savingId === a.id}
-                      testID={`access-save-${a.id}`}
-                    >
-                      {savingId === a.id ? (
-                        <ActivityIndicator color="#fff" />
-                      ) : (
-                        <>
-                          <Check size={14} color="#fff" />
-                          <Text style={styles.btnPrimaryText}>Save</Text>
-                        </>
-                      )}
+                      <Text style={[styles.groupToggleText, isLocked && { opacity: 0.4 }]}>
+                        {allOn ? 'Clear all' : 'Select all'}
+                      </Text>
                     </TouchableOpacity>
                   </View>
-                ) : null}
+                  <View style={styles.moduleRow}>
+                    {mods.map((m) => {
+                      const on = draft.modules.has(m.key);
+                      return (
+                        <TouchableOpacity
+                          key={m.key}
+                          onPress={() => toggleModule(m.key)}
+                          activeOpacity={0.7}
+                          disabled={isLocked}
+                          style={[
+                            styles.chip,
+                            on && styles.chipOn,
+                            isLocked && { opacity: 0.6 },
+                          ]}
+                          testID={`role-chip-${selected.slug}-${m.key}`}
+                        >
+                          {on ? <Check size={12} color="#fff" /> : null}
+                          <Text style={[styles.chipText, on && { color: '#fff' }]} numberOfLines={1}>
+                            {m.label}
+                          </Text>
+                          {m.sensitive ? (
+                            <ShieldAlert size={10} color={on ? '#fff' : COLORS.warning} />
+                          ) : null}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+              );
+            })}
+
+            {!isLocked ? (
+              <View style={styles.actionRow}>
+                {!selected.is_system ? (
+                  <TouchableOpacity
+                    onPress={onDelete}
+                    style={[styles.btn, styles.btnDanger]}
+                    activeOpacity={0.8}
+                    disabled={deleting || selected.assigned_admin_count > 0}
+                    testID="role-delete"
+                  >
+                    {deleting ? <ActivityIndicator color="#fff" /> : <Trash2 size={14} color="#fff" />}
+                    <Text style={styles.btnDangerText}>Delete role</Text>
+                  </TouchableOpacity>
+                ) : <View style={{ flex: 1 }} />}
+                <TouchableOpacity
+                  onPress={onSave}
+                  style={[
+                    styles.btn, styles.btnPrimary,
+                    (!isDirty || saving) && { opacity: 0.5 },
+                  ]}
+                  activeOpacity={0.8}
+                  disabled={!isDirty || saving}
+                  testID="role-save"
+                >
+                  {saving ? <ActivityIndicator color="#fff" /> : <Save size={14} color="#fff" />}
+                  <Text style={styles.btnPrimaryText}>Save changes</Text>
+                </TouchableOpacity>
               </View>
             ) : null}
-          </View>
-        );
-      })}
-    </ScrollView>
+          </>
+        )}
+      </ScrollView>
+    </View>
   );
 }
 
-const styles: any = StyleSheet.create({
-  root: { flex: 1, backgroundColor: COLORS.bg },
-  container: { padding: SPACING.lg, gap: SPACING.md, maxWidth: 1100, alignSelf: 'stretch', width: '100%' },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: SPACING.xl, gap: 8, backgroundColor: COLORS.bg },
+function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
+  if (a.size !== b.size) return false;
+  for (const x of a) if (!b.has(x)) return false;
+  return true;
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1, flexDirection: Platform.OS === 'web' ? 'row' : 'column', backgroundColor: COLORS.bg },
+  left: {
+    width: Platform.OS === 'web' ? 320 : '100%',
+    borderRightWidth: Platform.OS === 'web' ? 1 : 0,
+    borderRightColor: COLORS.border,
+    backgroundColor: COLORS.surface,
+    flexGrow: 0,
+  },
+  right: { flex: 1 },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: SPACING.xl, gap: 8 },
   gateTitle: { fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold, color: COLORS.text, marginTop: 12 },
   gateBody: { fontSize: FONT.sizes.sm, color: COLORS.subtext, textAlign: 'center', maxWidth: 360 },
   h1: { fontSize: FONT.sizes.xl, fontWeight: FONT.weights.bold, color: COLORS.text },
-  sub: { fontSize: FONT.sizes.sm, color: COLORS.subtext },
-  legendRow: {
-    flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6,
-    paddingVertical: 4, marginBottom: 4,
+  h2: { fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold, color: COLORS.text },
+  sub: { fontSize: FONT.sizes.sm, color: COLORS.subtext, lineHeight: 18 },
+  newRoleBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 10, borderRadius: RADIUS.md, backgroundColor: COLORS.primary,
+    marginVertical: SPACING.sm,
   },
-  chipDot: { width: 12, height: 12, borderRadius: 6, borderWidth: 1, marginLeft: 8 },
-  legendText: { fontSize: 11, color: COLORS.subtext, marginRight: 4 },
-  adminCard: {
-    backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, borderWidth: 1, borderColor: COLORS.border,
-    overflow: 'hidden',
-  },
-  adminHeader: {
-    flexDirection: 'row', alignItems: 'center', gap: 12, padding: SPACING.md,
-  },
-  adminName: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, color: COLORS.text },
-  adminMeta: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
-  adminUid: { fontSize: 11, color: COLORS.subtext, marginTop: 2, fontFamily: 'monospace', letterSpacing: 0.5 },
-  roleBadge: {
-    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999,
-  },
-  roleBadgeText: { fontSize: 10, color: '#fff', fontWeight: FONT.weights.bold, textTransform: 'uppercase' },
-  adminBody: { borderTopWidth: 1, borderTopColor: COLORS.border, padding: SPACING.md },
-  label: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginBottom: 4, fontWeight: FONT.weights.semibold },
-  roleRow: { flexDirection: 'row', gap: 6 },
-  roleOption: {
-    paddingHorizontal: 14, paddingVertical: 8, borderRadius: RADIUS.md,
+  newRoleText: { color: '#fff', fontWeight: FONT.weights.bold },
+  roleCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    padding: SPACING.md, borderRadius: RADIUS.md,
     backgroundColor: COLORS.bg, borderWidth: 1, borderColor: COLORS.border,
   },
-  roleOptionActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
-  roleOptionText: { fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold, color: COLORS.text, textTransform: 'lowercase' },
-  groupTitle: { fontSize: FONT.sizes.xs, color: COLORS.subtext, fontWeight: FONT.weights.bold, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 },
-  cellRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  cell: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 10, paddingVertical: 6, borderRadius: RADIUS.md,
-    borderWidth: 1, minHeight: 32,
+  roleCardActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  roleName: { fontSize: FONT.sizes.md, color: COLORS.text, fontWeight: FONT.weights.semibold },
+  roleSub: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
+  label: { fontSize: FONT.sizes.xs, color: COLORS.subtext, fontWeight: FONT.weights.semibold, marginBottom: 4 },
+  input: {
+    borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS.md,
+    paddingHorizontal: 12, paddingVertical: 10, color: COLORS.text,
+    fontSize: FONT.sizes.md, backgroundColor: COLORS.surface,
   },
-  cellLabel: { fontSize: FONT.sizes.xs, color: COLORS.text, fontWeight: FONT.weights.semibold },
-  cellState: { fontSize: 9, fontWeight: FONT.weights.bold, marginLeft: 4 },
-  actionRow: { flexDirection: 'row', gap: 8, marginTop: SPACING.lg, justifyContent: 'flex-end' },
-  btn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 18, paddingVertical: 10, borderRadius: RADIUS.md, minHeight: 40 },
-  btnGhost: { backgroundColor: COLORS.bg, borderWidth: 1, borderColor: COLORS.border },
-  btnGhostText: { fontWeight: FONT.weights.semibold, color: COLORS.text },
+  inputMulti: { minHeight: 60, textAlignVertical: 'top' },
+  groupBlock: { marginTop: 4 },
+  groupHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
+  groupTitle: { fontSize: FONT.sizes.xs, color: COLORS.text, fontWeight: FONT.weights.bold, textTransform: 'uppercase', letterSpacing: 0.5 },
+  groupToggle: { paddingHorizontal: 6, paddingVertical: 2 },
+  groupToggleText: { fontSize: FONT.sizes.xs, color: COLORS.primary, fontWeight: FONT.weights.semibold },
+  moduleRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  chip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999,
+    borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.surface,
+    minHeight: 32,
+  },
+  chipOn: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  chipText: { fontSize: FONT.sizes.xs, color: COLORS.text, fontWeight: FONT.weights.semibold },
+  lockBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999,
+    backgroundColor: COLORS.warningLight || '#FEF3C7',
+  },
+  lockText: { fontSize: 10, color: COLORS.warning, fontWeight: FONT.weights.bold, textTransform: 'uppercase' },
+  actionRow: { flexDirection: 'row', gap: 8, marginTop: SPACING.lg, justifyContent: 'space-between' },
+  btn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 18, paddingVertical: 10, borderRadius: RADIUS.md, minHeight: 40 },
   btnPrimary: { backgroundColor: COLORS.primary },
-  btnPrimaryText: { fontWeight: FONT.weights.bold, color: '#fff' },
+  btnPrimaryText: { color: '#fff', fontWeight: FONT.weights.bold },
+  btnDanger: { backgroundColor: COLORS.danger },
+  btnDangerText: { color: '#fff', fontWeight: FONT.weights.bold },
 });

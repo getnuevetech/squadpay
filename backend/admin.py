@@ -84,7 +84,11 @@ def decode_token(token: str) -> dict:
 # Models
 # ---------------------------------------------------------------------------
 
-Role = Literal["super_admin", "manager", "support"]
+# Role slug is a free-form string referencing db.roles[slug]. v1's tight
+# Literal["super_admin","manager","support"] was relaxed to support custom
+# roles created via Access Role Management. Validation happens at write-time
+# against the role registry (admin_modules.role_slug_exists).
+Role = str
 ROLE_HIERARCHY = {"super_admin": 3, "manager": 2, "support": 1}
 
 

@@ -9,7 +9,11 @@ const API = `${BACKEND_URL}/api/admin`;
 const TOKEN_KEY = 'gp.admin.token';
 const PROFILE_KEY = 'gp.admin.profile';
 
-export type AdminRole = 'super_admin' | 'manager' | 'support';
+// Role slug — was a tight Literal ('super_admin' | 'manager' | 'support').
+// As of RBAC v2 (June 2025) custom roles can be defined in Access Role
+// Management, so the type is now a free-form string. The 3 system slugs are
+// still always present.
+export type AdminRole = string;
 
 export type AdminProfile = {
   id: string;
@@ -249,7 +253,8 @@ export const adminApi = {
   // The request helper already prepends /api/admin, so we pass the suffix only.
   myModules: () =>
     request<{
-      role: AdminRole;
+      role: string;
+      role_name?: string;
       is_super_admin: boolean;
       group_order: string[];
       modules: Array<{
@@ -263,34 +268,48 @@ export const adminApi = {
   accessRegistry: () =>
     request<{
       group_order: string[];
-      available_roles: AdminRole[];
       modules: Array<{
         key: string; label: string; group: string; path: string;
-        default_roles: AdminRole[]; sensitive: boolean;
+        sensitive: boolean;
       }>;
     }>('/access/registry'),
-  accessAdmins: () =>
+
+  // ─────────────── Role CRUD (RBAC v2) ───────────────
+  listRoles: () =>
     request<{
       count: number;
       items: Array<{
         id: string;
-        email: string;
+        slug: string;
         name: string;
-        role: AdminRole;
-        is_active: boolean;
-        last_login_at: string | null;
-        module_overrides: Record<string, 'grant' | 'deny'>;
-        accessible_modules: string[];
+        description: string | null;
+        modules: string[];
+        is_system: boolean;
+        assigned_admin_count: number;
+        created_at: string;
+        updated_at: string;
       }>;
-    }>('/access/admins'),
-  setAdminAccess: (
-    admin_id: string,
-    body: { role?: AdminRole; module_overrides?: Record<string, 'grant' | 'deny'> },
-  ) =>
-    request<{ ok: boolean; admin?: any; unchanged?: boolean }>(
-      `/access/admins/${encodeURIComponent(admin_id)}`,
-      { method: 'PUT', body: JSON.stringify(body) },
-    ),
+    }>('/access/roles'),
+  rolesLookup: () =>
+    request<{
+      items: Array<{ id: string; slug: string; name: string; description: string | null; is_system: boolean }>;
+    }>('/access/roles/lookup'),
+  createRole: (body: { name: string; description?: string; modules: string[] }) =>
+    request<{
+      id: string; slug: string; name: string; description: string | null;
+      modules: string[]; is_system: boolean; assigned_admin_count: number;
+    }>('/access/roles', { method: 'POST', body: JSON.stringify(body) }),
+  updateRole: (role_id: string, body: { name?: string; description?: string; modules?: string[] }) =>
+    request<{
+      id: string; slug: string; name: string; description: string | null;
+      modules: string[]; is_system: boolean; assigned_admin_count: number;
+    }>(`/access/roles/${encodeURIComponent(role_id)}`, {
+      method: 'PUT', body: JSON.stringify(body),
+    }),
+  deleteRole: (role_id: string) =>
+    request<{ ok: boolean; deleted: string }>(`/access/roles/${encodeURIComponent(role_id)}`, {
+      method: 'DELETE',
+    }),
 
   // Customer Service (Contact Us tickets).
   listContactMessages: (page: number = 1, page_size: number = 25, opts: { status?: string; subject?: string; q?: string } = {}) => {

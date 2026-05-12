@@ -1,58 +1,42 @@
-"""Module Registry + RBAC layer (June 2025).
+"""Module Registry + Role-Based Access Control (June 2025 — v2).
 
-Layered on TOP of the existing `Role = super_admin | manager | support` system
-in `/app/backend/admin.py`. Doesn't replace it — extends it.
+Replaces the v1 design (hardcoded roles + per-admin module overrides) with a
+proper **role-centric** model:
 
-Why a Module Registry?
-======================
-The admin panel has 19+ distinct modules (Dashboard, Users, Squads, Bulk SMS,
-Credit Rules, Platform Fees, Reconciliations, …). Today each route hard-codes
-`require_role("super_admin", ...)`. As we scale, we need:
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  db.roles                                                           │
+  │    { id, slug, name, description, modules: [keys], is_system, ... } │
+  │                                                                     │
+  │  db.admins[].role  →  references a role slug from db.roles          │
+  └─────────────────────────────────────────────────────────────────────┘
 
-  • A single source of truth — one place that knows about every module.
-  • Per-admin overrides — sometimes you want to give a "support" agent access
-    to ONE high-privilege module (e.g. Master Account) without promoting them
-    to manager.
-  • Frontend gating — the sidebar must hide entries the admin can't access,
-    and a non-permitted user opening a deep link must see a friendly 403.
+When an admin signs in, we look up their role slug in db.roles and use that
+role's `modules` list to gate access.
 
-Data model
-==========
-Static (this file):
-    MODULES = [{key, label, group, path, default_roles, sensitive?}, ...]
+Three SYSTEM roles are seeded at startup:
+  • super_admin — every module, IMMUTABLE (name & modules & deletion locked)
+  • manager     — sensible defaults (editable)
+  • support     — minimal defaults (editable)
 
-Per admin (already stored in db.admins[]):
-    role                   ← unchanged (super_admin | manager | support)
-    module_overrides       ← NEW: {[module_key]: "grant" | "deny"}
-                             super_admin always has full access — overrides are
-                             ignored for them.
+Super-admins can:
+  • Create new custom roles via /admin/access/roles
+  • Edit any role (modules + name + description) except super_admin
+  • Delete a custom role (only if no admins are assigned to it)
+  • Reassign admins between roles via the existing admin user management UI
 
-Resolution:
-    super_admin           → access to ALL modules.
-    others                → role in module.default_roles, then per-admin
-                            override flips it.
-
-API surface (mounted under /api by the caller):
-    GET    /admin/me/modules                 — for the current admin's sidebar
-    GET    /admin/access/registry            — full registry (super_admin only)
-    GET    /admin/access/admins              — admins + overrides (super_admin)
-    PUT    /admin/access/admins/{admin_id}   — set role + overrides (super_admin)
-
-Usage in a sensitive new route:
-    @router.get("/foo")
-    async def foo(_=Depends(require_module(db, "platform_fees"))):
-        ...
+Per-admin module overrides from v1 are GONE — purely role-driven now. The
+field is no longer read; if it lingers on old admin docs it's silently ignored.
 """
-from typing import Optional, Dict, List, Literal
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional, Dict, List, Set
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+import re
 
 # -----------------------------------------------------------------------------
 # Static module registry
 # -----------------------------------------------------------------------------
-# `default_roles`: which legacy roles get access by default.
-# `sensitive`: optional flag — modules marked sensitive surface a warning in
-# the Access Control UI when granting them to a low-privilege user.
+# `default_roles` here ONLY drives the FIRST-TIME seed of the system roles.
+# Once roles are stored in db.roles, this list is irrelevant for access checks.
 
 MODULES: List[Dict] = [
     # ----- Overview
@@ -100,46 +84,122 @@ MODULES: List[Dict] = [
      "default_roles": ["super_admin"]},
     {"key": "admins",          "label": "Admin Users",        "group": "System",     "path": "/admin/admins",
      "default_roles": ["super_admin"], "sensitive": True},
-    {"key": "access",          "label": "Access Control",     "group": "System",     "path": "/admin/access",
+    {"key": "access",          "label": "Access Role Management", "group": "System", "path": "/admin/access",
      "default_roles": ["super_admin"], "sensitive": True},
 ]
 
-VALID_KEYS = {m["key"] for m in MODULES}
+VALID_KEYS: Set[str] = {m["key"] for m in MODULES}
 GROUP_ORDER = ["Overview", "Operations", "Marketing", "Finance", "System"]
+SYSTEM_SUPER_ADMIN_SLUG = "super_admin"
+SYSTEM_ROLE_SLUGS = {SYSTEM_SUPER_ADMIN_SLUG, "manager", "support"}
+
+# -----------------------------------------------------------------------------
+# In-memory roles cache (slug → set of module keys)
+# -----------------------------------------------------------------------------
+# Refreshed on every CRUD mutation of db.roles. Sync access from request paths.
+_ROLES_CACHE: Dict[str, Set[str]] = {}
+# Companion metadata cache for /admin/me/modules — slug → role doc
+_ROLE_DOCS_CACHE: Dict[str, Dict] = {}
+
+
+async def load_roles_cache(db) -> None:
+    """Reload _ROLES_CACHE + _ROLE_DOCS_CACHE from db.roles.
+
+    Call this on startup AND after every role mutation.
+    """
+    global _ROLES_CACHE, _ROLE_DOCS_CACHE
+    docs = await db.roles.find({}, {"_id": 0}).to_list(length=None)
+    _ROLES_CACHE = {d["slug"]: set(d.get("modules") or []) for d in docs}
+    _ROLE_DOCS_CACHE = {d["slug"]: d for d in docs}
+
+
+async def seed_system_roles(db) -> None:
+    """Create the 3 system roles if they don't already exist.
+
+    super_admin always has all modules; manager/support are seeded with the
+    MODULES.default_roles assignments and then become user-editable.
+    """
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+
+    defaults = {
+        "super_admin": {
+            "slug": "super_admin",
+            "name": "Super Admin",
+            "description": "Full, irrevocable access to every module. Cannot be edited or deleted.",
+            "modules": [m["key"] for m in MODULES],
+            "is_system": True,
+        },
+        "manager": {
+            "slug": "manager",
+            "name": "Manager",
+            "description": "Day-to-day operations + analytics + marketing.",
+            "modules": [m["key"] for m in MODULES if "manager" in m["default_roles"]],
+            "is_system": True,  # seeded by system but EDITABLE (modules can be changed)
+        },
+        "support": {
+            "slug": "support",
+            "name": "Support",
+            "description": "Customer-facing read access.",
+            "modules": [m["key"] for m in MODULES if "support" in m["default_roles"]],
+            "is_system": True,
+        },
+    }
+
+    for slug, defaults_doc in defaults.items():
+        existing = await db.roles.find_one({"slug": slug}, {"_id": 0})
+        if not existing:
+            doc = {
+                "id": f"role_{slug}",
+                **defaults_doc,
+                "created_at": now,
+                "updated_at": now,
+            }
+            await db.roles.insert_one(doc)
+        else:
+            # For super_admin: enforce that its modules list is ALWAYS the
+            # complete set, even if someone hand-edited it in mongo. Manager
+            # and support are user-editable so we don't reset them.
+            if slug == "super_admin":
+                full = [m["key"] for m in MODULES]
+                if set(existing.get("modules") or []) != set(full):
+                    await db.roles.update_one(
+                        {"slug": slug},
+                        {"$set": {"modules": full, "updated_at": now}},
+                    )
+
+    await load_roles_cache(db)
 
 
 # -----------------------------------------------------------------------------
-# Access-resolution helper
+# Access-resolution helpers
 # -----------------------------------------------------------------------------
 
 def admin_has_module(admin: Dict, module_key: str) -> bool:
     """Returns True iff the given admin doc has access to `module_key`.
 
-    Resolution rules:
-      • super_admin → always True.
-      • Otherwise:  start with (role in module.default_roles), then flip with
-                    admin.module_overrides[module_key] if present.
-                    "grant" → True, "deny" → False.
+    Resolution:
+      • super_admin → always True (defensive — never gets locked out).
+      • Otherwise → look up admin.role in _ROLES_CACHE; True iff module_key
+        is in that role's module set.
+      • If the role isn't in the cache (e.g. stale role slug), fall back to
+        MODULES.default_roles so we don't accidentally lock everyone out.
     """
     if not admin:
         return False
     role = (admin.get("role") or "").lower()
-    if role == "super_admin":
+    if role == SYSTEM_SUPER_ADMIN_SLUG:
         return True
 
+    if role in _ROLES_CACHE:
+        return module_key in _ROLES_CACHE[role]
+
+    # Fallback only if cache is empty (e.g. before startup seed) — read the
+    # static defaults list.
     mod = next((m for m in MODULES if m["key"] == module_key), None)
     if not mod:
-        # Unknown module key → deny by default (defensive).
         return False
-
-    base = role in mod["default_roles"]
-    overrides = admin.get("module_overrides") or {}
-    flip = overrides.get(module_key)
-    if flip == "grant":
-        return True
-    if flip == "deny":
-        return False
-    return base
+    return role in (mod.get("default_roles") or [])
 
 
 def admin_accessible_modules(admin: Dict) -> List[Dict]:
@@ -152,25 +212,9 @@ def admin_accessible_modules(admin: Dict) -> List[Dict]:
 # -----------------------------------------------------------------------------
 
 def require_module(module_key: str):
-    """FastAPI dependency that asserts the caller has access to the given module.
-
-    Reads the admin from `request.state.admin`, which is populated by:
-      • `_attach_admin` inside `build_admin_router` for legacy admin routes
-      • `get_current_admin_factory_sync(db)` for standalone-router routes
-        (its returned `_runtime` writes `request.state.admin = admin` itself)
-
-    Usage:
-        @router.get("/foo")
-        async def foo(
-            _admin=Depends(require_admin),        # populates request.state.admin
-            _check=Depends(require_module("k")),  # asserts module access
-        ):
-            ...
-    """
+    """FastAPI dependency that asserts the caller has access to the given module."""
     if module_key not in VALID_KEYS:
         raise ValueError(f"unknown module_key: {module_key}")
-
-    from fastapi import Request
 
     def _check(request: Request):
         admin = getattr(request.state, "admin", None)
@@ -180,42 +224,35 @@ def require_module(module_key: str):
             raise HTTPException(
                 403,
                 f"Your role does not have access to the '{module_key}' module. "
-                "Ask a super_admin to grant it via Access Control.",
+                "Ask a super_admin to grant it via Access Role Management.",
             )
         return admin
 
     return _check
 
 
-# Legacy factory kept for compatibility — internally delegates to require_module.
-def require_module_legacy(get_current_admin, module_key: str):
-    """Deprecated. Use require_module(module_key) directly. Kept for callers
-    that explicitly wire get_current_admin into the dependency tree."""
-    from fastapi import Depends as _D
-    if module_key not in VALID_KEYS:
-        raise ValueError(f"unknown module_key: {module_key}")
-
-    async def _dep(admin=_D(get_current_admin)):
-        if not admin_has_module(admin, module_key):
-            raise HTTPException(
-                403,
-                f"Your role does not have access to the '{module_key}' module.",
-            )
-        return admin
-
-    return _dep
-
-
 # -----------------------------------------------------------------------------
-# Pydantic models for the management API
+# Pydantic models
 # -----------------------------------------------------------------------------
 
-class AdminAccessUpdate(BaseModel):
-    role: Optional[Literal["super_admin", "manager", "support"]] = None
-    module_overrides: Optional[Dict[str, Literal["grant", "deny"]]] = Field(
-        default=None,
-        description="Map of module_key → 'grant'|'deny'. Pass {} to clear all overrides.",
-    )
+_SLUG_RE = re.compile(r"[^a-z0-9_]+")
+
+
+def _to_slug(name: str) -> str:
+    s = _SLUG_RE.sub("_", (name or "").strip().lower()).strip("_")
+    return s[:40] or "role"
+
+
+class RoleCreate(BaseModel):
+    name: str = Field(..., min_length=2, max_length=60)
+    description: Optional[str] = Field(default=None, max_length=300)
+    modules: List[str] = Field(default_factory=list)
+
+
+class RoleUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=2, max_length=60)
+    description: Optional[str] = Field(default=None, max_length=300)
+    modules: Optional[List[str]] = None
 
 
 # -----------------------------------------------------------------------------
@@ -223,7 +260,7 @@ class AdminAccessUpdate(BaseModel):
 # -----------------------------------------------------------------------------
 
 def attach_module_routes(router: APIRouter, db, get_current_admin):
-    """Mounts the module-registry endpoints onto `router`.
+    """Mounts module-registry + role-CRUD endpoints onto `router`.
 
     `router` must already be prefixed with /api (the server-wide api_router).
     """
@@ -232,9 +269,12 @@ def attach_module_routes(router: APIRouter, db, get_current_admin):
     # -- For the current admin's sidebar
     @router.get("/admin/me/modules")
     async def my_modules(admin=_D(get_current_admin)):
+        role_slug = (admin.get("role") or "").lower()
+        role_doc = _ROLE_DOCS_CACHE.get(role_slug)
         return {
-            "role": admin.get("role"),
-            "is_super_admin": (admin.get("role") or "").lower() == "super_admin",
+            "role": role_slug,
+            "role_name": (role_doc or {}).get("name") or role_slug,
+            "is_super_admin": role_slug == SYSTEM_SUPER_ADMIN_SLUG,
             "modules": [
                 {
                     "key": m["key"],
@@ -248,106 +288,165 @@ def attach_module_routes(router: APIRouter, db, get_current_admin):
             "group_order": GROUP_ORDER,
         }
 
-    # -- Super-admin: full registry
+    # Super-admin gate
     def _require_super(admin=_D(get_current_admin)):
-        if (admin.get("role") or "").lower() != "super_admin":
-            raise HTTPException(403, "Only super_admin can manage access control.")
+        if (admin.get("role") or "").lower() != SYSTEM_SUPER_ADMIN_SLUG:
+            raise HTTPException(403, "Only super_admin can manage access roles.")
         return admin
 
+    # -- Module registry (for the role editor's checklist)
     @router.get("/admin/access/registry")
     async def access_registry(_=_D(_require_super)):
         return {
             "modules": [
                 {
                     "key": m["key"], "label": m["label"], "group": m["group"],
-                    "path": m["path"], "default_roles": m["default_roles"],
-                    "sensitive": bool(m.get("sensitive")),
+                    "path": m["path"], "sensitive": bool(m.get("sensitive")),
                 } for m in MODULES
             ],
             "group_order": GROUP_ORDER,
-            "available_roles": ["super_admin", "manager", "support"],
         }
 
-    @router.get("/admin/access/admins")
-    async def access_admins(_=_D(_require_super)):
-        cursor = db.admins.find(
-            {},
-            {"_id": 0, "id": 1, "email": 1, "name": 1, "role": 1,
-             "is_active": 1, "module_overrides": 1, "last_login_at": 1},
-        ).sort("email", 1)
-        items = await cursor.to_list(length=500)
-        # Enrich each row with the resolved list of module keys they can access.
-        for it in items:
-            it["accessible_modules"] = [
-                m["key"] for m in MODULES if admin_has_module(it, m["key"])
-            ]
-            it.setdefault("module_overrides", {})
+    # ───────────────────────── Role CRUD ─────────────────────────
+
+    async def _count_admins_in_role(slug: str) -> int:
+        return await db.admins.count_documents({"role": slug})
+
+    async def _annotate(role: Dict) -> Dict:
+        return {**role, "assigned_admin_count": await _count_admins_in_role(role["slug"])}
+
+    @router.get("/admin/access/roles")
+    async def list_roles(_=_D(_require_super)):
+        cursor = db.roles.find({}, {"_id": 0}).sort([("is_system", -1), ("name", 1)])
+        docs = await cursor.to_list(length=200)
+        items = [await _annotate(r) for r in docs]
         return {"items": items, "count": len(items)}
 
-    @router.put("/admin/access/admins/{admin_id}")
-    async def set_admin_access(
-        admin_id: str,
-        body: AdminAccessUpdate,
-        actor=_D(_require_super),
-    ):
-        target = await db.admins.find_one({"id": admin_id}, {"_id": 0})
-        if not target:
-            raise HTTPException(404, "Admin not found")
+    @router.post("/admin/access/roles", status_code=201)
+    async def create_role(body: RoleCreate, actor=_D(_require_super)):
+        from datetime import datetime, timezone
+        slug = _to_slug(body.name)
+        if not slug:
+            raise HTTPException(400, "Invalid role name")
+        # Disallow reusing a system slug.
+        if slug == SYSTEM_SUPER_ADMIN_SLUG:
+            raise HTTPException(400, "That slug is reserved.")
+        # Unique-by-slug
+        if await db.roles.find_one({"slug": slug}, {"_id": 0, "id": 1}):
+            raise HTTPException(409, f"A role with slug '{slug}' already exists.")
+        # Validate modules
+        bad = [k for k in body.modules if k not in VALID_KEYS]
+        if bad:
+            raise HTTPException(400, f"Unknown module key(s): {','.join(bad)}")
 
-        update: Dict = {}
-
-        # ----- Role change (with last-super-admin guard)
-        if body.role is not None and body.role != target.get("role"):
-            if target.get("role") == "super_admin" and body.role != "super_admin":
-                other_supers = await db.admins.count_documents({
-                    "role": "super_admin",
-                    "is_active": True,
-                    "id": {"$ne": admin_id},
-                })
-                if other_supers == 0:
-                    raise HTTPException(
-                        400,
-                        "Cannot demote the last active super_admin. Create another "
-                        "super_admin first, then retry.",
-                    )
-            if admin_id == actor["id"] and body.role != "super_admin":
-                raise HTTPException(400, "You cannot demote your own super_admin account.")
-            update["role"] = body.role
-
-        # ----- Overrides
-        if body.module_overrides is not None:
-            cleaned: Dict[str, str] = {}
-            for k, v in body.module_overrides.items():
-                if k not in VALID_KEYS:
-                    raise HTTPException(400, f"Unknown module key: {k}")
-                if v not in ("grant", "deny"):
-                    raise HTTPException(400, f"Invalid value for {k}: {v}")
-                cleaned[k] = v
-            update["module_overrides"] = cleaned
-
-        if not update:
-            return {"ok": True, "unchanged": True, "admin_id": admin_id}
-
-        await db.admins.update_one({"id": admin_id}, {"$set": update})
-
-        # Audit-log it (best-effort).
+        now = datetime.now(timezone.utc).isoformat()
+        doc = {
+            "id": f"role_{slug}",
+            "slug": slug,
+            "name": body.name.strip(),
+            "description": (body.description or "").strip() or None,
+            "modules": list(dict.fromkeys(body.modules)),  # dedupe, preserve order
+            "is_system": False,
+            "created_at": now,
+            "created_by": actor.get("email"),
+            "updated_at": now,
+        }
+        await db.roles.insert_one(doc)
+        await load_roles_cache(db)
         try:
             from admin import write_audit
             await write_audit(
-                db,
-                actor=actor,
-                action="admin.access.updated",
-                target_type="admin",
-                target_id=admin_id,
-                payload={"changes": list(update.keys())},
-                destructive=False,
+                db, admin_id=actor["id"], admin_email=actor["email"],
+                action="admin.role_created", target_type="role", target_id=doc["id"],
+                payload={"slug": slug, "modules": doc["modules"]},
             )
         except Exception:
             pass
+        return await _annotate(doc)
 
-        updated = await db.admins.find_one({"id": admin_id}, {"_id": 0})
-        updated["accessible_modules"] = [
-            m["key"] for m in MODULES if admin_has_module(updated, m["key"])
-        ]
-        updated.setdefault("module_overrides", {})
-        return {"ok": True, "admin": updated}
+    @router.put("/admin/access/roles/{role_id}")
+    async def update_role(role_id: str, body: RoleUpdate, actor=_D(_require_super)):
+        from datetime import datetime, timezone
+        role = await db.roles.find_one({"id": role_id}, {"_id": 0})
+        if not role:
+            raise HTTPException(404, "Role not found")
+
+        # super_admin is fully immutable.
+        if role["slug"] == SYSTEM_SUPER_ADMIN_SLUG:
+            raise HTTPException(400, "The super_admin role is immutable.")
+
+        update: Dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
+        if body.name is not None:
+            update["name"] = body.name.strip()
+        if body.description is not None:
+            update["description"] = body.description.strip() or None
+        if body.modules is not None:
+            bad = [k for k in body.modules if k not in VALID_KEYS]
+            if bad:
+                raise HTTPException(400, f"Unknown module key(s): {','.join(bad)}")
+            update["modules"] = list(dict.fromkeys(body.modules))
+
+        if len(update) == 1:  # only updated_at
+            return await _annotate(role)
+
+        await db.roles.update_one({"id": role_id}, {"$set": update})
+        await load_roles_cache(db)
+        try:
+            from admin import write_audit
+            await write_audit(
+                db, admin_id=actor["id"], admin_email=actor["email"],
+                action="admin.role_updated", target_type="role", target_id=role_id,
+                payload={"changes": list(update.keys())},
+            )
+        except Exception:
+            pass
+        merged = {**role, **update}
+        return await _annotate(merged)
+
+    @router.delete("/admin/access/roles/{role_id}")
+    async def delete_role(role_id: str, actor=_D(_require_super)):
+        role = await db.roles.find_one({"id": role_id}, {"_id": 0})
+        if not role:
+            raise HTTPException(404, "Role not found")
+        if role.get("is_system"):
+            raise HTTPException(400, "System roles cannot be deleted.")
+        count = await _count_admins_in_role(role["slug"])
+        if count > 0:
+            raise HTTPException(
+                400,
+                f"Cannot delete role — {count} admin user(s) are assigned to it. "
+                "Reassign them to another role first.",
+            )
+        await db.roles.delete_one({"id": role_id})
+        await load_roles_cache(db)
+        try:
+            from admin import write_audit
+            await write_audit(
+                db, admin_id=actor["id"], admin_email=actor["email"],
+                action="admin.role_deleted", target_type="role", target_id=role_id,
+                payload={"slug": role["slug"]},
+            )
+        except Exception:
+            pass
+        return {"ok": True, "deleted": role_id}
+
+    # ───────────────────────── Helpers for admin-user form ─────────────────────────
+
+    @router.get("/admin/access/roles/lookup")
+    async def role_lookup(_=_D(get_current_admin)):
+        """Lightweight role list for populating the role dropdown on the
+        Admin Users page. Available to ANY admin (not just super_admin) so
+        the Admin Users page can show what role each row holds; the actual
+        edit form server-side still requires super_admin (existing `admins`
+        module gate).
+        """
+        cursor = db.roles.find({}, {"_id": 0, "id": 1, "slug": 1, "name": 1, "description": 1, "is_system": 1})
+        items = await cursor.to_list(length=200)
+        items.sort(key=lambda r: (not r.get("is_system"), r.get("name", "")))
+        return {"items": items}
+
+
+# Helper exported for the admin-creation route to validate role slugs.
+def role_slug_exists(slug: str) -> bool:
+    """Synchronous check against the in-memory cache."""
+    return slug in _ROLES_CACHE or slug == SYSTEM_SUPER_ADMIN_SLUG

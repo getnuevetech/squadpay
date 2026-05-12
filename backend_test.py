@@ -1,276 +1,357 @@
-"""
-Focused re-test (R1-R5) for "Sensitive admin routes migrated to require_module()" task.
+"""Backend test harness — Access Role Management v2 (G1–G12).
 
-Verifies fixes for:
-  R1 — F2 kms-status fix
-  R2 — F5 reconciliations deny override fix
-  R3 — Integrations GETs now gated
-  R4 — Master account GET is now its own module
-  R5 — Super admin still has full access
-
-Endpoint: http://localhost:8001/api
-Super admin: admin@squadpay.us / Letmein@2007#ForReal
-Manager: g1mgr1778059029@kwiktech.net / ManagerTemp!2026Aa
+Tests role-centric RBAC introduced in June 2025.
 """
-import json
+import os
 import sys
+import json
+import time
 import requests
 
-BASE = "http://localhost:8001/api"
+BASE_URL = "https://joint-pay-1.preview.emergentagent.com/api"
 SUPER_EMAIL = "admin@squadpay.us"
 SUPER_PASS = "Letmein@2007#ForReal"
-MGR_EMAIL = "g1mgr1778059029@kwiktech.net"
-MGR_PASS = "ManagerTemp!2026Aa"
 
-results = []  # list of (label, ok, detail)
+MANAGER_EMAIL = "g1mgr1778059029@kwiktech.net"
+MANAGER_PASS = "ManagerTemp!2026Aa"
 
+OPSLEAD_EMAIL = "opslead@squadpay.us"
+OPSLEAD_PASS = "Ops!2026Tst"
 
-def record(label, ok, detail=""):
-    results.append((label, ok, detail))
-    flag = "PASS" if ok else "FAIL"
-    print(f"[{flag}] {label} :: {detail}")
+results = []  # (name, ok, detail)
 
 
-def admin_login(email, password):
-    r = requests.post(f"{BASE}/admin/auth/login", json={"email": email, "password": password}, timeout=15)
-    r.raise_for_status()
-    j = r.json()
-    return j["token"], j["admin"]
+def record(name, ok, detail=""):
+    results.append((name, ok, detail))
+    status = "PASS" if ok else "FAIL"
+    print(f"[{status}] {name}: {detail}")
+
+
+def login(email, password):
+    r = requests.post(f"{BASE_URL}/admin/auth/login", json={"email": email, "password": password}, timeout=30)
+    if r.status_code != 200:
+        return None, r
+    return r.json()["token"], r
+
+
+def H(token):
+    return {"Authorization": f"Bearer {token}"}
 
 
 def main():
-    # ===== Login both admins =====
-    super_token, super_admin = admin_login(SUPER_EMAIL, SUPER_PASS)
-    print(f"super_admin id={super_admin.get('id')}")
-    mgr_token, mgr_admin = admin_login(MGR_EMAIL, MGR_PASS)
-    mgr_id = mgr_admin["id"]
-    print(f"manager id={mgr_id} overrides={mgr_admin.get('module_overrides')}")
+    print(f"=== Access Role Management v2 — G1..G12 ===")
+    print(f"BASE_URL={BASE_URL}\n")
 
-    super_h = {"Authorization": f"Bearer {super_token}"}
-    mgr_h = {"Authorization": f"Bearer {mgr_token}"}
+    # Login super_admin
+    super_token, r = login(SUPER_EMAIL, SUPER_PASS)
+    if not super_token:
+        record("super_admin login", False, f"status={r.status_code} body={r.text[:200]}")
+        return
+    record("super_admin login", True, "token obtained")
 
-    # Confirm overrides are {}
-    cur = mgr_admin.get("module_overrides") or {}
-    record(
-        "PRE: manager.module_overrides == {}",
-        cur == {},
-        f"got {cur!r}",
-    )
-    if cur != {}:
-        # Force-clear
+    # Pre-cleanup BEFORE G1 so any leftover ops_lead from a prior failed run
+    # doesn't pollute the "exactly 3 roles" assertion.
+    pre = requests.get(f"{BASE_URL}/admin/access/roles", headers=H(super_token), timeout=30)
+    if pre.status_code == 200:
+        for r in pre.json().get("items", []):
+            if not r.get("is_system"):
+                # detach any admins
+                ad_r = requests.get(f"{BASE_URL}/admin/admins", headers=H(super_token), timeout=30)
+                for a in ad_r.json() if ad_r.ok else []:
+                    if a.get("role") == r.get("slug"):
+                        requests.patch(
+                            f"{BASE_URL}/admin/admins/{a['id']}/role",
+                            headers=H(super_token), json={"role": "support"}, timeout=30,
+                        )
+                requests.delete(f"{BASE_URL}/admin/access/roles/{r['id']}", headers=H(super_token), timeout=30)
+                print(f"  (pre-cleanup before G1: removed leftover non-system role '{r.get('slug')}')")
+
+    # ─────────────────────── G1: list roles ───────────────────────
+    r = requests.get(f"{BASE_URL}/admin/access/roles", headers=H(super_token), timeout=30)
+    ok = r.status_code == 200
+    if not ok:
+        record("G1 list roles status", False, f"status={r.status_code} body={r.text[:200]}")
+    else:
+        data = r.json()
+        items = data.get("items", [])
+        record("G1 list roles status 200", True, f"count={len(items)}")
+        record("G1 exactly 3 roles", len(items) == 3, f"got {len(items)} items")
+        all_sys = all(it.get("is_system") is True for it in items)
+        record("G1 all is_system=true", all_sys, "")
+        sa = next((it for it in items if it.get("slug") == "super_admin"), None)
+        if sa:
+            mc = len(sa.get("modules") or [])
+            record("G1 super_admin has 19 modules", mc == 19, f"modules.length={mc}")
+        else:
+            record("G1 super_admin doc present", False, "no super_admin in items")
+
+    # ─────────────────────── G2: create ops_lead ───────────────────────
+    # Pre-cleanup: if leftover ops_lead role exists from previous run, remove it
+    rolelist = requests.get(f"{BASE_URL}/admin/access/roles", headers=H(super_token), timeout=30).json()
+    existing_opslead = next((r for r in rolelist.get("items", []) if r.get("slug") == "ops_lead"), None)
+    if existing_opslead:
+        # detach any admins from it first
+        admins_r = requests.get(f"{BASE_URL}/admin/admins", headers=H(super_token), timeout=30)
+        for a in admins_r.json() if admins_r.ok else []:
+            if a.get("role") == "ops_lead":
+                requests.patch(
+                    f"{BASE_URL}/admin/admins/{a['id']}/role",
+                    headers=H(super_token), json={"role": "support"}, timeout=30,
+                )
+        requests.delete(f"{BASE_URL}/admin/access/roles/{existing_opslead['id']}", headers=H(super_token), timeout=30)
+        print("(pre-cleanup: removed leftover ops_lead role)")
+
+    body = {"name": "Ops Lead", "description": "Squad operations team lead",
+            "modules": ["dashboard", "users", "squads"]}
+    r = requests.post(f"{BASE_URL}/admin/access/roles", headers=H(super_token), json=body, timeout=30)
+    record("G2 create role status 201", r.status_code == 201, f"status={r.status_code} body={r.text[:300]}")
+    ops_lead_id = None
+    if r.status_code == 201:
+        d = r.json()
+        ops_lead_id = d.get("id")
+        record("G2 slug==ops_lead", d.get("slug") == "ops_lead", f"slug={d.get('slug')}")
+        record("G2 assigned_admin_count==0", d.get("assigned_admin_count") == 0, f"got {d.get('assigned_admin_count')}")
+        record("G2 modules.length==3", len(d.get("modules") or []) == 3, f"got {len(d.get('modules') or [])}")
+    else:
+        # If POST returned non-201 but role was actually persisted (e.g. 500
+        # caused by response serialization), look it up so G3..G12 can proceed.
+        list_r = requests.get(f"{BASE_URL}/admin/access/roles", headers=H(super_token), timeout=30)
+        if list_r.status_code == 200:
+            ol = next((r for r in list_r.json().get("items", []) if r.get("slug") == "ops_lead"), None)
+            if ol:
+                ops_lead_id = ol["id"]
+                print(f"  (recovered ops_lead_id from list: {ops_lead_id} despite POST {r.status_code})")
+                record("G2 role actually persisted despite error response",
+                       len(ol.get("modules") or []) == 3,
+                       f"persisted modules={ol.get('modules')}, assigned_admin_count={ol.get('assigned_admin_count')}")
+
+    # ─────────────────────── G3: duplicate ───────────────────────
+    r = requests.post(f"{BASE_URL}/admin/access/roles", headers=H(super_token), json=body, timeout=30)
+    record("G3 duplicate -> 409", r.status_code == 409, f"status={r.status_code} body={r.text[:120]}")
+
+    # ─────────────────────── G4: update modules ───────────────────────
+    if ops_lead_id:
         r = requests.put(
-            f"{BASE}/admin/access/admins/{mgr_id}",
-            headers=super_h,
-            json={"module_overrides": {}},
-            timeout=15,
+            f"{BASE_URL}/admin/access/roles/{ops_lead_id}",
+            headers=H(super_token),
+            json={"modules": ["dashboard", "users", "squads", "analytics"]},
+            timeout=30,
         )
-        print("force-clear:", r.status_code, r.text[:200])
+        record("G4 update status 200", r.status_code == 200, f"status={r.status_code} body={r.text[:200]}")
+        if r.status_code == 200:
+            mlen = len(r.json().get("modules") or [])
+            record("G4 modules.length==4", mlen == 4, f"got {mlen}")
 
-    # ===== R1 — F2 kms-status fix =====
-    r = requests.get(f"{BASE}/admin/security/kms-status", headers=mgr_h, timeout=15)
-    body = r.text
-    try:
-        body_j = r.json()
-    except Exception:
-        body_j = {}
-    record(
-        "R1: GET /admin/security/kms-status as manager → 403 with 'module' in body",
-        r.status_code == 403 and "module" in body.lower(),
-        f"status={r.status_code} body={body[:200]}",
-    )
-
-    # ===== R2 — F5 reconciliations deny override fix =====
-    # 2a: Apply deny override
+    # ─────────────────────── G5: super_admin immutable ───────────────────────
     r = requests.put(
-        f"{BASE}/admin/access/admins/{mgr_id}",
-        headers=super_h,
-        json={"module_overrides": {"reconciliations": "deny"}},
-        timeout=15,
+        f"{BASE_URL}/admin/access/roles/role_super_admin",
+        headers=H(super_token),
+        json={"modules": ["dashboard"]},
+        timeout=30,
     )
-    record(
-        "R2a: PUT mgr overrides {reconciliations:deny} → 200",
-        r.status_code == 200,
-        f"status={r.status_code} body={r.text[:200]}",
-    )
+    record("G5 super_admin immutable -> 400", r.status_code == 400, f"status={r.status_code} body={r.text[:200]}")
+    if r.status_code == 400:
+        record("G5 detail mentions immutable", "immutable" in r.text.lower(), f"body={r.text[:200]}")
 
-    # 2b: GET /reconciliations as manager → 403
-    r = requests.get(f"{BASE}/admin/reconciliations", headers=mgr_h, timeout=15)
-    record(
-        "R2b: GET /admin/reconciliations as manager (deny) → 403",
-        r.status_code == 403 and "module" in r.text.lower(),
-        f"status={r.status_code} body={r.text[:200]}",
-    )
-
-    # 2c: GET /reconciliations/anyid as manager → 403 (gate fires before 404)
-    r = requests.get(f"{BASE}/admin/reconciliations/anyid", headers=mgr_h, timeout=15)
-    record(
-        "R2c: GET /admin/reconciliations/anyid as manager (deny) → 403 (gate before 404)",
-        r.status_code == 403 and "module" in r.text.lower(),
-        f"status={r.status_code} body={r.text[:200]}",
-    )
-
-    # 2d: GET /reconciliation-settings as manager → 403
-    r = requests.get(f"{BASE}/admin/reconciliation-settings", headers=mgr_h, timeout=15)
-    record(
-        "R2d: GET /admin/reconciliation-settings as manager (deny) → 403",
-        r.status_code == 403 and "module" in r.text.lower(),
-        f"status={r.status_code} body={r.text[:200]}",
-    )
-
-    # 2e: Clear override
-    r = requests.put(
-        f"{BASE}/admin/access/admins/{mgr_id}",
-        headers=super_h,
-        json={"module_overrides": {}},
-        timeout=15,
-    )
-    record(
-        "R2e: PUT mgr overrides {} (clear) → 200",
-        r.status_code == 200,
-        f"status={r.status_code} body={r.text[:200]}",
-    )
-
-    # 2f: Re-GET /reconciliations as manager → 200 (default access restored)
-    r = requests.get(f"{BASE}/admin/reconciliations", headers=mgr_h, timeout=15)
-    record(
-        "R2f: GET /admin/reconciliations as manager (cleared) → 200",
-        r.status_code == 200,
-        f"status={r.status_code} body={r.text[:200]}",
-    )
-
-    # ===== R3 — Integrations GETs now gated =====
-    # overrides are currently {} (cleared in 2e)
-    r = requests.get(f"{BASE}/admin/integrations", headers=mgr_h, timeout=15)
-    record(
-        "R3a: GET /admin/integrations as manager (no override) → 403 (integrations is super_admin only)",
-        r.status_code == 403 and "module" in r.text.lower(),
-        f"status={r.status_code} body={r.text[:200]}",
-    )
-
-    r = requests.get(f"{BASE}/admin/integrations/issuing", headers=mgr_h, timeout=15)
-    record(
-        "R3b: GET /admin/integrations/issuing as manager (no override) → 403",
-        r.status_code == 403 and "module" in r.text.lower(),
-        f"status={r.status_code} body={r.text[:200]}",
-    )
-
-    # Grant integrations
-    r = requests.put(
-        f"{BASE}/admin/access/admins/{mgr_id}",
-        headers=super_h,
-        json={"module_overrides": {"integrations": "grant"}},
-        timeout=15,
-    )
-    record(
-        "R3c: PUT mgr overrides {integrations:grant} → 200",
-        r.status_code == 200,
-        f"status={r.status_code} body={r.text[:200]}",
-    )
-
-    r = requests.get(f"{BASE}/admin/integrations", headers=mgr_h, timeout=15)
-    record(
-        "R3d: GET /admin/integrations as manager (granted) → 200",
-        r.status_code == 200,
-        f"status={r.status_code} body={r.text[:300]}",
-    )
-
-    r = requests.get(f"{BASE}/admin/integrations/issuing", headers=mgr_h, timeout=15)
-    # Should be 200 OR 5xx (if Stripe key missing), just not 403
-    record(
-        "R3e: GET /admin/integrations/issuing as manager (granted) → 200 or 5xx (NOT 403)",
-        r.status_code != 403,
-        f"status={r.status_code} body={r.text[:200]}",
-    )
-
-    # ===== R4 — Master account GET is its own module =====
-    # Clear overrides
-    r = requests.put(
-        f"{BASE}/admin/access/admins/{mgr_id}",
-        headers=super_h,
-        json={"module_overrides": {}},
-        timeout=15,
-    )
-    record(
-        "R4a: PUT mgr overrides {} (clear) → 200",
-        r.status_code == 200,
-        f"status={r.status_code} body={r.text[:200]}",
-    )
-
-    r = requests.get(f"{BASE}/admin/master-account", headers=mgr_h, timeout=15)
-    record(
-        "R4b: GET /admin/master-account as manager (no override) → 403 (master_account is super_admin only)",
-        r.status_code == 403 and "module" in r.text.lower(),
-        f"status={r.status_code} body={r.text[:200]}",
-    )
-
-    # Grant master_account
-    r = requests.put(
-        f"{BASE}/admin/access/admins/{mgr_id}",
-        headers=super_h,
-        json={"module_overrides": {"master_account": "grant"}},
-        timeout=15,
-    )
-    record(
-        "R4c: PUT mgr overrides {master_account:grant} → 200",
-        r.status_code == 200,
-        f"status={r.status_code} body={r.text[:200]}",
-    )
-
-    r = requests.get(f"{BASE}/admin/master-account", headers=mgr_h, timeout=15)
-    record(
-        "R4d: GET /admin/master-account as manager (granted) → 200",
-        r.status_code == 200,
-        f"status={r.status_code} body={r.text[:300]}",
-    )
-
-    # ===== R5 — Super admin still has full access =====
-    endpoints = [
-        ("GET", "/admin/security/kms-status"),
-        ("GET", "/admin/reconciliations"),
-        ("GET", "/admin/reconciliation-settings"),
-        ("GET", "/admin/integrations"),
-        ("GET", "/admin/integrations/issuing"),
-        ("GET", "/admin/master-account"),
-    ]
-    for method, path in endpoints:
-        r = requests.request(method, f"{BASE}{path}", headers=super_h, timeout=15)
-        # 200 expected (or natural 5xx if upstream missing). NOT 403.
-        ok = r.status_code != 403
-        record(
-            f"R5: {method} {path} as super_admin → not 403 (got {r.status_code})",
-            ok,
-            f"status={r.status_code} body={r.text[:150]}",
+    # ─────────────────────── G6: create opslead admin ───────────────────────
+    # Pre-cleanup: if user already exists, delete or reuse
+    admins_list = requests.get(f"{BASE_URL}/admin/admins", headers=H(super_token), timeout=30).json()
+    opslead_existing = next((a for a in admins_list if a.get("email") == OPSLEAD_EMAIL.lower()), None)
+    opslead_id = None
+    if opslead_existing:
+        # Reset its state: set role=ops_lead, is_active=true, reset password
+        opslead_id = opslead_existing["id"]
+        # PATCH role to ops_lead
+        rrole = requests.patch(
+            f"{BASE_URL}/admin/admins/{opslead_id}/role",
+            headers=H(super_token), json={"role": "ops_lead"}, timeout=30,
         )
+        if rrole.status_code in (200, 201):
+            record("G6 reused existing opslead admin (role=ops_lead)", True, f"id={opslead_id}")
+        else:
+            record("G6 reused existing opslead admin", False, f"role patch status={rrole.status_code} body={rrole.text[:200]}")
+        # Activate
+        requests.patch(
+            f"{BASE_URL}/admin/admins/{opslead_id}/active",
+            headers=H(super_token), json={"is_active": True}, timeout=30,
+        )
+        # Reset password via admin reset (try a few possible routes)
+        # First try direct mongo-less: use admin-reset endpoint if exists
+        rr = requests.post(
+            f"{BASE_URL}/admin/admins/{opslead_id}/reset-password",
+            headers=H(super_token), json={"new_password": OPSLEAD_PASS}, timeout=30,
+        )
+        if rr.status_code not in (200, 201, 204):
+            # try alternative endpoints
+            rr2 = requests.post(
+                f"{BASE_URL}/admin/admins/{opslead_id}/password",
+                headers=H(super_token), json={"new_password": OPSLEAD_PASS}, timeout=30,
+            )
+            print(f"  (note: reset-password fallback status={rr.status_code} alt={rr2.status_code if rr2 else 'NA'})")
+    else:
+        body = {"email": OPSLEAD_EMAIL, "password": OPSLEAD_PASS, "name": "Ops Lead", "role": "ops_lead"}
+        r = requests.post(f"{BASE_URL}/admin/admins", headers=H(super_token), json=body, timeout=30)
+        ok = r.status_code in (200, 201)
+        record("G6 create opslead admin", ok, f"status={r.status_code} body={r.text[:300]}")
+        if ok:
+            d = r.json()
+            opslead_id = d.get("id")
+            record("G6 role==ops_lead", d.get("role") == "ops_lead", f"role={d.get('role')}")
 
-    # The reconciliations/anyid 404 path for super_admin (gate must pass)
-    r = requests.get(f"{BASE}/admin/reconciliations/anyid", headers=super_h, timeout=15)
-    record(
-        "R5: GET /admin/reconciliations/anyid as super_admin → 404 (gate passed)",
-        r.status_code == 404,
-        f"status={r.status_code} body={r.text[:150]}",
-    )
+    # ─────────────────────── G7: login ops_lead, check modules ───────────────────────
+    ops_token = None
+    if opslead_id:
+        # Wait a brief moment if just created
+        time.sleep(0.3)
+        ops_token, r = login(OPSLEAD_EMAIL, OPSLEAD_PASS)
+        if not ops_token:
+            record("G7 login opslead", False, f"status={r.status_code} body={r.text[:300]}")
+        else:
+            record("G7 login opslead", True, "token obtained")
+            rm = requests.get(f"{BASE_URL}/admin/me/modules", headers=H(ops_token), timeout=30)
+            record("G7 /admin/me/modules status 200", rm.status_code == 200, f"status={rm.status_code} body={rm.text[:200]}")
+            if rm.status_code == 200:
+                d = rm.json()
+                mods = d.get("modules") or []
+                keys = sorted([m.get("key") for m in mods])
+                exp = sorted(["dashboard", "users", "squads", "analytics"])
+                record("G7 exactly 4 modules (dashboard,users,squads,analytics)", keys == exp, f"got {keys}")
+                record("G7 is_super_admin==false", d.get("is_super_admin") is False, f"got {d.get('is_super_admin')}")
+                record("G7 role==ops_lead", d.get("role") == "ops_lead", f"got {d.get('role')}")
+                record("G7 role_name==Ops Lead", d.get("role_name") == "Ops Lead", f"got {d.get('role_name')}")
+            # GET platform-fees -> 403
+            rp = requests.get(f"{BASE_URL}/admin/platform-fees", headers=H(ops_token), timeout=30)
+            record("G7 platform-fees forbidden -> 403", rp.status_code == 403, f"status={rp.status_code} body={rp.text[:200]}")
 
-    # ===== CLEANUP — restore manager overrides to {} =====
-    r = requests.put(
-        f"{BASE}/admin/access/admins/{mgr_id}",
-        headers=super_h,
-        json={"module_overrides": {}},
-        timeout=15,
-    )
-    record(
-        "CLEANUP: PUT mgr overrides {} → 200",
-        r.status_code == 200,
-        f"status={r.status_code}",
-    )
+    # ─────────────────────── G8: invalid role on PATCH ───────────────────────
+    if opslead_id:
+        r = requests.patch(
+            f"{BASE_URL}/admin/admins/{opslead_id}/role",
+            headers=H(super_token), json={"role": "bogus_slug"}, timeout=30,
+        )
+        record("G8 invalid role -> 400", r.status_code == 400, f"status={r.status_code} body={r.text[:200]}")
+        if r.status_code == 400:
+            record("G8 detail mentions 'Unknown role'", "unknown role" in r.text.lower(), f"body={r.text[:200]}")
 
-    # ===== summary =====
-    print("\n" + "=" * 70)
-    fails = [(l, d) for (l, ok, d) in results if not ok]
-    print(f"TOTAL {len(results)} | PASS {len(results) - len(fails)} | FAIL {len(fails)}")
-    for l, d in fails:
-        print(f"  ❌ {l}\n     {d}")
-    return 0 if not fails else 1
+    # ─────────────────────── G9: delete protected role ───────────────────────
+    if ops_lead_id:
+        r = requests.delete(f"{BASE_URL}/admin/access/roles/{ops_lead_id}", headers=H(super_token), timeout=30)
+        record("G9 delete protected -> 400", r.status_code == 400, f"status={r.status_code} body={r.text[:200]}")
+        if r.status_code == 400:
+            record("G9 mentions '1 admin'", "1 admin" in r.text, f"body={r.text[:200]}")
+
+    # ─────────────────────── G10: reassign + delete ───────────────────────
+    if opslead_id and ops_lead_id:
+        r = requests.patch(
+            f"{BASE_URL}/admin/admins/{opslead_id}/role",
+            headers=H(super_token), json={"role": "support"}, timeout=30,
+        )
+        record("G10 PATCH role->support 200", r.status_code in (200, 201), f"status={r.status_code} body={r.text[:200]}")
+        r = requests.delete(f"{BASE_URL}/admin/access/roles/{ops_lead_id}", headers=H(super_token), timeout=30)
+        record("G10 DELETE role 200", r.status_code == 200, f"status={r.status_code} body={r.text[:200]}")
+        if r.status_code == 200:
+            j = r.json()
+            record("G10 'deleted' field present", "deleted" in j, f"body={j}")
+        # Re-GET roles list
+        r = requests.get(f"{BASE_URL}/admin/access/roles", headers=H(super_token), timeout=30)
+        if r.status_code == 200:
+            items = r.json().get("items", [])
+            record("G10 roles back to 3", len(items) == 3, f"count={len(items)}")
+        # null ops_lead_id so subsequent tests can re-create
+        ops_lead_id = None
+
+    # ─────────────────────── G11: manager can't manage roles ───────────────────────
+    mgr_token, r = login(MANAGER_EMAIL, MANAGER_PASS)
+    if not mgr_token:
+        record("G11 manager login", False, f"status={r.status_code} body={r.text[:200]}")
+    else:
+        record("G11 manager login", True, "token obtained")
+        rr = requests.get(f"{BASE_URL}/admin/access/roles", headers=H(mgr_token), timeout=30)
+        record("G11 manager GET /admin/access/roles -> 403", rr.status_code == 403, f"status={rr.status_code} body={rr.text[:200]}")
+        rl = requests.get(f"{BASE_URL}/admin/access/roles/lookup", headers=H(mgr_token), timeout=30)
+        record("G11 manager GET /admin/access/roles/lookup -> 200", rl.status_code == 200, f"status={rl.status_code} body={rl.text[:200]}")
+
+    # ─────────────────────── G12: add platform_fees mid-test ───────────────────────
+    # Re-create ops_lead with dashboard + platform_fees
+    body12 = {"name": "Ops Lead", "description": "Re-created for G12",
+              "modules": ["dashboard", "platform_fees"]}
+    r = requests.post(f"{BASE_URL}/admin/access/roles", headers=H(super_token), json=body12, timeout=30)
+    record("G12 re-create ops_lead with platform_fees", r.status_code == 201, f"status={r.status_code} body={r.text[:300]}")
+    new_role_id = None
+    if r.status_code == 201:
+        new_role_id = r.json()["id"]
+    else:
+        # Recovery again — look up from list (same ObjectId bug as G2)
+        list_r = requests.get(f"{BASE_URL}/admin/access/roles", headers=H(super_token), timeout=30)
+        if list_r.status_code == 200:
+            ol = next((r for r in list_r.json().get("items", []) if r.get("slug") == "ops_lead"), None)
+            if ol:
+                new_role_id = ol["id"]
+                print(f"  (G12 recovered new_role_id from list: {new_role_id})")
+                record("G12 role actually persisted despite error",
+                       set(ol.get("modules") or []) == {"dashboard", "platform_fees"},
+                       f"persisted modules={ol.get('modules')}")
+
+    # Patch opslead admin back to ops_lead
+    if opslead_id and new_role_id:
+        r = requests.patch(
+            f"{BASE_URL}/admin/admins/{opslead_id}/role",
+            headers=H(super_token), json={"role": "ops_lead"}, timeout=30,
+        )
+        record("G12 PATCH opslead -> ops_lead", r.status_code in (200, 201), f"status={r.status_code}")
+
+        # Login (or reuse token? cache might be stale; new login should be safe)
+        time.sleep(0.3)
+        ops_token2, rr = login(OPSLEAD_EMAIL, OPSLEAD_PASS)
+        if not ops_token2:
+            record("G12 ops_lead re-login", False, f"status={rr.status_code} body={rr.text[:200]}")
+        else:
+            record("G12 ops_lead re-login", True, "token obtained")
+            rp = requests.get(f"{BASE_URL}/admin/platform-fees", headers=H(ops_token2), timeout=30)
+            record("G12 platform-fees -> 200 (granted)", rp.status_code == 200, f"status={rp.status_code} body={rp.text[:200]}")
+
+            # PUT role to drop platform_fees
+            r = requests.put(
+                f"{BASE_URL}/admin/access/roles/{new_role_id}",
+                headers=H(super_token),
+                json={"modules": ["dashboard"]},
+                timeout=30,
+            )
+            record("G12 PUT remove platform_fees -> 200", r.status_code == 200, f"status={r.status_code}")
+            # SAME token → expect 403 (cache reload effective)
+            rp2 = requests.get(f"{BASE_URL}/admin/platform-fees", headers=H(ops_token2), timeout=30)
+            record("G12 platform-fees -> 403 (revoked)", rp2.status_code == 403, f"status={rp2.status_code} body={rp2.text[:200]}")
+
+    # ─────────────────────── Cleanup ───────────────────────
+    print("\n=== Cleanup ===")
+    if opslead_id:
+        # PATCH role back to support
+        rc = requests.patch(
+            f"{BASE_URL}/admin/admins/{opslead_id}/role",
+            headers=H(super_token), json={"role": "support"}, timeout=30,
+        )
+        print(f"  cleanup PATCH role->support: {rc.status_code}")
+    if new_role_id:
+        rc = requests.delete(f"{BASE_URL}/admin/access/roles/{new_role_id}", headers=H(super_token), timeout=30)
+        print(f"  cleanup DELETE ops_lead role: {rc.status_code}")
+    if opslead_id:
+        rc = requests.patch(
+            f"{BASE_URL}/admin/admins/{opslead_id}/active",
+            headers=H(super_token), json={"is_active": False}, timeout=30,
+        )
+        print(f"  cleanup deactivate opslead admin: {rc.status_code}")
+
+    # ─────────────────────── Summary ───────────────────────
+    print("\n=== Summary ===")
+    n_pass = sum(1 for _, ok, _ in results if ok)
+    n_fail = sum(1 for _, ok, _ in results if not ok)
+    print(f"PASS: {n_pass}    FAIL: {n_fail}    Total: {len(results)}")
+    if n_fail:
+        print("\nFailures:")
+        for name, ok, det in results:
+            if not ok:
+                print(f"  - {name}: {det}")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

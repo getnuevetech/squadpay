@@ -6569,11 +6569,11 @@ agent_communication:
 backend:
   - task: "Credit Rules engine — CRUD + evaluator + lifecycle hooks (Batch June 2025)"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/backend/routes/admin_credit_rules.py + hooks in contribute_routes.py / refund_routes.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         -working: "NA"
         -agent: "main"
@@ -6675,3 +6675,47 @@ backend:
           functional behaviour of the engine is correct.
           Test artefact: /app/backend_test.py (idempotent — uses ts-based
           phones and cleans up rules between sub-cases).
+        -working: true
+        -agent: "testing"
+        -comment: |
+          Re-tested ONLY Case 8 per review request after main agent's
+          `doc.pop("_id", None)` fix in
+          /app/backend/routes/admin_credit_rules.py::create_rule.
+          Harness: /app/backend_test_case8.py. Live preview backend.
+
+          ✅ Case 8 — POST /api/admin/credit-rules happy path:
+             payload {name:"Welcome bonus <ts>", active:true, message:"Hello",
+                      criteria:{type:"first_time"}, reward:{type:"fixed", value:3}}
+             → 200. Response is a dict with keys
+               {id, name, active, message, criteria, reward, expiry_days,
+                stackable_with, created_at, match_count, total_paid_out,
+                created_by}. `id` starts with "cr_rule_" (e.g.
+               cr_rule_034022f0). NO `_id` key in the response body.
+             name/active/message/criteria/reward all echoed correctly.
+
+          ✅ Verification — the new rule appears in GET /api/admin/credit-rules:
+             list returned 3 rules total; the created id was present with the
+             same name and no `_id` leak in the listed item.
+
+          Cleanup: DELETE /api/admin/credit-rules/{id} → 200.
+
+          Backend log shows clean
+            "POST /api/admin/credit-rules HTTP/1.1" 200 OK
+            "GET  /api/admin/credit-rules HTTP/1.1" 200 OK
+            "DELETE /api/admin/credit-rules/cr_rule_034022f0 HTTP/1.1" 200 OK
+          (no 500, no traceback).
+
+          Per review request, no other Credit Rules cases were re-run; the
+          full suite previously passed 19/20 with Case 8 being the only
+          failure. Marking task working=true; needs_retesting=false.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+      Credit Rules Case 8 re-test — PASS. `doc.pop("_id", None)` fix in
+      admin_credit_rules.py::create_rule resolved the 500. POST
+      /api/admin/credit-rules now returns 200 with `id` starting `cr_rule_`
+      and no `_id` leak; rule is visible in subsequent GET list. Backend
+      logs clean (no traceback). Task marked working=true. No other Credit
+      Rules cases were re-tested per review request scope. Harness:
+      /app/backend_test_case8.py.

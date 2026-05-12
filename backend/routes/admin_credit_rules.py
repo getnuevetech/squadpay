@@ -430,6 +430,9 @@ def attach_credit_rules_routes(api_router: APIRouter, db, get_current_admin):
             "created_by": {"admin_id": admin.get("id"), "email": admin.get("email")},
         }
         await db.credit_rules.insert_one(doc)
+        # Strip the bson ObjectId mongo injects into `doc` so FastAPI can
+        # serialise the response.
+        doc.pop("_id", None)
         return doc
 
     @admin_r.patch("/admin/credit-rules/{rule_id}")

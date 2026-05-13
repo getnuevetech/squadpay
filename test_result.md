@@ -10173,6 +10173,24 @@ agent_communication:
       (only added recurrence sub-doc to groups; idempotent — older
       groups simply have no recurrence field).
 
+    -agent: "main"
+    -message: |
+      Post-test fixes applied based on testing-agent's two real defects:
+      1) `backend/core.py:501` — `_load_group_enriched` 404 detail
+         changed from "Group not found" → "Squad not found". Verified
+         via curl: GET /api/groups/g_doesnotexist now returns
+         {"detail":"Squad not found"}.
+      2) `backend/routes/pay_routes.py:260` — restored missing
+         `@router.post("/groups/{group_id}/repay")` decorator on the
+         repay handler so the frontend's /repay calls actually hit
+         it. Verified via curl: POST /api/groups/g_doesnotexist/repay
+         returns 404 "Squad not found" (was previously a 405 because
+         the route wasn't registered).
+      Items 3 of testing agent's report (refund/payout URL spec
+      discrepancy) is intentional — `/refund-overpayment` is the
+      canonical refund path; no group-scoped payout endpoint is in
+      scope this batch.
+
 
 #====================================================================================================
 # June 2025 P1+P2 batch — Recurring Bills + Squad terminology

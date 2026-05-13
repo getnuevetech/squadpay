@@ -498,7 +498,7 @@ async def _recompute_group(group: dict) -> dict:
 async def _load_group_enriched(db, group_id: str) -> dict:
     group = await db.groups.find_one({"id": group_id}, {"_id": 0})
     if not group:
-        raise HTTPException(404, "Group not found")
+        raise HTTPException(404, "Squad not found")
     user_ids = [m["user_id"] for m in group.get("members", [])]
     users = await db.users.find({"id": {"$in": user_ids}}, {"_id": 0}).to_list(1000)
     user_map = {u["id"]: u for u in users}

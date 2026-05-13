@@ -257,6 +257,8 @@ def attach_pay_routes(router: APIRouter, db):
             logger.warning(f"[issue-card] failed for {group_id}: {e}")
             raise HTTPException(502, f"Could not provision virtual card: {e}")
         return {"ok": True, "virtual_card": new_vc, "group": await _load_group_enriched(db, group_id)}
+
+    @router.post("/groups/{group_id}/repay")
     async def repay(group_id: str, body: RepayIn):
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:

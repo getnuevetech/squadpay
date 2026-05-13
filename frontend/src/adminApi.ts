@@ -1364,6 +1364,9 @@ export const notificationConfigApi = {
   set: (events: Record<string, NotifChannel>, push_enabled: boolean) =>
     _aRequest<NotificationConfig & { ok: boolean }>('/admin/notification-config', {
       method: 'PUT',
+      body: JSON.stringify({ events, push_enabled }),
+    }),
+};
 
 // ----- KYC Incentive Config (Lead + Non-Lead) -----
 export type KycIncentiveConfig = {
@@ -1385,9 +1388,5 @@ export const kycIncentiveApi = {
     _aRequest<{ ok: boolean } & KycIncentiveConfig>('/admin/kyc-incentive-member', {
       method: 'PUT',
       body: JSON.stringify(cfg),
-    }),
-};
-
-      body: JSON.stringify({ events, push_enabled }),
     }),
 };

@@ -10,6 +10,7 @@ from core import (
     _consume_user_credits, _load_group_enriched, _recompute_group,
 )
 from ledger import make_txn_id, record_charge_event, to_cents
+from adapters.registry import get_charge_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -134,8 +135,11 @@ def attach_contribute_routes(router: APIRouter, db):
         import stripe as _stripe_sdk
         _stripe_sdk.api_key = os.environ.get("STRIPE_API_KEY")
 
-        # Phase 3 — pre-generate canonical txn_id BEFORE talking to Stripe.
+        # Phase 3 — pre-generate canonical txn_id BEFORE talking to gateway.
         txn_id = make_txn_id("charge")
+
+        # Phase 4 — resolve active charge adapter.
+        adapter = await get_charge_adapter(db)
 
         app_return = (body.app_return_url or "").strip() if hasattr(body, "app_return_url") else ""
         if app_return:
@@ -158,17 +162,9 @@ def attach_contribute_routes(router: APIRouter, db):
             cancel_url = f"{origin}/group/{group_id}/pay?stripe_cancel=1"
 
         try:
-            session = _stripe_sdk.checkout.Session.create(
-                mode="payment",
-                payment_method_types=["card"],
-                line_items=[{
-                    "price_data": {
-                        "currency": "usd",
-                        "product_data": {"name": f"SquadPay contribution — {group.get('title') or 'Group Bill'}"},
-                        "unit_amount": int(round(cash_owed * 100)),
-                    },
-                    "quantity": 1,
-                }],
+            sess = await adapter.create_checkout_session(
+                amount_cents=int(round(cash_owed * 100)),
+                currency="usd",
                 success_url=success_url,
                 cancel_url=cancel_url,
                 metadata={
@@ -182,15 +178,19 @@ def attach_contribute_routes(router: APIRouter, db):
                     "txn_id": txn_id,
                 },
                 idempotency_key=txn_id,
+                product_name=f"SquadPay contribution — {group.get('title') or 'Group Bill'}",
             )
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.exception(f"[stripe] member contribute checkout failed: {e}")
-            raise HTTPException(502, f"Stripe error: {e}")
+            logger.exception(f"[{adapter.slug}] member contribute checkout failed: {e}")
+            raise HTTPException(502, f"Charge gateway error: {e}")
 
         tx = {
-            "id": f"px_{session.id[:14]}",
-            "session_id": session.id,
+            "id": f"px_{sess.session_id[:14]}",
+            "session_id": sess.session_id,
             "txn_id": txn_id,
+            "gateway_slug": adapter.slug,
             "group_id": group_id,
             "user_id": body.user_id,
             "amount": cash_owed,
@@ -204,6 +204,7 @@ def attach_contribute_routes(router: APIRouter, db):
                 "cash_owed": cash_owed,
                 "notify_on_settled": bool(body.notify_on_settled),
                 "txn_id": txn_id,
+                "gateway": adapter.slug,
             },
             "applied": False,
             "ledger_posted": False,
@@ -213,8 +214,8 @@ def attach_contribute_routes(router: APIRouter, db):
         await db.payment_transactions.insert_one(tx.copy())
         return {
             "checkout_required": True,
-            "url": session.url,
-            "session_id": session.id,
+            "url": sess.url,
+            "session_id": sess.session_id,
             "amount": round(amount, 2),
             "cash_owed": cash_owed,
             "credit_planned": credit_planned,
@@ -223,7 +224,7 @@ def attach_contribute_routes(router: APIRouter, db):
 
     @router.get("/contribute/status/{session_id}")
     async def get_contribute_status(session_id: str):
-        """Poll/finalize a member-contribution Stripe Checkout session."""
+        """Poll/finalize a member-contribution checkout session (provider-agnostic)."""
         tx = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
         if not tx:
             raise HTTPException(404, "Contribution session not found")
@@ -240,16 +241,17 @@ def attach_contribute_routes(router: APIRouter, db):
                 "group_id": tx.get("group_id"),
             }
 
-        import stripe as _stripe_sdk
-        _stripe_sdk.api_key = os.environ.get("STRIPE_API_KEY")
+        adapter = await get_charge_adapter(db)
         try:
-            s = _stripe_sdk.checkout.Session.retrieve(session_id)
+            ss = await adapter.retrieve_session(session_id)
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.exception(f"[stripe] contribute.status retrieve failed: {e}")
-            raise HTTPException(502, f"Stripe error: {e}")
+            logger.exception(f"[{adapter.slug}] contribute.status retrieve failed: {e}")
+            raise HTTPException(502, f"Charge gateway error: {e}")
 
-        payment_status = getattr(s, "payment_status", None)
-        sess_status = getattr(s, "status", None)
+        payment_status = ss.payment_status
+        sess_status = ss.status
         update: dict = {"status": sess_status, "payment_status": payment_status, "updated_at": now_iso()}
 
         if payment_status == "paid" and not tx.get("applied"):
@@ -362,8 +364,8 @@ def attach_contribute_routes(router: APIRouter, db):
             "session_id": session_id,
             "status": sess_status,
             "payment_status": payment_status,
-            "amount_total": getattr(s, "amount_total", None),
-            "currency": getattr(s, "currency", None),
+            "amount_total": ss.amount_total_cents,
+            "currency": ss.currency,
             "applied": bool(update.get("applied") or tx.get("applied")),
             "group_id": tx.get("group_id"),
             "awarded_credits": tx_after.get("awarded_credits") or [],

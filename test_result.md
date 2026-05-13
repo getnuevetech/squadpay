@@ -8259,6 +8259,182 @@ agent_communication:
       previous batches.
 
 
+backend_phase4:
+  - task: "Phase 4 — Group A Charge Adapter Contract (June 2025)"
+    implemented: true
+    working: true
+    file: "backend/adapters/__init__.py, backend/adapters/base.py, backend/adapters/charge_stripe.py, backend/adapters/charge_scaffolds.py, backend/adapters/registry.py, backend/payments.py, backend/routes/contribute_routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Phase 4 (Charge Adapter Contract) end-to-end tested via
+            /app/backend_test.py against the LOCAL backend
+            http://localhost:8001/api. 32/32 assertions PASS, no 5xx, no
+            failures. No backend code was modified.
+
+            Coverage by review item (all PASS):
+
+            P4.1 GET /api/admin/gateways as super_admin → 200; body.active ==
+              {"charge":"stripe","payout":None}. ✅
+
+            P4.2 POST /api/groups/g_96ee19bb03/checkout-session
+              {"origin_url":"http://localhost:3000"} (open group, total=$90,
+              3 verified members) → 200. Response keys =
+              [url, session_id, amount, txn_id]:
+                - url = https://checkout.stripe.com/c/pay/cs_test_a1QhJa…
+                - session_id starts with 'cs_test_'
+                - txn_id starts with 'tx_charge_' (e.g.
+                  tx_charge_01krfm74vchmet1bfsvhp7prte)
+              Real Stripe API call confirmed in backend logs:
+                "POST https://api.stripe.com/v1/checkout/sessions
+                 response_code=200".
+              Verified db.payment_transactions row created with:
+                gateway_slug == "stripe" (NEW field present),
+                txn_id matches response,
+                metadata.gateway == "stripe". ✅
+
+            P4.3 POST /api/groups/g_96ee19bb03/contribute for member
+              u_0a232a5534 (verified, zero active credits → Path B) with
+              origin_url='http://localhost:3000' → 200 with
+              checkout_required:true. Response contains:
+                txn_id (tx_charge_01krfm754sv86damz17r8hea2v),
+                session_id (cs_test_a1fcD5…), Stripe checkout URL.
+              db.payment_transactions row created with gateway_slug=='stripe'
+              and matching txn_id. Real Stripe call observed in logs. ✅
+
+            P4.4 GET /api/checkout/status/{cs_test_a1QhJa…} → 200
+                {status:"open", payment_status:"unpaid",
+                 amount_total:9000, currency:"usd",
+                 applied:false, group_id:"g_96ee19bb03"}.
+              The adapter-mediated retrieve_session call succeeded — no 502,
+              no metadata-validation regression. ✅
+              Bonus: GET /api/contribute/status/{cs_test_a1fcD5…} also →
+              200 with payment_status:"unpaid" (adapter path exercised on the
+              member contribute session too). ✅
+
+            P4.5 Defence-in-depth scaffold guardrail — direct method calls on
+              adapters.charge_scaffolds:
+                • SquareChargeAdapter.create_checkout_session(amount_cents=100,
+                  currency='usd', success_url='x', cancel_url='y', metadata={},
+                  idempotency_key='k') → raises fastapi.HTTPException
+                  status_code=501, detail =
+                    "Square charge adapter is not yet implemented.
+                     Credentials may be saved via the admin UI but live charges
+                     will only route here once the adapter ships in a future
+                     release." ✅
+                • SquareChargeAdapter.retrieve_session and .verify_webhook
+                  also raise 501. ✅
+                • AdyenChargeAdapter.create_checkout_session and
+                  FlutterwaveChargeAdapter.create_checkout_session both
+                  raise HTTPException(501) with "not yet implemented"
+                  detail. ✅
+
+            P4.6 Activation guard regression — POST
+              /api/admin/gateways/charge/activate {"provider_slug":"square"}
+              as super_admin → 400 with detail:
+                "Square adapter is not yet implemented in code. Credentials
+                 are saved, but activation will only be available once the
+                 adapter ships in a future release." ✅ (Phase 2 behaviour
+                 unchanged.)
+
+            P4.7 Phase 3 ledger regression — direct ledger.make_txn_id +
+              record_charge_event(db, txn_id, bill_id='test_bill_phase4',
+              user_id='u_test_phase4', gross_cents=10000, currency='usd',
+              reference={'test':'phase4'}) →
+                • 4 rows returned (categories charge.gross,
+                  charge.processor_fee, charge.tax, charge.net_payable). ✅
+                • Idempotency: second call with same txn_id → DB still has
+                  exactly 4 rows. ✅
+                • Math invariant: gross(10000) - fee(0) - tax(0) ==
+                  net_payable(10000). ✅
+                • Cleanup: db.ledger_entries.delete_many({txn_id}) →
+                  deleted_count == 4. ✅
+
+            Pass criteria from review request — all met:
+              ✓ All endpoints return correct HTTP codes (200/400/501)
+              ✓ gateway_slug appears on new payment_transactions rows
+              ✓ Stripe charge flow still works (live API call to Stripe
+                sandbox observed in logs)
+              ✓ Scaffold adapters raise 501 on direct call
+                (defence-in-depth)
+              ✓ Activation guard still blocks activating non-production
+                providers
+              ✓ Phase 3 ledger logic unchanged (4 rows, idempotent, math
+                invariant)
+
+            Backend log notes (informational, not blocking):
+              - passlib bcrypt cosmetic warning.
+              - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes;
+                ≥32 recommended).
+              - Real Stripe API responses (200) observed for all 4 session
+                operations.
+
+            Test harness: /app/backend_test.py — idempotent and re-runnable.
+            No backend code changes were made.
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Phase 4 introduces a provider-agnostic charge adapter contract.
+            payments.py + routes/contribute_routes.py NO LONGER import Stripe
+            directly — they call `await get_charge_adapter(db)` and use the
+            returned adapter.
+
+            Files added:
+              /app/backend/adapters/__init__.py
+              /app/backend/adapters/base.py         — ChargeAdapter ABC + CheckoutSession/Status/WebhookEvent dataclasses
+              /app/backend/adapters/charge_stripe.py — StripeChargeAdapter (live; wraps stripe SDK + emergentintegrations webhook verifier)
+              /app/backend/adapters/charge_scaffolds.py — Square/Adyen/Flutterwave stubs that raise HTTPException(501) on EVERY method (defence-in-depth)
+              /app/backend/adapters/registry.py    — get_charge_adapter(db) resolver based on gateway_config._ACTIVE_BY_GROUP
+
+            Behaviour preserved:
+              • `txn_id` still pre-generated and passed as idempotency_key (Phase 3)
+              • Ledger writes still happen on finalization (Phase 3)
+              • Stripe webhook signature verification still works
+              • payment_transactions rows now also carry `gateway_slug` (e.g. "stripe") for audit
+
+            REQUEST FOR TESTING — same admin creds as before:
+              P4.1 GET /api/admin/gateways → 200; `active.charge == "stripe"`.
+              P4.2 POST /api/groups/{open-group-id}/checkout-session → 200 with `txn_id` (starts `tx_charge_`). Live Stripe call observed in backend logs. `payment_transactions.gateway_slug == "stripe"`.
+              P4.3 POST /api/groups/{group-id}/contribute (cash path, Path B) → 200 with `txn_id` and `gateway_slug = "stripe"` on the persisted row.
+              P4.4 GET /api/checkout/status/{session_id} → 200 (uses adapter retrieve_session under the hood).
+              P4.5 Scaffold guardrail (defence-in-depth): import `adapters.charge_scaffolds.SquareChargeAdapter()`; calling any method raises HTTPException(501) with message containing "not yet implemented".
+              P4.6 Activation guard (existing — re-verify still works): POST /api/admin/gateways/charge/activate {"provider_slug":"square"} → 400 with "adapter is not yet implemented in code".
+              P4.7 Regression: existing lead-pay + member-contribute Stripe flows still write 4 ledger rows on finalization (re-verify L9/L10 still pass).
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+      Phase 4 (Charge Adapter Contract) P4.1–P4.7 all PASS — 32/32 assertions.
+      Test harness: /app/backend_test.py. No backend code changes made.
+      Highlights:
+        • GET /admin/gateways returns active.charge="stripe".
+        • POST /groups/{gid}/checkout-session returns txn_id starting
+          tx_charge_*; payment_transactions row stamped gateway_slug="stripe".
+        • POST /groups/{gid}/contribute Path B returns txn_id; row also has
+          gateway_slug="stripe".
+        • GET /checkout/status/{sid} (and /contribute/status/{sid}) succeed
+          via adapter.retrieve_session — no metadata-validation regression.
+        • SquareChargeAdapter / Adyen / Flutterwave raise HTTPException(501)
+          on every method (defence-in-depth) — verified including the exact
+          call signature from the review request.
+        • Activate-square guard still returns 400 with the "adapter is not
+          yet implemented in code" message.
+        • Phase 3 ledger writer still produces 4 rows, idempotent on txn_id,
+          math invariant holds; test rows cleaned up.
+      Real Stripe API calls confirmed in backend logs (multiple 200 responses
+      to /v1/checkout/sessions). No 5xx anywhere.
+    -agent: "main"
+    -message: |
+      Phase 4 done. The Stripe paths are now behind a ChargeAdapter abstraction.
+      No external behavior change for users; everything routes via the adapter
+      now. Please run P4.1–P4.7 (see backend_phase4 task). Auth and base URL
+      unchanged.
+
+
 backend_phase3:
   - task: "Phase 3 — Immutable Ledger + Txn ID System (June 2025)"
     implemented: true

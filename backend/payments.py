@@ -23,7 +23,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from emergentintegrations.payments.stripe.checkout import StripeCheckout
+from adapters.registry import get_charge_adapter
 
 from ledger import make_txn_id, record_charge_event, to_cents
 
@@ -43,12 +43,6 @@ def attach_payment_routes(api_router: APIRouter, db):
 
     def _stripe_api_key() -> str:
         return os.environ.get("STRIPE_API_KEY") or "sk_test_emergent"
-
-    def _stripe_for_webhook(http_request: Request) -> StripeCheckout:
-        api_key = _stripe_api_key()
-        host_url = str(http_request.base_url).rstrip("/")
-        webhook_url = f"{host_url}/api/webhook/stripe"
-        return StripeCheckout(api_key=api_key, webhook_url=webhook_url)
 
     async def _post_charge_ledger(tx: dict) -> bool:
         """Idempotently write the charge ledger event for this payment_transactions row.
@@ -129,20 +123,12 @@ def attach_payment_routes(api_router: APIRouter, db):
         # Phase 3 — pre-generate the canonical txn_id BEFORE talking to Stripe.
         txn_id = make_txn_id("charge")
 
-        import stripe as _stripe_sdk
-        _stripe_sdk.api_key = _stripe_api_key()
+        # Phase 4 — resolve the active charge adapter (currently Stripe).
+        adapter = await get_charge_adapter(db)
         try:
-            session = _stripe_sdk.checkout.Session.create(
-                mode="payment",
-                payment_method_types=["card"],
-                line_items=[{
-                    "price_data": {
-                        "currency": "usd",
-                        "product_data": {"name": f"SquadPay merchant payment — {group.get('title') or 'Group Bill'}"},
-                        "unit_amount": int(round(amount * 100)),
-                    },
-                    "quantity": 1,
-                }],
+            sess = await adapter.create_checkout_session(
+                amount_cents=int(round(amount * 100)),
+                currency="usd",
                 success_url=success_url,
                 cancel_url=cancel_url,
                 metadata={
@@ -151,31 +137,35 @@ def attach_payment_routes(api_router: APIRouter, db):
                     "kind": "group_lead_pay",
                     "txn_id": txn_id,
                 },
-                idempotency_key=txn_id,  # 2-way idempotency
+                idempotency_key=txn_id,
+                product_name=f"SquadPay merchant payment — {group.get('title') or 'Group Bill'}",
             )
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.exception(f"[stripe] create_checkout_session failed: {e}")
-            raise HTTPException(502, f"Stripe error: {e}")
+            logger.exception(f"[{adapter.slug}] create_checkout_session failed: {e}")
+            raise HTTPException(502, f"Charge gateway error: {e}")
 
         # Mandatory payment_transactions ledger row (status=initiated)
         tx = {
-            "id": f"px_{session.id[:14]}",
-            "session_id": session.id,
+            "id": f"px_{sess.session_id[:14]}",
+            "session_id": sess.session_id,
             "txn_id": txn_id,
+            "gateway_slug": adapter.slug,
             "group_id": group_id,
             "lead_id": group.get("lead_id"),
             "amount": round(amount, 2),
             "currency": "usd",
             "status": "initiated",  # initiated|complete|expired|failed
-            "payment_status": "pending",  # mirrors Stripe's payment_status
-            "metadata": {"kind": "group_lead_pay", "txn_id": txn_id},
+            "payment_status": "pending",  # mirrors gateway's payment_status
+            "metadata": {"kind": "group_lead_pay", "txn_id": txn_id, "gateway": adapter.slug},
             "applied": False,  # idempotency: True after group marked paid
             "ledger_posted": False,
             "created_at": _now(),
             "updated_at": _now(),
         }
         await db.payment_transactions.insert_one(tx.copy())
-        return {"url": session.url, "session_id": session.id, "amount": tx["amount"], "txn_id": txn_id}
+        return {"url": sess.url, "session_id": sess.session_id, "amount": tx["amount"], "txn_id": txn_id}
 
     @api_router.get("/checkout/status/{session_id}")
     async def get_checkout_status(session_id: str, http_request: Request):
@@ -194,33 +184,19 @@ def attach_payment_routes(api_router: APIRouter, db):
             }
 
         try:
-            # Workaround: emergentintegrations' get_checkout_status fails with Pydantic v2
-            # rejecting Stripe's StripeObject metadata. Call Stripe SDK directly.
-            import stripe as _stripe_sdk
+            adapter = await get_charge_adapter(db)
+            ss = await adapter.retrieve_session(session_id)
             from types import SimpleNamespace
-            _stripe_sdk.api_key = _stripe_api_key()
-            s = _stripe_sdk.checkout.Session.retrieve(session_id)
-            # stripe.checkout.Session is a StripeObject; access fields by attribute
-            _meta = getattr(s, "metadata", None)
-            if _meta is None:
-                meta_dict = {}
-            elif hasattr(_meta, "to_dict"):
-                meta_dict = _meta.to_dict()
-            else:
-                try:
-                    meta_dict = {k: _meta[k] for k in (list(_meta.keys()) if hasattr(_meta, "keys") else [])}
-                except Exception:
-                    meta_dict = {}
             status = SimpleNamespace(
-                status=getattr(s, "status", None),
-                payment_status=getattr(s, "payment_status", None),
-                amount_total=getattr(s, "amount_total", None),
-                currency=getattr(s, "currency", None),
-                metadata=meta_dict,
+                status=ss.status,
+                payment_status=ss.payment_status,
+                amount_total=ss.amount_total_cents,
+                currency=ss.currency,
+                metadata=ss.metadata,
             )
         except Exception as e:
-            logger.exception(f"[stripe] get_checkout_status failed: {e}")
-            raise HTTPException(502, f"Stripe error: {e}")
+            logger.exception(f"[charge-adapter] get_checkout_status failed: {e}")
+            raise HTTPException(502, f"Charge gateway error: {e}")
 
         update: dict = {
             "status": status.status,
@@ -260,11 +236,17 @@ def attach_payment_routes(api_router: APIRouter, db):
     async def stripe_webhook(request: Request):
         body = await request.body()
         sig = request.headers.get("Stripe-Signature")
-        stripe_checkout = _stripe_for_webhook(request)
+        adapter = await get_charge_adapter(db)
+        # Set webhook URL on adapter (Stripe uses it to construct the verifier)
+        host_url = str(request.base_url).rstrip("/")
         try:
-            evt = await stripe_checkout.handle_webhook(body, sig)
+            adapter.webhook_url = f"{host_url}/api/webhook/stripe"  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        try:
+            evt = await adapter.verify_webhook(body, sig)
         except Exception as e:
-            logger.exception(f"[stripe-webhook] failed: {e}")
+            logger.exception(f"[charge-webhook] verify failed: {e}")
             raise HTTPException(400, f"Webhook error: {e}")
         # Best-effort sync: if a checkout session became paid, ensure group/contrib state.
         try:

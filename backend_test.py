@@ -1,356 +1,387 @@
-"""Backend test harness — Access Role Management v2 (G1–G12).
+"""Phase 4 — Group A Charge Adapter Contract end-to-end tests.
 
-Tests role-centric RBAC introduced in June 2025.
+Run: python3 /app/backend_test.py
+
+Targets local backend at http://localhost:8001/api with super_admin creds.
 """
+from __future__ import annotations
+import asyncio
 import os
 import sys
 import json
-import time
+import traceback
+
 import requests
+from dotenv import load_dotenv
 
-BASE_URL = "https://joint-pay-1.preview.emergentagent.com/api"
-SUPER_EMAIL = "admin@squadpay.us"
-SUPER_PASS = "Letmein@2007#ForReal"
+sys.path.insert(0, "/app/backend")
+load_dotenv("/app/backend/.env")
 
-MANAGER_EMAIL = "g1mgr1778059029@kwiktech.net"
-MANAGER_PASS = "ManagerTemp!2026Aa"
+BASE = "http://localhost:8001/api"
+ADMIN_EMAIL = "admin@squadpay.us"
+ADMIN_PASSWORD = "Letmein@2007#ForReal"
 
-OPSLEAD_EMAIL = "opslead@squadpay.us"
-OPSLEAD_PASS = "Ops!2026Tst"
-
-results = []  # (name, ok, detail)
-
-
-def record(name, ok, detail=""):
-    results.append((name, ok, detail))
-    status = "PASS" if ok else "FAIL"
-    print(f"[{status}] {name}: {detail}")
+PASS = []
+FAIL = []
 
 
-def login(email, password):
-    r = requests.post(f"{BASE_URL}/admin/auth/login", json={"email": email, "password": password}, timeout=30)
+def record(name: str, ok: bool, detail: str = ""):
+    (PASS if ok else FAIL).append((name, detail))
+    tag = "PASS" if ok else "FAIL"
+    print(f"[{tag}] {name}" + (f" — {detail}" if detail else ""))
+
+
+def admin_login() -> str:
+    r = requests.post(f"{BASE}/admin/auth/login",
+                      json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+                      timeout=20)
+    r.raise_for_status()
+    return r.json()["token"]
+
+
+# ---------------------------------------------------------------------------
+async def get_db():
+    from motor.motor_asyncio import AsyncIOMotorClient
+    c = AsyncIOMotorClient(os.environ["MONGO_URL"])
+    return c[os.environ.get("DB_NAME", "test_database")]
+
+
+# ---------------------------------------------------------------------------
+async def find_open_group(db, *, min_members: int = 1, exclude_ids=None):
+    exclude_ids = set(exclude_ids or [])
+    cursor = db.groups.find({"status": "open", "total_amount": {"$gt": 0}}).limit(60)
+    async for g in cursor:
+        if g.get("is_blocked"):
+            continue
+        if g.get("id") in exclude_ids:
+            continue
+        members = g.get("members") or []
+        if len(members) < min_members:
+            continue
+        return g
+    return None
+
+
+# ---------------------------------------------------------------------------
+def p4_1(token: str):
+    print("\n--- P4.1 GET /api/admin/gateways ---")
+    r = requests.get(f"{BASE}/admin/gateways", headers={"Authorization": f"Bearer {token}"}, timeout=15)
+    record("P4.1 GET /admin/gateways → 200", r.status_code == 200, f"status={r.status_code}")
     if r.status_code != 200:
-        return None, r
-    return r.json()["token"], r
-
-
-def H(token):
-    return {"Authorization": f"Bearer {token}"}
-
-
-def main():
-    print(f"=== Access Role Management v2 — G1..G12 ===")
-    print(f"BASE_URL={BASE_URL}\n")
-
-    # Login super_admin
-    super_token, r = login(SUPER_EMAIL, SUPER_PASS)
-    if not super_token:
-        record("super_admin login", False, f"status={r.status_code} body={r.text[:200]}")
+        print(r.text[:500])
         return
-    record("super_admin login", True, "token obtained")
+    body = r.json()
+    active = body.get("active") or {}
+    record("P4.1 active.charge == 'stripe'", active.get("charge") == "stripe", f"active={active}")
 
-    # Pre-cleanup BEFORE G1 so any leftover ops_lead from a prior failed run
-    # doesn't pollute the "exactly 3 roles" assertion.
-    pre = requests.get(f"{BASE_URL}/admin/access/roles", headers=H(super_token), timeout=30)
-    if pre.status_code == 200:
-        for r in pre.json().get("items", []):
-            if not r.get("is_system"):
-                # detach any admins
-                ad_r = requests.get(f"{BASE_URL}/admin/admins", headers=H(super_token), timeout=30)
-                for a in ad_r.json() if ad_r.ok else []:
-                    if a.get("role") == r.get("slug"):
-                        requests.patch(
-                            f"{BASE_URL}/admin/admins/{a['id']}/role",
-                            headers=H(super_token), json={"role": "support"}, timeout=30,
-                        )
-                requests.delete(f"{BASE_URL}/admin/access/roles/{r['id']}", headers=H(super_token), timeout=30)
-                print(f"  (pre-cleanup before G1: removed leftover non-system role '{r.get('slug')}')")
 
-    # ─────────────────────── G1: list roles ───────────────────────
-    r = requests.get(f"{BASE_URL}/admin/access/roles", headers=H(super_token), timeout=30)
-    ok = r.status_code == 200
-    if not ok:
-        record("G1 list roles status", False, f"status={r.status_code} body={r.text[:200]}")
-    else:
-        data = r.json()
-        items = data.get("items", [])
-        record("G1 list roles status 200", True, f"count={len(items)}")
-        record("G1 exactly 3 roles", len(items) == 3, f"got {len(items)} items")
-        all_sys = all(it.get("is_system") is True for it in items)
-        record("G1 all is_system=true", all_sys, "")
-        sa = next((it for it in items if it.get("slug") == "super_admin"), None)
-        if sa:
-            mc = len(sa.get("modules") or [])
-            record("G1 super_admin has 19 modules", mc == 19, f"modules.length={mc}")
-        else:
-            record("G1 super_admin doc present", False, "no super_admin in items")
+def p4_2(token: str, db_get, group_id_holder: dict) -> str:
+    print("\n--- P4.2 POST /api/groups/{gid}/checkout-session ---")
+    # Find an open group with total > 0
+    db = asyncio.get_event_loop().run_until_complete(db_get())
+    g = asyncio.get_event_loop().run_until_complete(find_open_group(db, min_members=1))
+    if not g:
+        record("P4.2 setup — open group found", False, "no eligible group")
+        return ""
+    gid = g["id"]
+    group_id_holder["p42_group"] = gid
+    record("P4.2 setup — open group found", True, f"gid={gid} total={g.get('total_amount')}")
 
-    # ─────────────────────── G2: create ops_lead ───────────────────────
-    # Pre-cleanup: if leftover ops_lead role exists from previous run, remove it
-    rolelist = requests.get(f"{BASE_URL}/admin/access/roles", headers=H(super_token), timeout=30).json()
-    existing_opslead = next((r for r in rolelist.get("items", []) if r.get("slug") == "ops_lead"), None)
-    if existing_opslead:
-        # detach any admins from it first
-        admins_r = requests.get(f"{BASE_URL}/admin/admins", headers=H(super_token), timeout=30)
-        for a in admins_r.json() if admins_r.ok else []:
-            if a.get("role") == "ops_lead":
-                requests.patch(
-                    f"{BASE_URL}/admin/admins/{a['id']}/role",
-                    headers=H(super_token), json={"role": "support"}, timeout=30,
-                )
-        requests.delete(f"{BASE_URL}/admin/access/roles/{existing_opslead['id']}", headers=H(super_token), timeout=30)
-        print("(pre-cleanup: removed leftover ops_lead role)")
+    r = requests.post(f"{BASE}/groups/{gid}/checkout-session",
+                      json={"origin_url": "http://localhost:3000"},
+                      timeout=30)
+    record("P4.2 checkout-session → 200", r.status_code == 200,
+           f"status={r.status_code} body={r.text[:200]}")
+    if r.status_code != 200:
+        return ""
+    body = r.json()
+    txn_id = body.get("txn_id") or ""
+    sid = body.get("session_id") or ""
+    record("P4.2 response.txn_id starts with 'tx_charge_'", txn_id.startswith("tx_charge_"),
+           f"txn_id={txn_id}")
+    record("P4.2 response.session_id starts with 'cs_'", sid.startswith("cs_"),
+           f"session_id={sid}")
+    record("P4.2 response.url present (Stripe)", "stripe.com" in (body.get("url") or ""),
+           f"url={(body.get('url') or '')[:80]}")
 
-    body = {"name": "Ops Lead", "description": "Squad operations team lead",
-            "modules": ["dashboard", "users", "squads"]}
-    r = requests.post(f"{BASE_URL}/admin/access/roles", headers=H(super_token), json=body, timeout=30)
-    record("G2 create role status 201", r.status_code == 201, f"status={r.status_code} body={r.text[:300]}")
-    ops_lead_id = None
-    if r.status_code == 201:
-        d = r.json()
-        ops_lead_id = d.get("id")
-        record("G2 slug==ops_lead", d.get("slug") == "ops_lead", f"slug={d.get('slug')}")
-        record("G2 assigned_admin_count==0", d.get("assigned_admin_count") == 0, f"got {d.get('assigned_admin_count')}")
-        record("G2 modules.length==3", len(d.get("modules") or []) == 3, f"got {len(d.get('modules') or [])}")
-    else:
-        # If POST returned non-201 but role was actually persisted (e.g. 500
-        # caused by response serialization), look it up so G3..G12 can proceed.
-        list_r = requests.get(f"{BASE_URL}/admin/access/roles", headers=H(super_token), timeout=30)
-        if list_r.status_code == 200:
-            ol = next((r for r in list_r.json().get("items", []) if r.get("slug") == "ops_lead"), None)
-            if ol:
-                ops_lead_id = ol["id"]
-                print(f"  (recovered ops_lead_id from list: {ops_lead_id} despite POST {r.status_code})")
-                record("G2 role actually persisted despite error response",
-                       len(ol.get("modules") or []) == 3,
-                       f"persisted modules={ol.get('modules')}, assigned_admin_count={ol.get('assigned_admin_count')}")
+    # Verify db.payment_transactions row has gateway_slug='stripe' AND matching txn_id.
+    async def _check():
+        row = await db.payment_transactions.find_one({"session_id": sid}, {"_id": 0})
+        return row
+    row = asyncio.get_event_loop().run_until_complete(_check())
+    record("P4.2 db row exists for session", bool(row), f"row keys={list((row or {}).keys())}")
+    if row:
+        record("P4.2 db row.gateway_slug == 'stripe'",
+               row.get("gateway_slug") == "stripe",
+               f"gateway_slug={row.get('gateway_slug')}")
+        record("P4.2 db row.txn_id matches response",
+               row.get("txn_id") == txn_id,
+               f"db.txn_id={row.get('txn_id')} resp.txn_id={txn_id}")
+    return sid
 
-    # ─────────────────────── G3: duplicate ───────────────────────
-    r = requests.post(f"{BASE_URL}/admin/access/roles", headers=H(super_token), json=body, timeout=30)
-    record("G3 duplicate -> 409", r.status_code == 409, f"status={r.status_code} body={r.text[:120]}")
 
-    # ─────────────────────── G4: update modules ───────────────────────
-    if ops_lead_id:
-        r = requests.put(
-            f"{BASE_URL}/admin/access/roles/{ops_lead_id}",
-            headers=H(super_token),
-            json={"modules": ["dashboard", "users", "squads", "analytics"]},
-            timeout=30,
+def p4_3(db_get, group_id_holder: dict) -> str:
+    """Member contribute Path B → must route through Stripe with gateway_slug stamped."""
+    print("\n--- P4.3 POST /api/groups/{gid}/contribute (cash Path B) ---")
+    db = asyncio.get_event_loop().run_until_complete(db_get())
+
+    # Find a group with >= 2 members + a verified, non-blocked member who hasn't fully paid
+    # AND has zero active credits (so Path B kicks in).
+    async def _find():
+        cur = db.groups.find({"status": "open", "total_amount": {"$gt": 0}}).limit(80)
+        async for g in cur:
+            if g.get("is_blocked"):
+                continue
+            if g.get("id") == group_id_holder.get("p42_group"):
+                # avoid the group we just hit (no real conflict but cleaner)
+                pass
+            members = g.get("members") or []
+            if len(members) < 2:
+                continue
+            for m in members:
+                u = await db.users.find_one({"id": m["user_id"]}, {"_id": 0})
+                if not u or not u.get("verified") or u.get("is_blocked"):
+                    continue
+                # check no active credits with remaining balance
+                rows = await db.credits.find({"user_id": u["id"], "status": "active"}, {"_id": 0}).to_list(None)
+                bal = 0.0
+                for r in rows:
+                    bal += round(float(r.get("amount") or 0) - float(r.get("consumed_amount") or 0), 2)
+                if bal > 0.01:
+                    continue
+                # check this user has not already paid in full for this group
+                # quickly check by per-user share via enrichment? Easiest: see if there's
+                # at least one member who hasn't contributed.
+                contribs = g.get("contributions") or []
+                already = sum(float(c.get("amount") or 0) for c in contribs if c.get("user_id") == u["id"])
+                per_share = float(g.get("total_amount") or 0) / max(1, len(members))
+                if already + 0.01 >= per_share:
+                    continue
+                return g, u
+        return None, None
+
+    g, u = asyncio.get_event_loop().run_until_complete(_find())
+    record("P4.3 setup — group+member found", bool(g and u),
+           f"gid={g.get('id') if g else None} uid={u.get('id') if u else None}")
+    if not (g and u):
+        return ""
+    gid = g["id"]
+
+    r = requests.post(f"{BASE}/groups/{gid}/contribute",
+                      json={
+                          "user_id": u["id"],
+                          # let backend compute remaining share (so we don't overpay)
+                          "origin_url": "http://localhost:3000",
+                      },
+                      timeout=30)
+    record("P4.3 contribute → 200", r.status_code == 200,
+           f"status={r.status_code} body={r.text[:300]}")
+    if r.status_code != 200:
+        return ""
+    body = r.json()
+    if not body.get("checkout_required"):
+        record("P4.3 routed to Path B (checkout_required=true)", False,
+               f"body={json.dumps(body)[:200]}")
+        return ""
+    record("P4.3 routed to Path B (checkout_required=true)", True, "")
+    txn_id = body.get("txn_id") or ""
+    sid = body.get("session_id") or ""
+    record("P4.3 response.txn_id starts with 'tx_charge_'", txn_id.startswith("tx_charge_"),
+           f"txn_id={txn_id}")
+
+    async def _check():
+        row = await db.payment_transactions.find_one({"session_id": sid}, {"_id": 0})
+        return row
+    row = asyncio.get_event_loop().run_until_complete(_check())
+    record("P4.3 db row exists", bool(row), f"row={list((row or {}).keys())}")
+    if row:
+        record("P4.3 db row.gateway_slug == 'stripe'",
+               row.get("gateway_slug") == "stripe",
+               f"gateway_slug={row.get('gateway_slug')}")
+        record("P4.3 db row.txn_id matches response",
+               row.get("txn_id") == txn_id, f"db.txn_id={row.get('txn_id')}")
+    return sid
+
+
+def p4_4(sid: str):
+    print("\n--- P4.4 GET /api/checkout/status/{session_id} ---")
+    if not sid:
+        record("P4.4 status endpoint", False, "no session_id from prior step")
+        return
+    r = requests.get(f"{BASE}/checkout/status/{sid}", timeout=30)
+    record("P4.4 status → 200 (adapter-mediated retrieve)",
+           r.status_code == 200, f"status={r.status_code} body={r.text[:300]}")
+    if r.status_code != 200:
+        return
+    body = r.json()
+    record("P4.4 payment_status present", "payment_status" in body,
+           f"payment_status={body.get('payment_status')}")
+
+
+def p4_5():
+    print("\n--- P4.5 Scaffold defence-in-depth ---")
+    try:
+        # Run async method synchronously
+        from fastapi import HTTPException
+        from adapters.charge_scaffolds import SquareChargeAdapter, AdyenChargeAdapter, FlutterwaveChargeAdapter
+        # SquareChargeAdapter.create_checkout_session — explicit call from review
+        sq = SquareChargeAdapter()
+        try:
+            asyncio.new_event_loop().run_until_complete(sq.create_checkout_session(
+                amount_cents=100, currency="usd",
+                success_url="x", cancel_url="y", metadata={}, idempotency_key="k"))
+            record("P4.5 Square create_checkout_session raises HTTPException", False,
+                   "no exception raised")
+        except HTTPException as e:
+            ok = e.status_code == 501 and "Square" in (e.detail or "") and "not yet implemented" in (e.detail or "")
+            record("P4.5 Square.create_checkout_session → 501 'Square not yet implemented'",
+                   ok, f"status={e.status_code} detail={e.detail}")
+        except Exception as e:
+            record("P4.5 Square.create_checkout_session raises HTTPException", False,
+                   f"wrong exception {type(e).__name__}: {e}")
+
+        # bonus — check retrieve_session and verify_webhook also raise 501
+        for name, coro in [
+            ("Square.retrieve_session", sq.retrieve_session("abc")),
+            ("Square.verify_webhook",   sq.verify_webhook(b"{}", "sig")),
+        ]:
+            try:
+                asyncio.new_event_loop().run_until_complete(coro)
+                record(f"P4.5 {name} raises 501", False, "no exception")
+            except HTTPException as e:
+                ok = e.status_code == 501
+                record(f"P4.5 {name} raises 501", ok, f"status={e.status_code}")
+            except Exception as e:
+                record(f"P4.5 {name} raises 501", False, f"wrong type {type(e).__name__}")
+
+        # And verify the other two scaffold classes also raise on create_checkout_session
+        for cls in (AdyenChargeAdapter, FlutterwaveChargeAdapter):
+            inst = cls()
+            try:
+                asyncio.new_event_loop().run_until_complete(inst.create_checkout_session(
+                    amount_cents=100, currency="usd", success_url="x", cancel_url="y",
+                    metadata={}, idempotency_key="k"))
+                record(f"P4.5 {cls.__name__}.create_checkout_session raises 501", False,
+                       "no exception")
+            except HTTPException as e:
+                ok = e.status_code == 501 and ("not yet implemented" in (e.detail or ""))
+                record(f"P4.5 {cls.__name__}.create_checkout_session → 501",
+                       ok, f"status={e.status_code} detail={(e.detail or '')[:80]}")
+            except Exception as e:
+                record(f"P4.5 {cls.__name__}.create_checkout_session raises 501", False,
+                       f"wrong type {type(e).__name__}")
+    except Exception:
+        record("P4.5 scaffold defence-in-depth", False, traceback.format_exc()[-500:])
+
+
+def p4_6(token: str):
+    print("\n--- P4.6 Activation guard regression ---")
+    r = requests.post(f"{BASE}/admin/gateways/charge/activate",
+                      json={"provider_slug": "square"},
+                      headers={"Authorization": f"Bearer {token}"},
+                      timeout=20)
+    ok = r.status_code == 400 and "adapter is not yet implemented in code" in (r.text or "")
+    record("P4.6 activate square → 400 'adapter is not yet implemented in code'",
+           ok, f"status={r.status_code} body={r.text[:300]}")
+
+
+def p4_7():
+    """Phase 3 ledger regression — direct ledger.make_txn_id + record_charge_event."""
+    print("\n--- P4.7 Phase 3 ledger regression ---")
+
+    async def run():
+        from motor.motor_asyncio import AsyncIOMotorClient
+        from ledger import make_txn_id, record_charge_event, find_entries_by_txn
+        client = AsyncIOMotorClient(os.environ["MONGO_URL"])
+        db = client[os.environ.get("DB_NAME", "test_database")]
+        txn_id = make_txn_id("charge")
+        ok_fmt = txn_id.startswith("tx_charge_") and len(txn_id) > len("tx_charge_") + 20
+        record("P4.7 make_txn_id format", ok_fmt, f"txn_id={txn_id}")
+
+        rows1 = await record_charge_event(
+            db, txn_id=txn_id, bill_id="test_bill_phase4",
+            user_id="u_test_phase4", gross_cents=10000, currency="usd",
+            reference={"test": "phase4"},
         )
-        record("G4 update status 200", r.status_code == 200, f"status={r.status_code} body={r.text[:200]}")
-        if r.status_code == 200:
-            mlen = len(r.json().get("modules") or [])
-            record("G4 modules.length==4", mlen == 4, f"got {mlen}")
+        record("P4.7 first call → 4 rows returned", len(rows1) == 4, f"rows={len(rows1)}")
+        cats = sorted([r["category"] for r in rows1])
+        record("P4.7 categories include 4 expected",
+               cats == sorted(["charge.gross", "charge.processor_fee", "charge.tax", "charge.net_payable"]),
+               f"cats={cats}")
 
-    # ─────────────────────── G5: super_admin immutable ───────────────────────
-    r = requests.put(
-        f"{BASE_URL}/admin/access/roles/role_super_admin",
-        headers=H(super_token),
-        json={"modules": ["dashboard"]},
-        timeout=30,
-    )
-    record("G5 super_admin immutable -> 400", r.status_code == 400, f"status={r.status_code} body={r.text[:200]}")
-    if r.status_code == 400:
-        record("G5 detail mentions immutable", "immutable" in r.text.lower(), f"body={r.text[:200]}")
-
-    # ─────────────────────── G6: create opslead admin ───────────────────────
-    # Pre-cleanup: if user already exists, delete or reuse
-    admins_list = requests.get(f"{BASE_URL}/admin/admins", headers=H(super_token), timeout=30).json()
-    opslead_existing = next((a for a in admins_list if a.get("email") == OPSLEAD_EMAIL.lower()), None)
-    opslead_id = None
-    if opslead_existing:
-        # Reset its state: set role=ops_lead, is_active=true, reset password
-        opslead_id = opslead_existing["id"]
-        # PATCH role to ops_lead
-        rrole = requests.patch(
-            f"{BASE_URL}/admin/admins/{opslead_id}/role",
-            headers=H(super_token), json={"role": "ops_lead"}, timeout=30,
+        # Idempotency
+        rows2 = await record_charge_event(
+            db, txn_id=txn_id, bill_id="test_bill_phase4",
+            user_id="u_test_phase4", gross_cents=10000, currency="usd",
+            reference={"test": "phase4-replay"},
         )
-        if rrole.status_code in (200, 201):
-            record("G6 reused existing opslead admin (role=ops_lead)", True, f"id={opslead_id}")
-        else:
-            record("G6 reused existing opslead admin", False, f"role patch status={rrole.status_code} body={rrole.text[:200]}")
-        # Activate
-        requests.patch(
-            f"{BASE_URL}/admin/admins/{opslead_id}/active",
-            headers=H(super_token), json={"is_active": True}, timeout=30,
-        )
-        # Reset password via admin reset (try a few possible routes)
-        # First try direct mongo-less: use admin-reset endpoint if exists
-        rr = requests.post(
-            f"{BASE_URL}/admin/admins/{opslead_id}/reset-password",
-            headers=H(super_token), json={"new_password": OPSLEAD_PASS}, timeout=30,
-        )
-        if rr.status_code not in (200, 201, 204):
-            # try alternative endpoints
-            rr2 = requests.post(
-                f"{BASE_URL}/admin/admins/{opslead_id}/password",
-                headers=H(super_token), json={"new_password": OPSLEAD_PASS}, timeout=30,
-            )
-            print(f"  (note: reset-password fallback status={rr.status_code} alt={rr2.status_code if rr2 else 'NA'})")
-    else:
-        body = {"email": OPSLEAD_EMAIL, "password": OPSLEAD_PASS, "name": "Ops Lead", "role": "ops_lead"}
-        r = requests.post(f"{BASE_URL}/admin/admins", headers=H(super_token), json=body, timeout=30)
-        ok = r.status_code in (200, 201)
-        record("G6 create opslead admin", ok, f"status={r.status_code} body={r.text[:300]}")
-        if ok:
-            d = r.json()
-            opslead_id = d.get("id")
-            record("G6 role==ops_lead", d.get("role") == "ops_lead", f"role={d.get('role')}")
+        cnt = await db.ledger_entries.count_documents({"txn_id": txn_id})
+        record("P4.7 idempotency → still 4 rows in DB", cnt == 4, f"cnt={cnt}")
 
-    # ─────────────────────── G7: login ops_lead, check modules ───────────────────────
-    ops_token = None
-    if opslead_id:
-        # Wait a brief moment if just created
-        time.sleep(0.3)
-        ops_token, r = login(OPSLEAD_EMAIL, OPSLEAD_PASS)
-        if not ops_token:
-            record("G7 login opslead", False, f"status={r.status_code} body={r.text[:300]}")
-        else:
-            record("G7 login opslead", True, "token obtained")
-            rm = requests.get(f"{BASE_URL}/admin/me/modules", headers=H(ops_token), timeout=30)
-            record("G7 /admin/me/modules status 200", rm.status_code == 200, f"status={rm.status_code} body={rm.text[:200]}")
-            if rm.status_code == 200:
-                d = rm.json()
-                mods = d.get("modules") or []
-                keys = sorted([m.get("key") for m in mods])
-                exp = sorted(["dashboard", "users", "squads", "analytics"])
-                record("G7 exactly 4 modules (dashboard,users,squads,analytics)", keys == exp, f"got {keys}")
-                record("G7 is_super_admin==false", d.get("is_super_admin") is False, f"got {d.get('is_super_admin')}")
-                record("G7 role==ops_lead", d.get("role") == "ops_lead", f"got {d.get('role')}")
-                record("G7 role_name==Ops Lead", d.get("role_name") == "Ops Lead", f"got {d.get('role_name')}")
-            # GET platform-fees -> 403
-            rp = requests.get(f"{BASE_URL}/admin/platform-fees", headers=H(ops_token), timeout=30)
-            record("G7 platform-fees forbidden -> 403", rp.status_code == 403, f"status={rp.status_code} body={rp.text[:200]}")
+        # Math invariant: gross == fee + tax + net_payable. With fee=0 tax=0 → net == gross.
+        rows = await find_entries_by_txn(db, txn_id)
+        by_cat = {r["category"]: r for r in rows}
 
-    # ─────────────────────── G8: invalid role on PATCH ───────────────────────
-    if opslead_id:
-        r = requests.patch(
-            f"{BASE_URL}/admin/admins/{opslead_id}/role",
-            headers=H(super_token), json={"role": "bogus_slug"}, timeout=30,
-        )
-        record("G8 invalid role -> 400", r.status_code == 400, f"status={r.status_code} body={r.text[:200]}")
-        if r.status_code == 400:
-            record("G8 detail mentions 'Unknown role'", "unknown role" in r.text.lower(), f"body={r.text[:200]}")
+        def _amt(cat: str, want_dir: str) -> int:
+            r = by_cat.get(cat) or {}
+            if (r.get("direction") or "") == want_dir:
+                return int(r.get("amount_cents") or 0)
+            return 0
 
-    # ─────────────────────── G9: delete protected role ───────────────────────
-    if ops_lead_id:
-        r = requests.delete(f"{BASE_URL}/admin/access/roles/{ops_lead_id}", headers=H(super_token), timeout=30)
-        record("G9 delete protected -> 400", r.status_code == 400, f"status={r.status_code} body={r.text[:200]}")
-        if r.status_code == 400:
-            record("G9 mentions '1 admin'", "1 admin" in r.text, f"body={r.text[:200]}")
+        gross = _amt("charge.gross", "credit")
+        fee   = _amt("charge.processor_fee", "debit")
+        tax   = _amt("charge.tax", "debit")
+        net   = _amt("charge.net_payable", "credit")
+        record("P4.7 math invariant gross - fee - tax == net_payable",
+               gross - fee - tax == net,
+               f"gross={gross} fee={fee} tax={tax} net={net}")
 
-    # ─────────────────────── G10: reassign + delete ───────────────────────
-    if opslead_id and ops_lead_id:
-        r = requests.patch(
-            f"{BASE_URL}/admin/admins/{opslead_id}/role",
-            headers=H(super_token), json={"role": "support"}, timeout=30,
-        )
-        record("G10 PATCH role->support 200", r.status_code in (200, 201), f"status={r.status_code} body={r.text[:200]}")
-        r = requests.delete(f"{BASE_URL}/admin/access/roles/{ops_lead_id}", headers=H(super_token), timeout=30)
-        record("G10 DELETE role 200", r.status_code == 200, f"status={r.status_code} body={r.text[:200]}")
-        if r.status_code == 200:
-            j = r.json()
-            record("G10 'deleted' field present", "deleted" in j, f"body={j}")
-        # Re-GET roles list
-        r = requests.get(f"{BASE_URL}/admin/access/roles", headers=H(super_token), timeout=30)
-        if r.status_code == 200:
-            items = r.json().get("items", [])
-            record("G10 roles back to 3", len(items) == 3, f"count={len(items)}")
-        # null ops_lead_id so subsequent tests can re-create
-        ops_lead_id = None
+        # Cleanup
+        del_res = await db.ledger_entries.delete_many({"txn_id": txn_id})
+        record("P4.7 cleanup removed test rows",
+               del_res.deleted_count == 4, f"deleted={del_res.deleted_count}")
 
-    # ─────────────────────── G11: manager can't manage roles ───────────────────────
-    mgr_token, r = login(MANAGER_EMAIL, MANAGER_PASS)
-    if not mgr_token:
-        record("G11 manager login", False, f"status={r.status_code} body={r.text[:200]}")
-    else:
-        record("G11 manager login", True, "token obtained")
-        rr = requests.get(f"{BASE_URL}/admin/access/roles", headers=H(mgr_token), timeout=30)
-        record("G11 manager GET /admin/access/roles -> 403", rr.status_code == 403, f"status={rr.status_code} body={rr.text[:200]}")
-        rl = requests.get(f"{BASE_URL}/admin/access/roles/lookup", headers=H(mgr_token), timeout=30)
-        record("G11 manager GET /admin/access/roles/lookup -> 200", rl.status_code == 200, f"status={rl.status_code} body={rl.text[:200]}")
+    asyncio.new_event_loop().run_until_complete(run())
 
-    # ─────────────────────── G12: add platform_fees mid-test ───────────────────────
-    # Re-create ops_lead with dashboard + platform_fees
-    body12 = {"name": "Ops Lead", "description": "Re-created for G12",
-              "modules": ["dashboard", "platform_fees"]}
-    r = requests.post(f"{BASE_URL}/admin/access/roles", headers=H(super_token), json=body12, timeout=30)
-    record("G12 re-create ops_lead with platform_fees", r.status_code == 201, f"status={r.status_code} body={r.text[:300]}")
-    new_role_id = None
-    if r.status_code == 201:
-        new_role_id = r.json()["id"]
-    else:
-        # Recovery again — look up from list (same ObjectId bug as G2)
-        list_r = requests.get(f"{BASE_URL}/admin/access/roles", headers=H(super_token), timeout=30)
-        if list_r.status_code == 200:
-            ol = next((r for r in list_r.json().get("items", []) if r.get("slug") == "ops_lead"), None)
-            if ol:
-                new_role_id = ol["id"]
-                print(f"  (G12 recovered new_role_id from list: {new_role_id})")
-                record("G12 role actually persisted despite error",
-                       set(ol.get("modules") or []) == {"dashboard", "platform_fees"},
-                       f"persisted modules={ol.get('modules')}")
 
-    # Patch opslead admin back to ops_lead
-    if opslead_id and new_role_id:
-        r = requests.patch(
-            f"{BASE_URL}/admin/admins/{opslead_id}/role",
-            headers=H(super_token), json={"role": "ops_lead"}, timeout=30,
-        )
-        record("G12 PATCH opslead -> ops_lead", r.status_code in (200, 201), f"status={r.status_code}")
+# ---------------------------------------------------------------------------
+def main():
+    print("=" * 70)
+    print("Phase 4 — Charge Adapter Contract — backend test")
+    print("=" * 70)
+    token = admin_login()
+    print(f"super_admin token acquired (len={len(token)})")
 
-        # Login (or reuse token? cache might be stale; new login should be safe)
-        time.sleep(0.3)
-        ops_token2, rr = login(OPSLEAD_EMAIL, OPSLEAD_PASS)
-        if not ops_token2:
-            record("G12 ops_lead re-login", False, f"status={rr.status_code} body={rr.text[:200]}")
-        else:
-            record("G12 ops_lead re-login", True, "token obtained")
-            rp = requests.get(f"{BASE_URL}/admin/platform-fees", headers=H(ops_token2), timeout=30)
-            record("G12 platform-fees -> 200 (granted)", rp.status_code == 200, f"status={rp.status_code} body={rp.text[:200]}")
+    async def _db():
+        return await get_db()
 
-            # PUT role to drop platform_fees
-            r = requests.put(
-                f"{BASE_URL}/admin/access/roles/{new_role_id}",
-                headers=H(super_token),
-                json={"modules": ["dashboard"]},
-                timeout=30,
-            )
-            record("G12 PUT remove platform_fees -> 200", r.status_code == 200, f"status={r.status_code}")
-            # SAME token → expect 403 (cache reload effective)
-            rp2 = requests.get(f"{BASE_URL}/admin/platform-fees", headers=H(ops_token2), timeout=30)
-            record("G12 platform-fees -> 403 (revoked)", rp2.status_code == 403, f"status={rp2.status_code} body={rp2.text[:200]}")
+    p4_1(token)
 
-    # ─────────────────────── Cleanup ───────────────────────
-    print("\n=== Cleanup ===")
-    if opslead_id:
-        # PATCH role back to support
-        rc = requests.patch(
-            f"{BASE_URL}/admin/admins/{opslead_id}/role",
-            headers=H(super_token), json={"role": "support"}, timeout=30,
-        )
-        print(f"  cleanup PATCH role->support: {rc.status_code}")
-    if new_role_id:
-        rc = requests.delete(f"{BASE_URL}/admin/access/roles/{new_role_id}", headers=H(super_token), timeout=30)
-        print(f"  cleanup DELETE ops_lead role: {rc.status_code}")
-    if opslead_id:
-        rc = requests.patch(
-            f"{BASE_URL}/admin/admins/{opslead_id}/active",
-            headers=H(super_token), json={"is_active": False}, timeout=30,
-        )
-        print(f"  cleanup deactivate opslead admin: {rc.status_code}")
+    group_id_holder = {}
+    sid_p42 = p4_2(token, _db, group_id_holder)
+    sid_p43 = p4_3(_db, group_id_holder)
 
-    # ─────────────────────── Summary ───────────────────────
-    print("\n=== Summary ===")
-    n_pass = sum(1 for _, ok, _ in results if ok)
-    n_fail = sum(1 for _, ok, _ in results if not ok)
-    print(f"PASS: {n_pass}    FAIL: {n_fail}    Total: {len(results)}")
-    if n_fail:
-        print("\nFailures:")
-        for name, ok, det in results:
-            if not ok:
-                print(f"  - {name}: {det}")
+    # P4.4 — exercise checkout/status on the lead-pay session from P4.2.
+    p4_4(sid_p42)
+    # Also exercise contribute/status on the P4.3 session as additional adapter coverage.
+    if sid_p43:
+        print("\n--- P4.4-bonus GET /api/contribute/status/{session_id} ---")
+        r = requests.get(f"{BASE}/contribute/status/{sid_p43}", timeout=30)
+        record("P4.4-bonus contribute/status → 200", r.status_code == 200,
+               f"status={r.status_code} body={r.text[:200]}")
+
+    p4_5()
+    p4_6(token)
+    p4_7()
+
+    # Summary
+    print("\n" + "=" * 70)
+    print(f"RESULTS: PASS={len(PASS)}  FAIL={len(FAIL)}")
+    if FAIL:
+        print("\nFAILED ASSERTIONS:")
+        for n, d in FAIL:
+            print(f"  ❌ {n}\n     {d}")
+    print("=" * 70)
 
 
 if __name__ == "__main__":

@@ -138,6 +138,21 @@ async def issue_group_card(db, group: Dict[str, Any]) -> Dict[str, Any]:
     if existing.get("stripe_card_id") and existing.get("status") == "active":
         return existing
 
+    # Item 6 (June 2025) — admin master toggle gate. When OFF, we hard-stop
+    # all new card issuance globally even if the per-tenant `issuing` doc
+    # still says enabled=True. This is the kill-switch we promise the
+    # admin on /admin/wallets.
+    try:
+        wallet_cfg = await db.app_config.find_one({"_id": "wallet"}) or {}
+        if wallet_cfg.get("issuing_enabled") is False:
+            raise RuntimeError("Squad cards are currently disabled by the administrator.")
+    except RuntimeError:
+        raise
+    except Exception:
+        # Fail open on infra issues so we don't accidentally hose the
+        # whole funding flow if app_config is momentarily unreachable.
+        pass
+
     settings = await get_issuing_settings(db)
     if not settings.get("enabled", True):
         raise RuntimeError("Stripe Issuing is disabled in admin settings.")

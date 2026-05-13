@@ -341,9 +341,9 @@ export default function CashOutScreen() {
             <ExternalLink size={18} color="#fff" />
             <Text style={styles.primaryBtnText}>Connect with Stripe</Text>
           </TouchableOpacity>
-          <Text style={styles.fineprint}>
-            Powered by Stripe Connect Express. Standard Instant Payout fees apply (~1%).
-          </Text>
+          {/* Per spec: no third-party fee disclosures here. SquadPay's
+              single platform fee is the only fee surface presented to
+              users. */}
         </ScrollView>
       )}
 
@@ -483,8 +483,7 @@ export default function CashOutScreen() {
             </Text>
           </TouchableOpacity>
           <Text style={styles.fineprint}>
-            Funds typically arrive on your card within 30 minutes. A ~1% Instant Payout fee
-            applies (deducted from the merchant balance).
+            Funds typically arrive on your card within 30 minutes.
           </Text>
         </ScrollView>
       )}

@@ -1,7 +1,7 @@
 /**
- * Lead-only Virtual Card page.
+ * Lead-only Squad Card page.
  *
- * Houses everything related to the group's Stripe-issued virtual card:
+ * Houses everything related to the squad's Stripe-issued card:
  *   - Card face (last-4, exp, brand, nickname)
  *   - Spent / cap progress
  *   - Reveal full PAN + CVV (modal — re-uses existing component)
@@ -9,6 +9,12 @@
  *   - Disable / freeze (when active)
  *   - Empty-state when the card hasn't been provisioned yet, with a helpful
  *     explanation of when it will be issued automatically.
+ *
+ * Item 6 (June 2025) — Gated on the admin master `issuing_enabled` toggle.
+ * If admin has disabled Stripe Issuing, the page redirects to the squad
+ * lobby with a toast (defense-in-depth — the UI normally hides every
+ * entry-point to this route when the toggle is off, but a stale deep
+ * link should still get a clean redirect rather than an empty screen).
  */
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
@@ -41,6 +47,25 @@ export default function GroupCardScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [revealOpen, setRevealOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  // Item 6 (June 2025) — short-circuit redirect when admin has globally
+  // disabled the Squad-Card feature. We fetch once on mount; if the
+  // toggle is OFF we send the user back to the lobby with a toast.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch(`${process.env.EXPO_PUBLIC_BACKEND_URL || ''}/api/runtime/wallet-config`);
+        if (!r.ok) return;
+        const j = await r.json();
+        if (alive && j.issuing_enabled === false) {
+          toast.info('Squad cards have been disabled.');
+          router.replace(`/group/${id}`);
+        }
+      } catch { /* leave page mounted */ }
+    })();
+    return () => { alive = false; };
+  }, [id, router]);
 
   const load = useCallback(async () => {
     const u = await loadUser();

@@ -8877,3 +8877,120 @@ agent_communication:
       $50 of merchant_payable CREDIT, so 4 charges → $200. Test
       accepts available_usd > 0 + eligible=true and reports the actual
       $200 figure — implementation is correct.
+
+backend_phase5a_stripe_connect:
+  - task: "Phase 5a — Stripe Connect Express payout adapter (now the default Group B provider)"
+    implemented: true
+    working: true
+    file: "backend/adapters/payout_stripe_connect.py, backend/adapters/registry.py, backend/routes/payout_routes.py, backend/gateway_config.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Pivoted Group B from Astra to **Stripe Connect Express + Instant Payouts** at
+            user's request. Astra adapter still in the codebase as alternate provider.
+            (… full design notes preserved above …)
+        - working: true
+          agent: "testing"
+          comment: |
+            P5b-be.1 — P5b-be.10 all PASS (42/42 assertions). Test script:
+            /app/backend_test.py. Cleanup successful — all test users, groups,
+            ledger rows, payout cards, and connect_user_accounts deleted at end.
+
+            P5b-be.1 ✅ GET /api/admin/gateways → active.payout == "stripe_connect".
+            P5b-be.2 ✅ POST /payout/authorize-url:
+                       • Returns gateway_slug=="stripe_connect", kind=="account_onboarding"
+                       • url starts "https://connect.stripe.com/setup/e/" (live Stripe call)
+                       • account_id "acct_1TWV3LJvsILzbysr" persisted in db.connect_user_accounts
+                       • Idempotent — second call returns SAME account_id, fresh AccountLink URL
+            P5b-be.3 ✅ POST /payout/sync-after-onboarding:
+                       • details_submitted=false, payouts_enabled=false (correct for fresh acct)
+                       • requirements_due = ["business_profile.url","external_account",
+                         "individual.first_name","individual.last_name","tos_acceptance.date",
+                         "tos_acceptance.ip"]
+                       • cards == []
+                       • DB row connect_user_accounts.updated_at refreshed
+            P5b-be.4 ✅ GET /payout/cards → {"items": [], "gateway_slug": "stripe_connect"}
+            P5b-be.5 ✅ POST /payout/push-to-card before onboarding completes:
+                       → 412 {"detail":"Stripe Connect onboarding incomplete. Finish onboarding before cashing out."}
+                       (seeded a fake payout_user_cards row + force-set payouts_enabled=false in db)
+            P5b-be.6 ✅ POST /payout/push-to-card with amount=9999.99 over $50 available:
+                       → 409 {"detail":"Requested $9999.99 exceeds available cash-out balance $50.00"}
+                       (seeded charge.gross ledger row giving lead $50, force payouts_enabled=true)
+            P5b-be.7 ✅ POST /webhook/stripe-connect with no Stripe-Signature header:
+                       → 400 {"detail":"Webhook error: 400: Missing Stripe-Signature header"}
+                       NOTE: test had to seed a dummy webhook_secret via PUT
+                       /admin/gateways/payout/stripe_connect FIRST, because the adapter's
+                       verify_webhook() checks `webhook_secret` BEFORE `signature`. Without a
+                       secret configured, the no-secret 503 branch fires first and is wrapped
+                       to "Webhook error: 503: ... not configured" by the outer try/except in
+                       payout_routes.py. Once webhook_secret was seeded, the missing-signature
+                       400 fires as expected. Minor: consider swapping the check order in
+                       payout_stripe_connect.py:275 so the signature-presence check happens
+                       before the secret-configured check — better DX for self-hosted setups
+                       still configuring webhooks.
+            P5b-be.8 ✅ BranchPayoutAdapter.push_to_card() and WisePayoutAdapter.push_to_card()
+                       both raise HTTPException(501) — defence-in-depth holds.
+            P5b-be.9 ✅ Provider switching round-trip:
+                       • activate astra → active.payout=="astra"
+                       • /payout/authorize-url returns {gateway_slug:"astra", kind:"oauth_authorize",
+                         url starts "https://sandbox.astra.finance/oauth/authorize?"}
+                       • activate stripe_connect → active.payout=="stripe_connect"
+                       • /payout/authorize-url returns Stripe Connect AccountLink again
+                       (adapter abstraction holds — type-safe branches in route work both ways)
+            P5b-be.10 ✅ Phase 3+4 regression:
+                       • ledger.make_txn_id + record_charge_event writes exactly 4 rows
+                         (charge.gross, charge.net_payable, charge.processor_fee, charge.tax)
+                       • Math invariant: gross - processor_fee - tax == net_payable
+                       • Idempotent on repeat call with same txn_id (still 4 rows)
+                       • POST /groups → 200 (open group created)
+                       • POST /groups/{gid}/checkout-session → 200 with live Stripe checkout
+                         URL "https://checkout.stripe.com/c/pay/cs_test_..."
+                         (Stripe charge adapter unchanged, still works)
+
+            Live Stripe sandbox calls confirmed in backend logs:
+              • POST /v1/accounts → 200 (created acct_1TWV3LJvsILzbysr, acct_1TWV42JujR7ueCd3,
+                                          acct_1TWV48FFtwhbJPL3)
+              • POST /v1/account_links → 200 (returned setup/e/... URLs)
+              • GET  /v1/accounts/{id} → 200 (requirements list returned)
+              • POST /v1/checkout/sessions → 200 (cs_test_...)
+
+            Test users/groups/ledger_entries/payout_user_cards/connect_user_accounts rows
+            cleaned up after test. The Express accounts in Stripe sandbox cannot be deleted
+            via API but are harmless.
+
+            Backend code is sound. Ready for Phase 5b frontend work.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Stripe Connect is now the active payout provider and live-tested
+      against real Stripe sandbox. Please run P5b-be.1–P5b-be.10. Astra
+      kept as alternate provider (still in code + catalog). Once this
+      passes, we move to Phase 5b frontend (WebView + green CTA).
+    -agent: "testing"
+    -message: |
+      ✅ P5b-be.1 — P5b-be.10 ALL PASS (42/42 assertions in /app/backend_test.py).
+      The new stripe_connect path was exercised against the LIVE Stripe sandbox
+      (acct_xxx + AccountLink URLs returned by Stripe API).
+      Provider switching (stripe_connect ↔ astra) works both ways.
+      Defence-in-depth (501) still holds for Branch + Wise scaffolds.
+      Phase 3 ledger + Phase 4 Stripe checkout-session regression both green.
+
+      Minor observation (not blocking): in
+      adapters/payout_stripe_connect.py:275, verify_webhook() checks
+      `self.webhook_secret` BEFORE checking `signature`. The route in
+      payout_routes.py then wraps any inner HTTPException as 400
+      "Webhook error: <inner>". So if admin hasn't configured webhook_secret
+      yet, missing-signature requests get masked behind the 503-wrapped 400.
+      Test seeded a dummy webhook_secret to verify the intended path
+      and got the expected 400 "Missing Stripe-Signature header".
+      Consider swapping the check order so unconfigured webhooks still
+      surface "Missing Stripe-Signature header" for callers.
+
+      No other issues. Ready for Phase 5b frontend.
+
+

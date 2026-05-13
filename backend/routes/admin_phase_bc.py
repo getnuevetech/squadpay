@@ -132,6 +132,17 @@ class KycIncentiveIn(BaseModel):
     messages: list[str] = Field(default_factory=list)
 
 
+# Marketing / ad-hoc reward grant — uses the same pending_rewards array
+# the KYC reward feeds into so they stack cleanly on the lead's next
+# squad and never conflict with each other.
+class MarketingRewardIn(BaseModel):
+    user_id: str
+    mode: str = Field("credit_off_next_bill", description="credit_off_next_bill | waive_platform_fees_next_bill")
+    amount: float = Field(0, ge=0, le=500)
+    campaign_id: str = Field(..., description="Idempotency key — e.g. 'spring25_promo'")
+    note: str | None = None
+
+
 class CmsPageIn(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     slug: Optional[str] = Field(default=None, max_length=120)
@@ -768,6 +779,48 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
         except Exception:
             pass
         return {"ok": True, **cfg}
+
+    # Marketing / ad-hoc reward (June 2025) — admins can queue an
+    # additional pending reward for a specific user (e.g. holiday promo,
+    # support comp). It stacks with the KYC reward — both apply on the
+    # lead's NEXT squad, bounded by what they actually owe. Idempotent
+    # via `campaign_id`. Does not touch any stored balance.
+    @r.post("/admin/rewards/grant")
+    async def admin_grant_reward(
+        body: MarketingRewardIn = Body(...),
+        admin=Depends(get_current_admin),
+        _gate=Depends(require_role("super_admin", "manager")),
+    ):
+        from kyc_incentive import grant_pending_reward
+        admin_email = admin.get("email") if isinstance(admin, dict) else None
+        try:
+            granted = await grant_pending_reward(
+                db,
+                user_id=body.user_id,
+                kind="marketing",
+                mode=body.mode,
+                amount=body.amount,
+                dedupe_key=f"marketing:{body.campaign_id}",
+                note=body.note or f"Granted by {admin_email} (campaign {body.campaign_id})",
+            )
+        except ValueError as ve:
+            raise HTTPException(400, str(ve))
+        if granted is None:
+            return {"ok": True, "already_granted": True}
+        try:
+            await db.audit_log.insert_one({
+                "id": _new_id("aud_"),
+                "at": _now(),
+                "admin_email": admin_email or "?",
+                "action": "admin.marketing_reward_grant",
+                "destructive": False,
+                "target_type": "user",
+                "target_id": body.user_id,
+                "payload": body.model_dump(),
+            })
+        except Exception:
+            pass
+        return {"ok": True, "reward": granted}
 
     api_router.include_router(public_r)
     api_router.include_router(r)

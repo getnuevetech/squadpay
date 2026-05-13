@@ -581,6 +581,44 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ user_id, session_id, group_id, card_id, amount }),
     }),
+
+  // ───────── Phase 7 — Native Apple Pay / Google Pay via Stripe PaymentSheet ─────────
+  stripePublishableKey: () =>
+    request<{ publishable_key: string | null; configured: boolean; merchant_identifier: string }>(
+      '/stripe/publishable-key',
+    ),
+
+  contributePaymentIntent: (group_id: string, payload: { user_id: string; amount?: number; notify_on_settled?: boolean }) =>
+    request<{
+      payment_intent_id: string;
+      client_secret: string;
+      ephemeral_key_secret: string;
+      customer_id: string;
+      publishable_key: string | null;
+      txn_id: string;
+      cash_owed: number;
+      credit_planned: number;
+      requested_amount: number;
+      currency: string;
+      merchant_display_name: string;
+    }>(`/groups/${group_id}/contribute-payment-intent`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  finalizeContributePaymentIntent: (group_id: string, payment_intent_id: string) =>
+    request<{
+      applied: boolean;
+      payment_status: string;
+      status?: string;
+      group_id: string;
+      amount_total?: number;
+      currency?: string;
+      awarded_credits?: { id: string; reason?: string; amount: number }[];
+    }>(`/groups/${group_id}/contribute-payment-intent/finalize`, {
+      method: 'POST',
+      body: JSON.stringify({ payment_intent_id }),
+    }),
 };
 
 export { BACKEND_URL };

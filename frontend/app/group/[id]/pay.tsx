@@ -425,6 +425,79 @@ export default function PayScreen() {
     }
   };
 
+  // ──────────────────────────────────────────────────────────────────────
+  // Phase 7 — Native wallet pay (Apple Pay / Google Pay via Stripe PaymentSheet)
+  // ──────────────────────────────────────────────────────────────────────
+  const [nativePayBusy, setNativePayBusy] = useState(false);
+  const [nativePayAvailable, setNativePayAvailable] = useState(false);
+
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    if (kind !== 'contribute') return;
+    (async () => {
+      try {
+        const r = await api.stripePublishableKey();
+        setNativePayAvailable(!!r.configured);
+      } catch {}
+    })();
+  }, [kind]);
+
+  const onPayWithWallet = async () => {
+    if (Platform.OS === 'web') return;
+    if (!isVerified) { setVerifyStep('phone'); return; }
+    if (blockedNoAmount || amount <= 0) {
+      Alert.alert('Nothing to pay', 'Amount is zero.');
+      return;
+    }
+    let initPaymentSheet: any, presentPaymentSheet: any;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const m = require('@stripe/stripe-react-native');
+      initPaymentSheet = m.initPaymentSheet;
+      presentPaymentSheet = m.presentPaymentSheet;
+    } catch {
+      Alert.alert('Not available', 'Wallet payments are not available in this build.');
+      return;
+    }
+    setNativePayBusy(true);
+    try {
+      const pi = await api.contributePaymentIntent(group.id, {
+        user_id: userId,
+        amount,
+        notify_on_settled: notifyOnSettled,
+      });
+      const init = await initPaymentSheet({
+        merchantDisplayName: pi.merchant_display_name || 'SquadPay',
+        customerId: pi.customer_id,
+        customerEphemeralKeySecret: pi.ephemeral_key_secret,
+        paymentIntentClientSecret: pi.client_secret,
+        applePay: { merchantCountryCode: 'US' },
+        googlePay: { merchantCountryCode: 'US', testEnv: true, currencyCode: 'USD' },
+        allowsDelayedPaymentMethods: false,
+        returnURL: 'squadpay://stripe-redirect',
+      });
+      if (init?.error) throw new Error(init.error.message || 'Could not init payment sheet');
+      const res = await presentPaymentSheet();
+      if (res?.error) {
+        // user cancel is a soft failure
+        if (res.error.code === 'Canceled') return;
+        throw new Error(res.error.message || 'Payment failed');
+      }
+      // Finalize on backend
+      const fin = await api.finalizeContributePaymentIntent(group.id, pi.payment_intent_id);
+      if (fin.applied) {
+        try { (globalThis as any).__SQUADPAY_AWARDED_CREDITS__ = fin.awarded_credits || []; } catch {}
+        router.replace(`/group/${group.id}/success?amount=${amount.toFixed(2)}&kind=contribute&via=wallet`);
+      } else {
+        Alert.alert('Payment status', `Stripe reports: ${fin.payment_status}`);
+      }
+    } catch (e: any) {
+      Alert.alert('Wallet payment failed', e?.message || 'Please try card payment instead.');
+    } finally {
+      setNativePayBusy(false);
+    }
+  };
+
   const doPay = async () => {
     if (!isVerified) {
       setVerifyStep('phone');
@@ -921,6 +994,23 @@ export default function PayScreen() {
                 icon={<CreditCard size={18} color="#fff" />}
                 disabled={!isVerified || blockedNoAmount}
               />
+              {kind === 'contribute' && isVerified && !blockedNoAmount && nativePayAvailable && Platform.OS !== 'web' && (
+                <Button
+                  title={
+                    nativePayBusy
+                      ? 'Opening wallet…'
+                      : Platform.OS === 'ios'
+                      ? `Pay with Apple Pay — $${amount.toFixed(2)}`
+                      : `Pay with Google Pay — $${amount.toFixed(2)}`
+                  }
+                  variant="secondary"
+                  onPress={onPayWithWallet}
+                  loading={nativePayBusy}
+                  testID="pay-wallet-btn"
+                  leftIcon={<Wallet size={16} color={COLORS.primary} />}
+                  style={{ marginTop: SPACING.sm }}
+                />
+              )}
               {kind === 'lead' && isVerified && !blockedNoAmount && (group.funding?.remaining_to_collect || 0) > 0.01 ? (
                 <Button
                   title={stripeBusy ? 'Opening Stripe…' : `Pay with Stripe — $${amount.toFixed(2)}`}

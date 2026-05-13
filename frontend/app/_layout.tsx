@@ -7,6 +7,7 @@ import { Home } from 'lucide-react-native';
 import { COLORS } from '../src/theme';
 import { ToastHost } from '../src/components/Toast';
 import { SessionGuard } from '../src/components/SessionGuard';
+import { StripeNativeProvider } from '../src/components/StripeNativeProvider';
 
 function HeaderHomeButton() {
   const router = useRouter();
@@ -27,6 +28,7 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
+      <StripeNativeProvider>
       <StatusBar style="dark" />
       <View style={{ flex: 1, backgroundColor: COLORS.bg }}>
         <Stack
@@ -66,6 +68,7 @@ export default function RootLayout() {
         <ToastHost />
         <SessionGuard />
       </View>
+      </StripeNativeProvider>
     </SafeAreaProvider>
     </GestureHandlerRootView>
   );

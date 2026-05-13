@@ -65,6 +65,12 @@ from routes.kyc_routes import attach_kyc_routes
 attach_auth_routes(api_router, db)
 attach_groups_routes(api_router, db)
 attach_contribute_routes(api_router, db)
+# Phase 7 — Native Apple/Google Pay via Stripe PaymentSheet (June 2025)
+try:
+    from routes.contribute_native_routes import attach_native_contribute_routes
+    attach_native_contribute_routes(api_router, db)
+except Exception as _e:
+    print("[startup] native contribute routes attach failed:", _e)
 attach_pay_routes(api_router, db)
 attach_referrals_credits_routes(api_router, db)
 attach_misc_routes(api_router, db)

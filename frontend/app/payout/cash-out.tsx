@@ -57,6 +57,7 @@ import {
   Banknote,
   ExternalLink,
   RefreshCw,
+  ShieldCheck,
 } from 'lucide-react-native';
 import { api } from '../../src/api';
 import { loadUser, loadSessionId } from '../../src/session';
@@ -337,6 +338,42 @@ export default function CashOutScreen() {
             Funds typically arrive in seconds. Stripe handles all card details — SquadPay never
             sees them.
           </Text>
+
+          {/* Subtle KYC reassurance card — leads often pause at the
+              "ID verification" step. We frame it plainly: it's a one-
+              time legal step, it's for THEIR protection, and SquadPay
+              doesn't store the data. */}
+          <View style={styles.kycCard} testID="kyc-explainer">
+            <View style={styles.kycHeader}>
+              <ShieldCheck size={18} color={COLORS.primary} />
+              <Text style={styles.kycHeaderText}>One-time identity check</Text>
+            </View>
+            <View style={styles.kycRow}>
+              <Text style={styles.kycBullet}>•</Text>
+              <Text style={styles.kycText}>
+                Required by US law for anyone receiving money to a bank or debit card.
+              </Text>
+            </View>
+            <View style={styles.kycRow}>
+              <Text style={styles.kycBullet}>•</Text>
+              <Text style={styles.kycText}>
+                Protects you — confirms only YOU can withdraw funds from your Squads.
+              </Text>
+            </View>
+            <View style={styles.kycRow}>
+              <Text style={styles.kycBullet}>•</Text>
+              <Text style={styles.kycText}>
+                Takes about 60 seconds — and you'll never see this screen again on future Pay Outs.
+              </Text>
+            </View>
+            <View style={styles.kycRow}>
+              <Text style={styles.kycBullet}>•</Text>
+              <Text style={styles.kycText}>
+                Stripe handles the verification — SquadPay never sees or stores your ID details.
+              </Text>
+            </View>
+          </View>
+
           <TouchableOpacity style={styles.primaryBtn} onPress={handleConnect} testID="connect-stripe-btn">
             <ExternalLink size={18} color="#fff" />
             <Text style={styles.primaryBtnText}>Connect with Stripe</Text>
@@ -556,6 +593,47 @@ const styles = StyleSheet.create({
   bodyHeader: { ...FONT.subhead, fontWeight: '600' as const, color: COLORS.text, marginTop: SPACING.sm },
   bodyText: { ...FONT.body, color: COLORS.muted, lineHeight: 20 },
   fineprint: { ...FONT.caption, color: COLORS.muted, textAlign: 'center', marginTop: SPACING.sm },
+  // KYC reassurance card — calm primary-light tone, indented bullets,
+  // sits between the body copy and the primary CTA so it doesn't
+  // dominate the screen but is impossible to miss.
+  kycCard: {
+    marginTop: SPACING.md,
+    backgroundColor: '#F4F1FF', // soft primary-light tint
+    borderRadius: RADIUS.md,
+    padding: SPACING.md,
+    gap: SPACING.xs,
+    borderWidth: 1,
+    borderColor: 'rgba(124, 92, 246, 0.18)',
+  },
+  kycHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.xs,
+    marginBottom: SPACING.xs,
+  },
+  kycHeaderText: {
+    ...FONT.subhead,
+    color: COLORS.text,
+    fontWeight: '700' as const,
+  },
+  kycRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+  },
+  kycBullet: {
+    ...FONT.caption,
+    color: COLORS.primary,
+    fontWeight: '800' as const,
+    fontSize: 14,
+    lineHeight: 18,
+  },
+  kycText: {
+    ...FONT.caption,
+    color: COLORS.text,
+    lineHeight: 18,
+    flex: 1,
+  },
   statusCard: {
     backgroundColor: COLORS.card,
     padding: SPACING.lg,

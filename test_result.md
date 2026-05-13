@@ -10191,6 +10191,59 @@ agent_communication:
       canonical refund path; no group-scoped payout endpoint is in
       scope this batch.
 
+    -agent: "main"
+    -message: |
+      KMS full key rotation completed (June 2025).
+
+      Plan executed:
+      1) Extended crypto_kms.rotate_all() to walk these collections
+         (was only app_settings before):
+           app_settings, gateway_config, gateway_configs, app_config,
+           users, issuing, connect_user_accounts, astra_user_tokens,
+           payout_user_cards
+         Plus added support for the gateway_config pattern where the
+         parent field is `credentials_enc: {secret_key: <ciphertext>}`
+         (children unsuffixed). Walker now re-encrypts every string
+         child when the parent key ends in `_enc`.
+
+      2) Generated fresh Fernet key
+         (fp=8bc3964e). Old key (fp=216b1adf) added to
+         KMS_PREVIOUS_KEYS for MultiFernet decrypt fallback during
+         rotation.
+
+      3) Backend restarted → kms init logged:
+            source=kms_master primary_fp=8bc3964e
+            legacy_count=2 legacy_fps=['216b1adf','922f62e7']
+
+      4) rotate_all() executed via in-process script:
+            rotated=9 skipped=0 failed=3 elapsed_ms=10
+         The 3 "failed" entries were plaintext values stored inside
+         a credentials_enc parent (publishable_key=pk_test_…,
+         astra.client_id, astra.environment) — none are actual
+         secrets. They stay as-is.
+
+      5) Paranoia verification — decrypted every ciphertext using
+         ONLY the new primary key (no MultiFernet fallback):
+            ✅ success=9  ⚪ plaintext=3  ❌ failed=0
+         Rotation confirmed clean.
+
+      6) KMS_PREVIOUS_KEYS removed from /app/backend/.env. Backend
+         restarted → primary_fp=8bc3964e, legacy_count=1
+         (just the JWT-derived auto-fallback for pre-KMS safety).
+
+      7) Live-app smoke after rotation:
+            GET /api/                       → 200
+            GET /api/stripe/publishable-key → 200 (uses decrypt)
+                {pk_test_..., merchant_identifier:'merchant.us.squadpay'}
+         Encrypted creds decrypt cleanly under the new primary.
+
+      Side-fix included in this commit: /app/frontend/app.json was
+      missing the merchantIdentifier on @stripe/stripe-react-native
+      plugin entry → caused expo prebuild to crash with
+      "Cannot read properties of undefined (reading 'merchantIdentifier')".
+      Added {merchantIdentifier:'merchant.us.squadpay', enableGooglePay:true}
+      to that plugin entry so Metro/expo can start cleanly.
+
 
 #====================================================================================================
 # June 2025 P1+P2 batch — Recurring Bills + Squad terminology

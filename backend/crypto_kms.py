@@ -181,56 +181,157 @@ _ENC_FIELD_SUFFIXES = ("_enc", "_token_enc", "_key_enc")
 
 
 async def rotate_all(db) -> dict:
-    """Walk every encrypted field in `app_settings` and re-encrypt with the
-    current primary key. Decrypt uses MultiFernet (primary + legacy), so this
-    is safe to run during/after a key change.
+    """Walk every encrypted field across all known collections and re-encrypt
+    with the current primary key. Decrypt uses MultiFernet (primary + legacy),
+    so this is safe to run during/after a key change.
 
-    Returns a summary dict { rotated, skipped, failed, fingerprint }.
+    Scanned collections:
+      - app_settings.*                — sms providers, issuing webhook secret
+      - app_config (where _id="gateway_configs")
+                                       — gateway_config.{slug}.credentials_enc.*
+      - users.*                       — payout access_token_enc / refresh_token_enc
+                                         (and any other *_enc fields on the user doc)
+      - gateway_configs               — top-level credentials_enc dict (newer schema)
+
+    Returns a per-collection summary plus aggregate rotated/skipped/failed.
     """
     started = time.time()
-    rotated = 0
-    skipped = 0
-    failed = 0
+    totals = {"rotated": 0, "skipped": 0, "failed": 0}
+    per_collection: dict = {}
 
-    cursor = db.app_settings.find({}, {"_id": 0})
-    docs = await cursor.to_list(length=None)
+    def _rerypt(value):
+        """Returns (new_token, status) where status in {'rotated','skipped','failed'}."""
+        if not value or not isinstance(value, str):
+            return value, "skipped"
+        plain = decrypt(value)
+        if plain is None:
+            return value, "failed"
+        new_token = encrypt(plain)
+        if new_token == value:
+            return value, "skipped"
+        return new_token, "rotated"
 
-    for doc in docs:
-        # find all fields ending in _enc anywhere in the doc (one level deep is enough)
-        changed = False
-        for top_key, top_val in list(doc.items()):
-            if not isinstance(top_val, dict):
-                continue
-            for k, v in list(top_val.items()):
-                if not isinstance(k, str) or not k.endswith("_enc"):
-                    continue
-                if not v or not isinstance(v, str):
-                    continue
-                plain = decrypt(v)
-                if plain is None:
-                    failed += 1
-                    continue
-                new_token = encrypt(plain)
-                if new_token == v:
-                    skipped += 1
-                    continue
-                top_val[k] = new_token
-                changed = True
-                rotated += 1
-        if changed:
-            await db.app_settings.update_one(
-                {"key": doc.get("key")}, {"$set": doc}
-            )
+    async def _walk_dict_enc(coll_name: str, query: dict, key_for_update: dict | None = None):
+        """For docs matching `query`, find every *_enc field one or two levels
+        deep and re-encrypt in place. Also handles the gateway_config pattern
+        where the PARENT field is named `credentials_enc` (and its children
+        are unsuffixed, e.g. `secret_key`). `key_for_update` overrides the
+        update predicate (defaults to {"_id": doc["_id"]} or
+        {"key": doc["key"]} if present). Returns counts for this collection."""
+        c = {"rotated": 0, "skipped": 0, "failed": 0}
+
+        def _rotate_in_dict(d: dict) -> bool:
+            """Re-encrypt EVERY string value in this dict (used when the parent
+            field is itself flagged as _enc)."""
+            changed = False
+            for k, v in list(d.items()):
+                if isinstance(v, str) and v:
+                    new_token, status = _rerypt(v)
+                    c[status] += 1
+                    if status == "rotated":
+                        d[k] = new_token
+                        changed = True
+            return changed
+
+        try:
+            cursor = db[coll_name].find(query)
+            async for doc in cursor:
+                changed = False
+                for top_k, top_v in list(doc.items()):
+                    if top_k == "_id":
+                        continue
+                    if isinstance(top_k, str) and top_k.endswith("_enc"):
+                        if isinstance(top_v, str):
+                            new_token, status = _rerypt(top_v)
+                            c[status] += 1
+                            if status == "rotated":
+                                doc[top_k] = new_token
+                                changed = True
+                        elif isinstance(top_v, dict):
+                            # Parent is `*_enc` → every string child is a secret
+                            # (e.g. gateway_config.credentials_enc.secret_key).
+                            if _rotate_in_dict(top_v):
+                                changed = True
+                    elif isinstance(top_v, dict):
+                        # walk one more level for nested per-suffix encrypted fields.
+                        for k2, v2 in list(top_v.items()):
+                            if isinstance(k2, str) and k2.endswith("_enc"):
+                                if isinstance(v2, str):
+                                    new_token, status = _rerypt(v2)
+                                    c[status] += 1
+                                    if status == "rotated":
+                                        top_v[k2] = new_token
+                                        changed = True
+                                elif isinstance(v2, dict):
+                                    if _rotate_in_dict(v2):
+                                        changed = True
+                            elif isinstance(v2, dict):
+                                for k3, v3 in list(v2.items()):
+                                    if isinstance(k3, str) and k3.endswith("_enc"):
+                                        if isinstance(v3, str):
+                                            new_token, status = _rerypt(v3)
+                                            c[status] += 1
+                                            if status == "rotated":
+                                                v2[k3] = new_token
+                                                changed = True
+                if changed:
+                    pred = key_for_update or (
+                        {"_id": doc["_id"]} if "_id" in doc
+                        else {"key": doc.get("key")} if doc.get("key")
+                        else {"id": doc.get("id")} if doc.get("id")
+                        else None
+                    )
+                    if pred:
+                        update_doc = {k: v for k, v in doc.items() if k != "_id"}
+                        await db[coll_name].update_one(pred, {"$set": update_doc})
+        except Exception as e:  # pylint: disable=broad-except
+            logger.warning(f"[kms] rotate scan failed for {coll_name}: {e}")
+        per_collection[coll_name] = c
+        for k in totals:
+            totals[k] += c[k]
+
+    # ── 1. app_settings (sms providers, issuing config)
+    await _walk_dict_enc("app_settings", {})
+
+    # ── 2. gateway_config (SquadPay schema — singular, single collection)
+    await _walk_dict_enc("gateway_config", {})
+
+    # ── 3. gateway_configs (legacy plural variant — harmless if absent)
+    await _walk_dict_enc("gateway_configs", {})
+
+    # ── 4. app_config (legacy / future single-doc-style configs)
+    await _walk_dict_enc("app_config", {})
+
+    # ── 5. users — only docs that actually have any *_enc fields.
+    await _walk_dict_enc("users", {
+        "$or": [
+            {"access_token_enc": {"$exists": True, "$ne": None}},
+            {"refresh_token_enc": {"$exists": True, "$ne": None}},
+            {"stripe_connect": {"$exists": True}},
+        ],
+    })
+
+    # ── 6. issuing config (separate single-doc collection on some deployments)
+    await _walk_dict_enc("issuing", {})
+
+    # ── 7. connect_user_accounts (Stripe Connect tokens for payouts)
+    await _walk_dict_enc("connect_user_accounts", {})
+
+    # ── 8. astra_user_tokens / payout_user_cards (Astra payout integration)
+    await _walk_dict_enc("astra_user_tokens", {})
+    await _walk_dict_enc("payout_user_cards", {})
 
     elapsed_ms = int((time.time() - started) * 1000)
-    logger.info(f"[kms] rotation done: rotated={rotated} skipped={skipped} failed={failed} in {elapsed_ms}ms")
+    logger.info(
+        f"[kms] rotation done: rotated={totals['rotated']} skipped={totals['skipped']} "
+        f"failed={totals['failed']} in {elapsed_ms}ms per_collection={per_collection}"
+    )
     return {
-        "rotated": rotated,
-        "skipped": skipped,
-        "failed": failed,
+        **totals,
         "elapsed_ms": elapsed_ms,
         "primary_fingerprint": _PRIMARY_FP,
         "key_source": _KEY_SOURCE,
+        "per_collection": per_collection,
     }
 
 

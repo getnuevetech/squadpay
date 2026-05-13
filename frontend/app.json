@@ -26,19 +26,27 @@
         "NSPrivacyAccessedAPITypes": [
           {
             "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
-            "NSPrivacyAccessedAPITypeReasons": ["CA92.1"]
+            "NSPrivacyAccessedAPITypeReasons": [
+              "CA92.1"
+            ]
           },
           {
             "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryFileTimestamp",
-            "NSPrivacyAccessedAPITypeReasons": ["C617.1"]
+            "NSPrivacyAccessedAPITypeReasons": [
+              "C617.1"
+            ]
           },
           {
             "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategorySystemBootTime",
-            "NSPrivacyAccessedAPITypeReasons": ["35F9.1"]
+            "NSPrivacyAccessedAPITypeReasons": [
+              "35F9.1"
+            ]
           },
           {
             "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryDiskSpace",
-            "NSPrivacyAccessedAPITypeReasons": ["E174.1"]
+            "NSPrivacyAccessedAPITypeReasons": [
+              "E174.1"
+            ]
           }
         ],
         "NSPrivacyTracking": false,
@@ -101,7 +109,11 @@
         "NSContactsUsageDescription": "Invite friends from your contacts to a Squad",
         "NSFaceIDUsageDescription": "Securely unlock SquadPay and confirm payments",
         "ITSAppUsesNonExemptEncryption": false,
-        "LSApplicationQueriesSchemes": ["mailto", "tel", "sms"]
+        "LSApplicationQueriesSchemes": [
+          "mailto",
+          "tel",
+          "sms"
+        ]
       }
     },
     "android": {
@@ -124,14 +136,41 @@
           "action": "VIEW",
           "autoVerify": true,
           "data": [
-            { "scheme": "https", "host": "squadpay.us", "pathPrefix": "/join/" },
-            { "scheme": "https", "host": "squadpay.us", "pathPrefix": "/group/" },
-            { "scheme": "https", "host": "squadpay.us", "pathPrefix": "/payout/" },
-            { "scheme": "https", "host": "www.squadpay.us", "pathPrefix": "/join/" },
-            { "scheme": "https", "host": "www.squadpay.us", "pathPrefix": "/group/" },
-            { "scheme": "https", "host": "www.squadpay.us", "pathPrefix": "/payout/" }
+            {
+              "scheme": "https",
+              "host": "squadpay.us",
+              "pathPrefix": "/join/"
+            },
+            {
+              "scheme": "https",
+              "host": "squadpay.us",
+              "pathPrefix": "/group/"
+            },
+            {
+              "scheme": "https",
+              "host": "squadpay.us",
+              "pathPrefix": "/payout/"
+            },
+            {
+              "scheme": "https",
+              "host": "www.squadpay.us",
+              "pathPrefix": "/join/"
+            },
+            {
+              "scheme": "https",
+              "host": "www.squadpay.us",
+              "pathPrefix": "/group/"
+            },
+            {
+              "scheme": "https",
+              "host": "www.squadpay.us",
+              "pathPrefix": "/payout/"
+            }
           ],
-          "category": ["BROWSABLE", "DEFAULT"]
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
         }
       ]
     },
@@ -174,7 +213,16 @@
       ],
       [
         "./plugins/withWalletProvisioning",
-        { "enabled": false }
+        {
+          "enabled": false
+        }
+      ],
+      [
+        "@stripe/stripe-react-native",
+        {
+          "merchantIdentifier": "merchant.us.squadpay",
+          "enableGooglePay": true
+        }
       ]
     ],
     "experiments": {

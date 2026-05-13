@@ -271,10 +271,10 @@ class StripeConnectPayoutAdapter(PayoutAdapter):
         )
 
     async def verify_webhook(self, body: bytes, signature: Optional[str]) -> PayoutWebhookEvent:
-        if not self.webhook_secret:
-            raise HTTPException(503, "Stripe Connect webhook secret not configured")
         if not signature:
             raise HTTPException(400, "Missing Stripe-Signature header")
+        if not self.webhook_secret:
+            raise HTTPException(503, "Stripe Connect webhook secret not configured")
         try:
             evt = _stripe_sdk.Webhook.construct_event(body, signature, self.webhook_secret)
         except Exception as e:

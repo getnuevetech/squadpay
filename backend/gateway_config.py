@@ -129,6 +129,21 @@ GATEWAY_PROVIDERS: List[Dict] = [
 
     # ─────────── Group B — FUNDING / WITHDRAWAL (push-to-card) ───────────
     {
+        "slug": "stripe_connect",
+        "display_name": "Stripe Connect (Instant Payouts)",
+        "group": "payout",
+        "icon_hint": "stripe",
+        "default_fee_label": "1% Instant Payout fee (Visa Direct via Stripe). Connect Express account onboarding required per user.",
+        "regions": ["US"],
+        "fields": [
+            {"key": "api_key",        "label": "Stripe Secret Key",   "kind": "secret", "required": True,
+             "help_text": "Reuses the same Stripe secret key as the charge adapter unless you want a separate one."},
+            {"key": "webhook_secret", "label": "Webhook signing secret", "kind": "secret", "required": False,
+             "help_text": "From Stripe Dashboard → Developers → Webhooks → Endpoint signing secret."},
+        ],
+        "status": "production",   # Phase 5a — shipped June 2025
+    },
+    {
         "slug": "astra",
         "display_name": "Astra",
         "group": "payout",
@@ -144,7 +159,7 @@ GATEWAY_PROVIDERS: List[Dict] = [
             {"key": "environment",     "label": "Environment",       "kind": "select", "required": True,
              "options": ["sandbox", "production"]},
         ],
-        "status": "production",   # Phase 5a — Astra adapter is now shipped
+        "status": "production",   # adapter shipped; not the default — switch via Admin → Gateways
     },
     {
         "slug": "branch",

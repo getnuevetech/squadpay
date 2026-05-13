@@ -26,6 +26,7 @@ from .charge_scaffolds import (
 )
 from .payout_base import PayoutAdapter
 from .payout_astra import AstraPayoutAdapter
+from .payout_stripe_connect import StripeConnectPayoutAdapter
 from .payout_scaffolds import BranchPayoutAdapter, WisePayoutAdapter
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ _CHARGE_REGISTRY = {
 }
 
 _PAYOUT_REGISTRY = {
+    "stripe_connect": StripeConnectPayoutAdapter,
     "astra": AstraPayoutAdapter,
     "branch": BranchPayoutAdapter,
     "wise": WisePayoutAdapter,
@@ -121,6 +123,14 @@ async def get_payout_adapter(db) -> PayoutAdapter:
             client_secret=creds.get("client_secret"),
             webhook_secret=creds.get("webhook_secret"),
             environment=creds.get("environment") or "sandbox",
+        )
+
+    if slug == "stripe_connect":
+        creds = await _resolve_credentials(db, "payout", "stripe_connect")
+        api_key = creds.get("api_key") or os.environ.get("STRIPE_API_KEY") or "sk_test_emergent"
+        return StripeConnectPayoutAdapter(
+            api_key=api_key,
+            webhook_secret=creds.get("webhook_secret") or "",
         )
 
     return cls()

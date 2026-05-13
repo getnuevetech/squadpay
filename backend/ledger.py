@@ -245,6 +245,76 @@ async def record_charge_event(
     return rows
 
 
+async def record_payout_event(
+    db,
+    *,
+    txn_id: str,
+    bill_id: Optional[str],
+    user_id: str,
+    amount_cents: int,
+    currency: str = "usd",
+    reference: Optional[Dict[str, Any]] = None,
+    provider_fee_cents: int = 0,
+    kind: str = "lead_cash_out",
+) -> List[Dict[str, Any]]:
+    """Idempotently write payout-event rows for ``txn_id``.
+
+    Three rows per payout:
+      category=payout.requested       account=merchant_payable   debit=amount  (we owe less)
+      category=payout.processor_fee   account=processor_fees     debit=provider_fee_cents
+      category=payout.settled         account=payout_recipient   credit=amount - fee
+
+    Math invariant: requested == fee + settled
+    """
+    if amount_cents <= 0:
+        raise ValueError("amount_cents must be > 0")
+    if provider_fee_cents < 0 or provider_fee_cents > amount_cents:
+        raise ValueError("provider_fee_cents must be in [0, amount_cents]")
+
+    existing = await db.ledger_entries.find({"txn_id": txn_id}, {"_id": 0}).to_list(length=None)
+    if existing:
+        return existing
+
+    net_cents = amount_cents - provider_fee_cents
+    now = _now()
+    base = {
+        "txn_id": txn_id,
+        "bill_id": bill_id,
+        "user_id": user_id,
+        "currency": currency,
+        "reference": reference or {},
+        "kind": kind,
+        "created_at": now,
+    }
+    rows: List[Dict[str, Any]] = [
+        {**base, "id": make_entry_id(), "account": LedgerAccount.MERCHANT_PAYABLE,
+         "direction": DIRECTION_DEBIT, "amount_cents": int(amount_cents), "category": "payout.requested"},
+        {**base, "id": make_entry_id(), "account": LedgerAccount.PROCESSOR_FEES,
+         "direction": DIRECTION_DEBIT, "amount_cents": int(provider_fee_cents), "category": "payout.processor_fee"},
+        {**base, "id": make_entry_id(), "account": LedgerAccount.PAYOUT_RECIPIENT,
+         "direction": DIRECTION_CREDIT, "amount_cents": int(net_cents), "category": "payout.settled"},
+    ]
+
+    by_cat = {r["category"]: r["amount_cents"] for r in rows}
+    if by_cat["payout.requested"] != by_cat["payout.processor_fee"] + by_cat["payout.settled"]:
+        raise RuntimeError(
+            f"[ledger] payout event imbalance: requested={by_cat['payout.requested']} "
+            f"fee={by_cat['payout.processor_fee']} settled={by_cat['payout.settled']}"
+        )
+
+    try:
+        await db.ledger_entries.insert_many(rows, ordered=True)
+    except Exception as e:
+        logger.warning(f"[ledger] payout insert race for txn={txn_id}: {e}")
+        existing = await db.ledger_entries.find({"txn_id": txn_id}, {"_id": 0}).to_list(length=None)
+        if existing:
+            return existing
+        raise
+
+    logger.info(f"[ledger] payout event posted txn={txn_id} amount={amount_cents}c fee={provider_fee_cents}c")
+    return rows
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Query helpers (used by admin endpoints)
 # ─────────────────────────────────────────────────────────────────────────────

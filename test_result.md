@@ -8619,3 +8619,261 @@ agent_communication:
       Phase 3 done. Please test ledger endpoints L1–L10 above (see
       backend_phase3 task). Auth: admin@squadpay.us / Letmein@2007#ForReal.
       Local backend http://localhost:8001/api.
+
+backend_phase5a:
+  - task: "Phase 5a — Group B Payout Adapter Contract + Astra OAuth + Push-to-Card backend"
+    implemented: true
+    working: true
+    file: "backend/adapters/payout_base.py, backend/adapters/payout_astra.py, backend/adapters/payout_scaffolds.py, backend/adapters/registry.py, backend/ledger.py, backend/routes/payout_routes.py, backend/gateway_config.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Phase 5a backend tests PASSED — 41/41 assertions across P5a.1–P5a.15.
+            Test harness: /app/backend_test.py (httpx + motor; admin login
+            admin@squadpay.us / Letmein@2007#ForReal). All endpoints exercised
+            against local http://localhost:8001/api. No backend code changes
+            were made. Live Astra OAuth code exchange was intentionally NOT
+            attempted (requires real user consent), per review request.
+
+            Per-test results:
+              • P5a.1 GET /api/admin/gateways → 200; active = {"charge":"stripe","payout":"astra"}. ✅
+              • P5a.2 POST /api/payout/authorize-url with bogus user → 401
+                ("User not found"). Same call with real user but wrong
+                session_id → 401 as well. ✅
+              • P5a.3 POST /api/payout/authorize-url with valid user_id+session_id+
+                redirect_uri="https://example.com/cb" → 200. Verified:
+                  - url starts with "https://sandbox.astra.finance/oauth/authorize?"
+                  - query.response_type == "code"
+                  - query.client_id starts with "52b85ed4"
+                  - query.state present and equals response body state
+                  - query.redirect_uri round-trips to "https://example.com/cb"
+                  - body.gateway_slug == "astra"
+                  - db.astra_oauth_states row exists with consumed=false and
+                    user_id matching the test user. ✅
+              • P5a.4 POST /api/payout/oauth-callback with state="bogus_state_xyz"
+                → 400 "Invalid or expired OAuth state". ✅
+              • P5a.5 After flipping consumed=true in mongo, POST /api/payout/
+                oauth-callback with that state → 409 "OAuth state already used". ✅
+              • P5a.6 Fresh open group, GET /api/payout/eligibility → 200,
+                eligible=false, reasons=['group_not_paid','funding_mode_not_group']. ✅
+              • P5a.7 Same group with lead_id flipped to another user_id →
+                eligible=false, reasons contains 'not_lead' (also includes
+                'group_not_paid','funding_mode_not_group' — expected since
+                status/funding_mode hadn't been flipped yet). lead_id was
+                restored afterward. ✅
+              • P5a.8 db.groups.update_one({status:"paid",funding_mode:"group"}) +
+                4 × record_charge_event(gross_cents=5000) writes for that bill.
+                GET /api/payout/eligibility → eligible=true, available_usd=200.0
+                (4×$50 from each charge’s merchant_payable CREDIT — note the
+                review prompt said "~50.0" but spec text "4 charges × 5000c"
+                arithmetically produces $200, which is what the ledger writer
+                correctly emits; flagging as expected behaviour, not a bug),
+                astra_linked=false. ✅
+              • P5a.9 POST /api/payout/push-to-card with no astra token (card
+                row seeded so the card-not-found check doesn't shadow the
+                token check) → 412 "Astra session expired. Please reconnect
+                your Astra account." ✅
+              • P5a.10 Seeded encrypted astra_user_tokens (via
+                integrations.encrypt_secret) + an active astra_user_cards row;
+                POST /api/payout/push-to-card amount=999.99 (over available
+                $200) → 409 "Requested $999.99 exceeds available cash-out
+                balance $200.00". ✅
+              • P5a.11 POST /api/webhook/astra with no Astra-Signature header
+                → 400 (detail: "webhook error: 400: Missing Astra signature
+                header" — wrapped by outer try/except, content matches). ✅
+              • P5a.12 POST /api/webhook/astra with Astra-Signature: bogus_sig
+                + valid JSON body → 400 "Astra webhook signature mismatch". ✅
+              • P5a.13 from adapters.payout_scaffolds import
+                BranchPayoutAdapter, WisePayoutAdapter — both classes raise
+                HTTPException(status_code=501, detail contains "not yet
+                implemented") on .create_card_capture_session(...) AND on
+                .push_to_card(...) (4 assertions). ✅
+              • P5a.14 ledger.record_payout_event(amount_cents=5000,
+                provider_fee_cents=75) → 3 rows; re-running with same txn_id
+                leaves count_documents == 3 (idempotent via unique
+                (txn_id, category) index); by_cat = {payout.requested:5000,
+                payout.processor_fee:75, payout.settled:4925}; math invariant
+                5000 == 75 + 4925 holds; cleanup deleted test rows. ✅
+              • P5a.15 Phase 4 regression:
+                  - admin login still works ✅
+                  - POST /api/groups → 200 (open group $25.50) ✅
+                  - POST /api/groups/{id}/checkout-session →
+                    url starts "https://checkout.stripe.com",
+                    session_id starts "cs_test_",
+                    amount == 25.50, txn_id present ✅
+                  - GET /api/checkout/status/{cs_test_...} → 200 (status="open",
+                    payment_status="unpaid"). Bogus session id → 404. ✅
+                  - Second user joined group + POST /api/groups/{id}/contribute
+                    → 200 with checkout_required=true and stripe checkout
+                    session URL. ✅
+                  - charge_scaffolds (Square/Adyen/Flutterwave) all raise
+                    HTTPException(501) on .create_checkout_session(...). ✅
+
+            Logs observed during run (informational):
+              - Backend log shows "[astra-webhook] verify failed: 400: Missing
+                Astra signature header" (intentional — expected behaviour for
+                P5a.11).
+              - passlib bcrypt cosmetic warning (pre-existing, no impact).
+              - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes; pre-existing).
+              - kms.py emits "[kms] Using JWT-derived encryption key (INSECURE
+                for production). Set KMS_MASTER_KEY in .env to a Fernet key."
+                when first encrypting a value. Pre-existing — not a Phase 5a
+                regression; flagging for main agent's awareness only.
+              - Real Stripe API call succeeded in regression test:
+                "POST https://api.stripe.com/v1/checkout/sessions response 200".
+
+            Cleanup performed:
+              - 3 test users (Alex, Bob, Carol), 2 test groups, 1 astra_oauth_state
+                row, seeded astra_user_tokens and astra_user_cards, and all
+                test ledger entries were removed from the DB via the test
+                harness.
+
+            Pass criteria from review request — ALL MET:
+              ✓ All listed endpoints return the expected HTTP codes
+              ✓ Authorize URL matches Astra documented format
+                (sandbox.astra.finance/oauth/authorize)
+              ✓ state CSRF protection works (single-use, user-bound)
+              ✓ Eligibility logic correctly gates on
+                lead/status/funding_mode/available_balance
+              ✓ Payout ledger writer math invariant holds (5000 == 75 + 4925)
+              ✓ Scaffold adapters raise 501 (defence-in-depth)
+              ✓ Stripe (Phase 4) charge path still works (no regression)
+        - working: "NA"
+          agent: "main"
+          comment: |
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Phase 5a backend complete. Astra integration uses 3-legged OAuth (authorization_code) as
+            required by docs.astra.finance. Container DNS can NOT reach the Astra host, so end-to-end
+            transfers against Astra sandbox are NOT verifiable here — we instead test surface and shape.
+
+            Files added/changed:
+              /app/backend/adapters/payout_base.py        — PayoutAdapter ABC + CardCaptureSession/CardToken/PushToCardResult/PayoutWebhookEvent
+              /app/backend/adapters/payout_astra.py       — Real Astra adapter (OAuth authorize URL, token exchange, list cards, create transfer, HMAC webhook verify)
+              /app/backend/adapters/payout_scaffolds.py   — Branch/Wise scaffolds, every method raises 501
+              /app/backend/adapters/registry.py           — get_payout_adapter(db) resolver
+              /app/backend/ledger.py                      — record_payout_event() writes 3 rows (payout.requested DEBIT merchant_payable / payout.processor_fee DEBIT processor_fees / payout.settled CREDIT payout_recipient). Math invariant requested == fee + settled. Idempotent on txn_id.
+              /app/backend/routes/payout_routes.py        — endpoints below
+              /app/backend/gateway_config.py              — Astra catalog upgraded to status="production"; field renamed api_key→client_id to match Astra docs
+              /app/backend/server.py                      — attaches payout routes; ensure_ledger_indexes already creates supporting indexes
+
+            New endpoints (all gated by session check via _require_session, mirrors /api/auth/check-session logic):
+              POST /api/payout/authorize-url   {user_id, session_id, redirect_uri, group_id?} → {url, state, gateway_slug, environment}
+              POST /api/payout/oauth-callback  {user_id, session_id, code, state, redirect_uri} → {ok, cards[], scope}
+              GET  /api/payout/cards           ?user_id&session_id&refresh=bool → {items: [{id,brand,last4,is_default,...}]}
+              POST /api/payout/push-to-card    {user_id, session_id, group_id, card_id, amount} → {txn_id, status, amount, provider_payout_id, card_brand, card_last4}
+              GET  /api/payout/eligibility     ?user_id&session_id&group_id → {eligible, reasons, available_cents, astra_linked, default_card, gateway_slug}
+              POST /api/webhook/astra          — HMAC-SHA256 verified via webhook_secret
+
+            DB collections introduced:
+              db.astra_oauth_states         — CSRF state-tokens used to validate OAuth callbacks
+              db.astra_user_tokens          — per-user access/refresh tokens (ENCRYPTED via integrations.encrypt_secret/decrypt_secret + crypto_kms)
+              db.astra_user_cards           — per-user linked cards (id, brand, last4, display_name, is_default, is_active)
+              db.payouts                    — payout attempts (id == txn_id, gateway_slug, provider_payout_id, status, fee_cents, ledger_posted)
+
+            Eligibility logic (lead cash-out CTA spec):
+              • Lead only (group.lead_id == user_id)
+              • Group must be status=="paid" AND funding_mode=="group"
+              • Available cents = sum(ledger merchant_payable CREDITs for bill) − sum(DEBITs)
+              • Requested amount ≤ available cents
+
+            Credentials provisioned via the existing admin endpoint:
+              PUT /api/admin/gateways/payout/astra → saves client_id + client_secret + webhook_secret + environment, encrypted.
+              POST /api/admin/gateways/payout/activate {"provider_slug":"astra"} → flips active payout provider to Astra (verified working).
+
+            REQUEST FOR TESTING — admin@squadpay.us / Letmein@2007#ForReal:
+              P5a.1 GET /api/admin/gateways → 200; assert `active.payout == "astra"`.
+              P5a.2 POST /api/payout/authorize-url with invalid user_id/session_id → 401.
+              P5a.3 POST /api/payout/authorize-url with VALID user_id+session_id from a real account → 200; response.url MUST start with "https://sandbox.astra.finance/oauth/authorize?" AND contain client_id=52b85ed4..., redirect_uri (urlencoded), response_type=code, state. A row should appear in db.astra_oauth_states with consumed=false.
+              P5a.4 POST /api/payout/oauth-callback with WRONG state → 400 "Invalid or expired OAuth state".
+              P5a.5 POST /api/payout/oauth-callback re-using a state already consumed=true → 409.
+              P5a.6 GET /api/payout/eligibility with a NEW group whose status is "open" → eligible=false, reasons contains "group_not_paid".
+              P5a.7 GET /api/payout/eligibility with a group where user is NOT the lead → eligible=false, reasons contains "not_lead".
+              P5a.8 GET /api/payout/eligibility with a paid+group-funded group where the lead has merchant_payable in the ledger → eligible=true, available_usd > 0, astra_linked=false (no token yet).
+              P5a.9 POST /api/payout/push-to-card before linking Astra → 412 "Astra session expired" (no token).
+              P5a.10 POST /api/payout/push-to-card with amount > available → 409 "exceeds available cash-out balance".
+              P5a.11 POST /api/webhook/astra with no Astra-Signature header → 400 "Missing Astra signature".
+              P5a.12 POST /api/webhook/astra with wrong signature → 400 "signature mismatch".
+              P5a.13 Scaffold defence-in-depth: import BranchPayoutAdapter, WisePayoutAdapter; each method raises HTTPException(501).
+              P5a.14 Ledger payout writer regression — call record_payout_event directly with amount=5000c, fee=75c → 3 rows, math (5000 = 75 + 4925), idempotent; cleanup. (Same script as L9 but for payouts.)
+              P5a.15 Regression: existing Phase 3 charge ledger writer + Phase 4 Stripe charge flow still pass (re-run prior P4.* test plan; nothing should have regressed).
+
+            NOT TESTABLE FROM THIS CONTAINER (sandbox DNS limitations):
+              • Live Astra OAuth code exchange — Astra hosts are reachable but token endpoint requires real user consent.
+              • Live POST /v1/transfers push-to-card — needs valid user access_token from a real consent flow.
+              These will be verified by user on real device once Phase 5b ships.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Phase 5a backend done. Astra adapter built around real OAuth flow (3-legged
+      authorization_code as required by Astra docs). All endpoint surfaces in
+      place; auth/state guards verified by smoke tests. Please run P5a.1–P5a.15.
+      Note: live Astra OAuth callbacks cannot be exercised from this sandbox
+      because they require a real user consent in a browser — confine testing
+      to the contract/guard/shape assertions listed.
+
+
+    -agent: "testing"
+    -message: |
+      Phase 5a backend (P5a.1 – P5a.15) PASSED — 41/41 assertions, no
+      failures. Test harness saved at /app/backend_test.py. Highlights:
+
+        • OAuth authorize-url returns canonical
+          https://sandbox.astra.finance/oauth/authorize?... URL with
+          response_type=code, client_id=52b85ed4..., state, urlencoded
+          redirect_uri, gateway_slug=astra. CSRF state row written to
+          db.astra_oauth_states with consumed=false.
+        • oauth-callback correctly rejects bogus state (400 "Invalid or
+          expired OAuth state") and consumed state (409 "OAuth state
+          already used").
+        • Eligibility gating works: open group → reasons=
+          ['group_not_paid','funding_mode_not_group']; lead flipped to
+          another user → adds 'not_lead'; paid+group-funded with 4×$50
+          merchant_payable CREDITs → eligible=true, available_usd=200,
+          astra_linked=false.
+        • push-to-card: without astra token → 412 "Astra session expired";
+          with seeded encrypted token but amount > available → 409
+          "Requested $999.99 exceeds available cash-out balance $200.00".
+        • Webhook signature guards: missing header → 400 (wrapped
+          "webhook error: 400: Missing Astra signature header"); wrong
+          sig → 400 "Astra webhook signature mismatch".
+        • Defence-in-depth: BranchPayoutAdapter and WisePayoutAdapter
+          both raise HTTPException(501, "not yet implemented") on
+          create_card_capture_session() and push_to_card().
+        • Payout ledger writer: record_payout_event(amount_cents=5000,
+          provider_fee_cents=75) → 3 rows (requested/processor_fee/
+          settled); idempotent on same txn_id; math 5000 == 75 + 4925
+          holds.
+        • Phase 4 Stripe charge adapter regression CLEAN: admin login,
+          lead-pay /checkout-session (real Stripe API hit, cs_test_...
+          session, amount=$25.50), GET /checkout/status/{sid} → open/
+          unpaid, bogus id → 404, member contribute path returned
+          stripe checkout url, and Square/Adyen/Flutterwave scaffolds
+          still raise 501.
+
+      Test cleanup: 3 test users (Alex/Bob/Carol), 2 test groups, 1
+      astra_oauth_state row, seeded astra_user_tokens + astra_user_cards,
+      and all test ledger entries were removed from mongo. No backend
+      code changes were made.
+
+      Informational (not Phase 5a regressions, just observed in logs
+      during the run):
+        • kms.py prints "[kms] Using JWT-derived encryption key
+          (INSECURE for production). Set KMS_MASTER_KEY in .env to a
+          Fernet key." when encrypting Astra refresh tokens. Pre-
+          existing; flagging for main agent.
+        • passlib bcrypt warning + jwt InsecureKeyLengthWarning are
+          pre-existing cosmetic warnings.
+
+      Minor observation on review-request copy: P5a.8 expected
+      "available_usd ~ 50.0" but the same prompt says "write 4 charge
+      ledger entries ... with gross_cents=5000". Each charge writes
+      $50 of merchant_payable CREDIT, so 4 charges → $200. Test
+      accepts available_usd > 0 + eligible=true and reports the actual
+      $200 figure — implementation is correct.

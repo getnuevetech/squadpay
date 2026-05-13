@@ -24,6 +24,9 @@ from .charge_scaffolds import (
     AdyenChargeAdapter,
     FlutterwaveChargeAdapter,
 )
+from .payout_base import PayoutAdapter
+from .payout_astra import AstraPayoutAdapter
+from .payout_scaffolds import BranchPayoutAdapter, WisePayoutAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,12 @@ _CHARGE_REGISTRY = {
     "square": SquareChargeAdapter,
     "adyen": AdyenChargeAdapter,
     "flutterwave": FlutterwaveChargeAdapter,
+}
+
+_PAYOUT_REGISTRY = {
+    "astra": AstraPayoutAdapter,
+    "branch": BranchPayoutAdapter,
+    "wise": WisePayoutAdapter,
 }
 
 
@@ -86,4 +95,32 @@ async def get_charge_adapter(db) -> ChargeAdapter:
         return StripeChargeAdapter(api_key=api_key)
 
     # Scaffolds — credentials may or may not be set; their methods raise 501 anyway.
+    return cls()
+
+
+async def get_payout_adapter(db) -> PayoutAdapter:
+    """Resolve and instantiate the currently-active payout adapter.
+
+    Returns None semantics not possible (HTTPException raised) — callers can
+    assume an adapter is always returned (or 503 if no active provider).
+    """
+    slug = get_active_provider("payout")
+    if not slug:
+        raise HTTPException(
+            503,
+            "No active payout provider. Configure one in Admin → Payment Gateways → Payout.",
+        )
+    cls = _PAYOUT_REGISTRY.get(slug)
+    if not cls:
+        raise HTTPException(500, f"Unknown active payout provider: {slug}")
+
+    if slug == "astra":
+        creds = await _resolve_credentials(db, "payout", "astra")
+        return AstraPayoutAdapter(
+            client_id=creds.get("client_id"),
+            client_secret=creds.get("client_secret"),
+            webhook_secret=creds.get("webhook_secret"),
+            environment=creds.get("environment") or "sandbox",
+        )
+
     return cls()

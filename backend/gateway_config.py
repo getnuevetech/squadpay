@@ -136,14 +136,15 @@ GATEWAY_PROVIDERS: List[Dict] = [
         "default_fee_label": "1.0–1.5% per push-to-card payout (Visa Direct partner)",
         "regions": ["US"],
         "fields": [
-            {"key": "api_key",         "label": "API key",           "kind": "secret", "required": True,
-             "help_text": "Astra API key from app.astra.finance/developers."},
+            {"key": "client_id",       "label": "Client ID",          "kind": "public", "required": True,
+             "help_text": "Astra Client ID from app.astra.finance/developers."},
             {"key": "client_secret",   "label": "Client secret",     "kind": "secret", "required": True},
-            {"key": "webhook_secret",  "label": "Webhook secret",    "kind": "secret", "required": True},
+            {"key": "webhook_secret",  "label": "Webhook secret",    "kind": "secret", "required": True,
+             "help_text": "From Astra Dashboard → Webhooks → Signing Secret (HMAC SHA256)."},
             {"key": "environment",     "label": "Environment",       "kind": "select", "required": True,
              "options": ["sandbox", "production"]},
         ],
-        "status": "scaffold",
+        "status": "production",   # Phase 5a — Astra adapter is now shipped
     },
     {
         "slug": "branch",

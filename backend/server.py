@@ -244,6 +244,14 @@ except Exception as _e:
     print("[startup] ledger routes attach failed:", _e)
 
 
+# ---------- Payouts / Astra push-to-card (June 2025 Phase 5a) ----------
+try:
+    from routes.payout_routes import attach_payout_routes
+    attach_payout_routes(api_router, db)
+except Exception as _e:
+    print("[startup] payout routes attach failed:", _e)
+
+
 # ---------- Stripe Issuing PAN reveal + spend webhook (Phase F2) ----------
 try:
     from issuing_reveal import attach_reveal_routes

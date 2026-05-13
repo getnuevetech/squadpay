@@ -8257,3 +8257,189 @@ agent_communication:
 
       Don't retest Account Deletion / Contact Us / Bulk SMS / Credit Rules /
       previous batches.
+
+
+backend_phase3:
+  - task: "Phase 3 — Immutable Ledger + Txn ID System (June 2025)"
+    implemented: true
+    working: true
+    file: "backend/ledger.py, backend/routes/ledger_routes.py, backend/payments.py, backend/routes/contribute_routes.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Phase 3 (Immutable Ledger + Txn ID) end-to-end tested via
+            /app/backend_test_phase3.py against the LOCAL backend
+            http://localhost:8001/api. 29/29 assertions PASS, no 5xx, no failures.
+
+            Coverage (all PASS):
+              • PREREQ admin@squadpay.us login → 200, JWT token acquired.
+              • L1: GET /admin/audit-log?limit=1 with the token → 200 (sanity).
+              • L2: GET /admin/ledger/summary → 200; body has 'accounts' (dict). ✅
+              • L3: GET /admin/ledger → 200; shape exactly {total,int; skip,int;
+                limit,int; items,list}. ✅
+              • L4: GET /admin/ledger?limit=5&skip=0 → 200; both echoed. ✅
+              • L5: GET /admin/ledger/txn/tx_charge_doesnotexist → 404
+                ({"detail":"No ledger entries for txn 'tx_charge_doesnotexist'"}). ✅
+              • L6a/b: missing Authorization → 401 on both /admin/ledger and
+                /admin/ledger/summary. ✅
+              • L6c: GET /admin/ledger?category=bogus.value → 400 with
+                "Unknown category. Allowed: charge.gross, charge.processor_fee,
+                charge.tax, charge.net_payable, payout.requested,
+                payout.processor_fee, payout.settled". ✅
+              • L7: GET /admin/ledger?category=charge.gross → 200. ✅
+              • L8 Stripe checkout-session writer:
+                  - Used existing open group g_96ee19bb03 (total=$90).
+                  - POST /api/groups/{gid}/checkout-session
+                    {origin_url:"http://localhost:3000"} → 200, body keys =
+                    ['url','session_id','amount','txn_id']. ✅
+                  - response.txn_id starts with 'tx_charge_' (verified:
+                    tx_charge_01krfhr9fjxg2kervr3bhsgweh, 26-char ULID-style suffix). ✅
+                  - db.payment_transactions row exists with same session_id +
+                    matching txn_id + ledger_posted: False. ✅
+              • L9 Direct ledger writer (mirrors finalization):
+                  - ledger.make_txn_id("charge") returns
+                    tx_charge_01krfhr9rtfrp4kh08s6cqqrzd (format OK). ✅
+                  - record_charge_event(db, txn_id=..., bill_id="test_bill_phase3",
+                    user_id="u_test_ledger", gross_cents=10000, currency="usd",
+                    reference={"test":"phase3"}) returns 4 rows with categories
+                    [charge.gross, charge.processor_fee, charge.tax,
+                    charge.net_payable]. ✅
+                  - Re-running with same txn_id: db.ledger_entries.count_documents
+                    still == 4 (idempotent — no duplicates, unique index
+                    (txn_id, category) holds). ✅
+                  - find_entries_by_txn(db, txn_id) → 4 rows. ✅
+                  - Math invariant: gross(10000) - fee(0) - tax(0) ==
+                    net_payable(10000) ✅
+              • L10: GET /api/admin/ledger/txn/{test_txn_id} BEFORE cleanup →
+                200, body.entries is list of length 4. ✅
+              • L9-cleanup: db.ledger_entries.delete_many({txn_id}) removed
+                exactly 4 rows; subsequent count == 0. ✅
+              • L11: After L9 cleanup, GET /admin/ledger/summary still → 200
+                with accounts dict (no crash on sparse data). ✅
+              • L12 RBAC end-to-end:
+                  - POST /admin/access/roles {name:"Phase3Test ts",
+                    modules:["dashboard"]} as super_admin → 201; slug derived
+                    as 'phase3test_<ts>'. ✅
+                  - POST /admin/admins with role=<that slug> → 200 (admin
+                    ad_d89d99ebe9 created). ✅
+                  - Login as restricted admin → 200, token issued. ✅
+                  - GET /admin/ledger as restricted admin → 403 with detail
+                    "Your role does not have access to the 'income_fees'
+                    module. Ask a super_admin to grant it via Access Role
+                    Management." ✅ (module gate fires before route handler.)
+                  - PUT /admin/access/roles/role_phase3test_<ts>
+                    {modules:["dashboard","income_fees"]} → 200; cache reload
+                    triggered. ✅
+                  - Re-GET /admin/ledger with the SAME restricted-admin token
+                    → 200. ✅ (cache reload picks up new module without
+                    requiring re-login.)
+
+            Cleanup performed:
+              - Test ledger rows deleted via Motor.
+              - Test admin + role rows removed (no DELETE /admin/admins
+                endpoint exists in the codebase, so cleanup was done via direct
+                mongo delete: db.admins.delete_many({email: ^phase3test}) and
+                db.roles.delete_many({slug: ^phase3test}) — 1 admin + 2 role
+                rows reaped). Not a bug — purely a test-side observation
+                (review request had a minor copy-paste in the role_id literal,
+                which I worked around by using the slug returned from POST).
+
+            Backend log notes (informational, not blocking):
+              - passlib bcrypt cosmetic warning (no functional impact).
+              - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes; ≥32 recommended).
+              - Real Stripe API call succeeded:
+                "POST https://api.stripe.com/v1/checkout/sessions response_code=200".
+
+            Pass criteria from review request — all met:
+              ✓ All endpoints return correct HTTP status codes
+              ✓ 4 rows per charge event in db.ledger_entries
+              ✓ Idempotency: re-running record_charge_event with same txn_id
+                does NOT duplicate
+              ✓ Math invariant holds: gross == fee + tax + net_payable
+              ✓ RBAC gating works (403 without income_fees → 200 after grant)
+              ✓ No 500 errors
+
+            Test suite saved at /app/backend_test_phase3.py — idempotent (uses
+            ts-based names) and self-cleans (except admin record, see above).
+            No backend code changes were made.
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Phase 3 of the modular payment overhaul is in. New module
+            /app/backend/ledger.py defines:
+
+              • ULID-style server-side `txn_id` generator (make_txn_id) →
+                `tx_charge_<26char>` / `tx_payout_<26char>`
+              • LedgerAccount constants (stripe_clearing, processor_fees,
+                tax_held, merchant_payable, …)
+              • record_charge_event() — writes 4 immutable rows per
+                contribution into `db.ledger_entries`:
+                  category=charge.gross         account=stripe_clearing  credit=gross_cents
+                  category=charge.processor_fee account=processor_fees   debit=0     (placeholder; Phase 4 fills from Stripe BalanceTransaction)
+                  category=charge.tax           account=tax_held         debit=0     (placeholder; reserved per user direction)
+                  category=charge.net_payable   account=merchant_payable credit=gross - fee - tax
+                Idempotent: re-running with same txn_id returns existing rows; unique index `(txn_id, category)`.
+                Asserts double-entry invariant (credits − debits == gross) before inserting.
+              • account_balances() — admin aggregation per account
+              • find_entries_by_txn(), list_entries() — query helpers
+
+            Both Stripe entry points refactored:
+              • payments.py `POST /api/groups/{id}/checkout-session` (lead pays merchant) — now uses raw stripe SDK with `idempotency_key=txn_id`, stores `txn_id` on payment_transactions row.
+              • routes/contribute_routes.py `POST /api/groups/{id}/contribute` — same.
+            On finalization (status poll + webhook), `_post_charge_ledger()` / inline writer is called. Skips silently if the payment_transactions row is pre-Phase-3 (no txn_id).
+
+            New admin endpoints (gated by `require_module("income_fees")`):
+              GET /api/admin/ledger?bill_id=&user_id=&account=&category=&kind=&limit=&skip=
+              GET /api/admin/ledger/summary  → {accounts: {acct: {credit_cents, debit_cents, net_cents, …}}}
+              GET /api/admin/ledger/txn/{txn_id}
+
+            Startup hook in server.py creates indexes on first boot:
+              db.ledger_entries: txn_id, (txn_id, category) UNIQUE, bill_id, user_id, account, created_at
+
+            REQUEST FOR TESTING — run as `admin@squadpay.us / Letmein@2007#ForReal`:
+              L1. GET /api/admin/ledger/summary → 200; `accounts` key exists (may be empty on fresh DB).
+              L2. GET /api/admin/ledger → 200; pagination meta {total, skip, limit} present.
+              L3. GET /api/admin/ledger/txn/tx_charge_doesnotexist → 404.
+              L4. As non-admin (no admin token) → all /admin/ledger* endpoints → 401.
+              L5. As an admin whose role lacks `income_fees` module → 403 with "module not allowed".
+              L6. Create a lead-pay checkout session: POST /api/groups/{open-group-id}/checkout-session
+                  with body {"origin_url":"http://localhost:3000"}. Response should include `txn_id` starting with `tx_charge_`.
+                  `db.payment_transactions` row should have matching `txn_id` and `ledger_posted: false`.
+              L7. Idempotency: call POST /api/groups/{id}/checkout-session twice in quick succession (same group).
+                  Each call generates a fresh txn_id → no Stripe-side double-charge attempt is observable; verify two distinct payment_transactions rows (this is correct — each request is a new lead pay attempt unless deduped client-side).
+              L8. Member contribute: POST /api/groups/{id}/contribute path B (cash needed) returns `txn_id`.
+              L9. (Manual / DB-poke) Mark a payment_transactions row as `payment_status=paid` and re-hit GET /api/checkout/status/{session_id} or call _post_charge_ledger directly. Verify 4 rows appear in db.ledger_entries with that txn_id and that calling it again does NOT duplicate (idempotency).
+              L10. After L9, GET /api/admin/ledger/txn/{txn_id} should return all 4 rows; GET /api/admin/ledger/summary should reflect a non-zero `merchant_payable.net_cents`.
+
+            Notes for testing agent:
+              • Stripe test mode is fine; you don't need to actually complete checkout — direct DB updates to flip payment_status=paid are acceptable for L9.
+              • The credit-only contribute path does NOT generate a Stripe charge and intentionally does NOT write a ledger entry (since no cash moves through the gateway). This is by design for Phase 3; Phase 5 will add internal credit-ledger events.
+
+agent_communication:
+    -agent: "testing"
+    -message: |
+      Phase 3 (Immutable Ledger + Txn ID) tests L1–L12 all PASS — 29/29 assertions.
+      Test harness: /app/backend_test_phase3.py. No backend code changes were
+      made. Highlights:
+        • All ledger endpoints return correct HTTP codes (200/400/401/403/404).
+        • Charge writer produces exactly 4 rows (gross/processor_fee/tax/
+          net_payable), idempotent on same txn_id, math invariant holds.
+        • Stripe checkout-session writes payment_transactions.txn_id =
+          tx_charge_<ulid> + ledger_posted: False.
+        • RBAC: restricted role → 403; after granting income_fees module via
+          PUT /admin/access/roles/{role_id} → 200 on same restricted token.
+        • Real Stripe API hit confirmed in logs (200 response).
+      Minor non-issues observed (no fix needed):
+        • There is no DELETE /api/admin/admins/{id} endpoint, so test admin
+          cleanup was done via direct mongo. Pre-existing; not a Phase 3 bug.
+        • DELETE /api/admin/access/roles/{id} returns 400 when the role still
+          has assigned admins. Expected guard.
+    -agent: "main"
+    -message: |
+      Phase 3 done. Please test ledger endpoints L1–L10 above (see
+      backend_phase3 task). Auth: admin@squadpay.us / Letmein@2007#ForReal.
+      Local backend http://localhost:8001/api.

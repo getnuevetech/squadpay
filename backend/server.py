@@ -236,6 +236,14 @@ except Exception as _e:
     print("[startup] payment routes attach failed:", _e)
 
 
+# ---------- Immutable Ledger (June 2025 Phase 3) ----------
+try:
+    from routes.ledger_routes import attach_ledger_routes
+    attach_ledger_routes(api_router, db, _adm_factory(db))
+except Exception as _e:
+    print("[startup] ledger routes attach failed:", _e)
+
+
 # ---------- Stripe Issuing PAN reveal + spend webhook (Phase F2) ----------
 try:
     from issuing_reveal import attach_reveal_routes
@@ -346,6 +354,13 @@ async def _on_startup():
         await seed_default_active_gateways(db)
     except Exception as e:
         print("[startup] seed gateways failed:", e)
+
+    # June 2025 (Phase 3): ensure ledger indexes
+    try:
+        from ledger import ensure_ledger_indexes
+        await ensure_ledger_indexes(db)
+    except Exception as e:
+        print("[startup] ledger indexes failed:", e)
 
 
 @app.on_event("shutdown")

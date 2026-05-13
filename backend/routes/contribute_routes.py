@@ -9,6 +9,7 @@ from core import (
     new_id, now_iso,
     _consume_user_credits, _load_group_enriched, _recompute_group,
 )
+from ledger import make_txn_id, record_charge_event, to_cents
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,9 @@ def attach_contribute_routes(router: APIRouter, db):
         import stripe as _stripe_sdk
         _stripe_sdk.api_key = os.environ.get("STRIPE_API_KEY")
 
+        # Phase 3 — pre-generate canonical txn_id BEFORE talking to Stripe.
+        txn_id = make_txn_id("charge")
+
         app_return = (body.app_return_url or "").strip() if hasattr(body, "app_return_url") else ""
         if app_return:
             from urllib.parse import quote
@@ -175,7 +179,9 @@ def attach_contribute_routes(router: APIRouter, db):
                     "credit_planned": str(credit_planned),
                     "cash_owed": str(cash_owed),
                     "notify_on_settled": "1" if body.notify_on_settled else "0",
+                    "txn_id": txn_id,
                 },
+                idempotency_key=txn_id,
             )
         except Exception as e:
             logger.exception(f"[stripe] member contribute checkout failed: {e}")
@@ -184,6 +190,7 @@ def attach_contribute_routes(router: APIRouter, db):
         tx = {
             "id": f"px_{session.id[:14]}",
             "session_id": session.id,
+            "txn_id": txn_id,
             "group_id": group_id,
             "user_id": body.user_id,
             "amount": cash_owed,
@@ -196,8 +203,10 @@ def attach_contribute_routes(router: APIRouter, db):
                 "credit_planned": credit_planned,
                 "cash_owed": cash_owed,
                 "notify_on_settled": bool(body.notify_on_settled),
+                "txn_id": txn_id,
             },
             "applied": False,
+            "ledger_posted": False,
             "created_at": now_iso(),
             "updated_at": now_iso(),
         }
@@ -209,6 +218,7 @@ def attach_contribute_routes(router: APIRouter, db):
             "amount": round(amount, 2),
             "cash_owed": cash_owed,
             "credit_planned": credit_planned,
+            "txn_id": txn_id,
         }
 
     @router.get("/contribute/status/{session_id}")
@@ -317,6 +327,32 @@ def attach_contribute_routes(router: APIRouter, db):
                 update["awarded_credits"] = awarded_credits
 
             update["applied"] = True
+
+            # Phase 3 — write immutable ledger event for the cash portion
+            # (credit-only paths don't create a Stripe charge, so the ledger
+            # entry uses cash_owed only).
+            try:
+                _txn = tx.get("txn_id") or (tx.get("metadata") or {}).get("txn_id")
+                if _txn and cash_owed > 0:
+                    await record_charge_event(
+                        db,
+                        txn_id=_txn,
+                        bill_id=tx.get("group_id"),
+                        user_id=tx.get("user_id"),
+                        gross_cents=to_cents(cash_owed),
+                        currency=tx.get("currency") or "usd",
+                        reference={
+                            "stripe_session_id": session_id,
+                            "kind": "group_member_contribute",
+                            "payment_transaction_id": tx.get("id"),
+                            "credit_applied_usd": float(meta.get("credit_planned") or 0),
+                        },
+                        kind="group_member_contribute",
+                    )
+                    update["ledger_posted"] = True
+                    update["ledger_posted_at"] = now_iso()
+            except Exception as e:
+                logger.exception(f"[ledger] contribute charge ledger write failed: {e}")
 
         await db.payment_transactions.update_one({"session_id": session_id}, {"$set": update})
         # Re-read the tx so a polling client can still see awarded_credits

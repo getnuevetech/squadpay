@@ -1,7 +1,18 @@
-"""Stripe Checkout integration (Phase E).
+"""Stripe Checkout integration (Phase E + Phase 3 ledger refactor).
 
-Uses the Emergent-managed flow (`emergentintegrations.payments.stripe.checkout`).
 Server is the source of truth for amounts — frontend only sends origin URL.
+
+Phase 3 (June 2025) — Immutable Ledger + 2-way idempotency
+──────────────────────────────────────────────────────────
+For every charge we now:
+  1. Generate a server-side ``txn_id = tx_charge_<ulid>`` BEFORE talking to
+     Stripe and stash it on the ``payment_transactions`` row.
+  2. Pass that ``txn_id`` as Stripe's ``idempotency_key`` so a network
+     retry / app crash doesn't double-charge — Stripe returns the original
+     Session for the second call.
+  3. On finalization (status poll OR webhook), call
+     ``ledger.record_charge_event(txn_id=...)`` which is itself idempotent
+     (it no-ops if rows for the txn already exist).
 """
 from __future__ import annotations
 import datetime as dt
@@ -12,10 +23,9 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from emergentintegrations.payments.stripe.checkout import (
-    StripeCheckout,
-    CheckoutSessionRequest,
-)
+from emergentintegrations.payments.stripe.checkout import StripeCheckout
+
+from ledger import make_txn_id, record_charge_event, to_cents
 
 logger = logging.getLogger(__name__)
 
@@ -31,17 +41,55 @@ class CreateCheckoutIn(BaseModel):
 
 def attach_payment_routes(api_router: APIRouter, db):
 
-    def _stripe(http_request: Request) -> StripeCheckout:
-        api_key = os.environ.get("STRIPE_API_KEY") or "sk_test_emergent"
+    def _stripe_api_key() -> str:
+        return os.environ.get("STRIPE_API_KEY") or "sk_test_emergent"
+
+    def _stripe_for_webhook(http_request: Request) -> StripeCheckout:
+        api_key = _stripe_api_key()
         host_url = str(http_request.base_url).rstrip("/")
         webhook_url = f"{host_url}/api/webhook/stripe"
         return StripeCheckout(api_key=api_key, webhook_url=webhook_url)
+
+    async def _post_charge_ledger(tx: dict) -> bool:
+        """Idempotently write the charge ledger event for this payment_transactions row.
+
+        Returns True if rows were posted (or already present); False on failure.
+        """
+        txn_id = tx.get("txn_id")
+        if not txn_id:
+            # Pre-Phase-3 row (no txn_id stored). Skip rather than fail.
+            logger.warning(f"[ledger] skipping charge ledger — missing txn_id on tx={tx.get('id')}")
+            return False
+        try:
+            await record_charge_event(
+                db,
+                txn_id=txn_id,
+                bill_id=tx.get("group_id"),
+                user_id=tx.get("user_id") or tx.get("lead_id"),
+                gross_cents=to_cents(tx.get("amount") or 0),
+                currency=tx.get("currency") or "usd",
+                reference={
+                    "stripe_session_id": tx.get("session_id"),
+                    "kind": (tx.get("metadata") or {}).get("kind"),
+                    "payment_transaction_id": tx.get("id"),
+                },
+                kind=(tx.get("metadata") or {}).get("kind") or "group_lead_pay",
+            )
+            await db.payment_transactions.update_one(
+                {"id": tx["id"]},
+                {"$set": {"ledger_posted": True, "ledger_posted_at": _now()}},
+            )
+            return True
+        except Exception as e:
+            logger.exception(f"[ledger] post-charge write failed for txn={txn_id}: {e}")
+            return False
 
     @api_router.post("/groups/{group_id}/checkout-session")
     async def create_checkout(group_id: str, body: CreateCheckoutIn, http_request: Request):
         """Lead initiates a real Stripe payment for the merchant total of this group.
 
         Amount is taken from the group document (server-side; never trust client).
+        Uses a pre-generated ``txn_id`` as Stripe idempotency_key so retries are safe.
         """
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
@@ -78,20 +126,32 @@ def attach_payment_routes(api_router: APIRouter, db):
             success_url = f"{origin}/group/{group_id}/pay?session_id={{CHECKOUT_SESSION_ID}}"
             cancel_url = f"{origin}/group/{group_id}/pay?stripe_cancel=1"
 
-        stripe_checkout = _stripe(http_request)
+        # Phase 3 — pre-generate the canonical txn_id BEFORE talking to Stripe.
+        txn_id = make_txn_id("charge")
+
+        import stripe as _stripe_sdk
+        _stripe_sdk.api_key = _stripe_api_key()
         try:
-            session = await stripe_checkout.create_checkout_session(
-                CheckoutSessionRequest(
-                    amount=round(amount, 2),
-                    currency="usd",
-                    success_url=success_url,
-                    cancel_url=cancel_url,
-                    metadata={
-                        "group_id": group_id,
-                        "lead_id": str(group.get("lead_id") or ""),
-                        "kind": "group_lead_pay",
+            session = _stripe_sdk.checkout.Session.create(
+                mode="payment",
+                payment_method_types=["card"],
+                line_items=[{
+                    "price_data": {
+                        "currency": "usd",
+                        "product_data": {"name": f"SquadPay merchant payment — {group.get('title') or 'Group Bill'}"},
+                        "unit_amount": int(round(amount * 100)),
                     },
-                )
+                    "quantity": 1,
+                }],
+                success_url=success_url,
+                cancel_url=cancel_url,
+                metadata={
+                    "group_id": group_id,
+                    "lead_id": str(group.get("lead_id") or ""),
+                    "kind": "group_lead_pay",
+                    "txn_id": txn_id,
+                },
+                idempotency_key=txn_id,  # 2-way idempotency
             )
         except Exception as e:
             logger.exception(f"[stripe] create_checkout_session failed: {e}")
@@ -99,21 +159,23 @@ def attach_payment_routes(api_router: APIRouter, db):
 
         # Mandatory payment_transactions ledger row (status=initiated)
         tx = {
-            "id": f"px_{session.session_id[:14]}",
-            "session_id": session.session_id,
+            "id": f"px_{session.id[:14]}",
+            "session_id": session.id,
+            "txn_id": txn_id,
             "group_id": group_id,
             "lead_id": group.get("lead_id"),
             "amount": round(amount, 2),
             "currency": "usd",
             "status": "initiated",  # initiated|complete|expired|failed
             "payment_status": "pending",  # mirrors Stripe's payment_status
-            "metadata": {"kind": "group_lead_pay"},
+            "metadata": {"kind": "group_lead_pay", "txn_id": txn_id},
             "applied": False,  # idempotency: True after group marked paid
+            "ledger_posted": False,
             "created_at": _now(),
             "updated_at": _now(),
         }
         await db.payment_transactions.insert_one(tx.copy())
-        return {"url": session.url, "session_id": session.session_id, "amount": tx["amount"]}
+        return {"url": session.url, "session_id": session.id, "amount": tx["amount"], "txn_id": txn_id}
 
     @api_router.get("/checkout/status/{session_id}")
     async def get_checkout_status(session_id: str, http_request: Request):
@@ -131,13 +193,12 @@ def attach_payment_routes(api_router: APIRouter, db):
                 "group_id": tx.get("group_id"),
             }
 
-        stripe_checkout = _stripe(http_request)
         try:
             # Workaround: emergentintegrations' get_checkout_status fails with Pydantic v2
             # rejecting Stripe's StripeObject metadata. Call Stripe SDK directly.
             import stripe as _stripe_sdk
             from types import SimpleNamespace
-            _stripe_sdk.api_key = os.environ.get("STRIPE_API_KEY") or "sk_test_emergent"
+            _stripe_sdk.api_key = _stripe_api_key()
             s = _stripe_sdk.checkout.Session.retrieve(session_id)
             # stripe.checkout.Session is a StripeObject; access fields by attribute
             _meta = getattr(s, "metadata", None)
@@ -181,6 +242,8 @@ def attach_payment_routes(api_router: APIRouter, db):
                     }},
                 )
             update["applied"] = True
+            # Phase 3 — write immutable ledger event (idempotent inside helper)
+            await _post_charge_ledger({**tx, **update})
         await db.payment_transactions.update_one({"session_id": session_id}, {"$set": update})
 
         return {
@@ -197,7 +260,7 @@ def attach_payment_routes(api_router: APIRouter, db):
     async def stripe_webhook(request: Request):
         body = await request.body()
         sig = request.headers.get("Stripe-Signature")
-        stripe_checkout = _stripe(request)
+        stripe_checkout = _stripe_for_webhook(request)
         try:
             evt = await stripe_checkout.handle_webhook(body, sig)
         except Exception as e:
@@ -231,6 +294,8 @@ def attach_payment_routes(api_router: APIRouter, db):
                         {"$set": {"status": "complete", "payment_status": "paid",
                                   "applied": True, "updated_at": _now()}},
                     )
+                    # Phase 3 — write immutable ledger event (idempotent)
+                    await _post_charge_ledger({**tx, "applied": True})
                 elif kind == "group_member_contribute":
                     # Finalize member contribution + auto-issue card if fully funded
                     # (Same logic as GET /contribute/status; webhook is idempotent backup.)

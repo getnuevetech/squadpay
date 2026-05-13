@@ -91,7 +91,12 @@ export function HeroPhoneFrame({ height = 380 }: Props) {
     (async () => {
       try {
         const base = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '');
-        const res = await fetch(`${base}/runtime/landing-page`);
+        // Cache-bust with a per-mount timestamp so admin edits show up on
+        // the very next page load (no waiting for browser/CDN TTL expiry).
+        const res = await fetch(`${base}/runtime/landing-page?t=${Date.now()}`, {
+          cache: 'no-store',
+          headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' },
+        });
         if (!res.ok) return;
         const json = await res.json();
         if (!cancelled) setRemote(json);

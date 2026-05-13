@@ -383,7 +383,11 @@ function UnauthLanding() {
     (async () => {
       try {
         const base = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '');
-        const res = await fetch(`${base}/runtime/landing-page`);
+        // Cache-bust so admin edits show up on next page load.
+        const res = await fetch(`${base}/runtime/landing-page?t=${Date.now()}`, {
+          cache: 'no-store',
+          headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' },
+        });
         if (!res.ok) return;
         const j = await res.json();
         const shades: string[] = Array.isArray(j?.bg_purple_shades) && j.bg_purple_shades.length > 0

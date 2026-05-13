@@ -55,7 +55,7 @@ export default function SuccessScreen() {
               ? "Stripe charged the bill in full. We'll continue tracking repayments from your squad."
               : "You paid the restaurant. We'll track repayments from your squad."
             : isContribute
-            ? "Your contribution is now in the Squad Wallet, the Squad Lead will pay the Merchant."
+            ? "Thank You! Your share has been added to the Squad — the Lead will settle with the merchant."
             : 'Your repayment has been recorded.'}
         </Text>
 

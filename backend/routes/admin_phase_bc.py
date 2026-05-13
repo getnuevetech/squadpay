@@ -483,6 +483,20 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
             raise HTTPException(404, "Page not found")
         return p
 
+    # Item 6/7 (June 2025) — Public, unauthenticated read of the wallet/issuing
+    # config. The app needs this to decide whether to render the per-squad
+    # "Card" button on the lead dashboard, and whether the in-app Apple/Google
+    # Pay buttons should appear. We deliberately only expose the boolean
+    # flags (no admin metadata) so we don't leak operator emails.
+    @public_r.get("/runtime/wallet-config")
+    async def public_wallet_config():
+        cfg = await db.app_config.find_one({"_id": "wallet"}) or {}
+        return {
+            "apple_pay_enabled": bool(cfg.get("apple_pay_enabled", False)),
+            "google_pay_enabled": bool(cfg.get("google_pay_enabled", False)),
+            "issuing_enabled": bool(cfg.get("issuing_enabled", True)),
+        }
+
     @r.get("/admin/cms/pages")
     async def cms_admin_list(admin=Depends(get_current_admin)):
         cursor = db.cms_pages.find({}, {"_id": 0}).sort("updated_at", -1)
@@ -642,6 +656,12 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
     class WalletConfigIn(BaseModel):
         apple_pay_enabled: bool = True
         google_pay_enabled: bool = True
+        # Item 6 (June 2025) — master toggle for the squad/virtual card
+        # (Stripe Issuing) feature. When OFF the per-squad Card button is
+        # hidden in the app and no new cards are issued. Existing issued
+        # cards remain in the DB but become inert. Defaults to True so
+        # existing deployments aren't surprised by a behavior change.
+        issuing_enabled: bool = True
 
     @r.get("/admin/wallet-config")
     async def get_wallet_config(admin=Depends(get_current_admin)):
@@ -649,6 +669,7 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
         return {
             "apple_pay_enabled": cfg.get("apple_pay_enabled", True),
             "google_pay_enabled": cfg.get("google_pay_enabled", True),
+            "issuing_enabled": cfg.get("issuing_enabled", True),
             "updated_at": cfg.get("updated_at"),
             "updated_by": cfg.get("updated_by"),
         }
@@ -664,6 +685,7 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
             {"$set": {
                 "apple_pay_enabled": body.apple_pay_enabled,
                 "google_pay_enabled": body.google_pay_enabled,
+                "issuing_enabled": body.issuing_enabled,
                 "updated_at": _now(),
                 "updated_by": (admin.get("email") if isinstance(admin, dict) else None),
             }},

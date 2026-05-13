@@ -20,14 +20,13 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Swipeable } from 'react-native-gesture-handler';
-import { Receipt, CheckCircle2, Clock, Wallet, AlertCircle, Plus, Pencil, ChevronDown, UserPlus, Trash2, Split, Repeat } from 'lucide-react-native';
+import { Receipt, CheckCircle2, Clock, Wallet, AlertCircle, Plus, Pencil, ChevronDown, UserPlus, Trash2, Split } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 import { EditMetaModal } from '../../../src/EditMetaModal';
 import { ConfirmModal } from '../../../src/ConfirmModal';
-import { RecurrenceModal } from '../../../src/RecurrenceModal';
 import { toast } from '../../../src/components/Toast';
 import { Skeleton, SkeletonGroupRow } from '../../../src/components/Skeleton';
 import { HeroCard } from '../../../src/components/redesign/HeroCard';
@@ -53,11 +52,32 @@ export default function DashboardScreen() {
   // route rejects switches once any contribution has been made.
   const [splitModeTarget, setSplitModeTarget] = useState<'fast' | 'itemized' | null>(null);
   const [splitModeBusy, setSplitModeBusy] = useState(false);
-  // P2 (June 2025) — Recurring bills sheet. Lead can configure a weekly or
-  // monthly cadence and we auto-clone this squad on schedule (see backend
-  // recurring_groups_cron). Closed bills can still set recurrence so leads
-  // can flip on auto-repeat retroactively.
-  const [recurrenceVisible, setRecurrenceVisible] = useState(false);
+  // Items 6 + 7 (June 2025) — Public runtime wallet/issuing config so we
+  // can conditionally hide the per-squad Card button when the admin master
+  // toggle is off. Fetched once on mount via the public endpoint. Defaults
+  // to "issuing enabled" so we don't accidentally hide the card during
+  // cold starts before the fetch resolves.
+  const [walletConfig, setWalletConfig] = useState<{ apple_pay_enabled: boolean; google_pay_enabled: boolean; issuing_enabled: boolean }>(
+    { apple_pay_enabled: false, google_pay_enabled: false, issuing_enabled: true },
+  );
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch(`${process.env.EXPO_PUBLIC_BACKEND_URL || ''}/api/runtime/wallet-config`);
+        if (!r.ok) return;
+        const j = await r.json();
+        if (alive) setWalletConfig({
+          apple_pay_enabled: !!j.apple_pay_enabled,
+          google_pay_enabled: !!j.google_pay_enabled,
+          issuing_enabled: j.issuing_enabled !== false,
+        });
+      } catch {
+        // silent — defaults already keep card visible
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -262,31 +282,21 @@ export default function DashboardScreen() {
                 </TouchableOpacity>
               );
             })()}
-            {/* P2 (June 2025) — Recurring bills entry-point. We always show
-                the pill (regardless of bill status) so a lead can flip
-                auto-repeat on after a bill is paid. The pill reflects
-                whether recurrence is currently active. */}
-            {(() => {
-              const rec: any = (group as any).recurrence || null;
-              const active = !!rec?.enabled;
-              return (
-                <TouchableOpacity
-                  testID="dashboard-recurrence-pill"
-                  style={[styles.metaPill, active && { borderColor: COLORS.primary, backgroundColor: COLORS.primaryLight }]}
-                  onPress={() => setRecurrenceVisible(true)}
-                  activeOpacity={0.7}
-                >
-                  <Repeat size={14} color={COLORS.primary} />
-                  <Text style={styles.metaPillText}>
-                    {active ? (rec.cadence === 'monthly' ? 'Monthly' : 'Weekly') : 'Auto-repeat'}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })()}
           </View>
         )}
 
-        {/* Quick actions: Items / Invite / Card */}
+        {/* Quick actions: Items / Invite / Card OR Pay Out.
+            Item 5/6 (June 2025) — The third slot is now CONTEXT-AWARE:
+              • If the squad is fully funded and is using group funding,
+                we show "Pay Out" (route → /payout/cash-out). This is the
+                action the lead actually needs at that point — the card is
+                already moot once funds need to leave the wallet.
+              • Else if there's an existing virtual_card AND admin has
+                Stripe Issuing enabled, we show "Card" (route → /card).
+              • Otherwise the slot is hidden so we don't lead users to a
+                dead "no card yet" page.
+            We poll the public /runtime/wallet-config once on mount so the
+            admin master toggle propagates without a redeploy. */}
         <View style={styles.qaRow} testID="dashboard-quick-actions">
           <TouchableOpacity
             style={styles.qaBtn}
@@ -310,20 +320,50 @@ export default function DashboardScreen() {
             </View>
             <Text style={styles.qaText}>Invite</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.qaBtn}
-            activeOpacity={0.85}
-            onPress={() => router.push(`/group/${group.id}/card`)}
-            testID="dashboard-action-card"
-          >
-            <View style={styles.qaIcon}>
-              <Wallet size={18} color={COLORS.primary} />
-            </View>
-            <Text style={styles.qaText}>Card</Text>
-          </TouchableOpacity>
+          {(() => {
+            const isLead = group.lead_id === userId;
+            const fullyFunded = group.status === 'paid' && (group.funding_mode || 'lead') === 'group';
+            const hasCard = !!(group as any).virtual_card;
+            const cardEnabled = walletConfig.issuing_enabled !== false;
+            if (isLead && fullyFunded) {
+              return (
+                <TouchableOpacity
+                  style={styles.qaBtn}
+                  activeOpacity={0.85}
+                  onPress={() => router.push(`/payout/cash-out?group_id=${group.id}`)}
+                  testID="dashboard-action-payout"
+                >
+                  <View style={styles.qaIcon}>
+                    <Wallet size={18} color={COLORS.primary} />
+                  </View>
+                  <Text style={styles.qaText}>Pay Out</Text>
+                </TouchableOpacity>
+              );
+            }
+            if (hasCard && cardEnabled) {
+              return (
+                <TouchableOpacity
+                  style={styles.qaBtn}
+                  activeOpacity={0.85}
+                  onPress={() => router.push(`/group/${group.id}/card`)}
+                  testID="dashboard-action-card"
+                >
+                  <View style={styles.qaIcon}>
+                    <Wallet size={18} color={COLORS.primary} />
+                  </View>
+                  <Text style={styles.qaText}>Card</Text>
+                </TouchableOpacity>
+              );
+            }
+            // Spacer to keep the 3-column rhythm so Items+Invite don't get
+            // stretched into wide pill-buttons that look broken.
+            return <View style={[styles.qaBtn, { opacity: 0 }]} />;
+          })()}
         </View>
 
-        {/* Phase 5b — Lead cash-out CTA (visible only when group is fully funded by members). */}
+        {/* Item 1/3/4 (June 2025) — Lead "Pay Out" call-to-action banner.
+            Visible only when bill is fully funded and uses group funding.
+            Text + CTA are centered per design spec. */}
         {group.status === 'paid' && (group.funding_mode || 'lead') === 'group' && (
           <TouchableOpacity
             style={styles.cashOutCta}
@@ -331,15 +371,15 @@ export default function DashboardScreen() {
             onPress={() => router.push(`/payout/cash-out?group_id=${group.id}`)}
             testID="dashboard-cashout-cta"
             accessibilityRole="button"
-            accessibilityLabel="Cash out to debit card"
+            accessibilityLabel="Withdraw to debit card"
           >
             <View style={styles.cashOutIcon}>
               <Wallet size={20} color="#fff" />
             </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.cashOutTitle}>Cash out to debit card</Text>
+            <View style={styles.cashOutTextWrap}>
+              <Text style={styles.cashOutTitle}>Withdraw To Debit Card</Text>
               <Text style={styles.cashOutSubtitle}>
-                All members paid — your share is ready to send via Stripe Instant Payout.
+                All Squad contributions are completed — withdraw to your debit card to settle the bill for your Squad.
               </Text>
             </View>
           </TouchableOpacity>
@@ -613,18 +653,6 @@ export default function DashboardScreen() {
         />
       )}
 
-      {/* P2 (June 2025) — Recurring bills sheet. Lead-only. Refreshes the
-          group payload on save so the pill label reflects the new state. */}
-      {userId && (
-        <RecurrenceModal
-          visible={recurrenceVisible}
-          groupId={group.id}
-          userId={userId}
-          onClose={() => setRecurrenceVisible(false)}
-          onChanged={() => load()}
-        />
-      )}
-
       {/* Cross-platform remove-member confirmation. Driven by `removeTarget`
           so the same code path fires on iOS, Android, and Web. */}
       <ConfirmModal
@@ -691,14 +719,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   qaText: { fontSize: FONT.sizes.xs, fontWeight: FONT.weights.bold, color: COLORS.text },
-  // Phase 5b — green Cash-out CTA on Lead Dashboard
+  // Item 4 (June 2025) — Centralized layout: stack the green CTA vertically
+  // so title + subtitle align under each other and read as a single
+  // call-to-action rather than a two-column row.
   cashOutCta: {
     backgroundColor: COLORS.success,
     borderRadius: RADIUS.lg,
     padding: SPACING.md,
-    flexDirection: 'row',
     alignItems: 'center',
-    gap: SPACING.md,
+    justifyContent: 'center',
+    gap: SPACING.xs,
     marginTop: SPACING.xs,
     shadowColor: COLORS.success,
     shadowOpacity: 0.25,
@@ -713,16 +743,23 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.18)',
     alignItems: 'center',
     justifyContent: 'center',
+    marginBottom: SPACING.xs,
+  },
+  cashOutTextWrap: {
+    alignItems: 'center',
   },
   cashOutTitle: {
     fontSize: FONT.sizes.md,
     fontWeight: FONT.weights.bold,
     color: '#fff',
+    textAlign: 'center',
   },
   cashOutSubtitle: {
     fontSize: FONT.sizes.xs,
     color: 'rgba(255,255,255,0.92)',
     marginTop: 2,
+    textAlign: 'center',
+    paddingHorizontal: SPACING.md,
   },
   sectionTitle: {
     fontSize: FONT.sizes.md,

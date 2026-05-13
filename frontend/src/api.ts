@@ -535,44 +535,6 @@ export const api = {
   listGroupReceipts: (group_id: string) =>
     request<{ items: any[]; last_receipt_id?: string | null }>(`/groups/${group_id}/receipts`),
 
-  // ───────── P2 (June 2025) — Recurring Bills ─────────
-  // Lead-only. Reads/writes the per-squad recurrence config (weekly or monthly).
-  getRecurrence: (group_id: string, user_id: string) =>
-    request<{
-      enabled: boolean;
-      cadence?: 'weekly' | 'monthly';
-      anchor?: number;
-      skip_if_open?: boolean;
-      next_run_at?: string;
-      last_run_at?: string;
-      last_clone_group_id?: string;
-    }>(`/groups/${group_id}/recurrence?user_id=${encodeURIComponent(user_id)}`),
-  setRecurrence: (
-    group_id: string,
-    body: {
-      user_id: string;
-      enabled: boolean;
-      cadence: 'weekly' | 'monthly';
-      anchor: number;
-      skip_if_open?: boolean;
-    },
-  ) =>
-    request<{
-      ok: boolean;
-      enabled: boolean;
-      cadence?: string;
-      anchor?: number;
-      next_run_at?: string;
-    }>(`/groups/${group_id}/recurrence`, {
-      method: 'PUT',
-      body: JSON.stringify(body),
-    }),
-  disableRecurrence: (group_id: string, user_id: string) =>
-    request<{ ok: boolean; enabled: false }>(
-      `/groups/${group_id}/recurrence?user_id=${encodeURIComponent(user_id)}`,
-      { method: 'DELETE' },
-    ),
-
   // ───────── Phase 5b — Lead Cash-Out (Stripe Connect Express + Instant Payouts) ─────────
   payoutEligibility: (user_id: string, session_id: string, group_id: string) =>
     request<{

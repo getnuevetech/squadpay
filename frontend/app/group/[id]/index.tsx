@@ -25,6 +25,15 @@ import { StatusBadge } from '../../../src/StatusBadge';
 import { EditMetaModal } from '../../../src/EditMetaModal';
 import { RevealCardModal } from '../../../src/RevealCardModal';
 import { toast } from '../../../src/components/Toast';
+
+// App Item 5 (June 2025) — format a join code with spaces so it's easy to
+// read aloud. 6-digit numeric ("482917") → "482 917". Any length OK.
+function formatJoinCode(code: string): string {
+  const trimmed = (code || '').trim();
+  if (trimmed.length <= 3) return trimmed;
+  const mid = Math.ceil(trimmed.length / 2);
+  return `${trimmed.slice(0, mid)} ${trimmed.slice(mid)}`;
+}
 import { Skeleton, SkeletonGroupRow } from '../../../src/components/Skeleton';
 import { PressableScale } from '../../../src/components/PressableScale';
 import { AvatarRing } from '../../../src/components/AvatarRing';
@@ -190,7 +199,30 @@ export default function GroupLobbyScreen() {
           <View style={styles.qrBox}>
             <QRCode value={joinUrl} size={240} backgroundColor="white" color={COLORS.text} />
           </View>
-          <Text style={styles.codeText} testID="lobby-code">Code: {group.code}</Text>
+          {/* App Item 5 (June 2025) — Make the join code easier to share
+              verbally and to type. We display the code in BIG monospaced
+              digits with a visible separator after the 3rd character, and
+              add a dedicated "Tap to copy code" button. Pressing the code
+              itself also copies it. */}
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={async () => {
+              try {
+                await Clipboard.setStringAsync(String(group.code));
+                toast.success('Code copied');
+              } catch {
+                toast.error('Could not copy');
+              }
+            }}
+            testID="lobby-code-copy"
+            style={styles.codeChip}
+          >
+            <Text style={styles.codeLabel}>JOIN CODE</Text>
+            <Text style={styles.codeBig} selectable>
+              {formatJoinCode(String(group.code))}
+            </Text>
+            <Text style={styles.codeTapHint}>Tap to copy</Text>
+          </TouchableOpacity>
           <View style={styles.shareRow}>
             <PressableScale testID="lobby-copy-btn" onPress={copy} style={styles.shareBtn}>
               <View style={styles.shareBtnInner}>
@@ -529,6 +561,39 @@ const styles = StyleSheet.create({
     fontWeight: FONT.weights.bold,
     color: COLORS.text,
     letterSpacing: 2,
+  },
+  // App Item 5 (June 2025) — Big, scannable code chip.
+  codeChip: {
+    marginTop: SPACING.md,
+    alignSelf: 'stretch',
+    backgroundColor: COLORS.primaryLight,
+    borderRadius: RADIUS.lg,
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.lg,
+    alignItems: 'center',
+  },
+  codeLabel: {
+    fontSize: 10,
+    color: COLORS.primary,
+    fontWeight: FONT.weights.bold,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+  },
+  codeBig: {
+    marginTop: 4,
+    fontSize: 36,
+    lineHeight: 42,
+    fontWeight: FONT.weights.heavy,
+    color: COLORS.primary,
+    letterSpacing: 6,
+    fontVariant: ['tabular-nums'],
+  },
+  codeTapHint: {
+    marginTop: 2,
+    fontSize: FONT.sizes.xs,
+    color: COLORS.primary,
+    fontWeight: FONT.weights.medium,
+    opacity: 0.7,
   },
   shareRow: { flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.md },
   shareBtn: {

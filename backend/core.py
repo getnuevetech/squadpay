@@ -379,13 +379,35 @@ async def _recompute_group(group: dict) -> dict:
 
     fully_claimed = (split_mode == "fast") or (len(unclaimed_items) == 0 and subtotal > 0)
 
+    # Item 8 (June 2025) — Member with NO items claimed in itemized mode
+    # should see $0 contribution (no fees either). Previously we tacked
+    # transaction_fee + platform_fee + extras onto every member regardless
+    # of whether they actually owed anything, which produced confusing
+    # "$0.75 owed" lines for brand-new joiners and leads who hadn't
+    # claimed yet. In FAST/equal mode we keep the old behavior since the
+    # split is defined as "everyone pays an equal share" by design.
+    no_food_users: set = set()
+    if split_mode != "fast":
+        no_food_users = {p["user_id"] for p in per_user if p.get("food", 0.0) <= 0.001}
+
     for p in per_user:
         merchant_share = round(p["total"], 2)
         p["merchant_share"] = merchant_share
+        if p["user_id"] in no_food_users:
+            # Zero out the entire breakdown — they have nothing to contribute
+            # until an item is claimed for them.
+            p["transaction_fee"] = 0.0
+            p["platform_fee"] = 0.0
+            p["extra_fees"] = []
+            p["extra_fees_total"] = 0.0
+            p["total"] = 0.0
+            continue
         p["transaction_fee"] = round(merchant_share * _CORE_FEES_CACHE["transaction_fee_rate"], 2)
         p["platform_fee"] = round(_CORE_FEES_CACHE["platform_fee"], 2)
-        # Admin-configurable extra fees (split equally across members).
-        extra_fees = _compute_extra_fees_per_member(merchant_share, len(per_user))
+        # Admin-configurable extra fees (split equally across members WITH
+        # items claimed — empty-handed members are excluded from the divisor).
+        active_count = max(1, len(per_user) - len(no_food_users))
+        extra_fees = _compute_extra_fees_per_member(merchant_share, active_count)
         p["extra_fees"] = extra_fees
         extras_sum = round(sum(ef["amount"] for ef in extra_fees), 2)
         p["extra_fees_total"] = extras_sum

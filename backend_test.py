@@ -1,32 +1,41 @@
-"""SquadPay backend test harness — June 2025 P1+P2 batch.
+"""SquadPay backend test harness — June 2025 Item 6/7/8 batch.
 
-Focus areas (per review request):
-  1. NEW Recurring-Bills endpoints (R1-R11)
-  2. App-wide "Squad" terminology regression on HTTP error strings
-  3. Regression smoke (admin login, root, groups list, create group, etc.)
+Focus areas (per current review request):
+  1. Item 8 — Contribution math in itemized mode: members with no items
+     should show $0 contribution (no fees either).
+  2. Items 6/7 — Public GET /api/runtime/wallet-config endpoint + admin
+     PUT round-trip via /api/admin/wallet-config.
+  3. Regression smoke — /api/, POST /groups, repay 404, public wallet config.
 
-Run:
-    python /app/backend_test.py
+Bypasses /auth/send-otp 5/min IP rate limit by registering users via
+/auth/register then flipping `verified=true` directly in MongoDB.
+Recurring routes are intentionally NOT exercised — that feature was
+deleted in this session.
+
+Run:  python /app/backend_test.py
 """
 import os
 import sys
 import time
-import json
-from datetime import datetime, timedelta, timezone
-from calendar import monthrange
-from typing import Optional
+import asyncio
+from typing import Optional, List
 
 import requests
+from dotenv import load_dotenv
 
-BASE = "http://localhost:8001/api"
+load_dotenv("/app/frontend/.env")
+load_dotenv("/app/backend/.env", override=False)
+
+BASE = os.environ.get("EXPO_PUBLIC_BACKEND_URL",
+                     "https://joint-pay-1.preview.emergentagent.com").rstrip("/") + "/api"
+MONGO_URL = os.environ["MONGO_URL"]
+DB_NAME = os.environ["DB_NAME"]
+
 ADMIN_EMAIL = "admin@squadpay.us"
 ADMIN_PASSWORD = "Letmein@2007#ForReal"
 
-EXISTING_GID = "g_7f6e457006"
-EXISTING_LEAD = "u_4ab200b580"
-
-passes = []
-failures = []
+passes: List[str] = []
+failures: List[str] = []
 
 
 def record(ok: bool, label: str, detail: str = ""):
@@ -38,329 +47,352 @@ def record(ok: bool, label: str, detail: str = ""):
         print(f"  FAIL  {label} -- {detail}")
 
 
-def expect_status(resp, want: int, label: str, want_detail_substr: Optional[str] = None):
-    actual = resp.status_code
-    body_txt = resp.text[:300]
-    detail = None
-    try:
-        body = resp.json()
-        if isinstance(body, dict):
-            detail = body.get("detail")
-    except Exception:
-        body = None
-    if actual != want:
-        record(False, label, f"want {want}, got {actual}: {body_txt}")
-        return False
-    if want_detail_substr is not None:
-        if not detail or want_detail_substr.lower() not in str(detail).lower():
-            record(False, label, f"want detail '{want_detail_substr}', got '{detail}'")
-            return False
-    record(True, label)
-    return True
-
-
 def section(title: str):
     print(f"\n=== {title} ===")
 
 
+# ---------- Mongo helpers (verify-shortcut) ----------
+from motor.motor_asyncio import AsyncIOMotorClient
+_client = AsyncIOMotorClient(MONGO_URL)
+_db = _client[DB_NAME]
+
+
+async def _mark_verified(user_id: str, phone: str):
+    await _db.users.update_one(
+        {"id": user_id},
+        {"$set": {"phone": phone, "verified": True}},
+    )
+
+
+# ---------- HTTP helpers ----------
+def http(method: str, path: str, **kw):
+    url = f"{BASE}{path}"
+    return requests.request(method, url, timeout=30, **kw)
+
+
 def admin_login() -> Optional[str]:
-    r = requests.post(f"{BASE}/admin/auth/login",
-                      json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
-                      timeout=15)
+    r = http("POST", "/admin/auth/login",
+             json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
     if r.status_code == 200:
         tok = r.json().get("token")
-        record(bool(tok), "admin login (/admin/auth/login) returns token",
-               "no token in response" if not tok else "")
+        record(bool(tok), "admin login → token",
+               "no token in body" if not tok else "")
         return tok
-    record(False, "admin login (/admin/auth/login) returns token",
-           f"{r.status_code}: {r.text[:200]}")
-    # Also try the path the review-request mentioned, for transparency.
-    r2 = requests.post(f"{BASE}/admin/login",
-                       json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
-                       timeout=10)
-    record(r2.status_code == 200,
-           "admin login (/admin/login alias) returns 200",
-           f"{r2.status_code}: {r2.text[:120]}")
+    record(False, "admin login → token", f"{r.status_code}: {r.text[:200]}")
     return None
 
 
-def make_user(name: str) -> Optional[dict]:
-    """Register + verify (mock OTP)."""
-    phone = f"+1832{int(time.time() * 1000) % 10000000:07d}"
-    r = requests.post(f"{BASE}/auth/register", json={"name": name, "phone": phone}, timeout=10)
+# ---------- User factory (rate-limit safe via direct DB verify) ----------
+async def make_user(name_prefix: str) -> dict:
+    ts = int(time.time() * 1000)
+    phone = f"+1832{ts % 10000000:07d}"
+    name = f"{name_prefix}{ts % 100000}"
+    r = http("POST", "/auth/register", json={"name": name})
     if r.status_code != 200:
-        return None
+        raise RuntimeError(f"register failed: {r.status_code} {r.text[:200]}")
     user = r.json()
-    requests.post(f"{BASE}/auth/send-otp", json={"phone": phone}, timeout=10)
-    r2 = requests.post(f"{BASE}/auth/verify-otp",
-                       json={"phone": phone, "code": "123456", "name": name},
-                       timeout=10)
-    return r2.json() if r2.status_code == 200 else user
+    await _mark_verified(user["id"], phone)
+    user["phone"] = phone
+    user["verified"] = True
+    time.sleep(0.02)
+    return user
 
 
-def create_fresh_squad(lead_id: str):
+# ============================================================
+# 1) Item 8 — Itemized contribution math
+# ============================================================
+async def test_item8_itemized_contribution_math():
+    section("1. Item 8 — Itemized mode: no-items members must see $0 total/fees")
+
+    lead = await make_user("LeadIM")
+    alice = await make_user("AliceIM")
+    bob = await make_user("BobIM")
+
     body = {
-        "lead_id": lead_id,
-        "title": "Recur Test Bill",
+        "lead_id": lead["id"],
+        "title": "Itemized Math Test",
         "total_amount": 30.0,
-        "split_mode": "fast",
-        "items": [],
+        "split_mode": "itemized",
         "tax": 0.0,
         "tip": 0.0,
+        "items": [
+            {"name": "Burger", "price": 12.0, "quantity": 1},
+            {"name": "Fries",  "price": 6.0,  "quantity": 1},
+            {"name": "Drink",  "price": 12.0, "quantity": 1},
+        ],
     }
-    r = requests.post(f"{BASE}/groups", json=body, timeout=15)
+    r = http("POST", "/groups", json=body)
+    record(r.status_code == 200, "create itemized squad",
+           f"{r.status_code}: {r.text[:200]}")
+    if r.status_code != 200:
+        return None
+    g = r.json()
+    gid = g["id"]
+    items = g["items"]
+
+    for u, via in [(alice, "code"), (bob, "qr")]:
+        rj = http("POST", f"/groups/{gid}/join",
+                  json={"user_id": u["id"], "joined_via": via})
+        record(rj.status_code == 200,
+               f"{u['name']} joins squad",
+               f"{rj.status_code}: {rj.text[:120]}")
+
+    rg = http("GET", f"/groups/{gid}")
+    record(rg.status_code == 200, "GET /groups/{gid} (initial)",
+           f"{rg.status_code}: {rg.text[:200]}")
+    eg = rg.json()
+    per_user = {p["user_id"]: p for p in eg.get("per_user", [])}
+
+    for uid, label in [(lead["id"], "lead"), (alice["id"], "alice"), (bob["id"], "bob")]:
+        p = per_user.get(uid)
+        if not p:
+            record(False, f"per_user has {label}", "missing")
+            continue
+        ok = (
+            abs(p.get("food", 0)) < 0.001
+            and abs(p.get("total", 0)) < 0.001
+            and abs(p.get("transaction_fee", 0)) < 0.001
+            and abs(p.get("platform_fee", 0)) < 0.001
+            and abs(p.get("extra_fees_total", 0)) < 0.001
+        )
+        record(ok,
+               f"{label} (no items) → total=0, all fees=0 in itemized",
+               f"food={p.get('food')} total={p.get('total')} "
+               f"tx_fee={p.get('transaction_fee')} pf={p.get('platform_fee')} "
+               f"extras={p.get('extra_fees_total')}")
+
+    # Assign Burger ($12) → Alice
+    burger_id = items[0]["id"]
+    ra = http("POST", f"/groups/{gid}/assign",
+              json={"user_id": alice["id"], "item_id": burger_id, "quantity": 1})
+    record(ra.status_code == 200, "assign Burger → Alice",
+           f"{ra.status_code}: {ra.text[:200]}")
+
+    rg2 = http("GET", f"/groups/{gid}")
+    eg2 = rg2.json()
+    pu2 = {p["user_id"]: p for p in eg2.get("per_user", [])}
+
+    p_alice = pu2[alice["id"]]
+    record(p_alice["food"] > 0 and p_alice["total"] > 0,
+           "after assign — alice.total > 0",
+           f"food={p_alice['food']} total={p_alice['total']}")
+    record(p_alice["transaction_fee"] >= 0 and p_alice["total"] > p_alice["food"] - 0.001,
+           "after assign — alice has fee math applied",
+           f"food={p_alice['food']} tx_fee={p_alice['transaction_fee']} "
+           f"pf={p_alice['platform_fee']} total={p_alice['total']}")
+
+    for uid, label in [(lead["id"], "lead"), (bob["id"], "bob")]:
+        p = pu2[uid]
+        ok = (
+            abs(p.get("food", 0)) < 0.001
+            and abs(p.get("total", 0)) < 0.001
+            and abs(p.get("transaction_fee", 0)) < 0.001
+            and abs(p.get("platform_fee", 0)) < 0.001
+            and abs(p.get("extra_fees_total", 0)) < 0.001
+        )
+        record(ok,
+               f"after assign — {label} (still no items) still $0",
+               f"food={p.get('food')} total={p.get('total')} "
+               f"fees={p.get('transaction_fee')}/{p.get('platform_fee')}/{p.get('extra_fees_total')}")
+
+    # Remove the assignment (qty=0)
+    ra2 = http("POST", f"/groups/{gid}/assign",
+               json={"user_id": alice["id"], "item_id": burger_id, "quantity": 0})
+    record(ra2.status_code == 200, "remove Alice's Burger assignment (qty=0)",
+           f"{ra2.status_code}: {ra2.text[:200]}")
+
+    rg3 = http("GET", f"/groups/{gid}")
+    eg3 = rg3.json()
+    pu3 = {p["user_id"]: p for p in eg3.get("per_user", [])}
+    p_alice3 = pu3[alice["id"]]
+    ok = (
+        abs(p_alice3.get("food", 0)) < 0.001
+        and abs(p_alice3.get("total", 0)) < 0.001
+        and abs(p_alice3.get("transaction_fee", 0)) < 0.001
+        and abs(p_alice3.get("platform_fee", 0)) < 0.001
+        and abs(p_alice3.get("extra_fees_total", 0)) < 0.001
+    )
+    record(ok,
+           "after un-assign — alice reverts to $0",
+           f"food={p_alice3.get('food')} total={p_alice3.get('total')} "
+           f"fees={p_alice3.get('transaction_fee')}/{p_alice3.get('platform_fee')}/{p_alice3.get('extra_fees_total')}")
+
+
+async def test_item8_fast_mode_unaffected():
+    section("1b. Item 8 — FAST/equal mode: behavior MUST NOT apply")
+
+    lead = await make_user("LeadFM")
+    alice = await make_user("AliceFM")
+    bob = await make_user("BobFM")
+    body = {
+        "lead_id": lead["id"],
+        "title": "Fast Mode Test",
+        "total_amount": 30.0,
+        "split_mode": "fast",
+        "tax": 0.0,
+        "tip": 0.0,
+        "items": [],
+    }
+    r = http("POST", "/groups", json=body)
+    record(r.status_code == 200, "create fast-mode squad",
+           f"{r.status_code}: {r.text[:200]}")
+    if r.status_code != 200:
+        return
+    gid = r.json()["id"]
+    for u in [alice, bob]:
+        rj = http("POST", f"/groups/{gid}/join",
+                  json={"user_id": u["id"], "joined_via": "code"})
+        record(rj.status_code == 200, f"{u['name']} joins fast squad",
+               f"{rj.status_code}: {rj.text[:120]}")
+
+    rg = http("GET", f"/groups/{gid}")
+    eg = rg.json()
+    pu = {p["user_id"]: p for p in eg.get("per_user", [])}
+    for uid, label in [(lead["id"], "lead"), (alice["id"], "alice"), (bob["id"], "bob")]:
+        p = pu.get(uid)
+        record(
+            p and p["food"] > 0 and p["total"] > 0,
+            f"fast mode — {label} food>0 AND total>0 (NOT zero'd)",
+            f"got food={p.get('food') if p else 'N/A'} total={p.get('total') if p else 'N/A'}",
+        )
+        if p:
+            record(abs(p["food"] - 10.0) < 0.01,
+                   f"fast mode — {label} food == $10.00 (30/3 equal)",
+                   f"got {p.get('food')}")
+
+
+# ============================================================
+# 2) Items 6/7 — Public wallet-config endpoint
+# ============================================================
+async def test_wallet_config_public(admin_token: str):
+    section("2. Items 6/7 — Public /runtime/wallet-config + admin PUT round-trip")
+
+    r = http("GET", "/runtime/wallet-config")
+    record(r.status_code == 200, "GET /runtime/wallet-config (no auth) → 200",
+           f"{r.status_code}: {r.text[:200]}")
     if r.status_code == 200:
-        return r.json().get("id"), r.json()
-    return None, None
-
-
-def test_terminology():
-    section("2. Squad terminology regression on HTTP 404 detail strings")
-    cases = [
-        ("GET", "/groups/g_invalidnope", None, "GET /groups/{id} → 404 Squad not found"),
-        ("POST", "/groups/g_invalidnope/contribute",
-         {"user_id": "u_x", "amount": 1},
-         "POST /groups/{id}/contribute → 404 Squad not found"),
-        ("POST", "/groups/g_invalidnope/pay",
-         {"user_id": "u_x"},
-         "POST /groups/{id}/pay → 404 Squad not found"),
-        ("POST", "/groups/g_invalidnope/repay",
-         {"user_id": "u_x", "amount": 1},
-         "POST /groups/{id}/repay → 404 Squad not found"),
-        ("POST", "/groups/g_invalidnope/refund",
-         {"user_id": "u_x"},
-         "POST /groups/{id}/refund → 404 Squad not found"),
-        ("POST", "/groups/g_invalidnope/payout",
-         {"user_id": "u_x"},
-         "POST /groups/{id}/payout → 404 Squad not found"),
-    ]
-    for method, path, body, label in cases:
-        if method == "GET":
-            r = requests.get(f"{BASE}{path}", timeout=10)
-        else:
-            r = requests.post(f"{BASE}{path}", json=body, timeout=10)
-        expect_status(r, 404, label, "Squad not found")
-
-
-def test_recurrence(lead_id: str, gid: str, non_lead_id: str):
-    section("1. Recurring Bills endpoints")
-
-    # R1 — Non-lead caller → 403
-    r = requests.put(f"{BASE}/groups/{gid}/recurrence",
-                     json={"user_id": non_lead_id, "enabled": True,
-                           "cadence": "weekly", "anchor": 2, "skip_if_open": False},
-                     timeout=10)
-    expect_status(r, 403, "R1 PUT recurrence as non-lead → 403",
-                  "Only the lead can configure recurrence")
-
-    # R2 — Lead enables weekly Wed 09:00 UTC anchor=2
-    base_now = datetime.now(timezone.utc).replace(microsecond=0, second=0)
-    r = requests.put(f"{BASE}/groups/{gid}/recurrence",
-                     json={"user_id": lead_id, "enabled": True,
-                           "cadence": "weekly", "anchor": 2, "skip_if_open": False},
-                     timeout=10)
-    ok = expect_status(r, 200, "R2 PUT recurrence as lead → 200")
-    if ok:
         body = r.json()
-        nxt = body.get("next_run_at")
-        if not nxt or not isinstance(nxt, str) or not nxt.endswith("Z"):
-            record(False, "R2 next_run_at is ISO 'Z' string", f"got {nxt!r}")
-        else:
-            record(True, "R2 next_run_at is ISO 'Z' string")
-            try:
-                dt = datetime.fromisoformat(nxt.replace("Z", "+00:00"))
-                today_wd = base_now.weekday()
-                days_ahead = (2 - today_wd) % 7
-                if days_ahead == 0:
-                    days_ahead = 7
-                expected = (base_now + timedelta(days=days_ahead)).replace(
-                    hour=9, minute=0, second=0, microsecond=0)
-                if abs((dt - expected).total_seconds()) <= 120 and dt.weekday() == 2:
-                    record(True, "R2 next_run_at is next Wednesday 09:00 UTC")
-                else:
-                    record(False, "R2 next_run_at is next Wednesday 09:00 UTC",
-                           f"got {dt.isoformat()}, expected ~{expected.isoformat()}")
-            except Exception as e:
-                record(False, "R2 next_run_at parse", str(e))
+        for k in ("apple_pay_enabled", "google_pay_enabled", "issuing_enabled"):
+            record(k in body and isinstance(body[k], bool),
+                   f"public wallet-config has bool field {k}",
+                   f"body={body}")
+        record(body.get("apple_pay_enabled") is False,
+               "public — apple_pay_enabled == False (initial)",
+               f"got {body.get('apple_pay_enabled')}")
+        record(body.get("google_pay_enabled") is False,
+               "public — google_pay_enabled == False (initial)",
+               f"got {body.get('google_pay_enabled')}")
+        record(body.get("issuing_enabled") is True,
+               "public — issuing_enabled == True (initial)",
+               f"got {body.get('issuing_enabled')}")
 
-    # R3 — GET as lead returns same payload
-    r = requests.get(f"{BASE}/groups/{gid}/recurrence", params={"user_id": lead_id}, timeout=10)
-    if expect_status(r, 200, "R3 GET recurrence as lead → 200"):
-        body = r.json()
-        ok = (body.get("enabled") is True
-              and body.get("cadence") == "weekly"
-              and int(body.get("anchor", -1)) == 2
-              and "next_run_at" in body)
-        record(ok, "R3 GET returns same recurrence payload",
-               str(body)[:200] if not ok else "")
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    r2 = http("PUT", "/admin/wallet-config",
+              headers=headers,
+              json={"apple_pay_enabled": False,
+                    "google_pay_enabled": False,
+                    "issuing_enabled": False})
+    record(r2.status_code == 200,
+           "admin PUT /admin/wallet-config (issuing=False) → 200",
+           f"{r2.status_code}: {r2.text[:200]}")
+    if r2.status_code == 200:
+        record(r2.json().get("issuing_enabled") is False,
+               "PUT response echoes issuing_enabled=False",
+               f"got {r2.json()}")
 
-    # R4 — Disable
-    r = requests.put(f"{BASE}/groups/{gid}/recurrence",
-                     json={"user_id": lead_id, "enabled": False,
-                           "cadence": "weekly", "anchor": 0},
-                     timeout=10)
-    if expect_status(r, 200, "R4 PUT enabled:false → 200"):
-        body = r.json()
-        record(body.get("ok") is True and body.get("enabled") is False,
-               "R4 response is {ok:true, enabled:false}", str(body))
-    r = requests.get(f"{BASE}/groups/{gid}/recurrence", params={"user_id": lead_id}, timeout=10)
-    if expect_status(r, 200, "R4 GET after disable → 200"):
-        record(r.json().get("enabled") is False,
-               "R4 GET enabled:false", str(r.json()))
+    r3 = http("GET", "/runtime/wallet-config")
+    if r3.status_code == 200:
+        record(r3.json().get("issuing_enabled") is False,
+               "public reflects issuing_enabled=False after admin PUT",
+               f"got {r3.json()}")
 
-    # R5 — Monthly anchor=31 clamp
-    r = requests.put(f"{BASE}/groups/{gid}/recurrence",
-                     json={"user_id": lead_id, "enabled": True,
-                           "cadence": "monthly", "anchor": 31, "skip_if_open": False},
-                     timeout=10)
-    if expect_status(r, 200, "R5 PUT monthly anchor=31 → 200"):
-        body = r.json()
-        nxt = body.get("next_run_at")
-        if nxt:
-            try:
-                dt = datetime.fromisoformat(nxt.replace("Z", "+00:00"))
-                last_day = monthrange(dt.year, dt.month)[1]
-                if dt.day == last_day and dt.hour == 9:
-                    record(True,
-                           f"R5 monthly anchor=31 clamps to last day "
-                           f"(month={dt.month}, day={dt.day}, last={last_day})")
-                else:
-                    record(False, "R5 monthly anchor=31 clamps to last day",
-                           f"got day={dt.day}, last_day={last_day}")
-            except Exception as e:
-                record(False, "R5 monthly parse", str(e))
-
-    # R6 — invalid cadence
-    r = requests.put(f"{BASE}/groups/{gid}/recurrence",
-                     json={"user_id": lead_id, "enabled": True,
-                           "cadence": "biweekly", "anchor": 0},
-                     timeout=10)
-    expect_status(r, 400, "R6 PUT cadence=biweekly → 400")
-
-    # R7 — weekly anchor=7
-    r = requests.put(f"{BASE}/groups/{gid}/recurrence",
-                     json={"user_id": lead_id, "enabled": True,
-                           "cadence": "weekly", "anchor": 7},
-                     timeout=10)
-    expect_status(r, 400, "R7 PUT weekly anchor=7 → 400")
-
-    # R8 — monthly anchor=32
-    r = requests.put(f"{BASE}/groups/{gid}/recurrence",
-                     json={"user_id": lead_id, "enabled": True,
-                           "cadence": "monthly", "anchor": 32},
-                     timeout=10)
-    expect_status(r, 400, "R8 PUT monthly anchor=32 → 400")
-
-    # R9 — DELETE
-    r = requests.delete(f"{BASE}/groups/{gid}/recurrence",
-                        params={"user_id": lead_id}, timeout=10)
-    expect_status(r, 200, "R9 DELETE recurrence as lead → 200")
-    r = requests.get(f"{BASE}/groups/{gid}/recurrence",
-                     params={"user_id": lead_id}, timeout=10)
-    if expect_status(r, 200, "R9 GET after DELETE → 200"):
-        record(r.json().get("enabled") is False,
-               "R9 GET enabled:false after DELETE", str(r.json()))
-
-    # R10 — Non-lead GET → 403
-    r = requests.get(f"{BASE}/groups/{gid}/recurrence",
-                     params={"user_id": non_lead_id}, timeout=10)
-    expect_status(r, 403, "R10 GET as non-lead → 403")
-
-    # R11 — Unknown group → "Squad not found"
-    r = requests.put(f"{BASE}/groups/g_doesnotexist/recurrence",
-                     json={"user_id": lead_id, "enabled": True,
-                           "cadence": "weekly", "anchor": 0},
-                     timeout=10)
-    expect_status(r, 404, "R11 PUT unknown group → 404", "Squad not found")
-    r = requests.get(f"{BASE}/groups/g_doesnotexist/recurrence",
-                     params={"user_id": lead_id}, timeout=10)
-    expect_status(r, 404, "R11 GET unknown group → 404", "Squad not found")
+    r4 = http("PUT", "/admin/wallet-config",
+              headers=headers,
+              json={"apple_pay_enabled": False,
+                    "google_pay_enabled": False,
+                    "issuing_enabled": True})
+    record(r4.status_code == 200,
+           "admin PUT restore issuing_enabled=True → 200",
+           f"{r4.status_code}: {r4.text[:200]}")
+    r5 = http("GET", "/runtime/wallet-config")
+    if r5.status_code == 200:
+        record(r5.json().get("issuing_enabled") is True,
+               "public reflects issuing_enabled=True after restore",
+               f"got {r5.json()}")
 
 
-def test_smoke(admin_token: Optional[str]):
+# ============================================================
+# 3) Regression smoke
+# ============================================================
+async def test_regression_smoke():
     section("3. Regression smoke")
 
-    r = requests.get(f"{BASE}/", timeout=10)
-    if expect_status(r, 200, "GET / → 200"):
+    r = http("GET", "/")
+    if r.status_code == 200:
+        record("SquadPay" in r.text, "GET /api/ → 200 with 'SquadPay API'",
+               f"got body={r.text[:160]}")
+    else:
+        record(False, "GET /api/ → 200", f"{r.status_code}: {r.text[:200]}")
+
+    lead = await make_user("SmokeLead")
+    body = {
+        "lead_id": lead["id"],
+        "title": "Smoke Squad",
+        "total_amount": 25.0,
+        "split_mode": "fast",
+        "tax": 0.0,
+        "tip": 0.0,
+        "items": [],
+    }
+    r2 = http("POST", "/groups", json=body)
+    record(r2.status_code == 200,
+           "POST /groups (sample body) → 200 (fresh squad)",
+           f"{r2.status_code}: {r2.text[:200]}")
+
+    r3 = http("POST", "/groups/g_DOES_NOT_EXIST_xyz/repay",
+              json={"user_id": "u_nobody", "amount": 1.0})
+    record(r3.status_code == 404,
+           "POST /groups/{nonexistent}/repay → 404 (not 405)",
+           f"{r3.status_code}: {r3.text[:200]}")
+    if r3.status_code == 404:
         try:
-            msg = r.json().get("message", "")
-            record("SquadPay" in msg, "GET / message contains 'SquadPay'", msg)
+            d = r3.json().get("detail", "")
         except Exception:
-            record(False, "GET / message JSON", r.text[:200])
+            d = ""
+        record("squad" in str(d).lower() or "not found" in str(d).lower(),
+               "repay 404 detail mentions 'Squad not found'",
+               f"detail={d!r}")
 
-    r = requests.get(f"{BASE}/users/{EXISTING_LEAD}/groups", timeout=15)
-    expect_status(r, 200, "GET /users/{lead}/groups → 200")
-
-    fresh = make_user("RegSmokeUser")
-    if fresh:
-        # `title` is required by the CreateGroupIn model, but the route applies
-        # `body.title or "Squad Bill"` so an empty string falls through to the
-        # new default. This verifies the rename from "Group Bill" → "Squad Bill".
-        body = {
-            "lead_id": fresh["id"],
-            "title": "",
-            "total_amount": 12.5,
-            "split_mode": "fast",
-            "items": [],
-            "tax": 0.0,
-            "tip": 0.0,
-        }
-        r = requests.post(f"{BASE}/groups", json=body, timeout=15)
-        if expect_status(r, 200, "POST /groups (empty title) → 200"):
-            title = r.json().get("title")
-            record(title == "Squad Bill",
-                   "Default title is 'Squad Bill'",
-                   f"got {title!r}")
-            new_gid = r.json().get("id")
-            r2 = requests.get(f"{BASE}/groups/{new_gid}", timeout=10)
-            expect_status(r2, 200, "GET /groups/{new_gid} → 200")
-
-    if admin_token:
-        r = requests.get(f"{BASE}/admin/metrics",
-                         headers={"Authorization": f"Bearer {admin_token}"},
-                         timeout=15)
-        expect_status(r, 200, "GET /admin/metrics with super_admin → 200")
+    r4 = http("GET", "/runtime/wallet-config")
+    record(r4.status_code == 200,
+           "GET /runtime/wallet-config (no auth) → 200 (smoke)",
+           f"{r4.status_code}: {r4.text[:200]}")
 
 
-def main():
-    print(f"Backend: {BASE}\n")
+# ============================================================
+async def main():
+    print(f"Backend base: {BASE}")
+    print(f"Mongo DB:     {DB_NAME}")
 
     section("0. Admin login")
-    admin_token = admin_login()
+    tok = admin_login()
+    if not tok:
+        print("Cannot continue without admin token.")
+        return
 
-    section("Setup: create fresh users + squad for recurrence tests")
-    lead = make_user("RecLead")
-    time.sleep(0.05)
-    non_lead = make_user("RecNonLead")
-    if not lead or not non_lead:
-        record(False, "Setup users (fresh)",
-               "Could not create test users — falling back to existing IDs")
-        gid = EXISTING_GID
-        lead_id_for_rec = EXISTING_LEAD
-        non_lead_id = (non_lead or {}).get("id") or "u_nopermission"
-    else:
-        record(True, "Setup users (fresh)")
-        gid, _ = create_fresh_squad(lead["id"])
-        if not gid:
-            record(False, "Setup fresh squad", "fallback to EXISTING_GID")
-            gid = EXISTING_GID
-            lead_id_for_rec = EXISTING_LEAD
-        else:
-            record(True, "Setup fresh squad")
-            lead_id_for_rec = lead["id"]
-        non_lead_id = non_lead["id"]
+    await test_item8_itemized_contribution_math()
+    await test_item8_fast_mode_unaffected()
+    await test_wallet_config_public(tok)
+    await test_regression_smoke()
 
-    test_terminology()
-    test_recurrence(lead_id_for_rec, gid, non_lead_id)
-    test_smoke(admin_token)
-
-    print(f"\n{'='*60}\nSUMMARY: {len(passes)} PASS · {len(failures)} FAIL\n{'='*60}")
+    section("SUMMARY")
+    print(f"PASS  {len(passes)}")
+    print(f"FAIL  {len(failures)}")
     if failures:
-        print("\nFailures:")
         for f in failures:
-            print(f"  - {f}")
+            print(f"   - {f}")
         sys.exit(1)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

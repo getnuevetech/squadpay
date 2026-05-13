@@ -64,6 +64,10 @@ export default function RootLayout() {
           <Stack.Screen name="credits" options={{ headerShown: false }} />
           <Stack.Screen name="legal/terms" options={{ headerShown: false }} />
           <Stack.Screen name="contact" options={{ headerShown: false }} />
+          {/* Item 1 (June 2025) — Pay-Out flow uses its own in-screen
+              header; suppress the auto stack header to avoid the double
+              back-arrow. */}
+          <Stack.Screen name="payout/cash-out" options={{ headerShown: false, title: 'Pay Out' }} />
         </Stack>
         <ToastHost />
         <SessionGuard />

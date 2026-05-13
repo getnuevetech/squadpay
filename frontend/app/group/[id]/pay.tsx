@@ -991,7 +991,13 @@ export default function PayScreen() {
                 icon={<CreditCard size={18} color="#fff" />}
                 disabled={!isVerified || blockedNoAmount}
               />
-              {kind === 'contribute' && isVerified && !blockedNoAmount && nativePayAvailable && Platform.OS !== 'web' && ((Platform.OS === 'ios' && walletFlags.apple) || (Platform.OS === 'android' && walletFlags.google)) && (
+              {/* Item 7 (June 2025) — In-app Apple Pay / Google Pay
+                  buttons are DISABLED. We rely entirely on Stripe Checkout
+                  (which still surfaces wallets natively in the browser, at
+                  Stripe's standard rate). Leaving the bridge code in place
+                  so we can re-enable via admin Wallets config later, but
+                  the button itself never renders. */}
+              {false && kind === 'contribute' && isVerified && !blockedNoAmount && nativePayAvailable && Platform.OS !== 'web' && ((Platform.OS === 'ios' && walletFlags.apple) || (Platform.OS === 'android' && walletFlags.google)) && (
                 <Button
                   title={
                     nativePayBusy

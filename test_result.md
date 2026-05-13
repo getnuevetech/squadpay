@@ -10193,6 +10193,113 @@ agent_communication:
 
     -agent: "main"
     -message: |
+      Major task-list batch (June 2025) — REVERTED recurring-bills feature
+      and shipped 8 new items + verified missed items from prior list.
+
+      ROLLBACK:
+      - Deleted /app/backend/recurring_groups_cron.py
+      - Deleted /app/backend/routes/recurring_routes.py
+      - Deleted /app/frontend/src/RecurrenceModal.tsx
+      - Stripped recurrence imports/state/JSX from group/[id]/dashboard.tsx
+      - Stripped recurrence API helpers from src/api.ts
+      - Removed cron startup hook + route attach from server.py
+      All squads remain one-time only as designed.
+
+      NEW WORK:
+      Item 1 — Pay Out page: registered Stack.Screen entry with
+        headerShown:false so the auto stack header no longer renders
+        beside the in-screen back arrow (fixes double back arrow).
+        Renamed page title/header to "Pay Out to Debit Card".
+      Item 2 — react-native-webview crash on web: switched to lazy
+        `require()` guarded by Platform.OS check. Web users now see a
+        "Open Stripe onboarding in a new tab" fallback with proper
+        sync-back button. Native still gets full in-app WebView.
+      Item 3 — header copy: "Cash out to debit card" → "Pay Out to
+        Debit Card". CTA button: "Cash out $X" → "Pay Out $X".
+        Success title: "Cash-out submitted" → "Pay-out submitted".
+        Balance label: "Available to cash out" → "Available to pay
+        out".
+      Item 4 — Green Lead-dashboard banner:
+        Title:    "Cash out to debit card" → "Withdraw To Debit Card"
+        Subtitle: "All members paid — your share is ready to send via
+                    Stripe Instant Payout." → "All Squad contributions
+                    are completed — withdraw to your debit card to
+                    settle the bill for your Squad."
+        Layout: centralized — stacked vertically with text-align:
+        center on both title and subtitle.
+      Item 5 — Dashboard quick-actions: the 3rd slot is now context-
+        aware. When the squad is fully funded and uses group funding,
+        the slot becomes "Pay Out" (route /payout/cash-out). When the
+        squad has a card AND admin issuing_enabled=true, it stays as
+        "Card". Otherwise it's an invisible spacer (preserves 3-col
+        layout). testIDs: dashboard-action-payout / dashboard-action-card.
+      Item 6 — Per-squad card admin master toggle:
+        Backend: added `issuing_enabled` (default true) to
+          /api/admin/wallet-config GET+PUT and exposed it via a NEW
+          public unauthenticated endpoint:
+            GET /api/runtime/wallet-config →
+              { apple_pay_enabled, google_pay_enabled, issuing_enabled }
+        Frontend: dashboard.tsx now fetches /runtime/wallet-config on
+          mount and gates the Card button visibility on it. When admin
+          flips issuing_enabled OFF, the per-squad Card button hides
+          across the entire app.
+      Item 7 — Completely disable in-app Apple Pay / Google Pay:
+        Backend: app_config.wallet now has
+          apple_pay_enabled=false, google_pay_enabled=false (set via
+          /tmp/replace_squad.py-style one-off DB update — verified
+          via curl GET /api/runtime/wallet-config returns false/false).
+        Frontend: pay.tsx wallet button gated by `if (false && ...)`
+          so it never renders, regardless of the runtime config (belt
+          + suspenders). Stripe Checkout continues to surface Apple/
+          Google Pay via the hosted page (cheaper rate per spec).
+      Item 8 — CRITICAL contribution math fix:
+        In core.py _compute_per_user (itemized split only), members
+        with `food == 0` (no items claimed) now get their entire
+        breakdown zeroed: transaction_fee=0, platform_fee=0,
+        extra_fees=[], total=0. Active member count is recomputed for
+        the extras divisor so claimed-item members don't inherit
+        unclaimed-member share. Fast/equal split UNCHANGED.
+        Verified via /api/groups/{gid} on the live in-progress squad:
+        new joiners now show $0.00 owed until they claim an item.
+
+      ADDITIONAL DEFECT FIXES (post-test):
+      - core.py:_load_group_enriched 404 detail: "Group not found" →
+        "Squad not found" (testing agent report R9).
+      - pay_routes.py: restored missing `@router.post("/groups/{id}/
+        repay")` decorator (testing agent report).
+
+      MISSED-LIST CATCH-UP (from prior batch user flagged):
+      - Pay page contribute breakdown removed — only "You'll pay now
+        $X" + wallet-credit/shortfall rows when relevant.
+      - Virtual card user-facing strings → "Squad Card" everywhere
+        (card.tsx empty state, index.tsx pill, pay.tsx lead copy,
+        admin/groups/[id].tsx section header + button).
+      - Home headline "squad." → "Squad."
+      - Squad created-at timestamp on lobby header.
+      - Admin /admin/security KMS rotation alert now shows per-
+        collection counts via extended KmsRotateResult type.
+
+      APP ITEM 5 — Invite code UX refinement:
+      - Lobby code now renders inside a primary-colored chip with:
+          "JOIN CODE" caption (uppercase, letter-spaced)
+          Big 36pt monospaced number with letter-spacing 6 + a space
+            after the midpoint ("482 917" for 6-digit codes)
+          "Tap to copy" hint
+        Pressing the chip copies the raw code to clipboard.
+        testIDs: lobby-code-copy.
+
+      BACKEND ITEM 1 — Admin User/Squad detail line spacing/labels:
+      Verified already-shipped: both /admin/users/[id] and
+      /admin/groups/[id] use infoTable/infoRow/infoLabel/infoValue
+      pattern with `gap: 10`, uppercase 11pt labels, lineHeight 18 on
+      values. No further work needed.
+
+      Frontend bundles cleanly (web 200, native tunnel up). Backend
+      live traffic working — Stripe Checkout sessions succeeding,
+      ledger charges posting.
+
+    -agent: "main"
+    -message: |
       KMS full key rotation completed (June 2025).
 
       Plan executed:
@@ -10451,3 +10558,171 @@ agent_communication:
 
         I did NOT modify any production code — only created /app/backend_test.py.
 
+
+
+#====================================================================================================
+# June 2025 — Item 6/7/8 batch (post-recurring-deletion)
+#====================================================================================================
+
+backend:
+  - task: "Item 8 — Itemized split contribution math: no-items members must see $0 (no fees)"
+    implemented: true
+    working: true
+    file: "backend/core.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Item 8 verified end-to-end via /app/backend_test.py against the live
+            preview backend (https://joint-pay-1.preview.emergentagent.com/api).
+            14/14 itemized assertions + 9/9 fast-mode regression assertions PASS,
+            no 5xx.
+
+            Setup: fresh lead+alice+bob (registered via /auth/register +
+            DB-direct verify shortcut to skip the 5/min OTP rate limit).
+            Itemized squad, total=$30, three items (Burger $12, Fries $6,
+            Drink $12).
+
+            ✅ Initial GET /api/groups/{gid} — every member's per_user entry
+              shows food==0 AND total==0 AND transaction_fee==0 AND
+              platform_fee==0 AND extra_fees_total==0. (Previously the lead
+              and unassigned joiners showed $0.75 phantom platform fee +
+              transaction fee, which was the user-reported bug.)
+
+            ✅ After POST /groups/{gid}/assign assigning Burger ($12) to Alice:
+              - Alice: food=$12, transaction_fee>0, total>$12 (fees applied).
+              - Lead + Bob: still food==0/total==0/all fees==0.
+
+            ✅ After POST /groups/{gid}/assign with quantity=0 (un-assigning
+              Alice's Burger): Alice reverts to food=0/total=0/all fees=0.
+
+            ✅ FAST/equal mode regression: created a separate fast squad
+              ($30 / 3 members, no items). All three members show
+              food=$10.00, total>0. Confirms the new no-items zero-out
+              ONLY fires in itemized mode and does NOT affect fast mode
+              (which is defined as "everyone pays an equal share").
+
+  - task: "Items 6/7 — Public GET /api/runtime/wallet-config endpoint + admin PUT round-trip"
+    implemented: true
+    working: false
+    file: "backend/routes/admin_phase_bc.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: false
+          agent: "testing"
+          comment: |
+            7/10 PASS, 3 FAIL. Public GET endpoint works perfectly; admin PUT
+            endpoint is BROKEN (cannot mutate config).
+
+            ✅ GET /api/runtime/wallet-config (no auth) → 200 with exact shape
+              {apple_pay_enabled: bool, google_pay_enabled: bool,
+               issuing_enabled: bool}. Current values match expectation:
+                apple_pay_enabled = False
+                google_pay_enabled = False
+                issuing_enabled    = True
+
+            ❌ CRITICAL BUG — PUT /api/admin/wallet-config returns 422
+              "Field required" on `body`:
+
+              Verified via direct curl:
+                curl -X PUT https://joint-pay-1.preview.emergentagent.com/api/admin/wallet-config \
+                  -H "Authorization: Bearer <super_admin_token>" \
+                  -H "Content-Type: application/json" \
+                  -d '{"apple_pay_enabled":false,"google_pay_enabled":false,"issuing_enabled":false}'
+                → 422 {"detail":[{"type":"missing","loc":["query","body"],
+                                  "msg":"Field required",...}]}
+
+              ROOT CAUSE: `WalletConfigIn` is declared INSIDE the
+              `attach_phase_bc_routes` closure (admin_phase_bc.py line 656),
+              not at module level like every other config-In model. When a
+              Pydantic v2 model is defined inside a function, FastAPI's
+              automatic body detection fails and treats the parameter as a
+              query field (note the `loc=["query","body"]` rather than
+              `loc=["body"]`).
+
+              FIX (one of two options, both trivial):
+                Option A — move `class WalletConfigIn(BaseModel): ...` out of
+                  the closure to module scope (mirrors how `OcrConfigIn` is
+                  declared at line 107).
+                Option B — annotate the parameter explicitly:
+                  `body: WalletConfigIn = Body(...)` (Body is already imported
+                  at line 50).
+
+              IMPACT: Admins cannot toggle apple_pay_enabled, google_pay_enabled,
+              or issuing_enabled via the API. The public read endpoint still
+              works, but flipping issuing_enabled / wallet rails requires a
+              direct mongo write today.
+
+            Test details (still recorded as part of the harness):
+              - GET (no-auth) initial → 200, body matches expected initial
+                {apple_pay=False, google_pay=False, issuing=True}. ✅
+              - PUT (super_admin token, issuing=False) → 422 (expected 200). ❌
+              - GET after failed PUT → still issuing=True. ❌
+              - PUT (super_admin token, issuing=True restore) → 422. ❌
+              - Final GET → issuing=True (unchanged from initial state). ✅
+
+  - task: "Smoke regression — /api/, POST /groups, /groups/{id}/repay 404, public wallet-config"
+    implemented: true
+    working: true
+    file: "backend/routes/misc_routes.py, backend/routes/groups_routes.py, backend/routes/pay_routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            5/5 smoke PASS:
+              ✅ GET /api/ → 200, body contains "SquadPay API".
+              ✅ POST /api/groups (fresh sample body) → 200, fresh squad
+                created.
+              ✅ POST /api/groups/g_DOES_NOT_EXIST_xyz/repay → 404 (NOT 405).
+                Detail string: "Squad not found". Confirms the missing
+                @router.post decorator on /repay (previously flagged) has
+                been added — the endpoint is now properly registered.
+              ✅ GET /api/runtime/wallet-config (no auth) → 200 (smoke).
+
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        Item 6/7/8 batch tested via /app/backend_test.py against the live
+        preview backend. 37/40 assertions PASS.
+
+        ✅ Item 8 (contribution math) — fully working. Members with no items
+           assigned in ITEMIZED mode now show $0 total + $0 transaction_fee +
+           $0 platform_fee + $0 extra_fees_total. Behavior is correctly
+           gated to itemized mode; FAST/equal mode still gives every member
+           the full equal share + fees as expected.
+
+        ✅ Repay 404 fix verified — POST /api/groups/{nonexistent}/repay now
+           returns 404 "Squad not found" (was 405 before the decorator fix).
+
+        ✅ Public GET /api/runtime/wallet-config — working as specified,
+           returns the exact {apple_pay_enabled, google_pay_enabled,
+           issuing_enabled} bool shape with no auth, current values match
+           review-request expectations (AP=False, GP=False, issuing=True).
+
+        ❌ CRITICAL — PUT /api/admin/wallet-config is 422-broken.
+           Pydantic class `WalletConfigIn` is declared inside the
+           `attach_phase_bc_routes` closure (admin_phase_bc.py line 656),
+           which breaks FastAPI's body-vs-query inference. Admins cannot
+           toggle wallet rails or issuing_enabled via the API today.
+
+           Trivial fix (pick one):
+             (a) Move `class WalletConfigIn(BaseModel): ...` to module level
+                 (right next to `OcrConfigIn` at line 107).
+             (b) Annotate the parameter: `body: WalletConfigIn = Body(...)`
+                 (Body is already imported at line 50).
+
+           I did NOT patch this — main agent should apply the fix.
+
+        Test artifact: /app/backend_test.py — idempotent, uses fresh
+        timestamped users + direct DB verified-shortcut to bypass the
+        /send-otp 5/min IP rate limit. Recurring routes are NOT exercised
+        (deleted in this session per review request).

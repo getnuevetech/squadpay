@@ -35,7 +35,20 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { WebView, WebViewNavigation } from 'react-native-webview';
+// Item 2 (June 2025) — react-native-webview throws "WebView does not
+// support this platform" when bundled for web. Import it conditionally
+// so the screen still mounts on web; we render an external-link
+// fallback for the onboarding step instead.
+let WebView: any = null;
+type WebViewNavigation = any;
+if (Platform.OS !== 'web') {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
+    WebView = require('react-native-webview').WebView;
+  } catch (_e) {
+    WebView = null;
+  }
+}
 import {
   ArrowLeft,
   CheckCircle2,
@@ -125,7 +138,7 @@ export default function CashOutScreen() {
       setSessionId(sid);
       if (!group_id) {
         setPhase('error');
-        setErrMsg('Squad ID is required to cash out.');
+        setErrMsg('Squad ID is required to pay out.');
         return;
       }
       await runEligibility(u.id, sid, group_id);
@@ -268,7 +281,7 @@ export default function CashOutScreen() {
         <TouchableOpacity onPress={() => router.back()} hitSlop={12} accessibilityLabel="Back">
           <ArrowLeft size={24} color={COLORS.text} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Cash out to debit card</Text>
+        <Text style={styles.headerTitle}>Pay Out to Debit Card</Text>
         <View style={{ width: 24 }} />
       </View>
 
@@ -313,7 +326,7 @@ export default function CashOutScreen() {
           )}
           <View style={styles.balanceCard}>
             <Wallet size={28} color={COLORS.primary} />
-            <Text style={styles.balanceLabel}>Available to cash out</Text>
+            <Text style={styles.balanceLabel}>Available to pay out</Text>
             <Text style={styles.balanceAmount}>
               ${eligibility?.available_usd?.toFixed(2) || '0.00'}
             </Text>
@@ -336,23 +349,57 @@ export default function CashOutScreen() {
 
       {phase === 'onboarding' && !!onboardingUrl && (
         <View style={{ flex: 1 }}>
-          <WebView
-            ref={webViewRef}
-            source={{ uri: onboardingUrl }}
-            onNavigationStateChange={onNav}
-            startInLoadingState
-            renderLoading={() => (
-              <View style={styles.center}>
-                <ActivityIndicator size="large" color={COLORS.primary} />
-              </View>
-            )}
-            style={{ flex: 1 }}
-          />
-          <View style={styles.webviewFooter}>
-            <TouchableOpacity onPress={() => setPhase('sync_needed')} hitSlop={10}>
-              <Text style={styles.webviewFooterLink}>I'm done →</Text>
-            </TouchableOpacity>
-          </View>
+          {WebView ? (
+            <WebView
+              ref={webViewRef}
+              source={{ uri: onboardingUrl }}
+              onNavigationStateChange={onNav}
+              startInLoadingState
+              renderLoading={() => (
+                <View style={styles.center}>
+                  <ActivityIndicator size="large" color={COLORS.primary} />
+                </View>
+              )}
+              style={{ flex: 1 }}
+            />
+          ) : (
+            // Item 2 (June 2025) — Web fallback. react-native-webview can't
+            // render on web, so we open Stripe onboarding in a new tab and
+            // wait for the user to return.
+            <View style={styles.center}>
+              <ExternalLink size={40} color={COLORS.primary} />
+              <Text style={[styles.statusTitle, { marginTop: SPACING.md, textAlign: 'center' }]}>
+                Stripe onboarding opens in a new tab
+              </Text>
+              <Text style={[styles.statusHint, { textAlign: 'center', marginBottom: SPACING.lg }]}>
+                Finish setup with Stripe and then come back here to sync.
+              </Text>
+              <TouchableOpacity
+                style={styles.primaryBtn}
+                onPress={() => {
+                  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+                    window.open(onboardingUrl, '_blank');
+                  }
+                }}
+              >
+                <ExternalLink size={18} color="#fff" />
+                <Text style={styles.primaryBtnText}>Open Stripe onboarding</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.secondaryBtn, { marginTop: SPACING.md }]}
+                onPress={() => setPhase('sync_needed')}
+              >
+                <Text style={styles.secondaryBtnText}>I'm done — sync account</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          {WebView ? (
+            <View style={styles.webviewFooter}>
+              <TouchableOpacity onPress={() => setPhase('sync_needed')} hitSlop={10}>
+                <Text style={styles.webviewFooterLink}>I'm done →</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
         </View>
       )}
 
@@ -376,7 +423,7 @@ export default function CashOutScreen() {
         <ScrollView contentContainerStyle={styles.body}>
           <View style={styles.balanceCard}>
             <Wallet size={28} color={COLORS.primary} />
-            <Text style={styles.balanceLabel}>Available to cash out</Text>
+            <Text style={styles.balanceLabel}>Available to pay out</Text>
             <Text style={styles.balanceAmount}>
               ${eligibility?.available_usd?.toFixed(2) || '0.00'}
             </Text>
@@ -432,7 +479,7 @@ export default function CashOutScreen() {
           >
             <Banknote size={20} color="#fff" />
             <Text style={styles.primaryBtnText}>
-              Cash out ${amount && Number.parseFloat(amount) > 0 ? Number.parseFloat(amount).toFixed(2) : '0.00'}
+              Pay Out ${amount && Number.parseFloat(amount) > 0 ? Number.parseFloat(amount).toFixed(2) : '0.00'}
             </Text>
           </TouchableOpacity>
           <Text style={styles.fineprint}>
@@ -446,7 +493,7 @@ export default function CashOutScreen() {
         <ScrollView contentContainerStyle={styles.body}>
           <View style={[styles.statusCard, { backgroundColor: '#ECFDF5' }]}>
             <CheckCircle2 size={56} color={COLORS.primary} />
-            <Text style={styles.statusTitle}>Cash-out submitted</Text>
+            <Text style={styles.statusTitle}>Pay-out submitted</Text>
             <Text style={styles.statusHint}>
               ${successResult.amount.toFixed(2)} sent to {(successResult.card_brand || '').toUpperCase()} ••••{' '}
               {successResult.card_last4}

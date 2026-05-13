@@ -37,7 +37,27 @@ export default function AdminSecurity() {
       const r = await adminApi.rotateKms();
       setLastRotate(r);
       await load();
-      Alert.alert('Rotation complete', `Re-encrypted ${r.rotated} fields in ${r.elapsed_ms}ms.`);
+      // June 2025 — extended walker reports per-collection counts. Surface
+      // them so the admin can see exactly where secrets moved (gateway_config,
+      // app_settings, users, etc.) — useful for compliance / SOC-2 audit.
+      const lines: string[] = [
+        `Re-encrypted ${r.rotated} field${r.rotated === 1 ? '' : 's'} in ${r.elapsed_ms}ms.`,
+        `Skipped: ${r.skipped}   Failed: ${r.failed}`,
+        `New primary key fingerprint: ${r.primary_fingerprint}`,
+      ];
+      if (r.per_collection) {
+        const detail = Object.entries(r.per_collection)
+          .filter(([, v]) => v.rotated || v.skipped || v.failed)
+          .map(([k, v]) => `  • ${k}: ${v.rotated} rotated${v.failed ? `, ${v.failed} failed` : ''}`)
+          .join('\n');
+        if (detail) {
+          lines.push('', 'Per collection:', detail);
+        }
+      }
+      if (r.failed > 0) {
+        lines.push('', `Note: "failed" usually means plaintext values stored inside an *_enc parent (e.g. publishable Stripe key, environment flag). These are not actually encrypted and remain as-is.`);
+      }
+      Alert.alert('Rotation complete', lines.join('\n'));
     } catch (e: any) { Alert.alert('Error', e?.message || 'Failed'); }
     finally { setActing(null); }
   };

@@ -305,10 +305,10 @@ export default function PayScreen() {
     summary =
       group.funding.total_contributed > 0
         ? `Group already covered $${group.funding.total_contributed.toFixed(2)}. You cover the rest.`
-        : `Charge the bill to a real Stripe checkout, or fall back to the virtual card.`;
+        : `Charge the bill to a real Stripe checkout, or fall back to the squad card.`;
     actorIcon = <CreditCard color={COLORS.primary} size={18} />;
-    actorTitle = 'Stripe Checkout (or Virtual Card)';
-    actorSub = 'Real card payment via Stripe — virtual card fallback for shortfalls';
+    actorTitle = 'Stripe Checkout (or Squad Card)';
+    actorSub = 'Real card payment via Stripe — squad card fallback for shortfalls';
   } else if (kind === 'contribute') {
     // Both lead and members use this flow to fund the wallet upfront.
     // Lead's outstanding is force-zeroed in backend (they pay merchant), so we compute
@@ -643,28 +643,26 @@ export default function PayScreen() {
 
             {kind === 'contribute' && myPer ? (
               <>
-                <BreakRow label="Your share of food" value={myPer.food} />
-                {(myPer.tax_tip || 0) > 0.001 && (
-                  <BreakRow label="Tax & tip share" value={myPer.tax_tip} />
-                )}
-                {(myPer.platform_fee || 0) > 0.001 && (
-                  <BreakRow label="Service fee" value={myPer.platform_fee} hint="Helps us keep SquadPay running" />
-                )}
+                {/* Item 3 (June 2025) — Member contribute flow shows a SINGLE
+                    total value, not a per-line breakdown. The user's research
+                    showed the line-by-line decomposition felt like a receipt
+                    re-audit and confused new members. We keep the wallet
+                    credit row visible because it directly reduces what they
+                    type their card into, and the warning row for shortfalls
+                    so members understand if the number is unusually large. */}
                 {(myPer.shortfall_owed || 0) > 0.001 && (
-                  <BreakRow label="Shortfall obligation" value={myPer.shortfall_owed} tone="warning" />
-                )}
-                {(myPer.contributed || 0) > 0.001 && (
-                  <BreakRow label="Already contributed" value={-myPer.contributed} tone="success" />
+                  <BreakRow label="Includes shortfall" value={myPer.shortfall_owed} tone="warning" />
                 )}
                 {creditBalance > 0.01 && (
                   <BreakRow
-                    label="Wallet credits (max applied)"
+                    label="Wallet credits (auto-applied)"
                     value={-Math.min(creditBalance, amount)}
                     tone="primary"
-                    hint="We'll apply automatically at checkout"
                   />
                 )}
-                <View style={styles.divider} />
+                {(creditBalance > 0.01 || (myPer.shortfall_owed || 0) > 0.001) && (
+                  <View style={styles.divider} />
+                )}
                 <View style={styles.totalRow}>
                   <Text style={styles.totalLabel}>You'll pay now</Text>
                   <Text style={styles.totalValue}>

@@ -282,7 +282,7 @@ export default function HomeScreen() {
             <View style={{ paddingHorizontal: SPACING.md, marginTop: SPACING.lg }}>
               <Text style={styles.heroHeadline}>
                 <Text style={styles.heroHeadlineWhite}>Split Bill{'\n'}with Your </Text>
-                <Text style={styles.heroHeadlineLavender}>squad.</Text>
+                <Text style={styles.heroHeadlineLavender}>Squad.</Text>
               </Text>
               <Text style={styles.heroSub}>
                 Scan, split, and settle — all in one place. No more awkward money talks.

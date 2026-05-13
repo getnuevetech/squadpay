@@ -171,6 +171,18 @@ export default function GroupLobbyScreen() {
               {group.members.length} Squad {group.members.length === 1 ? 'member' : 'members'}
             </Text>
           </View>
+          {/* Item 8 (June 2025) — Surface the squad's creation date directly
+              on the lobby header so members can spot stale squads or recall
+              the night out without digging into the activity feed. Uses
+              en-US locale-light formatting (e.g. "Jun 14, 2025 · 7:42 PM"). */}
+          {group.created_at ? (
+            <Text style={styles.headerTimestamp} testID="lobby-created-at">
+              Created {new Date(group.created_at).toLocaleString(undefined, {
+                month: 'short', day: 'numeric', year: 'numeric',
+                hour: 'numeric', minute: '2-digit',
+              })}
+            </Text>
+          ) : null}
         </LinearGradient>
 
         <View style={[styles.qrCard, SHADOW.sm]}>
@@ -244,7 +256,7 @@ export default function GroupLobbyScreen() {
         {isLead && group.virtual_card && group.virtual_card.stripe_card_id && (
           <View style={styles.cardWrap} testID="lobby-virtual-card">
             <Text style={styles.cardLabel}>
-              Virtual card · {group.virtual_card.status === 'inactive' ? 'disabled' :
+              Squad card · {group.virtual_card.status === 'inactive' ? 'disabled' :
                 (group.funding?.total_contributed >= group.total ? 'active' : 'funding…')}
             </Text>
             <View style={[styles.cardFace, SHADOW.lg, group.virtual_card.status === 'inactive' && { opacity: 0.55 }]}>
@@ -482,6 +494,12 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.85)',
     fontSize: FONT.sizes.sm,
     fontWeight: FONT.weights.medium,
+  },
+  headerTimestamp: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: FONT.sizes.xs,
+    fontWeight: FONT.weights.medium,
+    marginTop: SPACING.xs,
   },
   qrCard: {
     backgroundColor: COLORS.surface,

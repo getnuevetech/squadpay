@@ -1066,6 +1066,8 @@ export type KmsRotateResult = {
   elapsed_ms: number;
   primary_fingerprint: string;
   key_source: string;
+  // June 2025 — extended walker now reports per-collection counts.
+  per_collection?: Record<string, { rotated: number; skipped: number; failed: number }>;
 };
 
 export type ReconciliationSettings = {

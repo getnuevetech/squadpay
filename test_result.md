@@ -10244,6 +10244,51 @@ agent_communication:
       Added {merchantIdentifier:'merchant.us.squadpay', enableGooglePay:true}
       to that plugin entry so Metro/expo can start cleanly.
 
+    -agent: "main"
+    -message: |
+      Task-list review pass (June 2025) — user pointed out items 3, 6, 7, 8
+      from the App list and the admin-KMS rotation UI were missed/incomplete.
+
+      Patched:
+      1) Pay page (kind='contribute') breakdown REMOVED. The 6-line itemized
+         breakdown (Your share / Tax & tip / Service fee / Already
+         contributed / Wallet credit / "You'll pay now") is gone for member
+         contribute flow. We keep only the *Wallet credit* and *shortfall*
+         conditional rows since those directly change the typed amount, and
+         the bold "You'll pay now $X" total. Lead and Repay flows still
+         show their respective breakdowns (they're a different mental
+         model). app/group/[id]/pay.tsx.
+      2) Card button on lead dashboard — still routes to /group/[id]/card
+         but that page is now renamed user-facing to "Squad Card":
+            - "No virtual card yet" → "No squad card yet"
+            - "A Stripe-issued virtual card will be created..." → "A squad
+              card will be created..."
+            - Lobby pill "Virtual card · {status}" → "Squad card · {status}"
+            - Pay flow lead actor copy: "Stripe Checkout (or Virtual Card)"
+              → "Stripe Checkout (or Squad Card)"
+            - Pay flow lead summary: "fall back to the virtual card" →
+              "fall back to the squad card"
+      3) Home headline "squad." → "Squad." (capitalization).
+      4) Squad timestamp pill added on lobby header card (lobby-created-at
+         testID). Uses locale formatting: "Created Jun 14, 2025 · 7:42 PM".
+      5) Admin /admin/security — kms-rotate now surfaces per-collection
+         counts in the result Alert, plus a hint explaining that "failed"
+         entries are usually plaintext values stored inside a *_enc
+         parent (publishable_key, environment, etc.). adminApi.ts
+         KmsRotateResult type extended with optional per_collection map
+         to match the new backend response.
+
+      Verified already-DONE items (no change needed):
+      - Item 1 (NewBillSheet): SquadPayMark + "Start a Bill"/"Join a Bill"
+      - Item 2 (Dashboard payment button): "Contribute Your Share\n$X"
+      - Item 4 (items.tsx "Who ordered what?"): fontSize: FONT.sizes.md
+      - Item 9 (OCR storage): receipts collection w/ 90-day TTL is live
+      - Item 10/13 (Apple/Google Pay icons + admin toggles): live
+      - Item 11 (Group → Squad): completed in P1 sweep this session
+      - Item 12 (Apple Pay error): resolved via Stripe key mismatch detector
+
+      Frontend bundled cleanly post-changes. Backend untouched.
+
 
 #====================================================================================================
 # June 2025 P1+P2 batch — Recurring Bills + Squad terminology

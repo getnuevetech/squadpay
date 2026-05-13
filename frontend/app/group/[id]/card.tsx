@@ -311,11 +311,11 @@ export default function GroupCardScreen() {
             <View style={styles.emptyIcon}>
               <CreditCard size={32} color={COLORS.primary} />
             </View>
-            <Text style={styles.emptyTitle}>No virtual card yet</Text>
+            <Text style={styles.emptyTitle}>No squad card yet</Text>
             <Text style={styles.emptyBody}>
               {fullyFunded
                 ? 'Your bill is fully funded but the card hasn\'t been issued. Try refreshing — Stripe Issuing usually takes a few seconds.'
-                : `A Stripe-issued virtual card will be created automatically once your bill is fully funded ($${collected.toFixed(
+                : `A squad card will be created automatically once your bill is fully funded ($${collected.toFixed(
                     2,
                   )} of $${total.toFixed(2)} collected).`}
             </Text>

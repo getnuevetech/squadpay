@@ -88,11 +88,12 @@ def attach_users_and_groups_routes(router: APIRouter, db, attach_admin):
         # Attach group counts (lead + member) per user — small N so cheap loop
         # Build aggregate counts in one pass over groups for performance
         all_groups = await db.groups.find(
-            {}, {"_id": 0, "id": 1, "lead_id": 1, "members": 1, "status": 1, "total_amount": 1}
+            {}, {"_id": 0, "id": 1, "lead_id": 1, "members": 1, "status": 1, "total_amount": 1, "contributions": 1}
         ).to_list(length=None)
         led: dict = {}
         joined: dict = {}
         led_billed: dict = {}
+        contributed_per_user: dict = {}
         for g in all_groups:
             lid = g.get("lead_id")
             if lid:
@@ -102,6 +103,13 @@ def attach_users_and_groups_routes(router: APIRouter, db, attach_admin):
                 uid = m.get("user_id")
                 if uid:
                     joined[uid] = joined.get(uid, 0) + 1
+            # Sum each user's actual contributions across all groups they participated in.
+            # Includes both cash contributions and credit-applied portions because the
+            # `amount` field on each contribution row is the gross share covered.
+            for c in (g.get("contributions") or []):
+                cuid = c.get("user_id")
+                if cuid:
+                    contributed_per_user[cuid] = contributed_per_user.get(cuid, 0.0) + float(c.get("amount") or 0)
 
         items = []
         for u in users:
@@ -110,6 +118,7 @@ def attach_users_and_groups_routes(router: APIRouter, db, attach_admin):
             row["groups_led"] = led.get(uid, 0)
             row["groups_joined"] = joined.get(uid, 0)
             row["total_billed_as_lead"] = round(led_billed.get(uid, 0.0), 2)
+            row["total_contributed"] = round(contributed_per_user.get(uid, 0.0), 2)
             items.append(row)
 
         return {"items": items, "total": total, "skip": skip, "limit": limit}
@@ -127,10 +136,28 @@ def attach_users_and_groups_routes(router: APIRouter, db, attach_admin):
             {"members.user_id": user_id, "lead_id": {"$ne": user_id}}, {"_id": 0}
         ).sort("created_at", -1).to_list(length=None)
 
+        # Sum the user's contributions across BOTH led and joined groups.
+        # Includes credit-applied + cash-paid portions because each contribution
+        # row's `amount` field is the gross share that was settled.
+        total_contributed = 0.0
+        for g in (led_groups + joined_groups):
+            for c in (g.get("contributions") or []):
+                if c.get("user_id") == user_id:
+                    total_contributed += float(c.get("amount") or 0)
+        # Also sum reimbursements they paid to the lead so the user's number
+        # truthfully reflects all money they've moved through the platform.
+        for g in (led_groups + joined_groups):
+            for r in (g.get("repayments") or []):
+                if r.get("user_id") == user_id:
+                    total_contributed += float(r.get("amount") or 0)
+        total_billed_as_lead = sum(float(g.get("total_amount") or 0) for g in led_groups)
+
         return {
             **_user_public(u),
             "led_groups": [_group_public(g) for g in led_groups],
             "joined_groups": [_group_public(g) for g in joined_groups],
+            "total_billed_as_lead": round(total_billed_as_lead, 2),
+            "total_contributed": round(total_contributed, 2),
         }
 
     @router.post("/users/{user_id}/block")

@@ -110,20 +110,44 @@ export default function AdminGroupDetailPage() {
               <Text style={[styles.statusBadgeText, group.is_blocked && { color: COLORS.danger }]}>{group.is_blocked ? 'BLOCKED' : group.status?.toUpperCase()}</Text>
             </View>
           </View>
-          <Text style={styles.meta}>code {group.code} • split mode {group.split_mode || 'itemized'}</Text>
-          <Text style={styles.sidLine} testID="admin-group-sid" selectable>
-            {formatSid(group.id)}
-          </Text>
-          <TouchableOpacity onPress={() => router.push(`/admin/users/${group.lead_id}` as any)} activeOpacity={0.7}>
-            <Text style={styles.leadLink}><Crown size={11} color={COLORS.warning} />  Lead: {group.lead_name || group.lead_id}{group.lead_phone ? ` • ${group.lead_phone}` : ''}</Text>
-            <Text style={styles.uidLine} testID="admin-group-lead-uid" selectable>
-              {formatUid(group.lead_id)}
-            </Text>
-          </TouchableOpacity>
-          <Text style={styles.metaSmall}>created {new Date(group.created_at).toLocaleString()}</Text>
-          {group.is_blocked && group.blocked_reason ? (
-            <Text style={styles.blockedReason}>Reason: {group.blocked_reason}</Text>
-          ) : null}
+
+          {/* Labeled info table — each field labeled and spaced for clear scanning */}
+          <View style={styles.infoTable} testID="admin-group-info-table">
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>Join code</Text>
+              <Text style={[styles.infoValue, styles.mono]} selectable>{group.code}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>Squad ID</Text>
+              <Text style={[styles.infoValue, styles.mono]} selectable testID="admin-group-sid">{formatSid(group.id)}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>Split mode</Text>
+              <Text style={styles.infoValue}>{group.split_mode || 'itemized'}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>Lead</Text>
+              <TouchableOpacity style={{ flex: 1 }} onPress={() => router.push(`/admin/users/${group.lead_id}` as any)} activeOpacity={0.7}>
+                <Text style={[styles.infoValue, { color: COLORS.primary, fontWeight: FONT.weights.semibold }]}>
+                  <Crown size={11} color={COLORS.warning} /> {group.lead_name || group.lead_id}
+                </Text>
+                {group.lead_phone ? <Text style={styles.infoValueSm}>{group.lead_phone}</Text> : null}
+                <Text style={[styles.infoValueSm, styles.mono]} testID="admin-group-lead-uid">
+                  {formatUid(group.lead_id)}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>Created</Text>
+              <Text style={styles.infoValue}>{new Date(group.created_at).toLocaleString()}</Text>
+            </View>
+            {group.is_blocked && group.blocked_reason ? (
+              <View style={styles.infoRow}>
+                <Text style={styles.infoLabel}>Block reason</Text>
+                <Text style={[styles.infoValue, { color: COLORS.danger, fontStyle: 'italic' }]}>{group.blocked_reason}</Text>
+              </View>
+            ) : null}
+          </View>
         </View>
       </View>
 
@@ -367,7 +391,7 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   backBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: SPACING.md },
   backText: { color: COLORS.subtext, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.medium },
-  headerCard: { padding: SPACING.md, backgroundColor: COLORS.surface, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, marginBottom: SPACING.md },
+  headerCard: { padding: SPACING.lg, backgroundColor: COLORS.surface, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, marginBottom: SPACING.md },
   title: { fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold, color: COLORS.text },
   statusBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4, backgroundColor: COLORS.primaryLight },
   statusBadgeText: { fontSize: 10, fontWeight: FONT.weights.bold, color: COLORS.primary, letterSpacing: 0.4 },
@@ -375,6 +399,13 @@ const styles = StyleSheet.create({
   meta: { fontSize: FONT.sizes.sm, color: COLORS.subtext, marginTop: 4 },
   leadLink: { fontSize: FONT.sizes.sm, color: COLORS.primary, marginTop: 2, fontWeight: FONT.weights.medium },
   metaSmall: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
+  // Labeled info table — narrow label column with stacked rows + room to breathe.
+  infoTable: { marginTop: SPACING.md, gap: 10 },
+  infoRow: { flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.sm },
+  infoLabel: { width: 100, fontSize: 11, color: COLORS.subtext, textTransform: 'uppercase', fontWeight: FONT.weights.bold, letterSpacing: 0.4, paddingTop: 1 },
+  infoValue: { flex: 1, fontSize: FONT.sizes.sm, color: COLORS.text, lineHeight: 18 },
+  infoValueSm: { flex: 1, fontSize: 11, color: COLORS.subtext, lineHeight: 16, marginTop: 1 },
+  mono: { fontFamily: 'monospace', letterSpacing: 0.4 },
   sidLine: {
     fontSize: 12,
     color: COLORS.subtext,

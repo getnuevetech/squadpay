@@ -171,21 +171,48 @@ export default function AdminUserDetailPage() {
           <Text style={[styles.avatarText, user.is_blocked && { color: COLORS.danger }]}>{(user.name || '?').slice(0, 1).toUpperCase()}</Text>
         </View>
         <View style={{ flex: 1 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <Text style={styles.name}>{user.name}</Text>
             {user.verified ? <ShieldCheck size={14} color={COLORS.success} /> : null}
             {user.is_blocked ? (
               <View style={styles.blockedPill}><Ban size={11} color={COLORS.danger} /><Text style={styles.blockedPillText}>Blocked</Text></View>
             ) : null}
           </View>
-          <Text style={styles.meta}>{user.phone || 'no phone on file'}</Text>
-          <Text style={styles.uidLine} testID="admin-user-uid" selectable>
-            {formatUid(user.id)}
-          </Text>
-          <Text style={styles.metaSmall}>raw id {user.id} • joined {new Date(user.created_at).toLocaleDateString()}</Text>
-          {user.is_blocked && user.blocked_reason ? (
-            <Text style={styles.blockedReason}>Reason: {user.blocked_reason}</Text>
-          ) : null}
+
+          {/* Labeled info table — each field gets its own line + label so the
+              admin can scan quickly. Replaces the previous clogged single-line
+              meta block. */}
+          <View style={styles.infoTable} testID="admin-user-info-table">
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>Phone</Text>
+              <Text style={styles.infoValue} selectable>{user.phone || '—'}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>User ID</Text>
+              <Text style={[styles.infoValue, styles.mono]} selectable testID="admin-user-uid">{formatUid(user.id)}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>Raw ID</Text>
+              <Text style={[styles.infoValueSm, styles.mono]} selectable>{user.id}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>Joined</Text>
+              <Text style={styles.infoValue}>{new Date(user.created_at).toLocaleString()}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>Verified</Text>
+              <Text style={[styles.infoValue, { color: user.verified ? COLORS.success : COLORS.warning }]}>
+                {user.verified ? 'Yes' : 'No'}
+              </Text>
+            </View>
+            {user.is_blocked && user.blocked_reason ? (
+              <View style={styles.infoRow}>
+                <Text style={styles.infoLabel}>Block reason</Text>
+                <Text style={[styles.infoValue, { color: COLORS.danger, fontStyle: 'italic' }]}>{user.blocked_reason}</Text>
+              </View>
+            ) : null}
+          </View>
+
           {/* T&C agreement status — surfaces user agreement check stored on the
               user account so support staff can confirm acceptance. */}
           <View
@@ -218,6 +245,12 @@ export default function AdminUserDetailPage() {
         <View style={styles.statCard}><Text style={styles.statLabel}>As lead</Text><Text style={styles.statValue}>{(user.led_groups || []).length}</Text></View>
         <View style={styles.statCard}><Text style={styles.statLabel}>As member</Text><Text style={styles.statValue}>{(user.joined_groups || []).length}</Text></View>
         <View style={styles.statCard}><Text style={styles.statLabel}>Lead billed</Text><Text style={styles.statValue}>${Number(user.total_billed_as_lead || (user.led_groups || []).reduce((s, g) => s + Number(g?.total_amount || 0), 0) || 0).toFixed(2)}</Text></View>
+        <View style={styles.statCard} testID="admin-user-total-contributed">
+          <Text style={styles.statLabel}>Total contributed</Text>
+          <Text style={[styles.statValue, { color: COLORS.success }]}>
+            ${Number(user.total_contributed || 0).toFixed(2)}
+          </Text>
+        </View>
       </View>
 
       <View style={styles.actionsCard}>
@@ -390,12 +423,19 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   backBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: SPACING.md },
   backText: { color: COLORS.subtext, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.medium },
-  headerCard: { flexDirection: 'row', alignItems: 'center', gap: SPACING.md, padding: SPACING.md, backgroundColor: COLORS.surface, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, marginBottom: SPACING.md },
+  headerCard: { flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.md, padding: SPACING.lg, backgroundColor: COLORS.surface, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, marginBottom: SPACING.md },
   avatar: { width: 56, height: 56, borderRadius: 28, backgroundColor: COLORS.primaryLight, alignItems: 'center', justifyContent: 'center' },
   avatarText: { color: COLORS.primary, fontSize: FONT.sizes.xl, fontWeight: FONT.weights.bold },
   name: { fontSize: FONT.sizes.lg, fontWeight: FONT.weights.bold, color: COLORS.text },
   meta: { fontSize: FONT.sizes.sm, color: COLORS.subtext, marginTop: 2 },
   metaSmall: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
+  // Labeled info table — left-aligned narrow label column, value column flexes.
+  infoTable: { marginTop: SPACING.md, gap: 10 },
+  infoRow: { flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.sm },
+  infoLabel: { width: 100, fontSize: 11, color: COLORS.subtext, textTransform: 'uppercase', fontWeight: FONT.weights.bold, letterSpacing: 0.4, paddingTop: 1 },
+  infoValue: { flex: 1, fontSize: FONT.sizes.sm, color: COLORS.text, lineHeight: 18 },
+  infoValueSm: { flex: 1, fontSize: 11, color: COLORS.subtext, lineHeight: 16 },
+  mono: { fontFamily: 'monospace', letterSpacing: 0.4 },
   uidLine: {
     fontSize: 12,
     color: COLORS.subtext,

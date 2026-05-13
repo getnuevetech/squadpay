@@ -111,6 +111,102 @@ user_problem_statement: |
   pay no longer errors with "bill is short".
 
 backend:
+  - task: "Phase A — Admin total_contributed (users list+detail) + audit-log filter expansions + CSV export"
+    implemented: true
+    working: true
+    file: "backend/admin_users_groups.py, backend/admin_routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Phase A backend changes fully verified end-to-end against the live preview
+            backend (https://joint-pay-1.preview.emergentagent.com/api). 56/56 assertions
+            PASS, 0 FAIL, no 5xx anywhere. Test harness at /app/backend_test.py.
+
+            ✅ A) total_contributed happy path:
+              - Registered fresh TomA + AliceA + BobA (mock OTP, direct-DB verify to
+                bypass 5/min rate limit). TomA created fast-split $30 group; AliceA + BobA
+                joined via code. Granted AliceA $10 credit; AliceA contributed $10 via
+                credit-only path (no Stripe). Verified mongo: group.contributions has
+                exactly one row with amount=10, cash_paid=0, credit_applied=10.
+              - GET /api/admin/users/{alice.id} → 200, total_contributed == 10.0 ✓
+              - GET /api/admin/users?q=<alice_phone> → 200, alice row present with
+                total_contributed == 10.0 ✓
+
+            ✅ B) total_contributed includes credit-applied amounts:
+              - Granted AliceA another $5 credit; created SECOND fast-split $30 group;
+                Alice+Bob joined. Inserted a mixed contribution row directly in mongo
+                {amount:10.0, cash_paid:5.0, credit_applied:5.0, via:'mixed'} to
+                deterministically simulate the post-FIFO credit consumption state
+                (real Stripe Checkout settle requires browser redirect — out of scope
+                for API test).
+              - GET /api/admin/users/{alice.id} → total_contributed == 20.0 ✓
+              - GET /api/admin/users (list) → alice row total_contributed == 20.0 ✓
+              Confirms summation logic adds the full `amount` field (gross share) and
+              correctly includes the credit-applied portion.
+
+            ✅ C) total_contributed includes repayments:
+              - Injected a repayment row {amount:3.5, user_id:alice} into group1.
+              - GET /api/admin/users/{alice.id} → total_contributed == 23.5 ✓
+                (20.0 from contributions + 3.5 from repayment) — confirms the detail
+                endpoint adds repayments[].amount on top of contributions[].amount.
+
+            ✅ D) audit-log substring + case-insensitive `action` filter:
+              - Blocked BobA via POST /admin/users/{bob.id}/block {is_blocked:true,
+                reason:"phaseA test"} → 200. Unblocked → 200.
+              - GET /admin/audit-log?action=block → 200. Both 'admin.block_user' and
+                'admin.unblock_user' rows targeting Bob present in results. ✓
+              - `total` field present in response: total=20, items_len=20. ✓
+              - Case-insensitive: action=BLOCK returned identical total (20). ✓
+
+            ✅ E) audit-log date range:
+              - date_from=yesterday-ISO + date_to=tomorrow-ISO → 200, 212 items
+                returned, every row's `at` field within bounds. ✓
+              - date_from=2099-01-01T00:00:00.000Z → 200, items=[], total=0. ✓
+
+            ✅ F) audit-log destructive filter:
+              - destructive=true → 200, ALL returned rows have destructive==true. ✓
+              - destructive=false → 200, ALL returned rows have destructive==false. ✓
+              No counter-examples in either set.
+
+            ✅ G) audit-log CSV export — primary test:
+              - GET /api/admin/audit-log/export → status 200.
+              - Headers: content-type='text/csv; charset=utf-8' ✓
+                          content-disposition='attachment; filename="audit_log_export.csv"' ✓
+              - First line (exact match): "at,admin_email,action,destructive,
+                target_type,target_id,ip,payload_json" ✓
+              - 823 total lines (header + 822 data rows); each row has 8 cols. ✓
+              - Filtered export with ?action=block → 21 lines (header + 20 data rows);
+                every data row's action column contains 'block' (case-insensitive). ✓
+              - CSV parsed cleanly with stdlib csv.reader; payload_json column is
+                proper escaped JSON.
+
+            ✅ H) RBAC:
+              - GET /admin/audit-log without bearer → 401 'Admin auth required'. ✓
+              - GET /admin/audit-log/export without bearer → 401 'Admin auth required'. ✓
+              - Created fresh support-role admin via POST /admin/admins as super_admin,
+                logged in. Both /audit-log and /audit-log/export returned 403
+                'Requires one of roles: manager,super_admin'. RBAC is CONSISTENT
+                across both endpoints (same require_role decorator). ✓
+
+            ✅ I) Regression smoke:
+              - GET /admin/metrics → 200 (groups_total=207, users_total=339, etc.). ✓
+              - GET /admin/users (no filter) → 200, 50 items returned. ✓
+              - POST /api/groups/{gid}/contribute-payment-intent (Phase 7) → 200 with
+                full payload (payment_intent_id, client_secret, ephemeral_key_secret,
+                customer_id, publishable_key, txn_id, cash_owed, credit_planned). ✓
+
+            Notes (informational, not blockers):
+              - Backend log shows passlib bcrypt cosmetic warning + jwt
+                InsecureKeyLengthWarning (JWT_SECRET 31 bytes; ≥32 recommended) —
+                same as previous phases, no functional impact.
+              - All Phase A acceptance criteria pass. No backend action required.
+
+
+backend:
   - task: "Phase 7 — Native Apple/Google Pay PaymentSheet endpoints (contribute-payment-intent, finalize, publishable-key)"
     implemented: true
     working: true
@@ -1576,12 +1672,84 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Phase 7 — Native member contribute PaymentIntent + finalize + publishable-key (Stripe PaymentSheet)"
+    - "Phase A — Admin UI polish backend changes (total_contributed + audit-log filter/CSV)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
+    - agent: "main"
+      message: |
+        Phase A backend changes — please verify:
+
+        1. GET /api/admin/users — each row now includes `total_contributed`
+           (sum of every contribution row's `amount` across all groups the user
+           appears in as lead OR member). Includes both cash + credit-applied
+           portions because each contribution row's amount is the gross share.
+
+        2. GET /api/admin/users/{user_id} — same `total_contributed` field
+           plus also sums repayments paid by this user. Verify the math:
+           total_contributed must equal Σ(all contributions where user_id==id)
+           + Σ(all repayments where user_id==id) across led + joined groups.
+
+        3. GET /api/admin/audit-log — extended:
+           • Action filter is now substring + case-insensitive (regex).
+           • New optional params: target_type, target_id, destructive,
+             date_from (ISO), date_to (ISO).
+           • Response now includes `total` count for accurate pagination.
+
+        4. GET /api/admin/audit-log/export — NEW endpoint.
+           Returns text/csv stream with Content-Disposition attachment.
+           Honors the same filters as /audit-log. Hard-capped at 50,000 rows.
+           Verify the CSV header row is:
+             at,admin_email,action,destructive,target_type,target_id,ip,payload_json
+
+        REVIEW SCOPE:
+          A) Create 2 fresh users + a fast-split group $30 with all 3 members.
+             User2 contributes $10. GET /admin/users/{user2.id} → total_contributed=10.
+             GET /admin/users?q=… → row total_contributed=10.
+          B) Apply admin credit $5 to user2, have them contribute the $10 again
+             on a different group (so 5 cash + 5 credit). total_contributed
+             should now be 20.0 (the credit-applied share counts).
+          C) Audit log substring filter: action='block' should match
+             admin.block_user / admin.unblock_user / admin.block_group rows.
+          D) Date range filter: date_from=yesterday → returns only entries with
+             at >= that ISO. Combine with date_to=today → bounded window.
+          E) CSV export: GET /admin/audit-log/export?action=block →
+             200, content-type=text/csv, Content-Disposition includes
+             "attachment; filename=", CSV body parses correctly, first
+             header row matches the expected schema. Row count <= 50,000.
+          F) Auth: both endpoints still require super_admin or manager role
+             (was already the case for /audit-log).
+
+  - task: "Phase A — total_contributed in admin user list + detail"
+    implemented: true
+    working: "NA"
+    file: "backend/admin_users_groups.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "List endpoint sums contributions across all groups in one pass. Detail endpoint also sums repayments paid by user."
+
+  - task: "Phase A — Audit log filter expansion + CSV export"
+    implemented: true
+    working: "NA"
+    file: "backend/admin_routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Audit-log GET now supports substring action filter, target_type,
+            target_id, destructive, date_from/date_to. Response shape adds `total`.
+            New /audit-log/export endpoint streams CSV with same filter set,
+            capped at 50k rows.
+
     - agent: "main"
       message: |
         Phase 7 — Native Apple Pay / Google Pay (Stripe PaymentSheet) — backend tests needed.

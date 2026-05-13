@@ -1,21 +1,23 @@
-"""Phase 7 — Native Apple/Google Pay PaymentSheet endpoint tests.
+"""Phase A — SquadPay admin console: total_contributed + audit-log filters + CSV export.
 
-Covers:
-  A) GET /api/stripe/publishable-key
-  B) Happy path POST /api/groups/{gid}/contribute-payment-intent
-  C) Eligibility 4xx coverage
-  D) Credit full-coverage 400 branch
-  E) Stripe Customer reuse
-  F) Finalize before payment succeeded
-  G) Finalize negative cases
-  H) Finalize idempotency (manual db flag flip)
-  R) Regression: legacy /contribute Checkout path still works
+Covers (per review request):
+  A) total_contributed happy path (list + detail)
+  B) total_contributed includes credit-applied amounts
+  C) total_contributed includes repayments
+  D) audit-log substring + case-insensitive action filter; `total` field
+  E) audit-log date_from / date_to range filter
+  F) audit-log destructive=true/false filter
+  G) audit-log CSV export — primary test
+  H) RBAC (401 without token; support role consistency between /audit-log and export)
+  I) Regression smoke (metrics + users + native PI)
 """
 from __future__ import annotations
 import asyncio
+import datetime as dt
+import io
+import csv
 import os
 import time
-import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -37,19 +39,22 @@ mongo_client = AsyncIOMotorClient(MONGO_URL)
 db = mongo_client[DB_NAME]
 
 results: List[Tuple[str, bool, str]] = []
+failures_verbatim: List[str] = []
 
 
 def record(name: str, ok: bool, info: str = ""):
     results.append((name, ok, info))
     status = "✅" if ok else "❌"
     print(f"  {status} {name} {('— ' + info) if info else ''}")
+    if not ok and info:
+        failures_verbatim.append(f"{name}: {info}")
 
 
 # ── helpers ─────────────────────────────────────────────────────────────
-async def admin_login(client: httpx.AsyncClient) -> str:
+async def admin_login(client: httpx.AsyncClient, email: str = ADMIN_EMAIL, password: str = ADMIN_PASSWORD) -> str:
     r = await client.post(
         f"{API}/admin/auth/login",
-        json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+        json={"email": email, "password": password},
     )
     r.raise_for_status()
     return r.json()["token"]
@@ -65,24 +70,22 @@ async def ensure_sms_mock(client: httpx.AsyncClient, token: str):
         print(f"[warn] could not set sms mock: {r.status_code} {r.text[:200]}")
 
 
-async def register_user(client: httpx.AsyncClient, name: str, phone: str, verify: bool = True) -> Dict[str, Any]:
-    """Register via /auth/register, then directly mark the user verified in mongo to
-    avoid the 5/minute send-otp rate limit. The verified state matches what
-    /verify-otp would set: {verified: True, phone: <phone>}.
-    """
+def fresh_phone(seed: int) -> str:
+    return f"+1832{seed % 10000000:07d}"
+
+
+async def register_user(client: httpx.AsyncClient, name: str, phone: str) -> Dict[str, Any]:
+    """Register and mark verified via direct mongo write to avoid the 5/min
+    send-otp rate-limit. Matches what /verify-otp would set."""
     r = await client.post(f"{API}/auth/register", json={"name": name})
     r.raise_for_status()
     user = r.json()
-    if not verify:
-        return user
-    # Direct-DB shortcut (test-only) to avoid 5/min rate limit on /send-otp.
-    from datetime import datetime, timezone
     await db.users.update_one(
         {"id": user["id"]},
         {"$set": {
             "phone": phone,
             "verified": True,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         }},
     )
     user["phone"] = phone
@@ -90,24 +93,15 @@ async def register_user(client: httpx.AsyncClient, name: str, phone: str, verify
     return user
 
 
-async def send_otp_only(client: httpx.AsyncClient, user_id: str, phone: str):
-    r = await client.post(f"{API}/auth/send-otp", json={"user_id": user_id, "phone": phone})
-    r.raise_for_status()
-
-
-def fresh_phone() -> str:
-    """Generate a random-looking 10-digit US phone."""
-    return f"+1832{int(time.time() * 1000) % 10000000:07d}"
-
-
-async def create_group(client: httpx.AsyncClient, lead: Dict[str, Any], total: float, title: str = "Pizza Night") -> Dict[str, Any]:
+async def create_group(client: httpx.AsyncClient, lead: Dict[str, Any], total: float,
+                       title: str = "Pizza Night", split_mode: str = "fast") -> Dict[str, Any]:
     r = await client.post(
         f"{API}/groups",
         json={
             "lead_id": lead["id"],
             "title": title,
             "total_amount": total,
-            "split_mode": "fast",
+            "split_mode": split_mode,
             "tax": 0.0,
             "tip": 0.0,
             "items": [],
@@ -118,7 +112,6 @@ async def create_group(client: httpx.AsyncClient, lead: Dict[str, Any], total: f
 
 
 async def join_group(client: httpx.AsyncClient, code: str, user_id: str) -> Dict[str, Any]:
-    # Resolve group_id from code
     r = await client.get(f"{API}/groups/by-code/{code}")
     r.raise_for_status()
     gid = r.json()["id"]
@@ -127,375 +120,497 @@ async def join_group(client: httpx.AsyncClient, code: str, user_id: str) -> Dict
     return r.json()
 
 
-async def get_group(client: httpx.AsyncClient, gid: str) -> Dict[str, Any]:
-    r = await client.get(f"{API}/groups/{gid}")
-    r.raise_for_status()
-    return r.json()
-
-
-async def admin_grant_credit(client: httpx.AsyncClient, token: str, user_id: str, amount: float) -> Dict[str, Any]:
-    r = await client.post(
-        f"{API}/admin/users/{user_id}/credits/grant",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"amount": amount, "note": "phase7 test"},
-    )
-    r.raise_for_status()
-    return r.json()
-
-
-async def admin_revoke_credit(client: httpx.AsyncClient, token: str, user_id: str, credit_id: str):
-    r = await client.post(
-        f"{API}/admin/users/{user_id}/credits/{credit_id}/revoke",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    r.raise_for_status()
-
-
-# ── tests ───────────────────────────────────────────────────────────────
-async def test_A_publishable_key(client: httpx.AsyncClient):
-    print("\n[A] GET /api/stripe/publishable-key")
-    r = await client.get(f"{API}/stripe/publishable-key")
-    record("A.status_200", r.status_code == 200, f"got {r.status_code}")
-    if r.status_code != 200:
-        return
-    body = r.json()
-    record("A.merchant_identifier", body.get("merchant_identifier") == "merchant.us.squadpay", body.get("merchant_identifier"))
-    record("A.configured_true", body.get("configured") is True, str(body.get("configured")))
-    record("A.publishable_key_present", bool(body.get("publishable_key")), str(bool(body.get("publishable_key"))))
-
-
-async def test_B_happy_path(client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
-    print("\n[B] HAPPY PATH — create group + create PI")
+# ── Scenario A: total_contributed happy path ───────────────────────────
+async def test_A_total_contributed_basic(client: httpx.AsyncClient, token: str) -> Dict[str, Any]:
+    print("\n[A] total_contributed happy path (list + detail)")
     ts = int(time.time())
-    tom = await register_user(client, f"Tom Phase7 {ts}", f"+1832{(ts % 10000000):07d}1")
-    alice = await register_user(client, f"Alice Phase7 {ts}", f"+1713{(ts % 10000000):07d}2")
-    bob = await register_user(client, f"Bob Phase7 {ts}", f"+1281{(ts % 10000000):07d}3")
-    record("B.users_registered", all([tom.get("verified"), alice.get("verified"), bob.get("verified")]),
-           f"tom={tom.get('verified')} alice={alice.get('verified')} bob={bob.get('verified')}")
+    tom = await register_user(client, f"TomA {ts}", fresh_phone(ts * 10 + 1))
+    alice = await register_user(client, f"AliceA {ts}", fresh_phone(ts * 10 + 2))
+    bob = await register_user(client, f"BobA {ts}", fresh_phone(ts * 10 + 3))
+    record("A.users_registered", all([tom["verified"], alice["verified"], bob["verified"]]))
 
-    group = await create_group(client, tom, total=30.0, title="Tom's Pizza")
-    gid = group["id"]
-    code = group["code"]
-    await join_group(client, code, alice["id"])
-    await join_group(client, code, bob["id"])
-
-    enriched = await get_group(client, gid)
-    tom_share = next(p["total"] for p in enriched["per_user"] if p["user_id"] == tom["id"])
-    record("B.tom_share_positive", tom_share > 0, f"tom_share={tom_share}")
-
-    r = await client.post(
-        f"{API}/groups/{gid}/contribute-payment-intent",
-        json={"user_id": tom["id"], "amount": tom_share, "notify_on_settled": True},
-    )
-    record("B.pi_status_200", r.status_code == 200, f"got {r.status_code}: {r.text[:300]}")
-    if r.status_code != 200:
-        return None
-    body = r.json()
-    record("B.client_secret_pi_prefix", body.get("client_secret", "").startswith("pi_"), body.get("client_secret", "")[:30])
-    record("B.client_secret_has_secret", "_secret_" in (body.get("client_secret") or ""), "")
-    record("B.payment_intent_id_pi", body.get("payment_intent_id", "").startswith("pi_"), body.get("payment_intent_id", "")[:30])
-    record("B.ephemeral_key_ek", body.get("ephemeral_key_secret", "").startswith("ek_"), body.get("ephemeral_key_secret", "")[:30])
-    record("B.customer_id_cus", body.get("customer_id", "").startswith("cus_"), body.get("customer_id", "")[:30])
-    record("B.publishable_key_present_or_null", body.get("publishable_key") is None or isinstance(body.get("publishable_key"), str), str(type(body.get("publishable_key"))))
-    record("B.txn_id_chg", body.get("txn_id", "").startswith("chg_"), body.get("txn_id", "")[:30])
-    record("B.cash_owed_positive", float(body.get("cash_owed") or 0) > 0, str(body.get("cash_owed")))
-    record("B.credit_planned_zero", abs(float(body.get("credit_planned") or 0)) < 0.01, str(body.get("credit_planned")))
-    record("B.currency_usd", body.get("currency") == "usd", str(body.get("currency")))
-    record("B.merchant_display_name", body.get("merchant_display_name") == "SquadPay", str(body.get("merchant_display_name")))
-
-    # DB inspection
-    pi_id = body.get("payment_intent_id")
-    tx = await db.payment_transactions.find_one({"payment_intent_id": pi_id}, {"_id": 0})
-    record("B.db_tx_exists", tx is not None, "row present" if tx else "missing")
-    if tx:
-        record("B.db_tx_status_initiated", tx.get("status") == "initiated", str(tx.get("status")))
-        record("B.db_tx_applied_false", tx.get("applied") is False, str(tx.get("applied")))
-        record("B.db_tx_ledger_posted_false", tx.get("ledger_posted") is False, str(tx.get("ledger_posted")))
-        record("B.db_tx_kind_native", (tx.get("metadata") or {}).get("kind") == "group_member_contribute_native",
-               str((tx.get("metadata") or {}).get("kind")))
-
-    return {"tom": tom, "alice": alice, "bob": bob, "group": group, "pi_body": body, "gid": gid, "tom_share": tom_share}
-
-
-async def test_C_eligibility(client: httpx.AsyncClient, admin_token: str, ctx: Dict[str, Any]):
-    print("\n[C] ELIGIBILITY 4xx COVERAGE")
-    tom = ctx["tom"]
-    alice = ctx["alice"]
-    gid = ctx["gid"]
-    share = ctx["tom_share"]
-
-    # Unknown group id
-    r = await client.post(f"{API}/groups/grp_DOESNOTEXIST/contribute-payment-intent",
-                         json={"user_id": tom["id"], "amount": 5.0})
-    record("C.unknown_group_404", r.status_code == 404, f"{r.status_code}: {r.text[:100]}")
-
-    # Wrong format
-    r = await client.post(f"{API}/groups/!!!INVALID/contribute-payment-intent",
-                         json={"user_id": tom["id"], "amount": 5.0})
-    record("C.bad_format_404", r.status_code == 404, f"{r.status_code}: {r.text[:100]}")
-
-    # Non-member
-    ts = int(time.time())
-    outsider = await register_user(client, f"Outsider {ts}", f"+1469{(ts % 10000000):07d}9")
-    r = await client.post(f"{API}/groups/{gid}/contribute-payment-intent",
-                         json={"user_id": outsider["id"], "amount": 5.0})
-    record("C.non_member_403", r.status_code == 403, f"{r.status_code}: {r.text[:120]}")
-    record("C.non_member_msg", r.status_code == 403 and "Not a member" in r.text, r.text[:120])
-
-    # Unverified user (skip verify-otp)
-    r = await client.post(f"{API}/auth/register", json={"name": f"Unv {ts}"})
-    unv = r.json()
-    # add unv to a fresh group as a member via join? They need to be a member to bypass non-member check.
-    # The route checks: 404 group, then 403 group_blocked, then 404 user-not-found, then 403 user-blocked,
-    # then 403 if not user.verified, then 403 if not a member.
-    # So the verified check fires BEFORE the member check ✓
-    r = await client.post(f"{API}/groups/{gid}/contribute-payment-intent",
-                         json={"user_id": unv["id"], "amount": 5.0})
-    record("C.unverified_403", r.status_code == 403, f"{r.status_code}: {r.text[:160]}")
-    record("C.unverified_msg", r.status_code == 403 and "Phone verification" in r.text, r.text[:160])
-
-    # Group with <2 members
-    solo_lead = await register_user(client, f"Solo {ts}", f"+1832{(ts % 10000000):07d}5")
-    solo_group = await create_group(client, solo_lead, total=20.0, title="Solo bill")
-    r = await client.post(f"{API}/groups/{solo_group['id']}/contribute-payment-intent",
-                         json={"user_id": solo_lead["id"], "amount": 10.0})
-    record("C.lt2_members_400", r.status_code == 400, f"{r.status_code}: {r.text[:160]}")
-    record("C.lt2_members_msg", r.status_code == 400 and "at least 2 members" in r.text, r.text[:160])
-
-    # amount=0
-    r = await client.post(f"{API}/groups/{gid}/contribute-payment-intent",
-                         json={"user_id": alice["id"], "amount": 0})
-    record("C.amount_zero_400", r.status_code == 400, f"{r.status_code}: {r.text[:160]}")
-    record("C.amount_zero_msg", r.status_code == 400 and "Nothing left" in r.text, r.text[:160])
-
-    # Force group status='paid' via direct db write — use a fresh group
-    paid_lead = await register_user(client, f"PaidLead {ts}", f"+1832{(ts % 10000000):07d}6")
-    paid_m2 = await register_user(client, f"PaidM2 {ts}", f"+1713{(ts % 10000000):07d}7")
-    paid_group = await create_group(client, paid_lead, total=15.0, title="Already paid")
-    await join_group(client, paid_group["code"], paid_m2["id"])
-    await db.groups.update_one({"id": paid_group["id"]}, {"$set": {"status": "paid"}})
-    r = await client.post(f"{API}/groups/{paid_group['id']}/contribute-payment-intent",
-                         json={"user_id": paid_lead["id"], "amount": 5.0})
-    record("C.bill_paid_400", r.status_code == 400, f"{r.status_code}: {r.text[:160]}")
-    record("C.bill_paid_msg", r.status_code == 400 and "Bill already paid" in r.text, r.text[:160])
-
-    # Force is_blocked=true on a group
-    blocked_lead = await register_user(client, f"BLead {ts}", f"+1832{(ts % 10000000):07d}8")
-    blocked_m2 = await register_user(client, f"BM2 {ts}", f"+1713{(ts % 10000000):07d}9")
-    blocked_group = await create_group(client, blocked_lead, total=15.0, title="Blocked group")
-    await join_group(client, blocked_group["code"], blocked_m2["id"])
-    await db.groups.update_one({"id": blocked_group["id"]}, {"$set": {"is_blocked": True}})
-    r = await client.post(f"{API}/groups/{blocked_group['id']}/contribute-payment-intent",
-                         json={"user_id": blocked_lead["id"], "amount": 5.0})
-    record("C.blocked_group_403", r.status_code == 403, f"{r.status_code}: {r.text[:160]}")
-
-
-async def test_D_credit_full_coverage(client: httpx.AsyncClient, admin_token: str, ctx: Dict[str, Any]):
-    print("\n[D] CREDIT FULL-COVERAGE BRANCH")
-    tom = ctx["tom"]
-    gid = ctx["gid"]
-    share = ctx["tom_share"]
-
-    grant = await admin_grant_credit(client, admin_token, tom["id"], 1000.0)
-    credit_id = grant["id"]
-    record("D.credit_granted", credit_id.startswith("cr_"), credit_id)
-
-    r = await client.post(
-        f"{API}/groups/{gid}/contribute-payment-intent",
-        json={"user_id": tom["id"], "amount": share},
-    )
-    record("D.fully_covered_400", r.status_code == 400, f"{r.status_code}: {r.text[:200]}")
-    record("D.fully_covered_msg",
-           r.status_code == 400 and "fully covered" in r.text.lower(),
-           r.text[:200])
-
-    # cleanup
-    await admin_revoke_credit(client, admin_token, tom["id"], credit_id)
-    record("D.credit_revoked", True, "revoked")
-
-
-async def test_E_customer_reuse(client: httpx.AsyncClient, ctx: Dict[str, Any]):
-    print("\n[E] STRIPE CUSTOMER REUSE")
-    tom = ctx["tom"]
-    gid = ctx["gid"]
-    first_cust = ctx["pi_body"]["customer_id"]
-
-    # second call with a DIFFERENT amount
-    r = await client.post(
-        f"{API}/groups/{gid}/contribute-payment-intent",
-        json={"user_id": tom["id"], "amount": 1.50},
-    )
-    record("E.second_call_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
-    if r.status_code != 200:
-        return
-    body = r.json()
-    second_cust = body.get("customer_id")
-    record("E.same_customer_returned", first_cust == second_cust, f"first={first_cust} second={second_cust}")
-
-    user_doc = await db.users.find_one({"id": tom["id"]}, {"_id": 0, "stripe_customer_id": 1})
-    record("E.db_user_stripe_customer_id_matches",
-           user_doc and user_doc.get("stripe_customer_id") == first_cust,
-           f"db={user_doc and user_doc.get('stripe_customer_id')}")
-
-    ctx["second_pi_body"] = body
-
-
-async def test_F_finalize_before_pay(client: httpx.AsyncClient, ctx: Dict[str, Any]):
-    print("\n[F] FINALIZE BEFORE PAYMENT")
-    gid = ctx["gid"]
-    pi_id = ctx["pi_body"]["payment_intent_id"]
-
-    # capture contributions count BEFORE
-    g_before = await get_group(client, gid)
-    contribs_before = len(g_before.get("contributions") or [])
-
-    r = await client.post(
-        f"{API}/groups/{gid}/contribute-payment-intent/finalize",
-        json={"payment_intent_id": pi_id},
-    )
-    record("F.finalize_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
-    if r.status_code != 200:
-        return
-    body = r.json()
-    record("F.applied_false", body.get("applied") is False, str(body.get("applied")))
-    record("F.payment_status_requires_pm",
-           body.get("payment_status") in ("requires_payment_method", "requires_confirmation", "requires_action"),
-           str(body.get("payment_status")))
-
-    # DB inspections
-    tx = await db.payment_transactions.find_one({"payment_intent_id": pi_id}, {"_id": 0})
-    record("F.db_tx_applied_still_false", tx and tx.get("applied") is False, str(tx and tx.get("applied")))
-    record("F.db_tx_status_updated", tx and tx.get("payment_status") in ("requires_payment_method", "requires_confirmation", "requires_action"),
-           str(tx and tx.get("payment_status")))
-
-    g_after = await get_group(client, gid)
-    contribs_after = len(g_after.get("contributions") or [])
-    record("F.contributions_unchanged", contribs_before == contribs_after, f"before={contribs_before} after={contribs_after}")
-
-
-async def test_G_finalize_negative(client: httpx.AsyncClient, ctx: Dict[str, Any]):
-    print("\n[G] FINALIZE NEGATIVE CASES")
-    pi_id = ctx["pi_body"]["payment_intent_id"]
-
-    # 1) wrong group_id with valid pi_id
-    r = await client.post(
-        f"{API}/groups/grp_OTHER_NOPE/contribute-payment-intent/finalize",
-        json={"payment_intent_id": pi_id},
-    )
-    record("G.wrong_group_400", r.status_code == 400, f"{r.status_code}: {r.text[:200]}")
-    record("G.wrong_group_msg",
-           r.status_code == 400 and "does not belong to this group" in r.text,
-           r.text[:200])
-
-    # 2) non-existent PI
-    gid = ctx["gid"]
-    r = await client.post(
-        f"{API}/groups/{gid}/contribute-payment-intent/finalize",
-        json={"payment_intent_id": "pi_DOES_NOT_EXIST"},
-    )
-    record("G.unknown_pi_404", r.status_code == 404, f"{r.status_code}: {r.text[:200]}")
-    record("G.unknown_pi_msg",
-           r.status_code == 404 and "not found in our records" in r.text,
-           r.text[:200])
-
-
-async def test_H_finalize_idempotency(client: httpx.AsyncClient, ctx: Dict[str, Any]):
-    print("\n[H] FINALIZE IDEMPOTENCY (simulated)")
-    # Use the second_pi_body from E (so we don't disturb the one used in F)
-    second = ctx.get("second_pi_body")
-    if not second:
-        record("H.precondition_skip", False, "no second PI from step E")
-        return
-    pi_id = second["payment_intent_id"]
-    gid = ctx["gid"]
-
-    # Flip applied=true directly in mongo
-    await db.payment_transactions.update_one(
-        {"payment_intent_id": pi_id},
-        {"$set": {"applied": True, "status": "complete", "payment_status": "succeeded"}},
-    )
-
-    g_before = await get_group(client, gid)
-    contribs_before = len(g_before.get("contributions") or [])
-
-    r = await client.post(
-        f"{API}/groups/{gid}/contribute-payment-intent/finalize",
-        json={"payment_intent_id": pi_id},
-    )
-    record("H.idempotent_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
-    if r.status_code == 200:
-        record("H.applied_true_in_response", r.json().get("applied") is True, str(r.json().get("applied")))
-
-    g_after = await get_group(client, gid)
-    contribs_after = len(g_after.get("contributions") or [])
-    record("H.no_new_contribution", contribs_before == contribs_after, f"before={contribs_before} after={contribs_after}")
-
-
-async def test_R_regression_legacy_contribute(client: httpx.AsyncClient):
-    print("\n[R] REGRESSION — legacy /contribute (Stripe Checkout) still works")
-    ts = int(time.time())
-    tom = await register_user(client, f"RegTom {ts}", f"+1832{(ts % 10000000):07d}A")
-    alice = await register_user(client, f"RegAlice {ts}", f"+1713{(ts % 10000000):07d}B")
-    g = await create_group(client, tom, total=24.0, title="Regression bill")
+    # Fast-split $30 group; tom leads, alice + bob join → 3 members = $10 each
+    g = await create_group(client, tom, total=30.0, title=f"PhaseA-1 {ts}", split_mode="fast")
     await join_group(client, g["code"], alice["id"])
+    await join_group(client, g["code"], bob["id"])
+    record("A.group_created_with_members", True, f"gid={g['id']} code={g['code']}")
 
-    enriched = await get_group(client, g["id"])
-    tom_share = next(p["total"] for p in enriched["per_user"] if p["user_id"] == tom["id"])
+    # AliceA contributes $10 (full share — no credits, so cash_owed=10 will
+    # require Stripe Checkout, NOT what we want for this test). Instead we
+    # grant 10 in credit so contribute goes through `credit_only` path with
+    # cash_owed=0. But the review request says A is happy-path BEFORE credits
+    # are granted in B. Workaround: directly insert a contribution row in mongo
+    # to simulate a settled $10 contribution — this exercises the SAME read
+    # path that total_contributed sums.
+    # Better: use credit-only contribute via admin grant to keep flow real.
+    # We'll grant $10 credit, then call /contribute amount=10 which routes
+    # through the credit_only path (no Stripe).
+    r = await client.post(
+        f"{API}/admin/users/{alice['id']}/credits/grant",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"amount": 10.0, "note": "phaseA test"},
+    )
+    record("A.alice_credit_granted", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
 
     r = await client.post(
         f"{API}/groups/{g['id']}/contribute",
-        json={
-            "user_id": tom["id"],
-            "amount": tom_share,
-            "origin_url": "http://localhost:3000",
-            "app_return_url": "http://localhost:3000",
-        },
+        json={"user_id": alice["id"], "amount": 10.0, "notify_on_settled": False},
     )
-    record("R.legacy_contribute_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
+    record("A.alice_contributed_10", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
+
+    # Verify mongo row: contribution.amount == 10
+    grp = await db.groups.find_one({"id": g["id"]}, {"_id": 0})
+    alice_contribs = [c for c in (grp.get("contributions") or []) if c.get("user_id") == alice["id"]]
+    contribs_sum = sum(float(c.get("amount") or 0) for c in alice_contribs)
+    record("A.db_alice_contrib_sum_10", abs(contribs_sum - 10.0) < 0.01,
+           f"sum={contribs_sum} rows={alice_contribs}")
+
+    # Detail: GET /api/admin/users/{alice.id} → total_contributed == 10.0
+    r = await client.get(
+        f"{API}/admin/users/{alice['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    record("A.user_detail_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
+    if r.status_code == 200:
+        body = r.json()
+        tc = body.get("total_contributed")
+        record("A.detail_total_contributed_10", abs(float(tc or 0) - 10.0) < 0.01,
+               f"got total_contributed={tc}")
+
+    # List: GET /api/admin/users?q=<alice phone> → row has total_contributed == 10
+    r = await client.get(
+        f"{API}/admin/users",
+        params={"q": alice["phone"], "limit": 50},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    record("A.user_list_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
+    if r.status_code == 200:
+        items = r.json().get("items", [])
+        row = next((it for it in items if it.get("id") == alice["id"]), None)
+        record("A.list_row_present", row is not None, f"found {len(items)} rows")
+        if row:
+            tc = row.get("total_contributed")
+            record("A.list_total_contributed_10", abs(float(tc or 0) - 10.0) < 0.01,
+                   f"got total_contributed={tc}")
+
+    return {"tom": tom, "alice": alice, "bob": bob, "group1": g}
+
+
+# ── Scenario B: total_contributed includes credit-applied portion ──────
+async def test_B_credit_applied(client: httpx.AsyncClient, token: str, ctx: Dict[str, Any]):
+    print("\n[B] total_contributed includes credit-applied portion")
+    tom = ctx["tom"]
+    alice = ctx["alice"]
+    bob = ctx["bob"]
+    ts = int(time.time())
+
+    # Grant Alice $5 credit (in addition to whatever's left from A)
+    r = await client.post(
+        f"{API}/admin/users/{alice['id']}/credits/grant",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"amount": 5.0, "note": "phaseB credit"},
+    )
+    record("B.alice_credit_5_granted", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
+
+    # Create SECOND fast-split $30 group with tom as lead; alice + bob join
+    g2 = await create_group(client, tom, total=30.0, title=f"PhaseB-2 {ts}", split_mode="fast")
+    await join_group(client, g2["code"], alice["id"])
+    await join_group(client, g2["code"], bob["id"])
+
+    # Alice contributes $10 → credit-FIFO will consume $5 credit + need $5 cash
+    # This means /contribute will trigger Stripe Checkout (cash_owed=5>0).
+    # We instead need the contribution to actually settle so the row gets
+    # recorded with amount=10. We can do this by granting MORE credit so the
+    # whole 10 is credit-only — but then credit_applied=10, cash_paid=0, and
+    # the review request specifically wants "credit_applied=5, cash_paid=5
+    # but amount=10". The only way to make this happen without a real Stripe
+    # checkout completion is to either:
+    #   (a) Drive a Stripe Checkout session and webhook simulate, OR
+    #   (b) Directly write a contribution row into mongo matching the shape.
+    # We use (b) — same data shape the contribute route produces — to verify
+    # the admin endpoint's summation logic includes credit_applied portions.
+    from uuid import uuid4
+    contrib = {
+        "id": f"c_{uuid4().hex[:10]}",
+        "user_id": alice["id"],
+        "amount": 10.0,
+        "cash_paid": 5.0,
+        "credit_applied": 5.0,
+        "notify_on_settled": False,
+        "via": "mixed",
+        "at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    await db.groups.update_one(
+        {"id": g2["id"]},
+        {"$push": {"contributions": contrib}},
+    )
+    record("B.simulated_mixed_contrib_inserted", True, f"amount=10 (cash=5+credit=5) in {g2['id']}")
+
+    # Detail: total_contributed should now be 10 (from g1) + 10 (from g2) = 20.0
+    r = await client.get(
+        f"{API}/admin/users/{alice['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    record("B.user_detail_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
+    if r.status_code == 200:
+        tc = r.json().get("total_contributed")
+        record("B.detail_total_contributed_20", abs(float(tc or 0) - 20.0) < 0.01,
+               f"got total_contributed={tc}, expected 20.0")
+
+    # List: alice's row should also reflect 20.0
+    r = await client.get(
+        f"{API}/admin/users",
+        params={"q": alice["phone"]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    if r.status_code == 200:
+        items = r.json().get("items", [])
+        row = next((it for it in items if it.get("id") == alice["id"]), None)
+        if row:
+            tc = row.get("total_contributed")
+            record("B.list_total_contributed_20", abs(float(tc or 0) - 20.0) < 0.01,
+                   f"got total_contributed={tc}, expected 20.0")
+    return {"g2": g2}
+
+
+# ── Scenario C: total_contributed includes repayments ──────────────────
+async def test_C_repayments(client: httpx.AsyncClient, token: str, ctx: Dict[str, Any]):
+    print("\n[C] total_contributed includes repayments")
+    alice = ctx["alice"]
+    # Take the first group from A and inject a repayment row for alice (simulating
+    # she paid tom back). This is the same shape the /repay endpoint creates.
+    g1 = ctx["group1"]
+    from uuid import uuid4
+    rep = {
+        "id": f"rep_{uuid4().hex[:10]}",
+        "user_id": alice["id"],
+        "amount": 3.50,
+        "at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    await db.groups.update_one(
+        {"id": g1["id"]},
+        {"$push": {"repayments": rep}},
+    )
+    record("C.repayment_injected", True, f"rep amount=3.5 in {g1['id']}")
+
+    # Detail total_contributed now expected: 20.0 (from A+B) + 3.5 = 23.5
+    r = await client.get(
+        f"{API}/admin/users/{alice['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    if r.status_code == 200:
+        tc = r.json().get("total_contributed")
+        record("C.detail_total_contributed_23_5", abs(float(tc or 0) - 23.5) < 0.01,
+               f"got total_contributed={tc}, expected 23.5 (20.0 contribs + 3.5 repayment)")
+    else:
+        record("C.detail_total_contributed_23_5", False, f"{r.status_code}: {r.text[:200]}")
+
+
+# ── Scenario D: audit-log substring + case-insensitive filter ──────────
+async def test_D_audit_action_filter(client: httpx.AsyncClient, token: str, ctx: Dict[str, Any]):
+    print("\n[D] audit-log substring + case-insensitive `action` filter")
+    bob = ctx["bob"]
+
+    # Block then unblock BobA so we have admin.block_user + admin.unblock_user rows
+    r = await client.post(
+        f"{API}/admin/users/{bob['id']}/block",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"is_blocked": True, "reason": "phaseA test"},
+    )
+    record("D.block_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
+
+    r = await client.post(
+        f"{API}/admin/users/{bob['id']}/block",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"is_blocked": False},
+    )
+    record("D.unblock_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
+
+    # Filter: action=block → should return both block_user + unblock_user rows
+    r = await client.get(
+        f"{API}/admin/audit-log",
+        params={"action": "block", "limit": 500},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    record("D.action_filter_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
+    if r.status_code == 200:
+        body = r.json()
+        items = body.get("items", [])
+        actions = [i.get("action") for i in items]
+        # Check both target_id matches bob, since other test runs may have produced more
+        bob_actions = [i for i in items if i.get("target_id") == bob["id"]]
+        bob_action_names = sorted(set(a.get("action") for a in bob_actions))
+        record("D.has_block_user", "admin.block_user" in bob_action_names, f"bob_actions={bob_action_names}")
+        record("D.has_unblock_user", "admin.unblock_user" in bob_action_names, f"bob_actions={bob_action_names}")
+        record("D.total_field_present", "total" in body, f"keys={list(body.keys())}")
+        record("D.total_matches_items", isinstance(body.get("total"), int) and body.get("total") >= len(items),
+               f"total={body.get('total')} items_len={len(items)}")
+        total_lower = body.get("total")
+
+        # Case-insensitive: action=BLOCK should yield same set
+        r2 = await client.get(
+            f"{API}/admin/audit-log",
+            params={"action": "BLOCK", "limit": 500},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if r2.status_code == 200:
+            total_upper = r2.json().get("total")
+            record("D.case_insensitive_total_match", total_lower == total_upper,
+                   f"lower={total_lower}, upper={total_upper}")
+        else:
+            record("D.case_insensitive_total_match", False, f"{r2.status_code}: {r2.text[:200]}")
+
+
+# ── Scenario E: audit-log date range ───────────────────────────────────
+async def test_E_audit_date_range(client: httpx.AsyncClient, token: str):
+    print("\n[E] audit-log date_from / date_to filter")
+    now = dt.datetime.now(dt.timezone.utc)
+    yesterday = (now - dt.timedelta(days=1)).isoformat()
+    tomorrow = (now + dt.timedelta(days=1)).isoformat()
+
+    r = await client.get(
+        f"{API}/admin/audit-log",
+        params={"date_from": yesterday, "date_to": tomorrow, "limit": 500},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    record("E.range_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
+    if r.status_code == 200:
+        items = r.json().get("items", [])
+        record("E.items_returned", len(items) > 0, f"got {len(items)} items")
+        # Verify all rows within bounds
+        all_in_bounds = True
+        offender = None
+        for it in items:
+            at_str = it.get("at") or ""
+            if at_str < yesterday or at_str > tomorrow:
+                all_in_bounds = False
+                offender = at_str
+                break
+        record("E.all_within_bounds", all_in_bounds, f"offender_at={offender}")
+
+    # Future date range → 0 items
+    r = await client.get(
+        f"{API}/admin/audit-log",
+        params={"date_from": "2099-01-01T00:00:00.000Z", "limit": 50},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    if r.status_code == 200:
+        body = r.json()
+        record("E.future_range_zero_items", len(body.get("items", [])) == 0 and body.get("total") == 0,
+               f"items={len(body.get('items', []))} total={body.get('total')}")
+    else:
+        record("E.future_range_zero_items", False, f"{r.status_code}: {r.text[:200]}")
+
+
+# ── Scenario F: audit-log destructive filter ───────────────────────────
+async def test_F_destructive(client: httpx.AsyncClient, token: str):
+    print("\n[F] audit-log destructive filter")
+    r = await client.get(
+        f"{API}/admin/audit-log",
+        params={"destructive": "true", "limit": 200},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    record("F.destructive_true_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
+    if r.status_code == 200:
+        items = r.json().get("items", [])
+        all_true = all(bool(it.get("destructive")) is True for it in items)
+        record("F.all_destructive_true", all_true, f"counter-examples={[i.get('action') for i in items if not i.get('destructive')]}")
+
+    r = await client.get(
+        f"{API}/admin/audit-log",
+        params={"destructive": "false", "limit": 200},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    record("F.destructive_false_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
+    if r.status_code == 200:
+        items = r.json().get("items", [])
+        all_false = all(bool(it.get("destructive")) is False for it in items)
+        record("F.all_destructive_false", all_false,
+               f"counter-examples={[i.get('action') for i in items if i.get('destructive')]}")
+
+
+# ── Scenario G: audit-log CSV export — primary test ────────────────────
+async def test_G_audit_csv_export(client: httpx.AsyncClient, token: str):
+    print("\n[G] audit-log CSV export — primary test")
+    r = await client.get(
+        f"{API}/admin/audit-log/export",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    record("G.export_status_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
     if r.status_code != 200:
         return
-    body = r.json()
-    # Legacy returns either checkout_url (Stripe checkout) or credit_only path
-    has_checkout = bool(body.get("checkout_url")) or bool(body.get("url")) or bool(body.get("session_id"))
-    record("R.legacy_has_session_or_url",
-           has_checkout or body.get("status") == "credit_only" or body.get("settled") is True,
-           f"keys={list(body.keys())[:10]}")
+    ctype = r.headers.get("content-type", "")
+    cdisp = r.headers.get("content-disposition", "")
+    record("G.content_type_csv", "text/csv" in ctype.lower(), f"content-type={ctype}")
+    record("G.content_disp_attachment", "attachment" in cdisp.lower(), f"content-disposition={cdisp}")
+    record("G.content_disp_filename", "filename=" in cdisp.lower(), f"content-disposition={cdisp}")
+
+    body = r.text
+    lines = body.splitlines()
+    record("G.body_has_more_than_header", len(lines) > 1, f"line count={len(lines)}")
+    expected_header = "at,admin_email,action,destructive,target_type,target_id,ip,payload_json"
+    record("G.header_exact_match", len(lines) > 0 and lines[0] == expected_header,
+           f"actual_first_line={lines[0] if lines else '<empty>'}")
+
+    # CSV parse + spot-check
+    reader = csv.reader(io.StringIO(body))
+    rows = list(reader)
+    record("G.csv_parses", len(rows) >= 2, f"parsed_rows={len(rows)}")
+    if len(rows) >= 2:
+        record("G.row_has_8_cols", len(rows[1]) == 8, f"col_count={len(rows[1])}")
+
+    # Filtered export: action=block → reduced set
+    r2 = await client.get(
+        f"{API}/admin/audit-log/export",
+        params={"action": "block"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    record("G.filtered_export_200", r2.status_code == 200, f"{r2.status_code}: {r2.text[:200]}")
+    if r2.status_code == 200:
+        body2 = r2.text
+        lines2 = body2.splitlines()
+        record("G.filtered_smaller_than_full", len(lines2) <= len(lines),
+               f"filtered={len(lines2)} full={len(lines)}")
+        # Every data row should have 'block' in column 2 (action) substring
+        reader2 = csv.reader(io.StringIO(body2))
+        all_rows = list(reader2)
+        if len(all_rows) > 1:
+            data_rows = all_rows[1:]
+            actions_lower = [row[2].lower() for row in data_rows if len(row) >= 3]
+            all_have_block = all("block" in a for a in actions_lower)
+            record("G.filtered_all_contain_block", all_have_block,
+                   f"non_block_actions={[a for a in actions_lower if 'block' not in a][:5]}")
 
 
-async def main():
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+# ── Scenario H: RBAC ───────────────────────────────────────────────────
+async def test_H_rbac(client: httpx.AsyncClient, admin_token: str):
+    print("\n[H] RBAC")
+    # No bearer → 401 on both endpoints
+    r = await client.get(f"{API}/admin/audit-log")
+    record("H.no_bearer_log_401", r.status_code == 401, f"{r.status_code}: {r.text[:120]}")
+    r = await client.get(f"{API}/admin/audit-log/export")
+    record("H.no_bearer_export_401", r.status_code == 401, f"{r.status_code}: {r.text[:120]}")
+
+    # Create a fresh 'support' role admin (super_admin only)
+    ts = int(time.time())
+    support_email = f"support_phaseA_{ts}@squadpay.us"
+    support_password = "Sup!Strong#Pwd_2026"
+    r = await client.post(
+        f"{API}/admin/admins",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "email": support_email,
+            "password": support_password,
+            "name": "Support PhaseA",
+            "role": "support",
+        },
+    )
+    record("H.support_admin_created", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
+    if r.status_code != 200:
+        return
+
+    try:
+        support_token = await admin_login(client, support_email, support_password)
+        record("H.support_login_ok", True, "")
+    except Exception as e:
+        record("H.support_login_ok", False, f"login failed: {e}")
+        return
+
+    # GET /audit-log as support
+    r = await client.get(
+        f"{API}/admin/audit-log",
+        headers={"Authorization": f"Bearer {support_token}"},
+    )
+    log_status = r.status_code
+    record("H.support_log_status", log_status in (200, 403), f"{log_status}: {r.text[:200]}")
+
+    # GET /audit-log/export as support
+    r = await client.get(
+        f"{API}/admin/audit-log/export",
+        headers={"Authorization": f"Bearer {support_token}"},
+    )
+    export_status = r.status_code
+    record("H.support_export_status", export_status in (200, 403), f"{export_status}: {r.text[:200]}")
+
+    # RBAC consistency: both endpoints must give same result for support
+    record("H.support_rbac_consistent", log_status == export_status,
+           f"log={log_status} export={export_status} — should be SAME for both endpoints")
+
+
+# ── Scenario I: regression smoke ───────────────────────────────────────
+async def test_I_regression(client: httpx.AsyncClient, token: str, ctx: Dict[str, Any]):
+    print("\n[I] regression smoke (metrics, users list, native PI)")
+
+    # GET /admin/metrics → 200
+    r = await client.get(f"{API}/admin/metrics", headers={"Authorization": f"Bearer {token}"})
+    record("I.metrics_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
+
+    # GET /admin/users → 200 with items > 0
+    r = await client.get(
+        f"{API}/admin/users",
+        params={"limit": 50},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    record("I.users_list_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
+    if r.status_code == 200:
+        items = r.json().get("items", [])
+        record("I.users_list_nonempty", len(items) > 0, f"count={len(items)}")
+
+    # Native PI smoke: tom contributes his share in group1
+    tom = ctx["tom"]
+    g1 = ctx["group1"]
+    enriched = await (await client.get(f"{API}/groups/{g1['id']}")).aread()
+    # Re-fetch via httpx
+    r = await client.get(f"{API}/groups/{g1['id']}")
+    if r.status_code == 200:
+        g = r.json()
+        per = next((p for p in g.get("per_user", []) if p["user_id"] == tom["id"]), None)
+        tom_share = per.get("total") if per else 0.0
+        remaining = per.get("remaining_share") if per else 0.0
+        amt = remaining if remaining and remaining > 0.01 else tom_share
+        r2 = await client.post(
+            f"{API}/groups/{g1['id']}/contribute-payment-intent",
+            json={"user_id": tom["id"], "amount": amt, "notify_on_settled": False},
+        )
+        record("I.native_pi_200", r2.status_code == 200, f"{r2.status_code}: {r2.text[:300]}")
+        if r2.status_code == 200:
+            body = r2.json()
+            record("I.native_pi_has_client_secret", bool(body.get("client_secret")),
+                   f"keys={list(body.keys())[:8]}")
+
+
+# ── runner ─────────────────────────────────────────────────────────────
+async def run_all():
+    timeout = httpx.Timeout(60.0, connect=15.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         token = await admin_login(client)
+        print(f"✅ admin login ok, token len={len(token)}")
         await ensure_sms_mock(client, token)
 
-        await test_A_publishable_key(client)
-
-        ctx = await test_B_happy_path(client)
-        if not ctx:
-            print("\n[!] Happy path failed; aborting dependent tests.")
-        else:
-            await test_C_eligibility(client, token, ctx)
-            await test_D_credit_full_coverage(client, token, ctx)
-            await test_E_customer_reuse(client, ctx)
-            await test_F_finalize_before_pay(client, ctx)
-            await test_G_finalize_negative(client, ctx)
-            await test_H_finalize_idempotency(client, ctx)
-
-        await test_R_regression_legacy_contribute(client)
+        ctx = await test_A_total_contributed_basic(client, token)
+        await test_B_credit_applied(client, token, ctx)
+        await test_C_repayments(client, token, ctx)
+        await test_D_audit_action_filter(client, token, ctx)
+        await test_E_audit_date_range(client, token)
+        await test_F_destructive(client, token)
+        await test_G_audit_csv_export(client, token)
+        await test_H_rbac(client, token)
+        await test_I_regression(client, token, ctx)
 
     # Summary
-    print("\n" + "=" * 70)
+    print("\n" + "=" * 72)
     passed = sum(1 for _, ok, _ in results if ok)
-    total = len(results)
-    print(f"SUMMARY: {passed}/{total} assertions passed")
-    fails = [r for r in results if not r[1]]
-    if fails:
-        print(f"\n{len(fails)} FAILURES:")
-        for name, _, info in fails:
-            print(f"  ❌ {name}: {info[:300]}")
-    else:
-        print("ALL PASSED.")
-    return 0 if not fails else 1
+    failed = sum(1 for _, ok, _ in results if not ok)
+    print(f"RESULTS: {passed}/{len(results)} pass, {failed} fail")
+    if failed:
+        print("\nFAILURES:")
+        for name, ok, info in results:
+            if not ok:
+                print(f"  ❌ {name}: {info}")
+    print("=" * 72)
+    return failed == 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    ok = asyncio.run(run_all())
+    raise SystemExit(0 if ok else 1)

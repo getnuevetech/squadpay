@@ -279,16 +279,113 @@ def build_admin_router(db):
         skip: int = Query(0, ge=0),
         action: Optional[str] = None,
         admin_email: Optional[str] = None,
+        target_type: Optional[str] = None,
+        target_id: Optional[str] = None,
+        destructive: Optional[bool] = None,
+        date_from: Optional[str] = Query(None, description="ISO datetime — inclusive lower bound"),
+        date_to: Optional[str] = Query(None, description="ISO datetime — inclusive upper bound"),
         admin=Depends(_attach_admin),
         _check=Depends(require_role("super_admin", "manager")),
     ):
+        """Paginated + filterable audit log feed.
+
+        Returns `total` (count for the filter) so the frontend can render
+        accurate "Page 3 of 12" affordances. Supports filtering by action,
+        admin email, target, destructive flag, and date range.
+        """
         q: dict = {}
         if action:
-            q["action"] = action
+            # Substring match — admins often type 'block' to see all block_user/block_group
+            esc = action.strip().replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)").replace(".", "\\.")
+            q["action"] = {"$regex": esc, "$options": "i"}
         if admin_email:
             q["admin_email"] = admin_email.lower()
+        if target_type:
+            q["target_type"] = target_type
+        if target_id:
+            q["target_id"] = target_id
+        if destructive is not None:
+            q["destructive"] = bool(destructive)
+        if date_from or date_to:
+            at_clause: dict = {}
+            if date_from:
+                at_clause["$gte"] = date_from
+            if date_to:
+                at_clause["$lte"] = date_to
+            q["at"] = at_clause
+        total = await db.audit_log.count_documents(q)
         cursor = db.audit_log.find(q, {"_id": 0}).sort("at", -1).skip(skip).limit(limit)
-        return {"items": await cursor.to_list(length=None), "skip": skip, "limit": limit}
+        items = await cursor.to_list(length=None)
+        return {"items": items, "total": total, "skip": skip, "limit": limit}
+
+    # ----- Audit log CSV download -----
+    @router.get("/audit-log/export")
+    async def audit_log_export(
+        request: Request,
+        action: Optional[str] = None,
+        admin_email: Optional[str] = None,
+        target_type: Optional[str] = None,
+        target_id: Optional[str] = None,
+        destructive: Optional[bool] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        admin=Depends(_attach_admin),
+        _check=Depends(require_role("super_admin", "manager")),
+    ):
+        """Stream the filtered audit log as a CSV download.
+
+        Limited to 50_000 rows (server-side hard cap) to protect memory on
+        huge tenants — admins should narrow the date range if they hit it.
+        """
+        import csv
+        import io
+        import json
+        from fastapi.responses import StreamingResponse
+
+        q: dict = {}
+        if action:
+            esc = action.strip().replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)").replace(".", "\\.")
+            q["action"] = {"$regex": esc, "$options": "i"}
+        if admin_email:
+            q["admin_email"] = admin_email.lower()
+        if target_type:
+            q["target_type"] = target_type
+        if target_id:
+            q["target_id"] = target_id
+        if destructive is not None:
+            q["destructive"] = bool(destructive)
+        if date_from or date_to:
+            at_clause: dict = {}
+            if date_from:
+                at_clause["$gte"] = date_from
+            if date_to:
+                at_clause["$lte"] = date_to
+            q["at"] = at_clause
+
+        cursor = db.audit_log.find(q, {"_id": 0}).sort("at", -1).limit(50_000)
+        rows = await cursor.to_list(length=None)
+
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["at", "admin_email", "action", "destructive", "target_type", "target_id", "ip", "payload_json"])
+        for r in rows:
+            w.writerow([
+                r.get("at") or "",
+                r.get("admin_email") or "",
+                r.get("action") or "",
+                "true" if r.get("destructive") else "false",
+                r.get("target_type") or "",
+                r.get("target_id") or "",
+                r.get("ip") or "",
+                json.dumps(r.get("payload") or {}, separators=(",", ":")),
+            ])
+        body = buf.getvalue()
+        filename = "audit_log_export.csv"
+        return StreamingResponse(
+            iter([body]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     # ----- Admin management (super_admin only) -----
     @router.get("/admins", response_model=List[AdminOut])

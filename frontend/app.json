@@ -126,8 +126,10 @@
           "data": [
             { "scheme": "https", "host": "squadpay.us", "pathPrefix": "/join/" },
             { "scheme": "https", "host": "squadpay.us", "pathPrefix": "/group/" },
+            { "scheme": "https", "host": "squadpay.us", "pathPrefix": "/payout/" },
             { "scheme": "https", "host": "www.squadpay.us", "pathPrefix": "/join/" },
-            { "scheme": "https", "host": "www.squadpay.us", "pathPrefix": "/group/" }
+            { "scheme": "https", "host": "www.squadpay.us", "pathPrefix": "/group/" },
+            { "scheme": "https", "host": "www.squadpay.us", "pathPrefix": "/payout/" }
           ],
           "category": ["BROWSABLE", "DEFAULT"]
         }

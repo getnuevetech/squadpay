@@ -12,6 +12,10 @@
           {
             "/": "/group/*",
             "comment": "Group detail / dashboard links open the app"
+          },
+          {
+            "/": "/payout/*",
+            "comment": "Stripe Connect Express return + refresh URLs for Lead cash-out flow open the app"
           }
         ]
       }

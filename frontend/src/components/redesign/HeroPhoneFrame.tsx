@@ -106,12 +106,12 @@ export function HeroPhoneFrame({ height = 380 }: Props) {
 
   // Re-pick on every fresh mount (one-time per landing visit).
   const palette = useMemo(() => {
-    const frameColor = pick(remote?.phone_frame_colors, FALLBACK_PHONE_COLORS[0]);
+    const frameColor = pick(remote?.phone_frame_colors, FALLBACK_PHONE_COLORS);
     const [tag1, tag2, tag3] = pickN(remote?.hashtags, FALLBACK_HASHTAGS, 3);
     const av = {
-      left: pick(remote?.avatars?.slot_left, FALLBACK_AVATARS_LEFT[0]),
-      rightMan: pick(remote?.avatars?.slot_right_man, FALLBACK_AVATARS_RIGHT_MAN[0]),
-      rightWoman: pick(remote?.avatars?.slot_right_woman, FALLBACK_AVATARS_RIGHT_WOMAN[0]),
+      left: pick(remote?.avatars?.slot_left, FALLBACK_AVATARS_LEFT),
+      rightMan: pick(remote?.avatars?.slot_right_man, FALLBACK_AVATARS_RIGHT_MAN),
+      rightWoman: pick(remote?.avatars?.slot_right_woman, FALLBACK_AVATARS_RIGHT_WOMAN),
     };
     return { frameColor, tag1, tag2, tag3, av };
   }, [remote]);

@@ -46,6 +46,23 @@ export default function GroupLobbyScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [editTitleVisible, setEditTitleVisible] = useState(false);
   const [revealOpen, setRevealOpen] = useState(false);
+  // Item 6 (June 2025) — admin master toggle for Stripe Issuing (the
+  // "Squad card" feature). When OFF, hide the per-squad card pill
+  // entirely. Defaults to enabled so a cold-start fetch failure doesn't
+  // accidentally hide the card.
+  const [issuingEnabled, setIssuingEnabled] = useState<boolean>(true);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch(`${process.env.EXPO_PUBLIC_BACKEND_URL || ''}/api/runtime/wallet-config`);
+        if (!r.ok) return;
+        const j = await r.json();
+        if (alive) setIssuingEnabled(j.issuing_enabled !== false);
+      } catch { /* leave default */ }
+    })();
+    return () => { alive = false; };
+  }, []);
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -284,8 +301,11 @@ export default function GroupLobbyScreen() {
           );
         })()}
 
-        {/* Virtual card (lead-only) — Real Stripe Issuing card (Phase F1) */}
-        {isLead && group.virtual_card && group.virtual_card.stripe_card_id && (
+        {/* Item 6 (June 2025) — Squad card pill is hidden when:
+            (a) no card has been issued yet, OR
+            (b) admin has flipped the issuing master toggle OFF.
+            Lead-only view, regardless. */}
+        {isLead && issuingEnabled && group.virtual_card && group.virtual_card.stripe_card_id && (
           <View style={styles.cardWrap} testID="lobby-virtual-card">
             <Text style={styles.cardLabel}>
               Squad card · {group.virtual_card.status === 'inactive' ? 'disabled' :

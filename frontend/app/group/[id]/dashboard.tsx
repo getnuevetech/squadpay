@@ -320,44 +320,33 @@ export default function DashboardScreen() {
             </View>
             <Text style={styles.qaText}>Invite</Text>
           </TouchableOpacity>
+          {/* Item 5 + 6 (June 2025) — Card button is REMOVED from the
+              quick-action row. The 3rd slot is now ALWAYS the Pay Out
+              button (replaces the old Card button location). When the
+              squad isn't payable yet (not fully funded, or lead is the
+              one paying the merchant directly), the button still
+              renders but is disabled & grayed-out — leads get a clear
+              visual hint that Pay Out is the only action waiting for
+              them. Access to the underlying squad card (if any) is
+              still available via the "Squad card" pill in the lobby. */}
           {(() => {
             const isLead = group.lead_id === userId;
             const fullyFunded = group.status === 'paid' && (group.funding_mode || 'lead') === 'group';
-            const hasCard = !!(group as any).virtual_card;
-            const cardEnabled = walletConfig.issuing_enabled !== false;
-            if (isLead && fullyFunded) {
-              return (
-                <TouchableOpacity
-                  style={styles.qaBtn}
-                  activeOpacity={0.85}
-                  onPress={() => router.push(`/payout/cash-out?group_id=${group.id}`)}
-                  testID="dashboard-action-payout"
-                >
-                  <View style={styles.qaIcon}>
-                    <Wallet size={18} color={COLORS.primary} />
-                  </View>
-                  <Text style={styles.qaText}>Pay Out</Text>
-                </TouchableOpacity>
-              );
-            }
-            if (hasCard && cardEnabled) {
-              return (
-                <TouchableOpacity
-                  style={styles.qaBtn}
-                  activeOpacity={0.85}
-                  onPress={() => router.push(`/group/${group.id}/card`)}
-                  testID="dashboard-action-card"
-                >
-                  <View style={styles.qaIcon}>
-                    <Wallet size={18} color={COLORS.primary} />
-                  </View>
-                  <Text style={styles.qaText}>Card</Text>
-                </TouchableOpacity>
-              );
-            }
-            // Spacer to keep the 3-column rhythm so Items+Invite don't get
-            // stretched into wide pill-buttons that look broken.
-            return <View style={[styles.qaBtn, { opacity: 0 }]} />;
+            const payOutEligible = isLead && fullyFunded;
+            return (
+              <TouchableOpacity
+                style={[styles.qaBtn, !payOutEligible && { opacity: 0.4 }]}
+                activeOpacity={payOutEligible ? 0.85 : 1}
+                onPress={() => payOutEligible && router.push(`/payout/cash-out?group_id=${group.id}`)}
+                disabled={!payOutEligible}
+                testID="dashboard-action-payout"
+              >
+                <View style={styles.qaIcon}>
+                  <Wallet size={18} color={COLORS.primary} />
+                </View>
+                <Text style={styles.qaText}>Pay Out</Text>
+              </TouchableOpacity>
+            );
           })()}
         </View>
 

@@ -498,7 +498,7 @@ export default function AdminIntegrations() {
 
         <View style={styles.toggleRow}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.label}>Credits / Wallet</Text>
+            <Text style={styles.label}>SquadPay credits</Text>
             <Text style={styles.helper}>Show credits balance pill, /credits page, and auto-apply credits during contributions.</Text>
           </View>
           <Switch value={featCredits} onValueChange={setFeatCredits} trackColor={{ false: COLORS.disabledBg, true: '#10B981' }} thumbColor="#fff" testID="admin-feat-credits" />

@@ -491,7 +491,7 @@ export default function PayScreen() {
         Alert.alert('Payment status', `Stripe reports: ${fin.payment_status}`);
       }
     } catch (e: any) {
-      Alert.alert('Wallet payment failed', e?.message || 'Please try card payment instead.');
+      Alert.alert('Payment failed', e?.message || 'Please try card payment instead.');
     } finally {
       setNativePayBusy(false);
     }
@@ -655,7 +655,7 @@ export default function PayScreen() {
                 )}
                 {creditBalance > 0.01 && (
                   <BreakRow
-                    label="Wallet credits (auto-applied)"
+                    label="SquadPay credits (auto-applied)"
                     value={-Math.min(creditBalance, amount)}
                     tone="primary"
                   />
@@ -675,7 +675,7 @@ export default function PayScreen() {
                 <BreakRow label="Owed to lead" value={myPer.outstanding} />
                 {creditBalance > 0.01 && (
                   <BreakRow
-                    label="Wallet credits"
+                    label="SquadPay credits"
                     value={-Math.min(creditBalance, amount)}
                     tone="primary"
                   />
@@ -1001,7 +1001,7 @@ export default function PayScreen() {
                 <Button
                   title={
                     nativePayBusy
-                      ? 'Opening wallet…'
+                      ? 'Opening payment…'
                       : Platform.OS === 'ios'
                       ? `Pay with Apple Pay — $${amount.toFixed(2)}`
                       : `Pay with Google Pay — $${amount.toFixed(2)}`

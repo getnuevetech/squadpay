@@ -126,6 +126,8 @@ class WalletConfigIn(BaseModel):
 # credit awarded the first time a lead completes Stripe Connect KYC.
 class KycIncentiveIn(BaseModel):
     enabled: bool = True
+    # Two reward strategies. Admin picks one — see kyc_incentive.py.
+    reward_mode: str = Field("credit_off_next_bill", description="credit_off_next_bill | waive_platform_fees_next_bill")
     credit_amount: float = Field(10.0, ge=0, le=500)
     messages: list[str] = Field(default_factory=list)
 
@@ -745,6 +747,7 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
             cfg = await set_kyc_incentive(
                 db,
                 enabled=body.enabled,
+                reward_mode=body.reward_mode,
                 credit_amount=body.credit_amount,
                 messages=body.messages,
                 admin_email=admin_email,

@@ -416,6 +416,48 @@ async def _recompute_group(group: dict) -> dict:
             2,
         )
 
+    # KYC reward application (June 2025) — if the lead earned a KYC
+    # reward on a prior Stripe Connect onboarding, it was stamped onto
+    # this group at creation time as `group.lead_reward`. We now apply
+    # it to the LEAD's per-user row:
+    #   • credit_off_next_bill          → subtract amount from lead.total,
+    #                                      add lead_reward line item
+    #   • waive_platform_fees_next_bill → zero out lead's platform_fee
+    # We never go negative. The lead_reward dict is exposed on the per-
+    # user row so the FE can render a "−$10 KYC reward" line clearly.
+    lead_reward = group.get("lead_reward") or {}
+    if lead_reward and lead_reward.get("mode"):
+        lead_id = group.get("lead_id")
+        for p in per_user:
+            if p["user_id"] != lead_id:
+                continue
+            if p.get("total", 0) <= 0:
+                # Lead hasn't claimed any items — no charge to discount.
+                # Leave the reward attached on the group so it applies
+                # once the lead claims something. Don't consume.
+                break
+            mode = lead_reward.get("mode")
+            if mode == "credit_off_next_bill":
+                amt = round(min(float(lead_reward.get("amount") or 0), p["total"]), 2)
+                if amt > 0:
+                    p["lead_reward"] = {
+                        "mode": mode,
+                        "amount": amt,
+                        "source": lead_reward.get("source"),
+                    }
+                    p["total"] = round(p["total"] - amt, 2)
+            elif mode == "waive_platform_fees_next_bill":
+                waived = round(float(p.get("platform_fee") or 0), 2)
+                if waived > 0:
+                    p["lead_reward"] = {
+                        "mode": mode,
+                        "amount": waived,
+                        "source": lead_reward.get("source"),
+                    }
+                    p["total"] = round(p["total"] - waived, 2)
+                    p["platform_fee"] = 0.0
+            break
+
     contributions = group.get("contributions", [])
     repayments = group.get("repayments", [])
     contrib_by_user: Dict[str, float] = {}

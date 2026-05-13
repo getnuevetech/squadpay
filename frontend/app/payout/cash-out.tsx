@@ -139,13 +139,17 @@ export default function CashOutScreen() {
   const [autoRedirectCancelled, setAutoRedirectCancelled] = useState(false);
   // KYC incentive (June 2025) — fetched once on mount. We pick ONE random
   // message from the admin-configured pool so different leads see
-  // different angles. The credit_amount is shown as a small earned-reward
-  // chip just above the CTA. All admin-tunable via /admin/kyc-incentive.
+  // different angles. The reward chip below shows the actual reward
+  // strategy chosen by the admin — either a flat dollar discount on
+  // the lead's NEXT squad, or a platform-fee waiver on their NEXT squad.
+  // All admin-tunable via /admin/kyc-incentive. SquadPay never stores
+  // value — the reward auto-applies to the next bill.
   const [kycIncentive, setKycIncentive] = useState<{
     enabled: boolean;
+    reward_mode: 'credit_off_next_bill' | 'waive_platform_fees_next_bill';
     credit_amount: number;
     message: string | null;
-  }>({ enabled: true, credit_amount: 10, message: null });
+  }>({ enabled: true, reward_mode: 'credit_off_next_bill', credit_amount: 10, message: null });
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -160,6 +164,9 @@ export default function CashOutScreen() {
         const picked = pool[Math.floor(Math.random() * pool.length)];
         setKycIncentive({
           enabled: j.enabled !== false,
+          reward_mode: (j.reward_mode === 'waive_platform_fees_next_bill'
+            ? 'waive_platform_fees_next_bill'
+            : 'credit_off_next_bill'),
           credit_amount: Number(j.credit_amount || 0),
           message: picked,
         });
@@ -407,14 +414,22 @@ export default function CashOutScreen() {
             {kycIncentive.message || 'Stripe handles it — SquadPay just makes sure your money gets back to you.'}
           </Text>
 
-          {/* Reward chip — only renders when admin has the incentive
-              enabled and credit > 0. Sits between message and CTA so
-              the eye lands on it last before tapping. */}
-          {kycIncentive.enabled && kycIncentive.credit_amount > 0 && (
+          {/* Reward chip — admin-tunable. Mode A = flat $ off the next
+              squad. Mode B = platform-fee waiver on the next squad.
+              The chip text reflects whichever mode admin picked. We
+              never use the word "Wallet" — SquadPay does not hold
+              stored value, only channels payments. */}
+          {kycIncentive.enabled && (
             <View style={styles.rewardChip} testID="kyc-reward-chip">
-              <Text style={styles.rewardChipBadge}>EARN ${kycIncentive.credit_amount.toFixed(0)}</Text>
+              <Text style={styles.rewardChipBadge}>
+                {kycIncentive.reward_mode === 'waive_platform_fees_next_bill'
+                  ? 'NO FEES'
+                  : `EARN $${kycIncentive.credit_amount.toFixed(0)}`}
+              </Text>
               <Text style={styles.rewardChipText}>
-                ${kycIncentive.credit_amount.toFixed(0)} SquadPay credit lands in your wallet the moment you finish.
+                {kycIncentive.reward_mode === 'waive_platform_fees_next_bill'
+                  ? 'We\'ll waive all SquadPay platform fees on your next Squad.'
+                  : `$${kycIncentive.credit_amount.toFixed(0)} discount auto-applies to your next Squad bill.`}
               </Text>
             </View>
           )}

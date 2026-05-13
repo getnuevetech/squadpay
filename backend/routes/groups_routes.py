@@ -86,6 +86,15 @@ def attach_groups_routes(router: APIRouter, db):
             "created_at": now_iso(),
         }
         await db.groups.insert_one(group.copy())
+        # KYC reward auto-attach (June 2025) — if this lead has a pending
+        # KYC reward, stamp it on the new squad so _compute_per_user
+        # applies it to their share. Idempotent — at most one squad
+        # per user ever gets the reward.
+        try:
+            from kyc_incentive import attach_pending_reward_to_group
+            await attach_pending_reward_to_group(db, lead_user_id=body.user_id, group_id=gid)
+        except Exception:
+            pass
         return await _load_group_enriched(db, gid)
 
     @router.get("/groups/{group_id}")

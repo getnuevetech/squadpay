@@ -274,8 +274,8 @@ export default function GroupLobbyScreen() {
                     const creditCount = breakdown.filter((b) => b.via === 'wallet_credit').length;
                     let msg = `Refunded $${r.refunded.toFixed(2)}`;
                     if (stripeCount && !creditCount) msg += ' to your card (5–10 days)';
-                    else if (creditCount && !stripeCount) msg += ' to your wallet';
-                    else if (stripeCount && creditCount) msg += ' (mixed: card + wallet)';
+                    else if (creditCount && !stripeCount) msg += ' as SquadPay credits';
+                    else if (stripeCount && creditCount) msg += ' (mixed: card + credits)';
                     toast.success(msg);
                   } else {
                     toast.error(r.info || 'Refund failed');

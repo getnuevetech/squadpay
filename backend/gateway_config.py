@@ -418,6 +418,18 @@ def attach_gateway_routes(router: APIRouter, db, get_current_admin):
         if not catalog or catalog["group"] != group:
             raise HTTPException(400, f"Provider '{body.provider_slug}' not in group '{group}'")
 
+        # Guardrail: refuse to activate a provider whose adapter is not yet
+        # implemented in code. Admin can SAVE credentials for it (preparing for
+        # future release), but flipping the active switch on a scaffold would
+        # break live charges silently.
+        if catalog.get("status") != "production":
+            raise HTTPException(
+                400,
+                f"{catalog['display_name']} adapter is not yet implemented in code. "
+                "Credentials are saved, but activation will only be available once "
+                "the adapter ships in a future release.",
+            )
+
         # Ensure provider's required fields are filled before activation
         cfg = await db.gateway_config.find_one(
             {"group": group, "provider_slug": body.provider_slug}, {"_id": 0},

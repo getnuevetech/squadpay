@@ -114,6 +114,14 @@ class TicketReplyIn(BaseModel):
     also_send_email: bool = True
 
 
+# Module-level so FastAPI can introspect it (closure-defined Pydantic
+# models break Body() resolution under pydantic v2 → 422 "missing body").
+class WalletConfigIn(BaseModel):
+    apple_pay_enabled: bool = True
+    google_pay_enabled: bool = True
+    issuing_enabled: bool = True
+
+
 class CmsPageIn(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     slug: Optional[str] = Field(default=None, max_length=120)
@@ -653,15 +661,8 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
     # Google Pay buttons in the member checkout flow. When disabled, the FE
     # falls back to Stripe Checkout WebView (which still surfaces wallet
     # buttons in supported browsers — cheaper-per-transaction trade-off).
-    class WalletConfigIn(BaseModel):
-        apple_pay_enabled: bool = True
-        google_pay_enabled: bool = True
-        # Item 6 (June 2025) — master toggle for the squad/virtual card
-        # (Stripe Issuing) feature. When OFF the per-squad Card button is
-        # hidden in the app and no new cards are issued. Existing issued
-        # cards remain in the DB but become inert. Defaults to True so
-        # existing deployments aren't surprised by a behavior change.
-        issuing_enabled: bool = True
+    # WalletConfigIn is module-level (above) — closure-defined Pydantic
+    # models break FastAPI Body() resolution under pydantic v2.
 
     @r.get("/admin/wallet-config")
     async def get_wallet_config(admin=Depends(get_current_admin)):
@@ -676,7 +677,7 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
 
     @r.put("/admin/wallet-config")
     async def set_wallet_config(
-        body: WalletConfigIn,
+        body: WalletConfigIn = Body(...),
         admin=Depends(get_current_admin),
         _gate=Depends(require_role("super_admin", "manager")),
     ):

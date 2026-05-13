@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Platform, TextInput } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ArrowLeft, Ban, ShieldCheck, Crown, Users as UsersIcon, Wallet, Plus, X as XIcon, Percent, DollarSign, Trash2, KeyRound, FileCheck2, FileWarning } from 'lucide-react-native';
-import { adminApi, AdminUserDetail, AdminGroupRow, UserCreditWallet, LeadAutoDiscount } from '../../../src/adminApi';
+import { ArrowLeft, Ban, ShieldCheck, Crown, Users as UsersIcon, Wallet, Plus, X as XIcon, Percent, DollarSign, Trash2, KeyRound, FileCheck2, FileWarning, Inbox, Mail } from 'lucide-react-native';
+import { adminApi, AdminUserDetail, AdminGroupRow, UserCreditWallet, LeadAutoDiscount, ticketsApi } from '../../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 import { formatUid } from '../../../src/ids';
 
@@ -21,6 +21,7 @@ export default function AdminUserDetailPage() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [user, setUser] = useState<AdminUserDetail | null>(null);
+  const [tickets, setTickets] = useState<any[]>([]);
   const [busy, setBusy] = useState(true);
   const [reason, setReason] = useState('');
   // C2 — credits + lead discount
@@ -36,12 +37,14 @@ export default function AdminUserDetailPage() {
     if (!id) return;
     setBusy(true);
     try {
-      const [u, w] = await Promise.all([
+      const [u, w, t] = await Promise.all([
         adminApi.getUser(id),
         adminApi.getUserCredits(id).catch(() => null),
+        ticketsApi.forUser(id).catch(() => ({ items: [], total: 0 })),
       ]);
       setUser(u);
       setWallet(w);
+      setTickets(t.items || []);
       const ld = w?.lead_auto_discount;
       if (ld) {
         setLdType(ld.type);
@@ -415,6 +418,37 @@ export default function AdminUserDetailPage() {
         <View style={styles.sectionHeader}><UsersIcon size={14} color={COLORS.text} /><Text style={styles.sectionTitle}>Groups joined ({user.joined_groups.length})</Text></View>
         {user.joined_groups.length === 0 ? <Text style={styles.empty}>None.</Text> : user.joined_groups.map(renderGroup)}
       </View>
+
+      {/* Customer Service tickets — auto-linked to user via UID.
+          Surfaces all contact-us messages the user has sent. Tap to jump to
+          the Customer Service screen with the ticket pre-opened. */}
+      <View style={styles.section} testID="admin-user-tickets-section">
+        <View style={styles.sectionHeader}>
+          <Inbox size={14} color={COLORS.text} />
+          <Text style={styles.sectionTitle}>Support tickets ({tickets.length})</Text>
+        </View>
+        {tickets.length === 0 ? (
+          <Text style={styles.empty}>No tickets from this user.</Text>
+        ) : tickets.map((t: any) => (
+          <TouchableOpacity
+            key={t.id}
+            style={styles.ticketRow}
+            activeOpacity={0.7}
+            onPress={() => router.push(`/admin/customer-service?ticket=${t.id}` as any)}
+            testID={`admin-user-ticket-${t.id}`}
+          >
+            <Mail size={14} color={t.status === 'new' ? COLORS.danger : t.status === 'resolved' || t.status === 'closed' ? COLORS.success : COLORS.warning} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.ticketTitle}>{t.subject_label || t.subject || 'Message'}</Text>
+              <Text style={styles.ticketBody} numberOfLines={2}>{t.message}</Text>
+              <Text style={styles.ticketMeta}>
+                {new Date(t.created_at).toLocaleString()} · status {t.status}
+                {t.replies?.length ? ` · ${t.replies.length} repl${t.replies.length === 1 ? 'y' : 'ies'}` : ''}
+              </Text>
+            </View>
+          </TouchableOpacity>
+        ))}
+      </View>
     </ScrollView>
   );
 }
@@ -476,6 +510,10 @@ const styles = StyleSheet.create({
   sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: SPACING.sm },
   sectionTitle: { fontSize: FONT.sizes.md, fontWeight: FONT.weights.bold, color: COLORS.text },
   empty: { fontSize: FONT.sizes.sm, color: COLORS.subtext, fontStyle: 'italic' },
+  ticketRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, padding: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  ticketTitle: { fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold, color: COLORS.text },
+  ticketBody: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
+  ticketMeta: { fontSize: 10, color: COLORS.subtext, marginTop: 4, fontStyle: 'italic' },
   groupRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   groupTitle: { fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold, color: COLORS.text },
   groupMeta: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },

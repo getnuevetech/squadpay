@@ -1111,3 +1111,220 @@ export type MasterAccountEntry = {
   created_at: string;
   created_by?: string;
 };
+
+
+// ============================================================================
+// Phase B + Phase C helpers (June 2025)
+// ============================================================================
+
+export type OcrProviderEntry = { provider: string; model: string };
+export type OcrAttempt = {
+  provider: string;
+  model: string;
+  ok: boolean;
+  error?: string;
+  latency_ms?: number;
+};
+export type OcrConfig = {
+  providers: OcrProviderEntry[];
+  recent_attempts: Array<{
+    id: string;
+    at: string;
+    chain: OcrProviderEntry[];
+    attempts: OcrAttempt[];
+    succeeded: boolean;
+    provider_used?: string | null;
+  }>;
+  updated_at?: string | null;
+};
+
+export type CmsPage = {
+  id: string;
+  slug: string;
+  title: string;
+  body: string;
+  body_format: 'markdown' | 'plain';
+  published: boolean;
+  visibility: 'web' | 'mobile' | 'both';
+  meta_description?: string | null;
+  created_at: string;
+  updated_at: string;
+  created_by?: string | null;
+};
+
+export type AdminActivityRow = {
+  id: string;
+  at: string;
+  admin_email: string;
+  admin_id?: string;
+  action: string;
+  target_type?: string;
+  target_id?: string;
+  payload?: any;
+  ip?: string;
+  user_agent?: string;
+};
+
+export type TicketReply = {
+  id: string;
+  ticket_id: string;
+  direction: 'outgoing' | 'incoming';
+  from_email?: string;
+  message: string;
+  created_at: string;
+  email_dispatch?: { sent: boolean; error?: string | null };
+};
+
+// Shared request helper — re-uses the same authenticated fetch pattern as the
+// rest of adminApi. We bind to the module-level `request` via a wrapper.
+async function _aRequest<T>(path: string, init?: RequestInit & { skipAuth?: boolean }): Promise<T> {
+  const token = await getToken();
+  const isAbsolute = path.startsWith('http');
+  const isAdmin = path.startsWith('/admin');
+  const url = isAbsolute ? path : `${BACKEND_URL}/api${isAdmin ? '' : ''}${path}`;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token && !init?.skipAuth) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(url, { ...init, headers: { ...headers, ...(init?.headers as any) } });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  // 204 / empty
+  const ct = res.headers.get('content-type') || '';
+  if (ct.includes('json')) return res.json();
+  return (await res.text()) as any;
+}
+
+// ----- OCR config -----
+export const ocrApi = {
+  get: () => _aRequest<OcrConfig>('/admin/ocr-config'),
+  set: (providers: OcrProviderEntry[]) =>
+    _aRequest<{ ok: boolean; providers: OcrProviderEntry[] }>('/admin/ocr-config', {
+      method: 'PUT',
+      body: JSON.stringify({ providers }),
+    }),
+};
+
+// ----- Income & Fees exports -----
+export const incomeFeesApi = {
+  downloadCsv: async (params: { status?: string; since?: string; until?: string }) => {
+    const q = new URLSearchParams();
+    if (params.status) q.set('status', params.status);
+    if (params.since) q.set('since', params.since);
+    if (params.until) q.set('until', params.until);
+    const url = `${BACKEND_URL}/api/admin/income-fees/export.csv${q.toString() ? `?${q.toString()}` : ''}`;
+    return _downloadFile(url, 'text/csv', 'income_fees.csv');
+  },
+  downloadPdf: async (params: { status?: string; since?: string; until?: string }) => {
+    const q = new URLSearchParams();
+    if (params.status) q.set('status', params.status);
+    if (params.since) q.set('since', params.since);
+    if (params.until) q.set('until', params.until);
+    const url = `${BACKEND_URL}/api/admin/income-fees/export.pdf${q.toString() ? `?${q.toString()}` : ''}`;
+    return _downloadFile(url, 'application/pdf', 'income_fees.pdf');
+  },
+};
+
+// Shared download helper — fetches with auth and triggers a browser-anchor
+// download on web. On native, returns the body for the caller to share.
+async function _downloadFile(url: string, mime: string, fallbackName: string) {
+  const token = await getToken();
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  const blob = mime === 'application/pdf' ? await res.blob() : new Blob([await res.text()], { type: mime });
+  const cd = res.headers.get('content-disposition') || '';
+  const m = /filename="?([^"]+)"?/.exec(cd);
+  const filename = m?.[1] || fallbackName;
+  if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(href);
+  }
+  return { filename, size: blob.size };
+}
+
+// ----- Customer-service replies + user tickets -----
+export const ticketsApi = {
+  reply: (ticketId: string, message: string, alsoSendEmail = true) =>
+    _aRequest<any>(`/admin/contact-messages/${ticketId}/reply`, {
+      method: 'POST',
+      body: JSON.stringify({ message, also_send_email: alsoSendEmail }),
+    }),
+  forUser: (userId: string) =>
+    _aRequest<{ items: any[]; total: number }>(`/admin/users/${userId}/tickets`),
+};
+
+// ----- CMS pages -----
+export const cmsApi = {
+  list: () => _aRequest<{ items: CmsPage[]; total: number }>('/admin/cms/pages'),
+  get: (id: string) => _aRequest<CmsPage>(`/admin/cms/pages/${id}`),
+  create: (body: Partial<CmsPage>) =>
+    _aRequest<CmsPage>('/admin/cms/pages', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id: string, body: Partial<CmsPage>) =>
+    _aRequest<CmsPage>(`/admin/cms/pages/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  remove: (id: string) =>
+    _aRequest<{ ok: boolean }>(`/admin/cms/pages/${id}`, { method: 'DELETE' }),
+};
+
+// Public CMS fetch (no admin token required). Used by the public route.
+export const publicCmsApi = {
+  list: async () => {
+    const res = await fetch(`${BACKEND_URL}/api/cms/pages`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return (await res.json()) as { items: CmsPage[] };
+  },
+  get: async (slug: string) => {
+    const res = await fetch(`${BACKEND_URL}/api/cms/pages/${encodeURIComponent(slug)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return (await res.json()) as CmsPage;
+  },
+};
+
+// ----- Admin activity -----
+export const adminActivityApi = {
+  record: (
+    action: string,
+    payload?: Record<string, any>,
+    targetType?: string,
+    targetId?: string,
+  ) =>
+    _aRequest<{ ok: boolean; id: string }>('/admin/activity', {
+      method: 'POST',
+      body: JSON.stringify({
+        action,
+        target_type: targetType,
+        target_id: targetId,
+        payload: payload || {},
+      }),
+    }).catch(() => ({ ok: false, id: '' })), // best-effort: never break the UI
+  forAdmin: (adminIdOrEmail: string, params?: { limit?: number; skip?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.limit) q.set('limit', String(params.limit));
+    if (params?.skip) q.set('skip', String(params.skip));
+    const qs = q.toString();
+    return _aRequest<{ items: AdminActivityRow[]; total: number; skip: number; limit: number }>(
+      `/admin/admins/${encodeURIComponent(adminIdOrEmail)}/activity${qs ? `?${qs}` : ''}`,
+    );
+  },
+};
+
+// ----- Edit admin (super_admin only) -----
+export const adminEditApi = {
+  update: (
+    adminId: string,
+    patch: { name?: string; role?: string; is_active?: boolean; notes?: string },
+  ) =>
+    _aRequest<any>(`/admin/admins/${adminId}`, {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+};

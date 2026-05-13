@@ -16,9 +16,11 @@ import {
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { ArrowLeft, ChevronDown, Receipt, TrendingUp } from 'lucide-react-native';
-import { adminApi, IncomeFeesResponse } from '../../src/adminApi';
+import { ArrowLeft, ChevronDown, Receipt, TrendingUp, Download, FileDown } from 'lucide-react-native';
+import { adminApi, IncomeFeesResponse, incomeFeesApi } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
+import { toast } from '../../src/components/Toast';
+import { Alert } from 'react-native';
 
 export default function AdminIncomeFees() {
   const router = useRouter();
@@ -64,6 +66,30 @@ export default function AdminIncomeFees() {
           <ArrowLeft size={22} color={COLORS.text} />
         </TouchableOpacity>
         <Text style={styles.heading}>Income & Fees</Text>
+        <View style={{ flex: 1 }} />
+        {/* Export buttons — CSV is fast, PDF is a one-page landscape ledger */}
+        <TouchableOpacity
+          onPress={async () => {
+            try { const r = await incomeFeesApi.downloadCsv({}); toast.success(`Downloaded ${r.filename}`); }
+            catch (e: any) { Alert.alert('Export failed', e?.message || 'CSV download failed'); }
+          }}
+          style={[styles.exportBtn, { backgroundColor: COLORS.primary }]}
+          testID="income-fees-export-csv"
+        >
+          <Download size={13} color="#fff" />
+          <Text style={styles.exportBtnText}>CSV</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={async () => {
+            try { const r = await incomeFeesApi.downloadPdf({}); toast.success(`Downloaded ${r.filename}`); }
+            catch (e: any) { Alert.alert('Export failed', e?.message || 'PDF download failed'); }
+          }}
+          style={[styles.exportBtn, { backgroundColor: COLORS.success }]}
+          testID="income-fees-export-pdf"
+        >
+          <FileDown size={13} color="#fff" />
+          <Text style={styles.exportBtnText}>PDF</Text>
+        </TouchableOpacity>
       </View>
       <Text style={styles.subhead}>
         Total platform-retained fees. Items / Tax / Tip flow to the group's
@@ -194,6 +220,8 @@ function BdRow({ label, amount, small }: { label: string; amount: number; small?
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.bg },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.md, marginBottom: 4 },
+  exportBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, height: 32, borderRadius: RADIUS.md },
+  exportBtnText: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: FONT.sizes.xs },
   heading: { flex: 1, fontSize: FONT.sizes.lg, fontWeight: FONT.weights.heavy, color: COLORS.text },
   subhead: { color: COLORS.subtext, fontSize: 12, marginBottom: SPACING.md, lineHeight: 17 },
   cardsRow: { flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.sm },

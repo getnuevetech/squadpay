@@ -17,8 +17,10 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Inbox, Filter, Send, CheckCircle2, Clock } from 'lucide-react-native';
-import { adminApi } from '../../src/adminApi';
+import { adminApi, ticketsApi } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
+import { toast } from '../../src/components/Toast';
+import { Alert } from 'react-native';
 
 const STATUS_OPTS = ['', 'new', 'open', 'resolved', 'closed'] as const;
 const SUBJECT_OPTS = ['', 'general_enquiry', 'technical_support', 'account_refund', 'others'] as const;
@@ -41,6 +43,8 @@ export default function AdminCustomerServiceScreen() {
   const [q, setQ] = useState('');
   const [selected, setSelected] = useState<any | null>(null);
   const [note, setNote] = useState('');
+  const [reply, setReply] = useState('');
+  const [replying, setReplying] = useState(false);
   const PAGE = 25;
 
   const load = useCallback(async () => {
@@ -207,6 +211,57 @@ export default function AdminCustomerServiceScreen() {
                 );
               })}
             </View>
+            <Text style={[styles.sectionLabel, { marginTop: SPACING.md }]}>Reply to user</Text>
+            {/* Outgoing replies (sent to user by admin) */}
+            {(selected.replies || []).length === 0 ? (
+              <Text style={styles.subtle}>No replies yet.</Text>
+            ) : (
+              (selected.replies || []).map((rp: any) => (
+                <View key={rp.id} style={[styles.noteCard, { backgroundColor: COLORS.primaryLight, borderColor: COLORS.primary }]}>
+                  <Text style={[styles.noteMeta, { color: COLORS.primary }]}>
+                    {rp.from_email || 'admin'} → {selected.email} · {new Date(rp.created_at).toLocaleString()}
+                    {rp.email_dispatch?.sent ? ' · email sent' : rp.email_dispatch?.error ? ` · email FAILED (${rp.email_dispatch.error})` : ''}
+                  </Text>
+                  <Text style={styles.noteBody}>{rp.message}</Text>
+                </View>
+              ))
+            )}
+            <View style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-end' }}>
+              <TextInput
+                value={reply}
+                onChangeText={setReply}
+                placeholder={`Send a reply to ${selected.email}…`}
+                placeholderTextColor={COLORS.disabledText}
+                multiline
+                style={[styles.input, { flex: 1, minHeight: 80, textAlignVertical: 'top' }]}
+                testID="cs-reply-input"
+              />
+              <TouchableOpacity
+                onPress={async () => {
+                  if (!reply.trim()) return;
+                  setReplying(true);
+                  try {
+                    const updated = await ticketsApi.reply(selected.id, reply.trim(), true);
+                    setSelected(updated);
+                    setReply('');
+                    toast.success('Reply sent');
+                    load();
+                  } catch (e: any) {
+                    Alert.alert('Reply failed', e?.message || 'Could not send reply');
+                  } finally {
+                    setReplying(false);
+                  }
+                }}
+                disabled={replying || !reply.trim()}
+                style={[styles.addNoteBtn, { backgroundColor: COLORS.success }, (replying || !reply.trim()) && { opacity: 0.5 }]}
+                activeOpacity={0.85}
+                testID="cs-reply-send"
+              >
+                {replying ? <ActivityIndicator color="#fff" size="small" /> : <Send size={14} color="#fff" />}
+                <Text style={styles.addNoteBtnText}>{replying ? 'Sending…' : 'Reply'}</Text>
+              </TouchableOpacity>
+            </View>
+
             <Text style={[styles.sectionLabel, { marginTop: SPACING.md }]}>Internal notes</Text>
             {(selected.notes || []).length === 0 ? (
               <Text style={styles.subtle}>No notes yet.</Text>

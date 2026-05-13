@@ -1,0 +1,616 @@
+"""
+Phase B + Phase C admin endpoints — bundled.
+
+Phase B
+-------
+B1) OCR provider chain config
+    GET  /api/admin/ocr-config        → current chain + recent attempts
+    PUT  /api/admin/ocr-config        → reorder/replace chain (super_admin)
+
+B2) Income & Fees CSV + PDF exports
+    GET  /api/admin/income-fees/export.csv
+    GET  /api/admin/income-fees/export.pdf
+
+Phase C
+-------
+C1) Customer Service replies + per-user tickets
+    POST /api/admin/contact-messages/{id}/reply  → admin replies (emails user)
+    GET  /api/admin/users/{user_id}/tickets      → list all tickets for a user
+
+C2) CMS admin pages (public + admin)
+    Public:
+      GET  /api/cms/pages              → list published pages
+      GET  /api/cms/pages/{slug}       → fetch one published page by slug
+    Admin:
+      GET    /api/admin/cms/pages
+      POST   /api/admin/cms/pages
+      GET    /api/admin/cms/pages/{id}
+      PUT    /api/admin/cms/pages/{id}
+      DELETE /api/admin/cms/pages/{id}
+
+C3) Admin RBAC: super_admin-only edit + per-admin activity log
+    POST /api/admin/activity              → record an admin activity event (called by admin app)
+    GET  /api/admin/admins/{id}/activity  → activity log for one admin
+    PUT  /api/admin/admins/{id}           → super_admin-only edit (override existing PUT if any)
+"""
+from __future__ import annotations
+
+import csv
+import datetime as dt
+import io
+import logging
+import os
+import re
+import smtplib
+import ssl
+from email.message import EmailMessage
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
+
+
+def _now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def _new_id(prefix: str) -> str:
+    return f"{prefix}{uuid4().hex[:10]}"
+
+
+def _slugify(s: str) -> str:
+    s = (s or "").lower().strip()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    s = re.sub(r"-+", "-", s).strip("-")
+    return s or _new_id("p_")
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Email helper (reused from contact_routes flow — duplicated here to keep
+# this module standalone so it can be removed independently if needed)
+# ───────────────────────────────────────────────────────────────────────────
+def _send_via_gmail(subject: str, body_text: str, to_addr: str) -> Optional[str]:
+    user = os.environ.get("GMAIL_SMTP_USER") or os.environ.get("CONTACT_US_DEST")
+    pwd = os.environ.get("GMAIL_APP_PASSWORD")
+    from_name = os.environ.get("GMAIL_FROM_NAME", "SquadPay Customer Service")
+    if not user or not pwd:
+        return "Gmail SMTP credentials missing"
+    msg = EmailMessage()
+    msg["From"] = f"{from_name} <{user}>"
+    msg["To"] = to_addr
+    msg["Reply-To"] = user
+    msg["Subject"] = subject
+    msg.set_content(body_text)
+    try:
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as s:
+            s.starttls(context=ctx)
+            s.login(user, pwd)
+            s.send_message(msg)
+        return None
+    except Exception as e:  # pylint: disable=broad-except
+        return f"{type(e).__name__}: {e}"
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Schemas
+# ───────────────────────────────────────────────────────────────────────────
+class OcrProvider(BaseModel):
+    provider: str = Field(..., min_length=2, max_length=32)
+    model: str = Field(..., min_length=2, max_length=80)
+
+
+class OcrConfigIn(BaseModel):
+    # Ordered list — first one is tried first, falling back through the rest.
+    providers: List[OcrProvider]
+
+
+class TicketReplyIn(BaseModel):
+    message: str = Field(..., min_length=1, max_length=8000)
+    also_send_email: bool = True
+
+
+class CmsPageIn(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    slug: Optional[str] = Field(default=None, max_length=120)
+    body: str = Field(..., min_length=1)
+    # 'markdown' (default) or 'plain'. Frontend renders accordingly.
+    body_format: str = Field(default="markdown")
+    published: bool = True
+    # 'web' | 'mobile' | 'both' — controls which surfaces show the page.
+    visibility: str = Field(default="both")
+    meta_description: Optional[str] = Field(default=None, max_length=400)
+
+
+class CmsPagePatch(BaseModel):
+    title: Optional[str] = None
+    slug: Optional[str] = None
+    body: Optional[str] = None
+    body_format: Optional[str] = None
+    published: Optional[bool] = None
+    visibility: Optional[str] = None
+    meta_description: Optional[str] = None
+
+
+class AdminActivityIn(BaseModel):
+    action: str = Field(..., min_length=1, max_length=120)
+    target_type: Optional[str] = None
+    target_id: Optional[str] = None
+    payload: Optional[Dict[str, Any]] = None
+
+
+class AdminEditIn(BaseModel):
+    name: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+    notes: Optional[str] = None
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Income & Fees export helpers — shared with admin_income_fees module
+# ───────────────────────────────────────────────────────────────────────────
+def _safe_iso(v: Any) -> Optional[str]:
+    if v is None:
+        return None
+    if isinstance(v, dt.datetime):
+        return v.isoformat()
+    return str(v) if v else None
+
+
+def _fee_breakdown_for_group(group: Dict[str, Any]) -> Dict[str, float]:
+    per_user = group.get("per_user") or []
+    transaction = sum(float(p.get("transaction_fee") or 0) for p in per_user)
+    platform = sum(float(p.get("platform_fee") or 0) for p in per_user)
+    extra_1 = 0.0
+    extra_2 = 0.0
+    extra_other = 0.0
+    for p in per_user:
+        for ef in (p.get("extra_fees") or []):
+            amt = float(ef.get("amount") or 0)
+            fid = str(ef.get("id") or "")
+            if fid == "extra_1":
+                extra_1 += amt
+            elif fid == "extra_2":
+                extra_2 += amt
+            else:
+                extra_other += amt
+    total = transaction + platform + extra_1 + extra_2 + extra_other
+    return {
+        "transaction_fees": round(transaction, 2),
+        "platform_fees": round(platform, 2),
+        "extra_1": round(extra_1, 2),
+        "extra_2": round(extra_2, 2),
+        "extra_other": round(extra_other, 2),
+        "total_retained": round(total, 2),
+    }
+
+
+def _money(x: Any) -> str:
+    try:
+        return f"${float(x or 0):.2f}"
+    except Exception:
+        return "$0.00"
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Routes
+# ───────────────────────────────────────────────────────────────────────────
+def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require_role):
+    """Mount all Phase B + Phase C endpoints."""
+    r = APIRouter()
+
+    # ============================ B1 — OCR config =========================
+    @r.get("/admin/ocr-config")
+    async def get_ocr_config(admin=Depends(get_current_admin)):
+        cfg = await db.app_config.find_one({"_id": "ocr"}) or {}
+        providers = cfg.get("providers") or [
+            {"provider": "openai", "model": "gpt-4o"},
+            {"provider": "anthropic", "model": "claude-sonnet-4-5-20250929"},
+            {"provider": "gemini", "model": "gemini-2.5-flash"},
+        ]
+        # Last 25 attempts so admins can spot a flaky provider.
+        recent = await db.ocr_attempts.find({}, {"_id": 0}).sort("at", -1).limit(25).to_list(length=None)
+        return {"providers": providers, "recent_attempts": recent, "updated_at": cfg.get("updated_at")}
+
+    @r.put("/admin/ocr-config")
+    async def set_ocr_config(
+        body: OcrConfigIn,
+        admin=Depends(get_current_admin),
+        _gate=Depends(require_role("super_admin", "manager")),
+    ):
+        if not body.providers:
+            raise HTTPException(400, "At least one provider required.")
+        # Persist as plain dicts so we can read it back without pydantic.
+        await db.app_config.update_one(
+            {"_id": "ocr"},
+            {"$set": {
+                "providers": [p.model_dump() for p in body.providers],
+                "updated_at": _now(),
+                "updated_by": (admin.get("email") if isinstance(admin, dict) else None),
+            }},
+            upsert=True,
+        )
+        # Audit
+        try:
+            await db.audit_log.insert_one({
+                "id": _new_id("aud_"),
+                "at": _now(),
+                "admin_email": (admin.get("email") if isinstance(admin, dict) else "?"),
+                "action": "admin.ocr_config_update",
+                "destructive": False,
+                "target_type": "settings",
+                "target_id": "ocr",
+                "payload": {"providers": [p.model_dump() for p in body.providers]},
+            })
+        except Exception:
+            pass
+        return {"ok": True, "providers": [p.model_dump() for p in body.providers]}
+
+    # ============================ B2 — Income & Fees export ==============
+    async def _collect_income_groups(status: Optional[str], since: Optional[str], until: Optional[str]):
+        q: Dict[str, Any] = {}
+        if status:
+            q["status"] = status
+        if since:
+            q.setdefault("created_at", {})["$gte"] = since
+        if until:
+            q.setdefault("created_at", {})["$lte"] = until
+        cursor = db.groups.find(q).sort("created_at", -1)
+        out = []
+        async for g in cursor:
+            out.append(g)
+        return out
+
+    @r.get("/admin/income-fees/export.csv")
+    async def income_fees_csv(
+        status: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        admin=Depends(get_current_admin),
+    ):
+        groups = await _collect_income_groups(status, since, until)
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow([
+            "Group ID", "Title", "Status", "Created at", "Settled at", "Lead ID",
+            "Members", "Gross contributed", "Transaction fees", "Platform fees",
+            "Extra 1", "Extra 2", "Extra other", "Total retained",
+        ])
+        for g in groups:
+            fees = _fee_breakdown_for_group(g)
+            w.writerow([
+                g.get("id"), g.get("title") or "Bill", g.get("status"),
+                _safe_iso(g.get("created_at")),
+                _safe_iso(g.get("paid_at") or g.get("settled_at")),
+                g.get("lead_id"),
+                len(g.get("members") or []),
+                f"{float((g.get('funding') or {}).get('total_contributed') or 0):.2f}",
+                f"{fees['transaction_fees']:.2f}", f"{fees['platform_fees']:.2f}",
+                f"{fees['extra_1']:.2f}", f"{fees['extra_2']:.2f}",
+                f"{fees['extra_other']:.2f}", f"{fees['total_retained']:.2f}",
+            ])
+        body = buf.getvalue()
+        fn = f"income_fees_{dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+        return StreamingResponse(
+            iter([body]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{fn}"'},
+        )
+
+    @r.get("/admin/income-fees/export.pdf")
+    async def income_fees_pdf(
+        status: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        admin=Depends(get_current_admin),
+    ):
+        # Lazy-import so reportlab can't crash module load if it's missing.
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import letter, landscape
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+
+        groups = await _collect_income_groups(status, since, until)
+        out = io.BytesIO()
+        doc = SimpleDocTemplate(
+            out, pagesize=landscape(letter),
+            leftMargin=24, rightMargin=24, topMargin=28, bottomMargin=24,
+        )
+        styles = getSampleStyleSheet()
+        story: List[Any] = [
+            Paragraph("<b>SquadPay — Income & Fees Ledger</b>", styles["Title"]),
+            Paragraph(
+                f"Generated {dt.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')} · "
+                f"{len(groups)} group(s)"
+                + (f" · status={status}" if status else "")
+                + (f" · since={since}" if since else "")
+                + (f" · until={until}" if until else ""),
+                styles["Normal"],
+            ),
+            Spacer(1, 10),
+        ]
+        # Totals row
+        agg = {"tx": 0.0, "pl": 0.0, "e1": 0.0, "e2": 0.0, "eo": 0.0, "total": 0.0, "gross": 0.0}
+        rows: List[List[Any]] = [[
+            "Group", "Title", "Status", "Created", "Lead", "Members",
+            "Gross", "TX fees", "Platform", "Extra 1", "Extra 2", "Other", "Total retained",
+        ]]
+        for g in groups:
+            fees = _fee_breakdown_for_group(g)
+            gross = float((g.get("funding") or {}).get("total_contributed") or 0)
+            agg["tx"] += fees["transaction_fees"]
+            agg["pl"] += fees["platform_fees"]
+            agg["e1"] += fees["extra_1"]
+            agg["e2"] += fees["extra_2"]
+            agg["eo"] += fees["extra_other"]
+            agg["total"] += fees["total_retained"]
+            agg["gross"] += gross
+            rows.append([
+                (g.get("id") or "")[:14],
+                (g.get("title") or "Bill")[:28],
+                g.get("status") or "",
+                (_safe_iso(g.get("created_at")) or "")[:10],
+                (g.get("lead_id") or "")[:12],
+                str(len(g.get("members") or [])),
+                _money(gross),
+                _money(fees["transaction_fees"]),
+                _money(fees["platform_fees"]),
+                _money(fees["extra_1"]),
+                _money(fees["extra_2"]),
+                _money(fees["extra_other"]),
+                _money(fees["total_retained"]),
+            ])
+        rows.append([
+            "", "TOTAL", "", "", "", "",
+            _money(agg["gross"]), _money(agg["tx"]), _money(agg["pl"]),
+            _money(agg["e1"]), _money(agg["e2"]), _money(agg["eo"]),
+            _money(agg["total"]),
+        ])
+        tbl = Table(rows, repeatRows=1)
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#7a3fef")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("ALIGN", (6, 1), (-1, -1), "RIGHT"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#f5f3ff")]),
+            ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#ede9fe")),
+            ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cbd5e1")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        story.append(tbl)
+        doc.build(story)
+        fn = f"income_fees_{dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
+        return StreamingResponse(
+            iter([out.getvalue()]),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{fn}"'},
+        )
+
+    # ============================ C1 — Customer Service replies ==========
+    @r.post("/admin/contact-messages/{ticket_id}/reply")
+    async def reply_to_ticket(
+        ticket_id: str,
+        body: TicketReplyIn,
+        admin=Depends(get_current_admin),
+    ):
+        t = await db.contact_messages.find_one({"id": ticket_id})
+        if not t:
+            raise HTTPException(404, "Ticket not found.")
+        reply = {
+            "id": _new_id("rep_"),
+            "ticket_id": ticket_id,
+            "direction": "outgoing",
+            "from_email": admin.get("email") if isinstance(admin, dict) else "admin",
+            "message": body.message.strip(),
+            "created_at": _now(),
+            "email_dispatch": {"sent": False, "error": None},
+        }
+        # Email the user the reply (best-effort).
+        if body.also_send_email:
+            err = _send_via_gmail(
+                subject=f"[SquadPay] Re: {t.get('subject_label') or 'Your message'}",
+                body_text=(
+                    f"Hi {t.get('name') or ''},\n\n{body.message.strip()}\n\n"
+                    "— SquadPay Customer Service\n\n"
+                    f"(Ticket {ticket_id})"
+                ),
+                to_addr=t.get("email") or "",
+            )
+            reply["email_dispatch"] = {"sent": err is None, "error": err}
+        # Push reply, bump updated_at, mark open if currently new.
+        new_status = t.get("status")
+        if new_status == "new":
+            new_status = "open"
+        await db.contact_messages.update_one(
+            {"id": ticket_id},
+            {"$push": {"replies": reply}, "$set": {"updated_at": _now(), "status": new_status}},
+        )
+        return await db.contact_messages.find_one({"id": ticket_id}, {"_id": 0})
+
+    @r.get("/admin/users/{user_id}/tickets")
+    async def list_user_tickets(user_id: str, admin=Depends(get_current_admin)):
+        """All contact tickets associated with a user UID."""
+        items = await db.contact_messages.find(
+            {"user_id": user_id}, {"_id": 0},
+        ).sort("created_at", -1).to_list(length=None)
+        return {"items": items, "total": len(items)}
+
+    # ============================ C2 — CMS pages ==========================
+    public_r = APIRouter()
+
+    @public_r.get("/cms/pages")
+    async def cms_list_public():
+        cursor = db.cms_pages.find(
+            {"published": True}, {"_id": 0, "body": 0},
+        ).sort("title", 1)
+        items = []
+        async for p in cursor:
+            items.append(p)
+        return {"items": items}
+
+    @public_r.get("/cms/pages/{slug}")
+    async def cms_get_public(slug: str):
+        p = await db.cms_pages.find_one({"slug": slug, "published": True}, {"_id": 0})
+        if not p:
+            raise HTTPException(404, "Page not found")
+        return p
+
+    @r.get("/admin/cms/pages")
+    async def cms_admin_list(admin=Depends(get_current_admin)):
+        cursor = db.cms_pages.find({}, {"_id": 0}).sort("updated_at", -1)
+        items = await cursor.to_list(length=None)
+        return {"items": items, "total": len(items)}
+
+    @r.post("/admin/cms/pages")
+    async def cms_admin_create(body: CmsPageIn, admin=Depends(get_current_admin)):
+        slug = (body.slug or _slugify(body.title)).strip().lstrip("/")
+        slug = _slugify(slug)
+        if await db.cms_pages.find_one({"slug": slug}):
+            raise HTTPException(409, f"Slug '{slug}' already in use.")
+        doc = {
+            "id": _new_id("cms_"),
+            "title": body.title.strip(),
+            "slug": slug,
+            "body": body.body,
+            "body_format": body.body_format or "markdown",
+            "published": body.published,
+            "visibility": body.visibility or "both",
+            "meta_description": body.meta_description,
+            "created_at": _now(),
+            "updated_at": _now(),
+            "created_by": admin.get("email") if isinstance(admin, dict) else None,
+        }
+        await db.cms_pages.insert_one(doc)
+        doc.pop("_id", None)
+        return doc
+
+    @r.get("/admin/cms/pages/{page_id}")
+    async def cms_admin_get(page_id: str, admin=Depends(get_current_admin)):
+        p = await db.cms_pages.find_one({"id": page_id}, {"_id": 0})
+        if not p:
+            raise HTTPException(404, "Page not found")
+        return p
+
+    @r.put("/admin/cms/pages/{page_id}")
+    async def cms_admin_update(page_id: str, body: CmsPagePatch, admin=Depends(get_current_admin)):
+        existing = await db.cms_pages.find_one({"id": page_id})
+        if not existing:
+            raise HTTPException(404, "Page not found")
+        upd: Dict[str, Any] = {"updated_at": _now()}
+        if body.title is not None:
+            upd["title"] = body.title.strip()
+        if body.slug is not None:
+            new_slug = _slugify(body.slug)
+            if new_slug != existing.get("slug"):
+                if await db.cms_pages.find_one({"slug": new_slug, "id": {"$ne": page_id}}):
+                    raise HTTPException(409, f"Slug '{new_slug}' already in use.")
+                upd["slug"] = new_slug
+        if body.body is not None:
+            upd["body"] = body.body
+        if body.body_format is not None:
+            upd["body_format"] = body.body_format
+        if body.published is not None:
+            upd["published"] = body.published
+        if body.visibility is not None:
+            upd["visibility"] = body.visibility
+        if body.meta_description is not None:
+            upd["meta_description"] = body.meta_description
+        await db.cms_pages.update_one({"id": page_id}, {"$set": upd})
+        return await db.cms_pages.find_one({"id": page_id}, {"_id": 0})
+
+    @r.delete("/admin/cms/pages/{page_id}")
+    async def cms_admin_delete(
+        page_id: str,
+        admin=Depends(get_current_admin),
+        _gate=Depends(require_role("super_admin", "manager")),
+    ):
+        res = await db.cms_pages.delete_one({"id": page_id})
+        if not res.deleted_count:
+            raise HTTPException(404, "Page not found")
+        return {"ok": True}
+
+    # ============================ C3 — Admin activity + RBAC =============
+    @r.post("/admin/activity")
+    async def record_admin_activity(
+        body: AdminActivityIn,
+        request: Request,
+        admin=Depends(get_current_admin),
+    ):
+        """Called by the admin app to record session activity (login, navigations,
+        button clicks). Also auto-called by the FE on app start with a 'login' action."""
+        doc = {
+            "id": _new_id("act_"),
+            "at": _now(),
+            "admin_email": admin.get("email") if isinstance(admin, dict) else "?",
+            "admin_id": admin.get("id") if isinstance(admin, dict) else None,
+            "action": body.action,
+            "target_type": body.target_type,
+            "target_id": body.target_id,
+            "payload": body.payload or {},
+            "ip": request.client.host if request.client else None,
+            "user_agent": request.headers.get("user-agent", "")[:300],
+        }
+        await db.admin_activity.insert_one(doc)
+        return {"ok": True, "id": doc["id"]}
+
+    @r.get("/admin/admins/{admin_id}/activity")
+    async def list_admin_activity(
+        admin_id: str,
+        limit: int = Query(50, ge=1, le=500),
+        skip: int = Query(0, ge=0),
+        admin=Depends(get_current_admin),
+    ):
+        # We accept either admin_id or admin_email so the FE can call this with whatever it has.
+        flt = {"$or": [{"admin_id": admin_id}, {"admin_email": admin_id}]}
+        total = await db.admin_activity.count_documents(flt)
+        items = await db.admin_activity.find(flt, {"_id": 0}).sort("at", -1).skip(skip).limit(limit).to_list(length=None)
+        return {"items": items, "total": total, "skip": skip, "limit": limit}
+
+    @r.put("/admin/admins/{admin_id}")
+    async def edit_admin(
+        admin_id: str,
+        body: AdminEditIn,
+        admin=Depends(get_current_admin),
+        _gate=Depends(require_role("super_admin")),
+    ):
+        """Edit an admin record — restricted to super_admin only.
+
+        This intentionally overrides any previously-mounted PUT /admin/admins/{id}
+        because the prior implementation allowed managers to edit roles, which
+        leaks privilege. Last-route-wins on FastAPI for duplicate paths.
+        """
+        target = await db.admins.find_one({"id": admin_id})
+        if not target:
+            raise HTTPException(404, "Admin not found")
+        upd: Dict[str, Any] = {"updated_at": _now()}
+        if body.name is not None:
+            upd["name"] = body.name.strip()
+        if body.role is not None:
+            upd["role"] = body.role
+        if body.is_active is not None:
+            upd["is_active"] = body.is_active
+        if body.notes is not None:
+            upd["notes"] = body.notes
+        await db.admins.update_one({"id": admin_id}, {"$set": upd})
+        # Audit
+        await db.audit_log.insert_one({
+            "id": _new_id("aud_"),
+            "at": _now(),
+            "admin_email": admin.get("email") if isinstance(admin, dict) else "?",
+            "action": "admin.admin_edit",
+            "destructive": False,
+            "target_type": "admin",
+            "target_id": admin_id,
+            "payload": upd,
+        })
+        out = await db.admins.find_one({"id": admin_id}, {"_id": 0, "password_hash": 0})
+        return out
+
+    api_router.include_router(public_r)
+    api_router.include_router(r)

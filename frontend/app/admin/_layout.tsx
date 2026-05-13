@@ -6,7 +6,7 @@ import {
   Plug, Wallet, RefreshCw, Lock, BarChart3, FileText, KeyRound, Percent,
   Megaphone, MessageSquare, Coins, Inbox, ShieldCheck, ShieldAlert, CircleDollarSign, Layers,
 } from 'lucide-react-native';
-import { adminApi, AdminProfile, getProfile, getToken, clearSession } from '../../src/adminApi';
+import { adminApi, AdminProfile, getProfile, getToken, clearSession, adminActivityApi } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
 import { AdminSearchBar } from '../../src/components/admin/AdminSearchBar';
 
@@ -32,6 +32,8 @@ const ICON_BY_KEY: Record<string, any> = {
   security: Lock,
   audit: ScrollText,
   legal_pages: FileText,
+  cms_pages: FileText,
+  ocr_config: ScrollText,
   admins: Users,
   access: ShieldCheck,
   capabilities: Layers,
@@ -72,6 +74,8 @@ const FALLBACK_MODULES: ModuleEntry[] = [
   { key: 'security',          label: 'Security',         group: 'System',     path: '/admin/security',          sensitive: true  },
   { key: 'audit',             label: 'Audit Log',        group: 'System',     path: '/admin/audit',             sensitive: false },
   { key: 'legal_pages',       label: 'Legal Pages',      group: 'System',     path: '/admin/legal-pages',       sensitive: false },
+  { key: 'cms_pages',         label: 'CMS Pages',        group: 'System',     path: '/admin/cms-pages',         sensitive: false },
+  { key: 'ocr_config',        label: 'Receipt OCR',      group: 'System',     path: '/admin/ocr-config',        sensitive: false },
   { key: 'admins',            label: 'Admins',           group: 'System',     path: '/admin/admins',            sensitive: true  },
   { key: 'access',            label: 'Access Roles',     group: 'System',     path: '/admin/access',            sensitive: true  },
   { key: 'capabilities',      label: 'Capabilities',     group: 'System',     path: '/admin/capabilities',      sensitive: true  },
@@ -248,6 +252,10 @@ export default function AdminLayout() {
       try {
         const me = await adminApi.me();
         setProfile(me);
+        // C3 — record an "admin.session_active" activity event whenever the
+        // session is rehydrated (after login or page refresh). Fire-and-forget
+        // so failures never break the dashboard.
+        adminActivityApi.record('admin.session_active', { pathname });
         await fetchModules();
         if (pathname === '/admin/login' || pathname === '/admin') router.replace('/admin/dashboard');
       } catch (e: any) {

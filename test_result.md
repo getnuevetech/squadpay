@@ -1671,13 +1671,306 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Phase A — Admin UI polish backend changes (total_contributed + audit-log filter/CSV)"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
+    - agent: "testing"
+      message: |
+        Phase B + Phase C backend tests COMPLETE — 61/61 assertions PASS.
+        Test artifact: /app/backend_test.py. Target:
+        https://joint-pay-1.preview.emergentagent.com/api.
+
+        All 5 Phase B/C tasks marked working=true:
+          - Phase B OCR provider failover chain + admin config
+          - Phase B Income & Fees CSV + PDF export
+          - Phase C Customer Service replies + per-user ticket lookup
+          - Phase C CMS pages (public + admin)
+          - Phase C Admin activity log + super_admin-only edit
+
+        Regression smoke also clean (Phase A audit-log export, Phase A
+        users/{id}.total_contributed, Phase 7 contribute-payment-intent).
+
+        No 5xx anywhere. No backend action required.
+
+    - agent: "main"
+      message: |
+        Phase B + Phase C backend changes — please verify.
+
+        NEW MODULE: backend/routes/admin_phase_bc.py mounted in server.py.
+
+        ───────── Phase B ─────────
+        B1) Receipt OCR failover chain (modified misc_routes.py)
+            * POST /api/receipt/scan — now walks an ordered provider list.
+              On error/non-JSON from one provider, falls through to the
+              next. Each call writes an audit row to db.ocr_attempts.
+            * GET  /api/admin/ocr-config — returns current chain + last 25
+              attempts.
+            * PUT  /api/admin/ocr-config — reorder/replace chain
+              (super_admin or manager). Persists to db.app_config._id=ocr.
+            Default chain when none configured:
+              [openai/gpt-4o, anthropic/claude-sonnet-4-5-20250929,
+               gemini/gemini-2.5-flash]
+
+        B2) Income & Fees export
+            * GET /api/admin/income-fees/export.csv?status=&since=&until=
+            * GET /api/admin/income-fees/export.pdf?status=&since=&until=
+            Both return Content-Disposition: attachment with proper filenames.
+            CSV header row:
+              Group ID,Title,Status,Created at,Settled at,Lead ID,Members,
+              Gross contributed,Transaction fees,Platform fees,Extra 1,
+              Extra 2,Extra other,Total retained
+            PDF: landscape Letter, header + per-group rows + bold TOTAL row.
+
+        ───────── Phase C ─────────
+        C1) Customer Service replies + user-ticket lookup
+            * POST /api/admin/contact-messages/{ticket_id}/reply
+              body: { message, also_send_email? }
+              - Appends an outgoing reply to ticket.replies[]
+              - Auto-bumps status from 'new' → 'open'
+              - Best-effort emails the user via Gmail SMTP (errors stored,
+                never bubble up)
+            * GET /api/admin/users/{user_id}/tickets
+              Returns all contact_messages where user_id matches.
+
+        C2) CMS pages
+            Public (NO auth):
+              * GET /api/cms/pages → list of published pages (body trimmed)
+              * GET /api/cms/pages/{slug} → one published page (full body)
+            Admin:
+              * GET    /api/admin/cms/pages
+              * POST   /api/admin/cms/pages
+              * GET    /api/admin/cms/pages/{id}
+              * PUT    /api/admin/cms/pages/{id}
+              * DELETE /api/admin/cms/pages/{id}  (super_admin/manager only)
+
+        C3) Admin activity + super_admin-only edit
+            * POST /api/admin/activity  body: { action, target_type?, target_id?, payload? }
+              Anyone authenticated as admin can record. Captures IP + UA.
+              Frontend admin layout fires `admin.session_active` on rehydrate.
+            * GET /api/admin/admins/{admin_id_or_email}/activity
+            * PUT /api/admin/admins/{admin_id}  body: { name?, role?, is_active?, notes? }
+              CRITICAL: now restricted to super_admin role only. Audit-logs
+              every edit to db.audit_log with action=admin.admin_edit.
+              Test that a 'manager' admin gets 403 trying to edit anyone.
+
+        REVIEW SCOPE:
+          A) Default OCR chain returned with NO config: providers=
+             [openai/gpt-4o, anthropic/claude-sonnet-4-5-20250929,
+              gemini/gemini-2.5-flash]
+          B) PUT a 2-entry chain → readback matches. Try PUT with empty list → 400.
+          C) Income/Fees CSV: 200 + text/csv + Content-Disposition. Exact
+             header row matches. Apply since=<future ISO> → only header line.
+          D) Income/Fees PDF: 200 + application/pdf + Content-Disposition.
+             Body starts with '%PDF'.
+          E) POST a contact message as a logged-in user (silently attach UID).
+             Verify admin GET /admin/users/{uid}/tickets returns it.
+          F) Admin reply: POST /admin/contact-messages/{id}/reply with a
+             dummy message. Re-fetch ticket → replies[] has 1 row,
+             email_dispatch field present (sent may be false in test env;
+             that's fine), status flipped to 'open' if it was 'new'.
+          G) CMS public list before any pages exist → {items: []}.
+             POST /admin/cms/pages {title:"About",body:"Hello",visibility:"both"}
+             → 201/200 with slug='about'. GET /cms/pages → contains it.
+             GET /cms/pages/about → full body returned.
+             Duplicate slug create → 409.
+          H) PUT admin page slug change → readback matches new slug; trying
+             to PUT a slug already taken by another page → 409.
+          I) DELETE page as a 'manager' admin → should be allowed (handler
+             requires super_admin or manager). DELETE non-existent → 404.
+          J) POST /admin/activity {action:"test_run"} → 200, returns id.
+             GET /admin/admins/{admin_email}/activity → finds the row.
+          K) PUT /admin/admins/{some_id} as super_admin → 200 with updated row,
+             audit_log entry with action=admin.admin_edit.
+             Same call as 'manager' role → 403.
+
+        REGRESSION:
+          - GET /api/admin/audit-log/export still works (Phase A endpoint).
+          - GET /api/admin/users/{id} still returns total_contributed.
+          - POST /api/groups/{gid}/contribute-payment-intent (Phase 7) still works.
+
+  - task: "Phase B — OCR provider failover chain + admin config"
+    implemented: true
+    working: true
+    file: "backend/routes/misc_routes.py, backend/routes/admin_phase_bc.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "POST /receipt/scan walks provider chain with failover. Admin GET/PUT /admin/ocr-config persists chain in db.app_config. Default = openai→anthropic→gemini."
+        - working: true
+          agent: "testing"
+          comment: |
+            Verified end-to-end via /app/backend_test.py against live preview backend
+            (https://joint-pay-1.preview.emergentagent.com/api). 9/9 assertions for OCR
+            config PASS.
+
+            ✅ GET /admin/ocr-config (no existing config in db) → 200 with default
+               chain EXACTLY matching spec:
+                 [{provider:'openai',model:'gpt-4o'},
+                  {provider:'anthropic',model:'claude-sonnet-4-5-20250929'},
+                  {provider:'gemini',model:'gemini-2.5-flash'}]
+               Response also includes recent_attempts:[] + updated_at:null. ✓
+            ✅ PUT with 2-entry chain [openai/gpt-4o-mini, anthropic/claude-haiku-4-5-20251001]
+               → 200 {ok:true, providers:[...]}. GET readback returns the exact same chain. ✓
+            ✅ PUT {providers:[]} → 400 "At least one provider required." ✓
+            ✅ PUT without bearer token → 401 "Admin auth required". ✓
+            ✅ PUT as freshly-created support-role admin → 403
+               "Requires one of roles: manager,super_admin". ✓
+
+            Pre-existing db.app_config._id=ocr (if any) was snapshotted and restored
+            after the test, so no side-effects on environment state.
+
+  - task: "Phase B — Income & Fees CSV + PDF export"
+    implemented: true
+    working: true
+    file: "backend/routes/admin_phase_bc.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Two endpoints stream CSV / PDF with same status/since/until filters as the data endpoint. PDF uses reportlab landscape Letter with totals row."
+        - working: true
+          agent: "testing"
+          comment: |
+            All assertions PASS via /app/backend_test.py against live preview backend.
+
+            ✅ CSV export:
+              - GET /api/admin/income-fees/export.csv → 200.
+              - content-type: "text/csv; charset=utf-8" ✓
+              - content-disposition: 'attachment; filename="income_fees_YYYYMMDD_HHMMSS.csv"' ✓
+              - First line EXACTLY:
+                  Group ID,Title,Status,Created at,Settled at,Lead ID,Members,Gross contributed,Transaction fees,Platform fees,Extra 1,Extra 2,Extra other,Total retained ✓
+              - GET ?since=2099-01-01T00:00:00.000Z → 200, only the header line
+                (no data rows). ✓
+            ✅ PDF export:
+              - GET /api/admin/income-fees/export.pdf → 200.
+              - content-type: application/pdf ✓
+              - content-disposition: attachment ✓
+              - Body bytes begin with b"%PDF-1.4" (verified magic prefix) ✓
+
+  - task: "Phase C — Customer Service replies + per-user ticket lookup"
+    implemented: true
+    working: true
+    file: "backend/routes/admin_phase_bc.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Admin can reply to a ticket (gets pushed to replies[], emails user, bumps status from new→open). New /admin/users/{uid}/tickets surfaces every ticket auto-linked by UID."
+        - working: true
+          agent: "testing"
+          comment: |
+            All assertions PASS via /app/backend_test.py against live preview backend.
+
+            ✅ Setup: registered fresh TomQ (verified). POST /api/contact
+               {name, email, subject:'general_enquiry', message:'Phase B+C test',
+               user_id: tom.id} → 200 with ticket_id=cs_<10hex>. ✓
+            ✅ GET /api/admin/users/{tom.id}/tickets → 200 {items:[…], total:1};
+               1 item in items with the expected message/subject/user_id. ✓
+            ✅ POST /api/admin/contact-messages/{ticket_id}/reply
+               {message, also_send_email:false} → 200; returned ticket has:
+                 - replies: 1 row
+                 - replies[0].direction == "outgoing" ✓
+                 - replies[0].from_email == "admin@squadpay.us" ✓
+                 - replies[0].message == provided text
+                 - status flipped from 'new' to 'open' ✓
+            ✅ Re-fetch GET /admin/users/{tom.id}/tickets → updated ticket reflects
+               replies length 1 (no duplicates). ✓
+
+  - task: "Phase C — CMS pages (public + admin)"
+    implemented: true
+    working: true
+    file: "backend/routes/admin_phase_bc.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Full CRUD on db.cms_pages. Public endpoints under /api/cms/* serve published pages. Slug uniqueness enforced (409 on conflict). DELETE restricted to super_admin/manager."
+        - working: true
+          agent: "testing"
+          comment: |
+            All CMS assertions PASS via /app/backend_test.py against live preview backend.
+
+            ✅ Public GET /api/cms/pages (no auth) → 200 with {items:[]} on a clean
+               state. ✓
+            ✅ Admin POST /admin/cms/pages
+                 {title:"About SquadPay (BC test)", body:"# About\n\nHello",
+                  visibility:"both"} → 200, slug auto-slugified to
+                  'about-squadpay-bc-test', body_format='markdown', published=true. ✓
+            ✅ Public GET /api/cms/pages/about-squadpay-bc-test (no auth) → 200 with
+                  full body present. ✓
+            ✅ Duplicate POST with same title → 409 with
+                  "Slug 'about-squadpay-bc-test' already in use." ✓
+            ✅ PUT /admin/cms/pages/{id} {slug:"about-bc"} → 200, slug now
+                  'about-bc'. ✓
+            ✅ Public GET /api/cms/pages/about-bc → 200. ✓
+            ✅ Public GET /api/cms/pages/about-squadpay-bc-test → 404 (old slug gone). ✓
+            ✅ DELETE /admin/cms/pages/{id} as super_admin → 200 {ok:true}. ✓
+            ✅ Public GET /api/cms/pages/about-bc after delete → 404. ✓
+            ✅ Admin GET /admin/cms/pages/cms_DOESNOTEXIST → 404 "Page not found". ✓
+
+  - task: "Phase C — Admin activity log + super_admin-only edit"
+    implemented: true
+    working: true
+    file: "backend/routes/admin_phase_bc.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            POST /admin/activity records any admin event with IP+UA. GET
+            /admin/admins/{id_or_email}/activity returns paginated history.
+            PUT /admin/admins/{id} now requires super_admin (was 'manager'-
+            editable in earlier code path — this overrides). Every edit
+            writes an audit_log row (action=admin.admin_edit).
+        - working: true
+          agent: "testing"
+          comment: |
+            All activity + admin-edit assertions PASS via /app/backend_test.py.
+
+            ✅ POST /api/admin/activity {action:"qa.test_event", payload:{note:"hello"}}
+               → 200, returns {ok:true, id:"act_<10hex>"}. ✓
+            ✅ GET /api/admin/admins/admin@squadpay.us/activity → 200; items contains
+               the qa.test_event row with admin_email=admin@squadpay.us and the
+               correct admin_id captured. ✓
+            ✅ GET /api/admin/admins/{admin.id}/activity → 200; same qa.test_event row
+               returned via the id-based lookup branch. ✓
+
+            ✅ Super_admin-only PUT /admin/admins/{super_admin.id} → 200 with name
+               updated to "Renamed (BC test)". Subsequent PUT to revert name also 200. ✓
+            ✅ db.audit_log gained an entry with action="admin.admin_edit",
+               target_id=super_admin.id, target_type="admin", and payload with the
+               new name + updated_at. ✓
+            ✅ Created fresh manager-role admin (POST /admin/admins {role:'manager'}).
+               Logged in as that manager. PUT /admin/admins/{super_admin.id} as the
+               manager → 403 "Requires one of roles: super_admin". ✓
+               (Manager admin left behind by design — no delete endpoint for admins;
+                test ids are stamped with epoch so subsequent runs are non-colliding.)
+
+            REGRESSION smoke (all PASS):
+              - GET /api/admin/audit-log/export?action=block → 200, text/csv. ✓
+              - GET /api/admin/users/{tom.id} → 200, includes total_contributed key. ✓
+              - POST /api/groups/{gid}/contribute-payment-intent for fast-split $30
+                group (Tom + Alice) → 200 with full PaymentSheet payload
+                (pi_…, ek_test_…, cus_… etc.). ✓
+
+            Test artifact: /app/backend_test.py (Phase B+C suite — idempotent, uses
+            TS-based names + fresh phones + direct mongo verify-shortcut to dodge
+            /send-otp 5/min IP rate limit). 61/61 assertions PASS overall.
+
     - agent: "main"
       message: |
         Phase A backend changes — please verify:

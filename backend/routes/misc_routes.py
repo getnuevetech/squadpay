@@ -1,8 +1,11 @@
 """Referrals + credits + receipt OCR + misc routes (Batch B refactor)."""
+import datetime as _dt
 import json
 import logging
 import os
 import re
+import time
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, urlencode, parse_qsl
 
 from fastapi import APIRouter, HTTPException
@@ -13,6 +16,10 @@ from core import (
     new_id, generate_unique_referral_code,
     _get_referral_settings, _user_credit_balance,
 )
+
+
+def now_iso() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).isoformat()
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +129,38 @@ def attach_referrals_credits_routes(router: APIRouter, db):
 def attach_misc_routes(router: APIRouter, db):
     """Receipt OCR + root + app-features + Stripe native bridge."""
 
+    # ────────────────────────────────────────────────────────────────────
+    # OCR provider failover chain (Phase B item #4)
+    # ────────────────────────────────────────────────────────────────────
+    # Each entry maps to LlmChat.with_model("<provider>", "<model>"). When the
+    # first provider errors (network, rate-limit, model returning non-JSON), we
+    # automatically try the next one. Admins can reorder this chain at runtime
+    # via POST /api/admin/ocr-config — the chain is persisted in
+    # `db.app_config.singleton`. ENV vars give the bootstrap default.
+    _OCR_DEFAULT_CHAIN = [
+        {"provider": "openai", "model": "gpt-4o"},
+        {"provider": "anthropic", "model": "claude-sonnet-4-5-20250929"},
+        {"provider": "gemini", "model": "gemini-2.5-flash"},
+    ]
+
+    async def _get_ocr_chain():
+        """Read admin-configured chain from app_config; fall back to default."""
+        try:
+            cfg = await db.app_config.find_one({"_id": "ocr"}) or {}
+            chain = cfg.get("providers") or []
+            if isinstance(chain, list) and chain:
+                # Defensive: only keep entries with both keys present
+                clean = [
+                    {"provider": str(c.get("provider")), "model": str(c.get("model"))}
+                    for c in chain
+                    if isinstance(c, dict) and c.get("provider") and c.get("model")
+                ]
+                if clean:
+                    return clean
+        except Exception:
+            pass
+        return list(_OCR_DEFAULT_CHAIN)
+
     @router.post("/receipt/scan")
     async def scan_receipt(body: ScanReceiptIn):
         try:
@@ -149,27 +188,65 @@ def attach_misc_routes(router: APIRouter, db):
             "6. The numbers must reconcile: sum(items[i].price * items[i].quantity) + tax + tip must equal total. "
             "If they don't, double-check that you captured ALL tax lines."
         )
-        chat = LlmChat(api_key=api_key, session_id=new_id("ocr_"), system_message=system_msg).with_model("openai", "gpt-4o")
         b64 = body.image_base64
         if b64.startswith("data:"):
             b64 = b64.split(",", 1)[1]
-        msg = UserMessage(
-            text="Parse this receipt. Return only JSON.",
-            file_contents=[ImageContent(image_base64=b64)],
-        )
-        try:
-            response = await chat.send_message(msg)
-        except Exception as e:
-            raise HTTPException(502, f"OCR failed: {e}")
 
-        text = response if isinstance(response, str) else str(response)
-        match = re.search(r"\{[\s\S]*\}", text)
-        if not match:
-            raise HTTPException(422, "Could not parse receipt JSON")
+        chain = await _get_ocr_chain()
+        # Walk the chain. First successful parse wins. We log every attempt to
+        # db.ocr_attempts so admins can see which provider actually answered.
+        attempts: List[Dict[str, Any]] = []
+        data = None
+        response = None
+        last_err: Optional[str] = None
+        for idx, prov in enumerate(chain):
+            sess = new_id("ocr_")
+            t_start = time.time()
+            try:
+                chat = LlmChat(api_key=api_key, session_id=sess, system_message=system_msg).with_model(
+                    prov["provider"], prov["model"]
+                )
+                msg = UserMessage(
+                    text="Parse this receipt. Return only JSON.",
+                    file_contents=[ImageContent(image_base64=b64)],
+                )
+                response = await chat.send_message(msg)
+                text = response if isinstance(response, str) else str(response)
+                match = re.search(r"\{[\s\S]*\}", text)
+                if not match:
+                    raise RuntimeError("model returned no JSON object")
+                data = json.loads(match.group(0))
+                attempts.append({
+                    "provider": prov["provider"], "model": prov["model"],
+                    "ok": True, "latency_ms": int((time.time() - t_start) * 1000),
+                })
+                break
+            except Exception as e:  # pylint: disable=broad-except
+                last_err = f"{type(e).__name__}: {str(e)[:240]}"
+                attempts.append({
+                    "provider": prov["provider"], "model": prov["model"],
+                    "ok": False, "error": last_err,
+                    "latency_ms": int((time.time() - t_start) * 1000),
+                })
+                # Keep walking — next provider in the chain takes over.
+                continue
+
+        # Fire-and-forget audit row so admins can monitor provider reliability.
         try:
-            data = json.loads(match.group(0))
+            await db.ocr_attempts.insert_one({
+                "id": new_id("ocrlog_"),
+                "at": now_iso(),
+                "chain": chain,
+                "attempts": attempts,
+                "succeeded": bool(data),
+                "provider_used": (next((a for a in attempts if a.get("ok")), {}) or {}).get("provider"),
+            })
         except Exception:
-            raise HTTPException(422, "Invalid JSON from OCR")
+            pass
+
+        if data is None:
+            # Every provider failed — surface the last error to the client.
+            raise HTTPException(502, f"OCR failed across all providers. Last error: {last_err or 'unknown'}")
         items = []
         for it in data.get("items", []) or []:
             try:

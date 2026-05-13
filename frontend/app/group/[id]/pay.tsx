@@ -991,40 +991,12 @@ export default function PayScreen() {
                 icon={<CreditCard size={18} color="#fff" />}
                 disabled={!isVerified || blockedNoAmount}
               />
-              {/* Item 7 (June 2025) — In-app Apple Pay / Google Pay
-                  buttons are DISABLED. We rely entirely on Stripe Checkout
-                  (which still surfaces wallets natively in the browser, at
-                  Stripe's standard rate). Leaving the bridge code in place
-                  so we can re-enable via admin Wallets config later, but
-                  the button itself never renders. */}
-              {false && kind === 'contribute' && isVerified && !blockedNoAmount && nativePayAvailable && Platform.OS !== 'web' && ((Platform.OS === 'ios' && walletFlags.apple) || (Platform.OS === 'android' && walletFlags.google)) && (
-                <Button
-                  title={
-                    nativePayBusy
-                      ? 'Opening payment…'
-                      : Platform.OS === 'ios'
-                      ? `Pay with Apple Pay — $${amount.toFixed(2)}`
-                      : `Pay with Google Pay — $${amount.toFixed(2)}`
-                  }
-                  variant="secondary"
-                  onPress={onPayWithWallet}
-                  loading={nativePayBusy}
-                  testID="pay-wallet-btn"
-                  leftIcon={Platform.OS === 'ios' ? <Apple size={16} color={COLORS.primary} fill={COLORS.primary} /> : <Smartphone size={16} color={COLORS.primary} />}
-                  style={{ marginTop: SPACING.sm }}
-                />
-              )}
-              {kind === 'lead' && isVerified && !blockedNoAmount && (group.funding?.remaining_to_collect || 0) > 0.01 ? (
-                <Button
-                  title={stripeBusy ? 'Opening Stripe…' : `Pay with Stripe — $${amount.toFixed(2)}`}
-                  variant="secondary"
-                  onPress={onPayWithStripe}
-                  loading={stripeBusy}
-                  testID="pay-stripe-btn"
-                  leftIcon={<Lock size={16} color={COLORS.primary} />}
-                  style={{ marginTop: SPACING.sm }}
-                />
-              ) : null}
+              {/* June 2025 — Single Pay button policy.
+                  All payments flow through Stripe Checkout via the primary
+                  "Pay" button above. Legacy in-app native wallet buttons
+                  (Apple Pay / Google Pay) and the duplicate "Pay with Stripe"
+                  secondary button have been removed to avoid user confusion.
+                  Stripe Checkout natively surfaces wallets in the browser. */}
             </>
           )}
           <Button

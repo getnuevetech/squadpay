@@ -48,7 +48,7 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Query, Body
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -968,10 +968,26 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
 
     # June 2025 — Landing Page dynamic visuals: public read endpoint
     # (no auth) + admin manage endpoints.
+    #
+    # CRITICAL: This endpoint MUST return strict no-cache headers so that
+    # CDN/edge layers (Vercel, Cloudflare) in front of the API do not
+    # cache the response. Without these headers, admin updates to avatars
+    # / colors / hashtags can be invisible to clients for hours/days.
     @public_r.get("/runtime/landing-page")
     async def runtime_get_landing_page():
         from landing_page_config import get_landing_page_config
-        return await get_landing_page_config(db)
+        cfg = await get_landing_page_config(db)
+        return JSONResponse(
+            content=cfg,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0, private",
+                "CDN-Cache-Control": "no-store",
+                "Vercel-CDN-Cache-Control": "no-store",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                "Vary": "*",
+            },
+        )
 
     @r.get("/admin/landing-page")
     async def admin_get_landing_page(admin=Depends(get_current_admin)):

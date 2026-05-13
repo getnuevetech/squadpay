@@ -73,6 +73,7 @@ type RemoteConfig = {
   phone_frame_colors?: string[];
   hashtags?: string[];
   avatars?: { slot_left?: string[]; slot_right_man?: string[]; slot_right_woman?: string[] };
+  updated_at?: string | null;
 };
 
 function PhotoAvatar({ uri, size = 100 }: { uri: string; size?: number }) {
@@ -81,6 +82,22 @@ function PhotoAvatar({ uri, size = 100 }: { uri: string; size?: number }) {
       <Image source={{ uri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
     </View>
   );
+}
+
+/**
+ * Append a cache-buster (`?v=<updated_at>`) to remote image URLs so the
+ * browser re-fetches when the admin replaces an avatar but keeps the
+ * same URL slot. The `updated_at` is shared across the response, so all
+ * three avatars are invalidated together — that's intentional.
+ */
+function bust(url: string, version: string | null | undefined): string {
+  if (!url || !version) return url;
+  try {
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}v=${encodeURIComponent(version)}`;
+  } catch {
+    return url;
+  }
 }
 
 export function HeroPhoneFrame({ height = 380 }: Props) {
@@ -113,10 +130,11 @@ export function HeroPhoneFrame({ height = 380 }: Props) {
   const palette = useMemo(() => {
     const frameColor = pick(remote?.phone_frame_colors, FALLBACK_PHONE_COLORS);
     const [tag1, tag2, tag3] = pickN(remote?.hashtags, FALLBACK_HASHTAGS, 3);
+    const ver = remote?.updated_at || '';
     const av = {
-      left: pick(remote?.avatars?.slot_left, FALLBACK_AVATARS_LEFT),
-      rightMan: pick(remote?.avatars?.slot_right_man, FALLBACK_AVATARS_RIGHT_MAN),
-      rightWoman: pick(remote?.avatars?.slot_right_woman, FALLBACK_AVATARS_RIGHT_WOMAN),
+      left: bust(pick(remote?.avatars?.slot_left, FALLBACK_AVATARS_LEFT), ver),
+      rightMan: bust(pick(remote?.avatars?.slot_right_man, FALLBACK_AVATARS_RIGHT_MAN), ver),
+      rightWoman: bust(pick(remote?.avatars?.slot_right_woman, FALLBACK_AVATARS_RIGHT_WOMAN), ver),
     };
     return { frameColor, tag1, tag2, tag3, av };
   }, [remote]);

@@ -125,7 +125,7 @@ export default function CashOutScreen() {
       setSessionId(sid);
       if (!group_id) {
         setPhase('error');
-        setErrMsg('Group ID is required to cash out.');
+        setErrMsg('Squad ID is required to cash out.');
         return;
       }
       await runEligibility(u.id, sid, group_id);

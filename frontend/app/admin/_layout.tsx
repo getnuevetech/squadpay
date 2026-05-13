@@ -4,7 +4,7 @@ import { View, Text, TouchableOpacity, StyleSheet, Platform, ActivityIndicator, 
 import {
   LayoutDashboard, ScrollText, Users, LogOut, Shield, UserCog, Receipt, Gift,
   Plug, Wallet, RefreshCw, Lock, BarChart3, FileText, KeyRound, Percent,
-  Megaphone, MessageSquare, Coins, Inbox, ShieldCheck, ShieldAlert, CircleDollarSign, Layers,
+  Megaphone, MessageSquare, Coins, Inbox, ShieldCheck, ShieldAlert, CircleDollarSign, Layers, Hash,
 } from 'lucide-react-native';
 import { adminApi, AdminProfile, getProfile, getToken, clearSession, adminActivityApi } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';

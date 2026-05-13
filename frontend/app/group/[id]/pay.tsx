@@ -694,7 +694,7 @@ export default function PayScreen() {
               <>
                 <BreakRow label="Bill total" value={group.total} />
                 <BreakRow
-                  label="Group already covered"
+                  label="Squad already covered"
                   value={-(group.funding?.total_contributed || 0)}
                   tone="success"
                 />

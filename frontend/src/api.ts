@@ -521,6 +521,20 @@ export const api = {
       body: JSON.stringify({ image_base64 }),
     }),
 
+  // Phase D (#9) — persist the OCR'd receipt image so admins/leads can
+  // pull it up later. Backend compresses to ~200-400KB JPEG and applies a
+  // 90-day TTL. Best-effort: errors must never break bill creation.
+  storeReceipt: (group_id: string, image_base64: string) =>
+    request<{ ok: boolean; receipt_id: string; mime: string; expires_at: string; url: string }>(
+      '/receipts/store',
+      {
+        method: 'POST',
+        body: JSON.stringify({ group_id, image_base64, compress: true }),
+      },
+    ),
+  listGroupReceipts: (group_id: string) =>
+    request<{ items: any[]; last_receipt_id?: string | null }>(`/groups/${group_id}/receipts`),
+
   // ───────── Phase 5b — Lead Cash-Out (Stripe Connect Express + Instant Payouts) ─────────
   payoutEligibility: (user_id: string, session_id: string, group_id: string) =>
     request<{

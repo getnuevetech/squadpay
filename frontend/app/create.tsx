@@ -29,7 +29,7 @@ type DraftItem = { name: string; price: string; quantity: string };
 
 export default function CreateBillScreen() {
   const router = useRouter();
-  const [title, setTitle] = useState('Group Bill');
+  const [title, setTitle] = useState('Squad Bill');
   const [tax, setTax] = useState('');
   const [tip, setTip] = useState('');
   const [mode, setMode] = useState<Mode>('smart');
@@ -37,6 +37,9 @@ export default function CreateBillScreen() {
   const [loading, setLoading] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
+  // #9 — keep the most recently parsed receipt image so we can persist it
+  // alongside the group as soon as the user submits "Create bill".
+  const [lastReceiptB64, setLastReceiptB64] = useState<string | null>(null);
 
   useEffect(() => {
     loadUser().then((u) => {
@@ -59,6 +62,7 @@ export default function CreateBillScreen() {
 
   const handleParsedReceipt = async (base64: string) => {
     setScanning(true);
+    setLastReceiptB64(base64);
     try {
       const parsed = await api.scanReceipt(base64);
       setItems(
@@ -151,13 +155,19 @@ export default function CreateBillScreen() {
         }));
       const group = await api.createGroup({
         lead_id: userId,
-        title: title.trim() || 'Group Bill',
+        title: title.trim() || 'Squad Bill',
         total_amount: total,
         tax: parseFloat(tax) || 0,
         tip: parseFloat(tip) || 0,
         split_mode: mode,
         items: payloadItems,
       });
+      // #9 — Best-effort: persist the scanned/uploaded receipt image to the
+      // backend so admins and members can pull it up for 90 days. We don't
+      // block bill creation on this.
+      if (lastReceiptB64) {
+        api.storeReceipt(group.id, lastReceiptB64).catch(() => {});
+      }
       router.replace(`/group/${group.id}`);
     } catch (e: any) {
       toast.error(e?.message || 'Could not create bill');

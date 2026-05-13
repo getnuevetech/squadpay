@@ -213,7 +213,7 @@ export default function RevealPage() {
           <ShieldCheck size={20} color={COLORS.primary} />
           <Text style={styles.title}>Reveal card details</Text>
         </View>
-        <Text style={styles.sub}>Group · {String(groupId).slice(0, 14)}</Text>
+        <Text style={styles.sub}>Squad · {String(groupId).slice(0, 14)}</Text>
 
         {phase === 'sending_otp' ? (
           <View style={styles.loadingBlock}>

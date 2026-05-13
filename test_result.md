@@ -8994,3 +8994,60 @@ agent_communication:
       No other issues. Ready for Phase 5b frontend.
 
 
+
+frontend_phase5b:
+  - task: "Phase 5b — Lead Cash-out frontend (green CTA + WebView cash-out screen + push-to-card UI)"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/payout/cash-out.tsx, frontend/app/group/[id]/dashboard.tsx, frontend/src/api.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Phase 5b shipped. Three files changed:
+
+            1) /app/frontend/src/api.ts
+               • Added 5 new API helpers: payoutEligibility, payoutAuthorizeUrl,
+                 payoutSyncAfterOnboarding, payoutListCards, payoutPushToCard.
+
+            2) /app/frontend/app/payout/cash-out.tsx  (NEW screen)
+               State machine: loading → ineligible | not_linked → onboarding →
+               sync_needed → pick_amount → confirming → success | error.
+               • Loads eligibility via /api/payout/eligibility on mount
+               • If not_linked: shows "Connect with Stripe" CTA → fetches
+                 authorize URL → renders Stripe Connect onboarding in
+                 react-native-webview
+               • WebView nav listener detects redirect to
+                 https://squadpay.app/payout/return → advances to sync_needed
+               • Sync calls /api/payout/sync-after-onboarding → lists cards
+               • Pick-amount: $ input with "Max" shortcut + card-picker rows
+               • Confirm: shows a "Sending funds…" modal, calls push-to-card,
+                 surfaces success state with brand+last4+txn_id
+
+            3) /app/frontend/app/group/[id]/dashboard.tsx
+               • Added green "Cash out to debit card" CTA card immediately
+                 after the quick-actions row.
+               • Visible ONLY when group.status === 'paid' AND
+                 (group.funding_mode || 'lead') === 'group'
+                 (i.e. fully member-funded, per user spec).
+               • Routes to /payout/cash-out?group_id={id}
+               • testID="dashboard-cashout-cta"
+
+            Color & spacing follow theme.ts (COLORS.success green with tinted
+            shadow). KeyboardAvoidingView isn't strictly required since the
+            amount input sits near top of screen; can be added if reports come in.
+
+            NOT YET TESTED on real device — main agent did web-preview smoke
+            test only. User to verify on actual mobile Expo Go session.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Phase 5b shipped. Frontend testing requires real-device interaction
+      (Stripe Connect onboarding is a hosted page, can't be exercised in
+      automated playwright). Asking user before invoking frontend testing
+      agent.
+

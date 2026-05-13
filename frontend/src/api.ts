@@ -520,6 +520,67 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ image_base64 }),
     }),
+
+  // ───────── Phase 5b — Lead Cash-Out (Stripe Connect Express + Instant Payouts) ─────────
+  payoutEligibility: (user_id: string, session_id: string, group_id: string) =>
+    request<{
+      eligible: boolean;
+      reasons: string[];
+      available_cents: number;
+      available_usd: number;
+      linked: boolean;
+      payouts_enabled: boolean;
+      default_card: { id: string; brand?: string; last4?: string } | null;
+      gateway_slug: string;
+    }>(
+      `/payout/eligibility?user_id=${encodeURIComponent(user_id)}&session_id=${encodeURIComponent(session_id)}&group_id=${encodeURIComponent(group_id)}`,
+    ),
+
+  payoutAuthorizeUrl: (user_id: string, session_id: string, return_url: string, refresh_url?: string, group_id?: string) =>
+    request<{
+      url: string;
+      gateway_slug: string;
+      account_id?: string;
+      state?: string;
+      kind: 'account_onboarding' | 'oauth_authorize';
+    }>(`/payout/authorize-url`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id, session_id, return_url, refresh_url, group_id }),
+    }),
+
+  payoutSyncAfterOnboarding: (user_id: string, session_id: string, code?: string, state?: string, redirect_uri?: string) =>
+    request<{
+      ok: boolean;
+      details_submitted?: boolean;
+      payouts_enabled?: boolean;
+      requirements_due?: string[];
+      cards: { id: string; brand?: string; last4?: string; is_default?: boolean; is_active?: boolean }[];
+      scope?: string;
+    }>(`/payout/sync-after-onboarding`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id, session_id, code, state, redirect_uri }),
+    }),
+
+  payoutListCards: (user_id: string, session_id: string, refresh = false) =>
+    request<{
+      items: { id: string; brand?: string; last4?: string; is_default?: boolean; is_active?: boolean }[];
+      gateway_slug: string;
+    }>(
+      `/payout/cards?user_id=${encodeURIComponent(user_id)}&session_id=${encodeURIComponent(session_id)}&refresh=${refresh ? 'true' : 'false'}`,
+    ),
+
+  payoutPushToCard: (user_id: string, session_id: string, group_id: string, card_id: string, amount: number) =>
+    request<{
+      txn_id: string;
+      status: 'pending' | 'succeeded' | 'failed' | string;
+      amount: number;
+      provider_payout_id: string;
+      card_brand?: string;
+      card_last4?: string;
+    }>(`/payout/push-to-card`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id, session_id, group_id, card_id, amount }),
+    }),
 };
 
 export { BACKEND_URL };

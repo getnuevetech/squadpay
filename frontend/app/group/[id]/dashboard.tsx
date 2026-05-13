@@ -296,6 +296,28 @@ export default function DashboardScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* Phase 5b — Lead cash-out CTA (visible only when group is fully funded by members). */}
+        {group.status === 'paid' && (group.funding_mode || 'lead') === 'group' && (
+          <TouchableOpacity
+            style={styles.cashOutCta}
+            activeOpacity={0.9}
+            onPress={() => router.push(`/payout/cash-out?group_id=${group.id}`)}
+            testID="dashboard-cashout-cta"
+            accessibilityRole="button"
+            accessibilityLabel="Cash out to debit card"
+          >
+            <View style={styles.cashOutIcon}>
+              <Wallet size={20} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cashOutTitle}>Cash out to debit card</Text>
+              <Text style={styles.cashOutSubtitle}>
+                All members paid — your share is ready to send via Stripe Instant Payout.
+              </Text>
+            </View>
+          </TouchableOpacity>
+        )}
+
         {/* Bill/Fund Breakdown — shared component, kept in sync across screens */}
         <BillBreakdown
           group={group}
@@ -630,6 +652,39 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   qaText: { fontSize: FONT.sizes.xs, fontWeight: FONT.weights.bold, color: COLORS.text },
+  // Phase 5b — green Cash-out CTA on Lead Dashboard
+  cashOutCta: {
+    backgroundColor: COLORS.success,
+    borderRadius: RADIUS.lg,
+    padding: SPACING.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+    marginTop: SPACING.xs,
+    shadowColor: COLORS.success,
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
+  },
+  cashOutIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cashOutTitle: {
+    fontSize: FONT.sizes.md,
+    fontWeight: FONT.weights.bold,
+    color: '#fff',
+  },
+  cashOutSubtitle: {
+    fontSize: FONT.sizes.xs,
+    color: 'rgba(255,255,255,0.92)',
+    marginTop: 2,
+  },
   sectionTitle: {
     fontSize: FONT.sizes.md,
     fontWeight: FONT.weights.bold,

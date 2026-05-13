@@ -1,580 +1,480 @@
-"""Backend test — Phase 5a Stripe Connect Express payout adapter (P5b-be.1–10).
-
-Runs against the live preview backend. Cleans up after itself.
 """
-from __future__ import annotations
+P1 Follow-ups — backend tests
+    M1 — Maintenance Mode round trip (toggle ON → 503, toggle OFF → 200)
+    M2 — Maintenance only affects POST /api/groups (existing groups continue)
+    P1 — Admin auth gating on POST /api/admin/users/run-purge-cron
+    P2 — Functional purge for past-grace user
+    P3 — Within grace user not purged
+    P4 — Idempotency
+    P5 — Edge case: deletion_scheduled_at = null
 
+Run:  python /app/backend_test.py
+"""
 import os
 import sys
 import time
-import uuid
+import json
 import asyncio
+from datetime import datetime, timezone, timedelta
+
 import requests
-from typing import Any, Dict, Optional
+from motor.motor_asyncio import AsyncIOMotorClient
 
-BACKEND = os.environ.get("BACKEND_URL", "https://joint-pay-1.preview.emergentagent.com").rstrip("/")
-API = f"{BACKEND}/api"
-
+BASE = "http://localhost:8001/api"
 ADMIN_EMAIL = "admin@squadpay.us"
 ADMIN_PASSWORD = "Letmein@2007#ForReal"
 
-sys.path.insert(0, "/app/backend")
-from motor.motor_asyncio import AsyncIOMotorClient  # type: ignore
+MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+DB_NAME = os.environ.get("DB_NAME", "test_database")
 
-MONGO_URL = "mongodb://localhost:27017"
-DB_NAME = "test_database"
-
-_results: list = []
-_failures: list = []
-_cleanup_user_ids: list = []
-_cleanup_group_ids: list = []
-_cleanup_payout_card_ids: list = []
-_cleanup_connect_account_user_ids: list = []
-_cleanup_ledger_txn_ids: list = []
+PASS, FAIL = 0, 0
+FAILS = []
 
 
-def _log(name: str, ok: bool, detail: str = "") -> None:
-    tag = "✅" if ok else "❌"
-    print(f"{tag} {name} {('— ' + detail) if detail else ''}".rstrip())
-    _results.append((name, ok, detail))
-    if not ok:
-        _failures.append((name, detail))
+def _check(label, cond, info=""):
+    global PASS, FAIL
+    if cond:
+        PASS += 1
+        print(f"  ✅ {label}")
+    else:
+        FAIL += 1
+        FAILS.append((label, info))
+        print(f"  ❌ {label}  {info}")
 
 
-def _assert(name: str, cond: bool, detail: str = "") -> bool:
-    _log(name, cond, detail)
-    return cond
+def admin_login():
+    r = requests.post(f"{BASE}/admin/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}, timeout=30)
+    r.raise_for_status()
+    return r.json()["token"]
 
 
-def _post(path: str, **kwargs) -> requests.Response:
-    return requests.post(f"{API}{path}", timeout=60, **kwargs)
-
-
-def _get(path: str, **kwargs) -> requests.Response:
-    return requests.get(f"{API}{path}", timeout=60, **kwargs)
-
-
-def admin_login() -> str:
-    r = _post("/admin/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
-    if r.status_code != 200:
-        raise RuntimeError(f"Admin login failed: {r.status_code} {r.text}")
-    j = r.json()
-    token = j.get("access_token") or j.get("token")
-    if not token:
-        raise RuntimeError(f"No access_token in login response: {r.text}")
-    return token
-
-
-def make_user_session(name: str) -> Dict[str, str]:
-    phone = f"+1555{int(time.time() * 1000) % 10000000:07d}"
-    r = _post("/auth/register", json={"name": name})
-    if r.status_code != 200:
-        raise RuntimeError(f"Register failed: {r.status_code} {r.text}")
-    uid = r.json()["id"]
-    _cleanup_user_ids.append(uid)
-
-    r = _post("/auth/send-otp", json={"user_id": uid, "phone": phone})
-    if r.status_code != 200:
-        raise RuntimeError(f"send-otp failed: {r.status_code} {r.text}")
-    r = _post("/auth/verify-otp", json={"user_id": uid, "phone": phone, "code": "123456"})
-    if r.status_code != 200:
-        raise RuntimeError(f"verify-otp failed: {r.status_code} {r.text}")
-    payload = r.json()
-    return {"id": payload["id"], "session_id": payload["session_id"], "phone": phone}
-
-
-def gateways_state(token: str) -> Dict[str, Any]:
-    r = _get("/admin/gateways", headers={"Authorization": f"Bearer {token}"})
+def get_app_config(token):
+    r = requests.get(f"{BASE}/admin/app-config", headers={"Authorization": f"Bearer {token}"}, timeout=30)
     r.raise_for_status()
     return r.json()
 
 
-def activate_provider(token: str, group: str, slug: str) -> requests.Response:
-    return _post(
-        f"/admin/gateways/{group}/activate",
+def put_app_config(token, cfg):
+    r = requests.put(
+        f"{BASE}/admin/app-config",
         headers={"Authorization": f"Bearer {token}"},
-        json={"provider_slug": slug},
+        json=cfg,
+        timeout=30,
     )
+    return r
 
 
-def p1(token: str) -> None:
-    print("\n── P5b-be.1 — admin/gateways shows stripe_connect active ──")
-    s = gateways_state(token)
-    active = (s.get("active") or {})
-    _assert(
-        "P1.active.payout==stripe_connect",
-        active.get("payout") == "stripe_connect",
-        detail=f"active={active}",
+def set_maintenance(token, base_cfg, on: bool, msg=None):
+    cfg = json.loads(json.dumps(base_cfg))  # deep copy
+    cfg.setdefault("ops", {})
+    cfg["ops"]["maintenance_mode"] = on
+    if msg is not None:
+        cfg["ops"]["maintenance_message"] = msg
+    r = put_app_config(token, cfg)
+    r.raise_for_status()
+    return r.json()
+
+
+def find_active_user(token):
+    """Get a real, non-deleted, non-blocked user we can use as lead."""
+    r = requests.get(
+        f"{BASE}/admin/users?limit=50",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
     )
+    r.raise_for_status()
+    items = r.json().get("items") or []
+    for u in items:
+        if (
+            not u.get("is_blocked")
+            and not u.get("is_deleted")
+            and not u.get("is_purged")
+            and u.get("verified")
+        ):
+            return u
+    for u in items:
+        if not u.get("is_blocked") and not u.get("is_deleted"):
+            return u
+    raise RuntimeError("No usable user found in /admin/users")
 
 
-def p2(user: Dict[str, str]) -> Optional[str]:
-    print("\n── P5b-be.2 — /payout/authorize-url (Stripe Connect) ──")
-    body = {
-        "user_id": user["id"],
-        "session_id": user["session_id"],
-        "return_url": "https://example.com/return",
-        "refresh_url": "https://example.com/refresh",
+def find_existing_group(token):
+    """Find any open existing group to use for M2."""
+    r = requests.get(
+        f"{BASE}/admin/groups?status=open&limit=50",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    items = r.json().get("items") or []
+    if items:
+        return items[0]
+    r = requests.get(
+        f"{BASE}/admin/groups?limit=50",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    items = r.json().get("items") or []
+    return items[0] if items else None
+
+
+# ─────────────────────────────────────────────────────────────────
+# Mongo helpers (P2/P3/P4/P5)
+# ─────────────────────────────────────────────────────────────────
+
+async def mongo_seed_user(db, uid, name, phone, email, scheduled_dt, deleted_days_ago=31):
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": uid,
+        "is_deleted": True,
+        "is_purged": False,
+        "name": name,
+        "phone": phone,
+        "email": email,
+        "verified": True,
+        "deleted_at": (now - timedelta(days=deleted_days_ago)).isoformat(),
+        "deletion_scheduled_at": scheduled_dt.isoformat() if scheduled_dt else None,
+        "deletion_reason": "p1_purge_test",
+        "last_session_id_before_delete": "sess_test_xyz",
+        "current_session_id": "sess_test_xyz",
+        "created_at": (now - timedelta(days=60)).isoformat(),
     }
-    r = _post("/payout/authorize-url", json=body)
-    if not _assert("P2.status==200", r.status_code == 200, detail=f"{r.status_code} {r.text[:300]}"):
-        return None
-    j = r.json()
-    _assert("P2.gateway_slug==stripe_connect", j.get("gateway_slug") == "stripe_connect", str(j))
-    _assert("P2.kind==account_onboarding", j.get("kind") == "account_onboarding", str(j))
-    url = j.get("url") or ""
-    _assert(
-        "P2.url starts with https://connect.stripe.com/setup/e/",
-        url.startswith("https://connect.stripe.com/setup/e/"),
-        detail=url[:120],
-    )
-    acct = j.get("account_id") or ""
-    _assert("P2.account_id starts with acct_", acct.startswith("acct_"), detail=acct)
-    _cleanup_connect_account_user_ids.append(user["id"])
-
-    async def _check_db():
-        cli = AsyncIOMotorClient(MONGO_URL)
-        try:
-            db = cli[DB_NAME]
-            row = await db.connect_user_accounts.find_one(
-                {"user_id": user["id"], "gateway_slug": "stripe_connect"},
-                {"_id": 0},
-            )
-            return row
-        finally:
-            cli.close()
-
-    row = asyncio.get_event_loop().run_until_complete(_check_db())
-    _assert("P2.db.connect_user_accounts row exists", bool(row), str(row))
-    if row:
-        _assert("P2.db.account_id matches", row.get("account_id") == acct, f"{row.get('account_id')} vs {acct}")
-
-    r2 = _post("/payout/authorize-url", json=body)
-    if _assert("P2.idem.status==200", r2.status_code == 200, detail=f"{r2.status_code} {r2.text[:200]}"):
-        j2 = r2.json()
-        _assert(
-            "P2.idem.same account_id (no duplicate Express account)",
-            j2.get("account_id") == acct,
-            detail=f"first={acct} second={j2.get('account_id')}",
-        )
-        url2 = j2.get("url") or ""
-        _assert(
-            "P2.idem.url is fresh https://connect.stripe.com/setup/e/...",
-            url2.startswith("https://connect.stripe.com/setup/e/"),
-            detail=url2[:120],
-        )
-    return acct
+    await db.users.replace_one({"id": uid}, doc, upsert=True)
 
 
-def p3(user: Dict[str, str]) -> None:
-    print("\n── P5b-be.3 — /payout/sync-after-onboarding ──")
-    r = _post(
-        "/payout/sync-after-onboarding",
-        json={"user_id": user["id"], "session_id": user["session_id"]},
-    )
-    if not _assert("P3.status==200", r.status_code == 200, detail=f"{r.status_code} {r.text[:300]}"):
-        return
-    j = r.json()
-    _assert("P3.details_submitted==false", j.get("details_submitted") is False, detail=str(j))
-    _assert("P3.payouts_enabled==false", j.get("payouts_enabled") is False, detail=str(j))
-    _assert(
-        "P3.requirements_due is list",
-        isinstance(j.get("requirements_due"), list),
-        detail=str(j.get("requirements_due"))[:200],
-    )
-    _assert("P3.cards == []", j.get("cards") == [], detail=str(j.get("cards"))[:200])
-
-    async def _check_db():
-        cli = AsyncIOMotorClient(MONGO_URL)
-        try:
-            db = cli[DB_NAME]
-            return await db.connect_user_accounts.find_one(
-                {"user_id": user["id"], "gateway_slug": "stripe_connect"}, {"_id": 0}
-            )
-        finally:
-            cli.close()
-
-    row = asyncio.get_event_loop().run_until_complete(_check_db())
-    if row:
-        _assert("P3.db.details_submitted==false", row.get("details_submitted") is False, str(row))
-        _assert("P3.db.payouts_enabled==false", row.get("payouts_enabled") is False, str(row))
+async def mongo_read_user(db, uid):
+    return await db.users.find_one({"id": uid}, {"_id": 0})
 
 
-def p4(user: Dict[str, str]) -> None:
-    print("\n── P5b-be.4 — GET /payout/cards ──")
-    r = _get(
-        "/payout/cards",
-        params={"user_id": user["id"], "session_id": user["session_id"]},
-    )
-    if not _assert("P4.status==200", r.status_code == 200, detail=f"{r.status_code} {r.text[:300]}"):
-        return
-    j = r.json()
-    _assert("P4.items==[]", j.get("items") == [], detail=str(j.get("items"))[:200])
-    _assert("P4.gateway_slug==stripe_connect", j.get("gateway_slug") == "stripe_connect", str(j))
-
-
-async def _setup_paid_group_with_balance(user_id: str) -> str:
-    from ledger import make_txn_id, record_charge_event  # type: ignore
-
-    cli = AsyncIOMotorClient(MONGO_URL)
-    try:
-        db = cli[DB_NAME]
-        gid = f"g_test_{uuid.uuid4().hex[:12]}"
-        group = {
-            "id": gid,
-            "code": f"TEST{uuid.uuid4().hex[:6].upper()}",
-            "lead_id": user_id,
-            "title": "P5b-be test group",
-            "total_amount": 50.0,
-            "original_total_amount": 50.0,
-            "tax": 0.0,
-            "tip": 0.0,
-            "split_mode": "fast",
-            "status": "paid",
-            "funding_mode": "group",
-            "items": [],
-            "members": [{"user_id": user_id, "role": "lead", "joined_at": "2025-06-01T00:00:00Z"}],
-            "assignments": [],
-            "contributions": [],
-            "repayments": [],
-            "created_at": "2025-06-01T00:00:00Z",
-        }
-        await db.groups.insert_one(group)
-
-        txn = make_txn_id("charge")
-        await record_charge_event(
-            db,
-            txn_id=txn,
-            bill_id=gid,
-            user_id=user_id,
-            gross_cents=5000,
-            currency="usd",
-            reference={"test": "P5b-be setup"},
-        )
-        _cleanup_ledger_txn_ids.append(txn)
-        _cleanup_group_ids.append(gid)
-        return gid
-    finally:
-        cli.close()
-
-
-def p5_p6(user: Dict[str, str]) -> None:
-    print("\n── P5b-be.5 — push-to-card before onboarding → 412 ──")
-    loop = asyncio.get_event_loop()
-    gid = loop.run_until_complete(_setup_paid_group_with_balance(user["id"]))
-
-    card_id = "card_fake"
-
-    async def _ensure_card_row():
-        cli = AsyncIOMotorClient(MONGO_URL)
-        try:
-            db = cli[DB_NAME]
-            await db.payout_user_cards.delete_many({"id": card_id, "user_id": user["id"]})
-            await db.payout_user_cards.insert_one({
-                "id": card_id,
-                "user_id": user["id"],
-                "gateway_slug": "stripe_connect",
-                "brand": "visa",
-                "last4": "4242",
-                "is_active": True,
-                "is_default": True,
-                "created_at": "2025-06-01T00:00:00Z",
-                "updated_at": "2025-06-01T00:00:00Z",
-            })
-            _cleanup_payout_card_ids.append(card_id)
-        finally:
-            cli.close()
-
-    loop.run_until_complete(_ensure_card_row())
-
-    r = _post(
-        "/payout/push-to-card",
-        json={
-            "user_id": user["id"],
-            "session_id": user["session_id"],
-            "group_id": gid,
-            "card_id": card_id,
-            "amount": 10.00,
-        },
-    )
-    _assert(
-        "P5.status==412 with 'Stripe Connect onboarding incomplete'",
-        r.status_code == 412 and "Stripe Connect onboarding incomplete" in (r.text or ""),
-        detail=f"{r.status_code} {r.text[:300]}",
-    )
-
-    print("\n── P5b-be.6 — push-to-card amount > available → 409 ──")
-
-    async def _force_enabled():
-        cli = AsyncIOMotorClient(MONGO_URL)
-        try:
-            db = cli[DB_NAME]
-            await db.connect_user_accounts.update_one(
-                {"user_id": user["id"], "gateway_slug": "stripe_connect"},
-                {"$set": {"payouts_enabled": True, "details_submitted": True}},
-            )
-        finally:
-            cli.close()
-
-    loop.run_until_complete(_force_enabled())
-
-    r = _post(
-        "/payout/push-to-card",
-        json={
-            "user_id": user["id"],
-            "session_id": user["session_id"],
-            "group_id": gid,
-            "card_id": card_id,
-            "amount": 9999.99,
-        },
-    )
-    _assert(
-        "P6.status==409 with 'exceeds available cash-out balance'",
-        r.status_code == 409 and "exceeds available cash-out balance" in (r.text or ""),
-        detail=f"{r.status_code} {r.text[:300]}",
+async def mongo_audit_for(db, uid):
+    return await db.audit_logs.find_one(
+        {"type": "account_purged_auto", "user_id": uid}, {"_id": 0}
     )
 
 
-def p7(token: str) -> None:
-    print("\n── P5b-be.7 — /webhook/stripe-connect missing signature ──")
-    # The adapter checks `webhook_secret` BEFORE `signature`. If admin hasn't
-    # configured a webhook secret, the no-secret 503 branch fires first and the
-    # outer route wraps it as 400 "Webhook error: 503: ... not configured".
-    # That's misleading — the real test target is the missing-signature path.
-    # We seed a dummy webhook_secret via the existing PUT endpoint so we can
-    # exercise the actual missing-signature branch the review request targets.
-    seed = _post(
-        "/admin/gateways/payout/stripe_connect",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"credentials": {"webhook_secret": "whsec_test_dummy_for_unit_test"}},
-    )
-    print(f"   [seed webhook_secret] {seed.status_code} {seed.text[:200]}")
-    if seed.status_code != 200:
-        # PUT not allowed via POST? Try PUT.
-        import json as _json
-        seed = requests.put(
-            f"{API}/admin/gateways/payout/stripe_connect",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            data=_json.dumps({"credentials": {"webhook_secret": "whsec_test_dummy_for_unit_test"}}),
-            timeout=30,
-        )
-        print(f"   [seed webhook_secret PUT] {seed.status_code} {seed.text[:200]}")
-    # ACTUAL HTTP-request to the webhook endpoint with NO Stripe-Signature header.
-    r = _post("/webhook/stripe-connect", data=b'{"id":"evt_test"}')
-    _assert(
-        "P7.status==400 with 'Missing Stripe-Signature header'",
-        r.status_code == 400 and "Missing Stripe-Signature header" in (r.text or ""),
-        detail=f"{r.status_code} {r.text[:300]}",
-    )
-    # Best-effort: clear the dummy secret to leave state as we found it.
-    _post(
-        "/admin/gateways/payout/stripe_connect",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"credentials": {"webhook_secret": ""}},
-    )
+async def mongo_cleanup_user(db, uid):
+    await db.users.delete_one({"id": uid})
+    await db.audit_logs.delete_many({"user_id": uid, "type": "account_purged_auto"})
 
 
-def p8() -> None:
-    print("\n── P5b-be.8 — Branch/Wise scaffolds raise HTTPException(501) ──")
-    from adapters.payout_scaffolds import BranchPayoutAdapter, WisePayoutAdapter  # type: ignore
-    from fastapi import HTTPException
-
-    for name, cls in (("Branch", BranchPayoutAdapter), ("Wise", WisePayoutAdapter)):
-        a = cls()
-        try:
-            asyncio.get_event_loop().run_until_complete(
-                a.push_to_card(
-                    amount_cents=100, currency="usd", card_token="x|y",
-                    idempotency_key="x", metadata={},
-                )
-            )
-            _assert(f"P8.{name} push_to_card raised 501", False, "did NOT raise")
-        except HTTPException as e:
-            _assert(f"P8.{name} push_to_card raised 501", e.status_code == 501, f"status={e.status_code}")
-        except Exception as e:
-            _assert(f"P8.{name} push_to_card raised 501", False, f"raised {type(e).__name__}: {e}")
+# ─────────────────────────────────────────────────────────────────
+# Tests
+# ─────────────────────────────────────────────────────────────────
 
 
-def p9(token: str, user: Dict[str, str]) -> None:
-    print("\n── P5b-be.9 — switch payout provider stripe_connect ↔ astra ──")
-    r = activate_provider(token, "payout", "astra")
-    if not _assert("P9.activate astra==200", r.status_code == 200, detail=f"{r.status_code} {r.text[:300]}"):
-        return
-    s = gateways_state(token)
-    _assert("P9.active.payout==astra", (s.get("active") or {}).get("payout") == "astra", str(s.get("active")))
+def run_M1(token, base_cfg, lead_user):
+    print("\n[M1] Maintenance Mode round trip")
 
-    r = _post(
-        "/payout/authorize-url",
-        json={
-            "user_id": user["id"],
-            "session_id": user["session_id"],
-            "return_url": "https://example.com/return",
-        },
-    )
-    if _assert("P9.astra authorize-url status==200", r.status_code == 200, detail=f"{r.status_code} {r.text[:300]}"):
-        j = r.json()
-        _assert("P9.astra gateway_slug==astra", j.get("gateway_slug") == "astra", str(j))
-        _assert("P9.astra kind==oauth_authorize", j.get("kind") == "oauth_authorize", str(j))
-        url = j.get("url") or ""
-        _assert(
-            "P9.astra url starts https://sandbox.astra.finance/oauth/authorize?",
-            url.startswith("https://sandbox.astra.finance/oauth/authorize?"),
-            detail=url[:120],
-        )
+    cfg = get_app_config(token)
+    _check("GET /admin/app-config returns 200 + has ops", isinstance(cfg, dict) and "ops" in cfg)
 
-    r = activate_provider(token, "payout", "stripe_connect")
-    _assert("P9.activate stripe_connect==200", r.status_code == 200, detail=f"{r.status_code} {r.text[:300]}")
-    s = gateways_state(token)
-    _assert(
-        "P9.active.payout==stripe_connect (after switch back)",
-        (s.get("active") or {}).get("payout") == "stripe_connect",
-        str(s.get("active")),
-    )
+    msg = "Down for testing"
+    new_cfg = set_maintenance(token, cfg, on=True, msg=msg)
+    _check("PUT /admin/app-config maintenance_mode=true → 200",
+           new_cfg.get("ops", {}).get("maintenance_mode") is True,
+           info=f"ops={new_cfg.get('ops')}")
+    _check("Saved maintenance_message persisted",
+           new_cfg.get("ops", {}).get("maintenance_message") == msg)
 
-    r = _post(
-        "/payout/authorize-url",
-        json={
-            "user_id": user["id"],
-            "session_id": user["session_id"],
-            "return_url": "https://example.com/return",
-            "refresh_url": "https://example.com/refresh",
-        },
-    )
-    if _assert("P9.back authorize-url status==200", r.status_code == 200, detail=f"{r.status_code} {r.text[:300]}"):
-        j = r.json()
-        _assert("P9.back gateway_slug==stripe_connect", j.get("gateway_slug") == "stripe_connect", str(j))
-        _assert("P9.back kind==account_onboarding", j.get("kind") == "account_onboarding", str(j))
-
-
-def p10(user: Dict[str, str]) -> None:
-    print("\n── P5b-be.10 — Phase 3 + Phase 4 regression ──")
-
-    async def _ledger_test():
-        from ledger import make_txn_id, record_charge_event, find_entries_by_txn  # type: ignore
-        cli = AsyncIOMotorClient(MONGO_URL)
-        try:
-            db = cli[DB_NAME]
-            txn = make_txn_id("charge")
-            _cleanup_ledger_txn_ids.append(txn)
-            rows1 = await record_charge_event(
-                db,
-                txn_id=txn,
-                bill_id="g_regression_test",
-                user_id=user["id"],
-                gross_cents=5000,
-                currency="usd",
-                reference={"regression": True},
-            )
-            assert len(rows1) == 4, f"expected 4 rows got {len(rows1)}"
-            cats = sorted(r["category"] for r in rows1)
-            assert cats == [
-                "charge.gross", "charge.net_payable", "charge.processor_fee", "charge.tax",
-            ], f"unexpected categories: {cats}"
-            by = {r["category"]: r["amount_cents"] for r in rows1}
-            assert by["charge.gross"] - by["charge.processor_fee"] - by["charge.tax"] == by["charge.net_payable"]
-            rows2 = await record_charge_event(
-                db, txn_id=txn, bill_id="g_regression_test", user_id=user["id"],
-                gross_cents=5000, currency="usd",
-            )
-            total_for_txn = await find_entries_by_txn(db, txn)
-            assert len(total_for_txn) == 4, f"idem expected 4 rows still got {len(total_for_txn)}"
-            return True
-        finally:
-            cli.close()
-
-    try:
-        ok = asyncio.get_event_loop().run_until_complete(_ledger_test())
-        _assert("P10.A ledger.record_charge_event 4 rows + idem + math invariant", bool(ok))
-    except Exception as e:
-        _assert("P10.A ledger.record_charge_event 4 rows + idem + math invariant", False, f"{type(e).__name__}: {e}")
-
-    name = f"P10Lead{int(time.time())}"
-    lead = make_user_session(name)
-    r = _post("/groups", json={
-        "lead_id": lead["id"],
-        "title": "Regression checkout test",
-        "total_amount": 25.0,
+    body = {
+        "lead_id": lead_user["id"],
+        "title": "P1-Maint-Test-Bill",
+        "total_amount": 12.50,
         "split_mode": "fast",
         "tax": 0.0,
         "tip": 0.0,
         "items": [],
-    })
-    if not _assert("P10.B create group==200", r.status_code == 200, detail=f"{r.status_code} {r.text[:300]}"):
-        return
-    gid = r.json()["id"]
-    _cleanup_group_ids.append(gid)
-
-    r = _post(f"/groups/{gid}/checkout-session", json={
-        "origin_url": "http://localhost:3000",
-    })
-    if _assert("P10.B checkout-session==200", r.status_code == 200, detail=f"{r.status_code} {r.text[:400]}"):
-        j = r.json()
-        url = j.get("url") or ""
-        sid = j.get("session_id") or ""
-        _assert("P10.B Stripe url returned", "stripe.com" in url, detail=url[:120])
-        _assert("P10.B session_id starts cs_", sid.startswith("cs_"), detail=sid)
-
-
-async def _cleanup() -> None:
-    cli = AsyncIOMotorClient(MONGO_URL)
+    }
+    r = requests.post(f"{BASE}/groups", json=body, timeout=30)
+    _check("POST /api/groups during maintenance → 503",
+           r.status_code == 503,
+           info=f"status={r.status_code} body={r.text[:200]}")
     try:
-        db = cli[DB_NAME]
-        if _cleanup_user_ids:
-            await db.users.delete_many({"id": {"$in": _cleanup_user_ids}})
-            await db.otp_codes.delete_many({"user_id": {"$in": _cleanup_user_ids}})
-        if _cleanup_group_ids:
-            await db.groups.delete_many({"id": {"$in": _cleanup_group_ids}})
-            await db.ledger_entries.delete_many({"bill_id": {"$in": _cleanup_group_ids}})
-        if _cleanup_payout_card_ids:
-            await db.payout_user_cards.delete_many({"id": {"$in": _cleanup_payout_card_ids}})
-        if _cleanup_connect_account_user_ids:
-            await db.connect_user_accounts.delete_many(
-                {"user_id": {"$in": _cleanup_connect_account_user_ids}}
+        detail = r.json().get("detail")
+    except Exception:
+        detail = None
+    _check("503 detail == 'Down for testing'",
+           detail == msg,
+           info=f"detail={detail!r}")
+
+    new_cfg = set_maintenance(token, cfg, on=False)
+    _check("PUT /admin/app-config maintenance_mode=false → 200",
+           new_cfg.get("ops", {}).get("maintenance_mode") is False)
+
+    r = requests.post(f"{BASE}/groups", json=body, timeout=30)
+    _check("POST /api/groups after maintenance off → 200",
+           r.status_code == 200,
+           info=f"status={r.status_code} body={r.text[:300]}")
+
+    created_gid = None
+    if r.status_code == 200:
+        try:
+            created_gid = r.json().get("id")
+        except Exception:
+            pass
+    return created_gid
+
+
+def run_M2(token, base_cfg, existing_group):
+    print("\n[M2] Maintenance affects ONLY POST /api/groups")
+
+    cfg_before = get_app_config(token)
+    set_maintenance(token, cfg_before, on=True, msg="M2 testing window")
+
+    gid = existing_group["id"]
+
+    r = requests.get(f"{BASE}/groups/{gid}", timeout=30)
+    _check("GET /api/groups/{existing} during maintenance → 200",
+           r.status_code == 200,
+           info=f"status={r.status_code} body={r.text[:200]}")
+
+    members = []
+    if r.status_code == 200:
+        try:
+            members = r.json().get("members") or []
+        except Exception:
+            members = []
+    user_id = (members[0]["user_id"] if members else existing_group.get("lead_id"))
+    contrib_body = {
+        "user_id": user_id,
+        "amount": 0.01,
+        "method": "credit_only",
+    }
+    r2 = requests.post(f"{BASE}/groups/{gid}/contribute", json=contrib_body, timeout=30)
+    is_503_maint = False
+    try:
+        is_503_maint = (r2.status_code == 503 and r2.json().get("detail") == "M2 testing window")
+    except Exception:
+        is_503_maint = (r2.status_code == 503)
+    _check("POST /groups/{existing}/contribute NOT blocked by maintenance",
+           not is_503_maint,
+           info=f"status={r2.status_code} body={r2.text[:300]}")
+
+    set_maintenance(token, cfg_before, on=False)
+
+
+def run_P1(token):
+    print("\n[P1] Admin auth gating on POST /api/admin/users/run-purge-cron")
+
+    r = requests.post(
+        f"{BASE}/admin/users/run-purge-cron",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+    _check("POST run-purge-cron with admin token → 200",
+           r.status_code == 200,
+           info=f"status={r.status_code} body={r.text[:300]}")
+    if r.status_code == 200:
+        body = r.json()
+        for k in ("ok", "purged", "scanned", "skipped", "ran_at"):
+            _check(f"  response has key '{k}'", k in body, info=f"body={body}")
+
+    r = requests.post(f"{BASE}/admin/users/run-purge-cron", timeout=30)
+    _check("POST run-purge-cron without auth → 401",
+           r.status_code == 401,
+           info=f"status={r.status_code} body={r.text[:200]}")
+
+
+async def run_P2_P3_P4_P5(token):
+    client = AsyncIOMotorClient(MONGO_URL)
+    db = client[DB_NAME]
+
+    ts = int(time.time())
+    u_p2 = "u_test_purge_p2"
+    u_p3 = f"u_test_purge_p3_{ts}"
+    u_p5 = f"u_test_purge_p5_{ts}"
+
+    try:
+        print("\n[P2] Past-grace user gets purged")
+        await mongo_cleanup_user(db, u_p2)
+        await mongo_seed_user(
+            db, u_p2,
+            name="Past Grace",
+            phone="+15550009999",
+            email="past_grace@test.com",
+            scheduled_dt=datetime.now(timezone.utc) - timedelta(days=1),
+            deleted_days_ago=31,
+        )
+        r = requests.post(
+            f"{BASE}/admin/users/run-purge-cron",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30,
+        )
+        _check("P2 cron 200",
+               r.status_code == 200,
+               info=f"status={r.status_code} body={r.text[:200]}")
+        purged = (r.json() or {}).get("purged", 0) if r.status_code == 200 else 0
+        _check("P2 purged >= 1", purged >= 1, info=f"purged={purged}")
+
+        u = await mongo_read_user(db, u_p2)
+        _check("P2 user re-read present", u is not None)
+        if u:
+            _check("P2 is_purged=true", u.get("is_purged") is True, info=f"u={u}")
+            _check("P2 name starts with 'Deleted User ('",
+                   (u.get("name") or "").startswith("Deleted User ("),
+                   info=f"name={u.get('name')!r}")
+            _check("P2 phone is None", u.get("phone") is None, info=f"phone={u.get('phone')!r}")
+            _check("P2 email is None", u.get("email") is None, info=f"email={u.get('email')!r}")
+            _check("P2 current_session_id is None",
+                   u.get("current_session_id") is None,
+                   info=f"sess={u.get('current_session_id')!r}")
+            _check("P2 purged_at is set", bool(u.get("purged_at")), info=f"purged_at={u.get('purged_at')!r}")
+
+        audit = await mongo_audit_for(db, u_p2)
+        _check("P2 audit_logs row exists with type=account_purged_auto", audit is not None,
+               info=f"audit={audit}")
+        if audit:
+            _check("P2 audit.by_admin == 'system:purge-cron'",
+                   audit.get("by_admin") == "system:purge-cron",
+                   info=f"by_admin={audit.get('by_admin')!r}")
+            _check("P2 audit.user_id matches",
+                   audit.get("user_id") == u_p2)
+
+        print("\n[P4] Idempotency — re-run does not double-purge")
+        r2 = requests.post(
+            f"{BASE}/admin/users/run-purge-cron",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30,
+        )
+        _check("P4 cron re-run 200", r2.status_code == 200,
+               info=f"status={r2.status_code} body={r2.text[:200]}")
+        if r2.status_code == 200:
+            audit_count = await db.audit_logs.count_documents(
+                {"type": "account_purged_auto", "user_id": u_p2}
             )
-        if _cleanup_ledger_txn_ids:
-            await db.ledger_entries.delete_many({"txn_id": {"$in": _cleanup_ledger_txn_ids}})
-        await db.ledger_entries.delete_many({"bill_id": "g_regression_test"})
+            _check("P4 P2 only has ONE audit row (no double-purge)",
+                   audit_count == 1, info=f"audit_count={audit_count}")
+
+        print("\n[P3] Within grace — user NOT purged")
+        await mongo_cleanup_user(db, u_p3)
+        await mongo_seed_user(
+            db, u_p3,
+            name="Within Grace",
+            phone="+15550009111",
+            email="within_grace@test.com",
+            scheduled_dt=datetime.now(timezone.utc) + timedelta(days=5),
+            deleted_days_ago=25,
+        )
+        r = requests.post(
+            f"{BASE}/admin/users/run-purge-cron",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30,
+        )
+        _check("P3 cron 200", r.status_code == 200,
+               info=f"status={r.status_code} body={r.text[:200]}")
+        u = await mongo_read_user(db, u_p3)
+        _check("P3 user re-read present", u is not None)
+        if u:
+            _check("P3 is_purged still false/missing",
+                   not bool(u.get("is_purged")),
+                   info=f"u.is_purged={u.get('is_purged')!r}")
+            _check("P3 name unchanged ('Within Grace')",
+                   u.get("name") == "Within Grace",
+                   info=f"name={u.get('name')!r}")
+            _check("P3 phone unchanged", u.get("phone") == "+15550009111",
+                   info=f"phone={u.get('phone')!r}")
+            _check("P3 email unchanged", u.get("email") == "within_grace@test.com",
+                   info=f"email={u.get('email')!r}")
+
+        print("\n[P5] Edge case — missing deletion_scheduled_at")
+        await mongo_cleanup_user(db, u_p5)
+        await mongo_seed_user(
+            db, u_p5,
+            name="No Schedule",
+            phone="+15550008888",
+            email="noschedule@test.com",
+            scheduled_dt=None,
+            deleted_days_ago=40,
+        )
+        r = requests.post(
+            f"{BASE}/admin/users/run-purge-cron",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30,
+        )
+        _check("P5 cron 200 (no crash)", r.status_code == 200,
+               info=f"status={r.status_code} body={r.text[:200]}")
+        u = await mongo_read_user(db, u_p5)
+        _check("P5 user re-read present", u is not None)
+        if u:
+            _check("P5 is_purged still false/missing",
+                   not bool(u.get("is_purged")),
+                   info=f"u.is_purged={u.get('is_purged')!r}")
+            _check("P5 name unchanged", u.get("name") == "No Schedule",
+                   info=f"name={u.get('name')!r}")
+            _check("P5 phone unchanged", u.get("phone") == "+15550008888",
+                   info=f"phone={u.get('phone')!r}")
+
     finally:
-        cli.close()
+        for uid in (u_p2, u_p3, u_p5):
+            try:
+                await mongo_cleanup_user(db, uid)
+            except Exception as e:
+                print(f"  ⚠ cleanup {uid} failed: {e}")
+        client.close()
 
 
-def main() -> int:
-    print(f"BACKEND={BACKEND}")
-    token = admin_login()
-    print(f"Admin logged in OK (token len={len(token)})")
-
-    p1(token)
-
-    user = make_user_session(f"P5bLead{int(time.time())}")
-    print(f"Created user {user['id']} session={user['session_id'][:8]}...")
-
-    p2(user)
-    p3(user)
-    p4(user)
-    p5_p6(user)
-    p7(token)
-    p8()
-    user2 = make_user_session(f"P9User{int(time.time())}")
-    p9(token, user2)
-    activate_provider(token, "payout", "stripe_connect")
-    p10(user)
-
-    print("\n── Cleaning up test data ──")
+def cleanup_created_group(gid):
+    if not gid:
+        return
     try:
-        asyncio.get_event_loop().run_until_complete(_cleanup())
-        print("Cleanup OK")
+        import pymongo
+        client = pymongo.MongoClient(MONGO_URL)
+        client[DB_NAME].groups.delete_one({"id": gid})
+        client.close()
+        print(f"  🧹 cleaned up group {gid}")
     except Exception as e:
-        print(f"Cleanup error (non-fatal): {e}")
+        print(f"  ⚠ cleanup group {gid} failed: {e}")
 
-    print("\n" + "═" * 80)
-    passed = sum(1 for _, ok, _ in _results if ok)
-    failed = len(_results) - passed
-    print(f"RESULTS: {passed}/{len(_results)} passed, {failed} failed")
-    if _failures:
+
+def main():
+    print("=" * 60)
+    print("P1 Follow-ups Backend Tests")
+    print("=" * 60)
+
+    token = admin_login()
+    print(f"✅ admin login OK (token len={len(token)})")
+    base_cfg = get_app_config(token)
+    print(f"✅ initial app-config fetched, ops.maintenance_mode={base_cfg.get('ops', {}).get('maintenance_mode')}")
+
+    if base_cfg.get("ops", {}).get("maintenance_mode"):
+        set_maintenance(token, base_cfg, on=False)
+        base_cfg = get_app_config(token)
+
+    lead_user = find_active_user(token)
+    print(f"✅ lead user: id={lead_user['id']} name={lead_user.get('name')!r}")
+
+    existing_group = find_existing_group(token)
+    print(f"✅ existing group: id={existing_group['id'] if existing_group else None}")
+
+    created_gid = None
+    try:
+        created_gid = run_M1(token, base_cfg, lead_user)
+        if existing_group:
+            run_M2(token, base_cfg, existing_group)
+        else:
+            print("[M2] SKIPPED — no existing group available")
+        run_P1(token)
+        asyncio.run(run_P2_P3_P4_P5(token))
+    finally:
+        try:
+            cfg_now = get_app_config(token)
+            if cfg_now.get("ops", {}).get("maintenance_mode"):
+                set_maintenance(token, cfg_now, on=False)
+                print("🧹 restored maintenance_mode=false")
+        except Exception as e:
+            print(f"  ⚠ final maintenance restore failed: {e}")
+
+        cleanup_created_group(created_gid)
+
+    print("\n" + "=" * 60)
+    print(f"RESULTS  PASS={PASS}  FAIL={FAIL}")
+    if FAILS:
         print("\nFAILURES:")
-        for n, d in _failures:
-            print(f"  ❌ {n}: {d}")
-    return 0 if failed == 0 else 1
+        for label, info in FAILS:
+            print(f"  - {label}\n     {info}")
+    print("=" * 60)
+    return 0 if FAIL == 0 else 1
 
 
 if __name__ == "__main__":

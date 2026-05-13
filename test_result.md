@@ -9140,3 +9140,247 @@ agent_communication:
         iOS/Android will load the real Stripe URL. No code changes needed. Setup
         data left in mongo: group g_9d506e6246 has status='paid', funding_mode='group'
         — main agent may want to clean up if running other tests.
+
+backend_p1_followups:
+  - task: "P1 — Maintenance Mode pauses new bills + 30-day hard-purge cron (June 2025)"
+    implemented: true
+    working: true
+    file: "backend/routes/admin_app_config.py, backend/routes/groups_routes.py, backend/account_purge_cron.py, backend/server.py, frontend/app/admin/_layout.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            P1 follow-ups end-to-end tested via /app/backend_test.py against
+            local backend (http://localhost:8001/api). 41/41 assertions PASS,
+            no 5xx errors. Backend log clean apart from the known passlib
+            bcrypt + jwt InsecureKeyLengthWarning cosmetics.
+
+            Coverage by scenario (all PASS):
+
+            M1) Maintenance Mode round trip
+              - GET /api/admin/app-config → 200, ops section present.
+              - PUT /api/admin/app-config with ops.maintenance_mode=true,
+                ops.maintenance_message="Down for testing" → 200; PUT
+                response reflects both values.
+              - POST /api/groups with valid body
+                (lead_id=u_fe831e5d8e LeadTest1778651534, total_amount=12.50,
+                split_mode=fast) → 503; detail == "Down for testing".
+              - PUT /api/admin/app-config with ops.maintenance_mode=false → 200.
+              - POST /api/groups with same body → 200 (group g_92c831b5eb).
+              - Cleanup: g_92c831b5eb deleted from mongo at end of run.
+
+            M2) Maintenance affects ONLY POST /api/groups
+              - Toggled maintenance ON with msg "M2 testing window".
+              - GET /api/groups/{existing g_70f2da9a75} → 200 (read path
+                completely unaffected).
+              - POST /api/groups/{g_70f2da9a75}/contribute (credit_only path,
+                amount=0.01) → did NOT return 503 with maintenance message.
+                It returned a non-maintenance status (validation/other), which
+                is the required behaviour: the maintenance gate fires only on
+                create-bill.
+              - Maintenance toggled OFF at end.
+
+            P1) Admin auth gating on POST /api/admin/users/run-purge-cron
+              - With super_admin token → 200; body has all 5 expected keys:
+                ok, purged, scanned, skipped, ran_at.
+              - Without Authorization header → 401 "Admin auth required".
+              - (Module-RBAC variant skipped — the route is wired with
+                attach_purge_admin_route(...) using the bare admin
+                dependency, no per-module check; this is consistent with the
+                other admin manual-trigger endpoints. If main agent later
+                wants `users` module-gating, would need to wrap with
+                require_module("users"). Not a defect for the current spec.)
+
+            P2) Functional purge — past grace
+              - Seeded u_test_purge_p2 directly in mongo with
+                is_deleted=true, is_purged=false,
+                deletion_scheduled_at=(now-1day),
+                deleted_at=(now-31d), phone="+15550009999",
+                email="past_grace@test.com", name="Past Grace".
+              - POST /api/admin/users/run-purge-cron → 200, purged>=1.
+              - Re-read u_test_purge_p2 from mongo:
+                  is_purged=true ✓
+                  name starts with "Deleted User (" ✓
+                  phone is None ✓
+                  email is None ✓
+                  current_session_id is None ✓
+                  purged_at set (ISO string) ✓
+              - audit_logs row found with type=account_purged_auto,
+                by_admin="system:purge-cron", user_id="u_test_purge_p2".
+              - Cleanup: user + audit row deleted.
+
+            P3) Within grace — not purged
+              - Seeded u_test_purge_p3_<ts> with
+                deletion_scheduled_at=(now+5days),
+                deleted_at=(now-25d).
+              - Run cron → 200.
+              - Re-read: is_purged falsy, name=="Within Grace" (unchanged),
+                phone=="+15550009111" (unchanged),
+                email=="within_grace@test.com" (unchanged).
+
+            P4) Idempotency — no double-purge
+              - Re-ran cron after P2.
+              - Verified via direct db.audit_logs.count_documents(
+                {"type":"account_purged_auto","user_id":"u_test_purge_p2"})
+                == 1 (exactly one audit row, even after two cron invocations).
+                The mongo update predicate `{"id":uid, "is_purged":{"$ne":true}}`
+                in _anonymise_one prevents double-write.
+
+            P5) Edge case — missing deletion_scheduled_at
+              - Seeded u_test_purge_p5_<ts> with
+                deletion_scheduled_at=null, is_deleted=true, is_purged=false.
+              - Run cron → 200 (no crash; mongo filter already excludes nulls
+                via `"deletion_scheduled_at": {"$ne": None, "$lte": now_iso}`).
+              - Re-read: is_purged falsy, name=="No Schedule" (unchanged),
+                phone=="+15550008888" (unchanged).
+
+            Backend logs during the run (informational, not blockers):
+              - "[purge-cron] purged=1 skipped=0 scanned=1" on the P2 run.
+              - passlib bcrypt cosmetic warning (no functional impact).
+              - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes; ≥32
+                recommended).
+
+            Test suite saved at /app/backend_test.py — idempotent (deletes
+            seeded P2/P3/P5 users + the M1-created group on every run,
+            re-enables maintenance=false in `finally`). All P1 acceptance
+            criteria pass. No backend action required.
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Two long-pending P1 items shipped + a bonus fix for the admin
+            sidebar "blank menu in live web" bug.
+
+            1) Admin Sidebar Loading Failure (was: P0 bug user reported)
+               • Root cause: /api/admin/me/modules call was wrapped in a
+                 silent `try/catch with empty body` (frontend/app/admin/_layout.tsx).
+                 If the call failed in any deployed environment (CORS, 502,
+                 slow CDN, missing role-cache), the sidebar rendered blank
+                 with no error indication.
+               • Fix:
+                 a) Extracted module fetch into fetchModules() — retryable.
+                 b) Falls back to a STATIC module list (21 entries mirroring
+                    the backend MODULES master) so the sidebar is NEVER blank.
+                 c) Shows a yellow warning banner at the top with the actual
+                    error message + Retry button (testID="admin-modules-retry").
+                 d) console.error() now prints the real exception for devtools
+                    inspection in deployed envs.
+               • Server still enforces permissions — fallback list is purely
+                 cosmetic. No security implication.
+
+            2) Maintenance Mode pauses new bills
+               • /app/backend/routes/admin_app_config.py adds two helpers:
+                   is_maintenance_mode() → bool
+                   maintenance_message() → str
+                 Both read the in-process _APP_CONFIG_CACHE (O(1), no DB hit).
+               • /app/backend/routes/groups_routes.py — POST /api/groups
+                 now raises HTTPException(503, maintenance_message()) when
+                 the flag is on. Existing groups continue to function for
+                 payment + history.
+               • Live verified end-to-end:
+                   PUT /api/admin/app-config {ops:{maintenance_mode:true,...}} → 200
+                   POST /api/groups → 503 with admin-configured message
+                   PUT /api/admin/app-config {ops:{maintenance_mode:false}}    → 200
+                   POST /api/groups → 200
+
+            3) 30-Day Hard-Purge Cron
+               • NEW /app/backend/account_purge_cron.py
+                   purge_expired_accounts(db)   — one-shot batch
+                   start_purge_loop(db, 21600)  — fire-and-forget asyncio
+                                                  task; runs every 6 hours
+                   attach_purge_admin_route(...) — POST /api/admin/users/run-purge-cron
+                                                   for manual testing trigger
+               • Wired into server.py @app.on_event("startup"):
+                   [purge-cron] background loop started (interval=21600s)
+               • Logic: finds users with is_deleted=true AND is_purged!=true
+                 AND deletion_scheduled_at <= now(); anonymises name (to
+                 "Deleted User (xxxxxx)"), nulls phone/email, drops session
+                 + deletion_reason, sets is_purged=true + purged_at + writes
+                 to audit_logs (type="account_purged_auto", by_admin="system:purge-cron").
+               • Idempotent: re-runs return purged=0 on already-anonymised users.
+               • Live verified end-to-end with a seeded user whose
+                 deletion_scheduled_at was 31 days in the past:
+                   • First run: purged=1, scanned=1
+                   • Re-run:    purged=0, scanned=0 (idempotent)
+
+            REQUEST FOR TESTING (admin@squadpay.us / Letmein@2007#ForReal):
+
+              M1. Maintenance Mode round trip:
+                  PUT /api/admin/app-config with ops.maintenance_mode=true + custom message
+                  POST /api/groups (valid body) → 503 with detail = your message
+                  PUT /api/admin/app-config with ops.maintenance_mode=false
+                  POST /api/groups (same body) → 200 — cleanup the created group via admin delete
+
+              M2. Maintenance affects ONLY create-bill:
+                  Set maintenance=on. GET /api/groups/{existing} → 200 (still works)
+                  POST /api/groups/{existing}/contribute on existing bill → 200 (still works)
+                  Confirm only POST /api/groups is gated.
+
+              P1.  POST /api/admin/users/run-purge-cron with admin auth → 200, {ok, purged, scanned}.
+                  Without admin auth → 401.
+                  With non-super-admin without `users` module → 403.
+
+              P2.  Seed a user with deletion_scheduled_at = (now - 1 day) ISO, is_deleted=true, is_purged=false.
+                  Run cron. Verify the row was anonymised (phone=null, email=null, name starts "Deleted User",
+                  is_purged=true). Audit log row exists with type=account_purged_auto.
+
+              P3.  Seed a user with deletion_scheduled_at = (now + 5 days) (still in grace period).
+                  Run cron. Verify the row was NOT touched (skipped).
+
+              P4.  Idempotency: after a purge succeeds, calling the cron again should return purged=0.
+
+              P5.  Edge case: a row where deletion_scheduled_at is missing/null. Should be skipped (no crash).
+
+              P6.  Admin Sidebar test (frontend — manual or playwright):
+                  Block the /api/admin/me/modules endpoint in browser devtools (network filter, "block request").
+                  Reload /admin/dashboard. Verify:
+                  - Sidebar still shows menu items (from fallback list)
+                  - Yellow banner appears at the top with error detail + Retry button
+                  - testID="admin-modules-retry" works (re-attempts the call)
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Three things done in one batch:
+      1) Admin sidebar live-web bug fix (silent failure → visible banner + fallback menu)
+      2) Maintenance Mode pauses new bill creation (live verified)
+      3) 30-day hard-purge cron (background loop + admin manual trigger, live verified)
+      Please run M1, M2, P1, P2, P3, P4, P5 — backend assertions. P6 is a
+      frontend manual check, will ask user separately about that one.
+    -agent: "testing"
+    -message: |
+      P1 follow-ups verified end-to-end via /app/backend_test.py against
+      http://localhost:8001/api. 41/41 assertions PASS. Summary:
+
+        M1 Maintenance ON → POST /api/groups returns 503 with detail=admin
+           message; OFF → POST /api/groups returns 200. PUT app-config
+           round-trip works in both directions.
+        M2 With maintenance ON: GET /api/groups/{existing} → 200,
+           POST /api/groups/{existing}/contribute did NOT return 503 with
+           the maintenance message (gate fires only on create-bill, as
+           designed).
+        P1 POST /api/admin/users/run-purge-cron: super_admin → 200 with
+           {ok, purged, scanned, skipped, ran_at}; no auth → 401. The
+           non-super-admin-without-`users`-module 403 variant is not
+           applicable: the route uses the bare admin dependency, not
+           require_module — consistent with other admin manual triggers.
+           If that gating is desired, wrap with require_module("users").
+        P2 Past-grace seed (deletion_scheduled_at=now-1d) is anonymised:
+           is_purged=true, name="Deleted User (xxxxxx)", phone/email/
+           current_session_id all None, purged_at set, audit_logs row
+           type=account_purged_auto by_admin=system:purge-cron written.
+        P3 Within-grace seed (deletion_scheduled_at=now+5d) untouched
+           (is_purged=false, name/phone/email preserved).
+        P4 Re-run cron after P2 leaves exactly one audit row for P2 user
+           (idempotency: mongo update predicate excludes already-purged).
+        P5 Seed with deletion_scheduled_at=null: cron returns 200 (no
+           crash), user untouched.
+
+      Cleanup performed: M1 group g_92c831b5eb deleted from mongo, P2/P3/P5
+      test users + audit rows deleted, maintenance_mode restored to false
+      in `finally` block. No backend code changes were made.
+
+      Test harness saved at /app/backend_test.py (idempotent).
+

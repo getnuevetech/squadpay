@@ -228,6 +228,14 @@ except Exception as _e:
     print("[startup] account deletion routes attach failed:", _e)
 
 
+# ---------- 30-day hard-purge admin trigger (P1 — June 2025) ----------
+try:
+    from account_purge_cron import attach_purge_admin_route
+    attach_purge_admin_route(api_router, db, _adm_factory(db))
+except Exception as _e:
+    print("[startup] purge admin route attach failed:", _e)
+
+
 # ---------- Stripe payment routes (Phase E) ----------
 try:
     from payments import attach_payment_routes
@@ -335,6 +343,13 @@ async def _on_startup():
         start_reminder_loop(db, interval_seconds=900)
     except Exception as e:
         print("[startup] reminder loop failed:", e)
+
+    # P1 — June 2025: 30-day hard-purge cron for soft-deleted accounts.
+    try:
+        from account_purge_cron import start_purge_loop
+        start_purge_loop(db, interval_seconds=21600)  # every 6 hours
+    except Exception as e:
+        print("[startup] purge cron failed:", e)
     # Phase G1: seed reconciliation defaults (idempotent)
     try:
         from reconciliation import ensure_reconciliation_settings

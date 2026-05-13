@@ -43,6 +43,42 @@ type ModuleEntry = {
 };
 
 // ---------------------------------------------------------------------------
+// Static FALLBACK module list (June 2025).
+//
+// Used when /api/admin/me/modules fails (network blip, 502 from CDN, CORS in
+// a misconfigured deployment, etc). Keeps the sidebar usable instead of
+// rendering blank. Permission checks still happen on the BACKEND, so even
+// if a non-super-admin sees these links here, the backend will 403 on entry.
+//
+// Keep this list in sync with the master MODULES list in
+// /app/backend/admin_modules.py — only label/path/group are mirrored, not
+// the role assignments.
+// ---------------------------------------------------------------------------
+const FALLBACK_MODULES: ModuleEntry[] = [
+  { key: 'dashboard',         label: 'Dashboard',        group: 'Overview',   path: '/admin/dashboard',         sensitive: false },
+  { key: 'analytics',         label: 'Analytics',        group: 'Overview',   path: '/admin/analytics',         sensitive: false },
+  { key: 'users',             label: 'Users',            group: 'Operations', path: '/admin/users',             sensitive: false },
+  { key: 'squads',            label: 'Squads',           group: 'Operations', path: '/admin/squads',            sensitive: false },
+  { key: 'customer_service',  label: 'Customer Service', group: 'Operations', path: '/admin/customer-service',  sensitive: false },
+  { key: 'notifications',     label: 'Notifications',    group: 'Marketing',  path: '/admin/notifications',     sensitive: false },
+  { key: 'bulk_sms',          label: 'Bulk SMS',         group: 'Marketing',  path: '/admin/bulk-sms',          sensitive: false },
+  { key: 'credit_rules',      label: 'Credit Rules',     group: 'Marketing',  path: '/admin/credit-rules',      sensitive: false },
+  { key: 'referrals',         label: 'Referrals',        group: 'Marketing',  path: '/admin/referrals',         sensitive: false },
+  { key: 'platform_fees',     label: 'Platform Fees',    group: 'Finance',    path: '/admin/platform-fees',     sensitive: true  },
+  { key: 'income_fees',       label: 'Income & Fees',    group: 'Finance',    path: '/admin/income-fees',       sensitive: true  },
+  { key: 'master_account',    label: 'Master Account',   group: 'Finance',    path: '/admin/master-account',    sensitive: true  },
+  { key: 'reconciliations',   label: 'Reconciliations',  group: 'Finance',    path: '/admin/reconciliations',   sensitive: false },
+  { key: 'integrations',      label: 'Integrations',     group: 'System',     path: '/admin/integrations',      sensitive: true  },
+  { key: 'security',          label: 'Security',         group: 'System',     path: '/admin/security',          sensitive: true  },
+  { key: 'audit',             label: 'Audit Log',        group: 'System',     path: '/admin/audit',             sensitive: false },
+  { key: 'legal_pages',       label: 'Legal Pages',      group: 'System',     path: '/admin/legal-pages',       sensitive: false },
+  { key: 'admins',            label: 'Admins',           group: 'System',     path: '/admin/admins',            sensitive: true  },
+  { key: 'access',            label: 'Access Roles',     group: 'System',     path: '/admin/access',            sensitive: true  },
+  { key: 'capabilities',      label: 'Capabilities',     group: 'System',     path: '/admin/capabilities',      sensitive: true  },
+  { key: 'gateways',          label: 'Payment Gateways', group: 'System',     path: '/admin/gateways',          sensitive: true  },
+];
+
+// ---------------------------------------------------------------------------
 // Legacy NAV_ITEMS export (kept for AdminSearchBar fuzzy nav matching).
 // We hand it the same shape it expects, derived from the modules response.
 // ---------------------------------------------------------------------------
@@ -156,6 +192,45 @@ export default function AdminLayout() {
   const [groupOrder, setGroupOrder] = useState<string[]>(
     ['Overview', 'Operations', 'Marketing', 'Finance', 'System'],
   );
+  const [modulesError, setModulesError] = useState<string | null>(null);
+  const [modulesLoading, setModulesLoading] = useState(false);
+
+  // Phase 5b+ — split out modules fetching so we can retry it independently
+  // from the profile/auth check. The earlier `try/catch with empty body` hid
+  // network/CORS/server errors and left the sidebar mysteriously blank.
+  const fetchModules = async () => {
+    setModulesLoading(true);
+    try {
+      const mods = await adminApi.myModules();
+      setModules(mods.modules);
+      setGroupOrder(mods.group_order || groupOrder);
+      LATEST_NAV_ITEMS = mods.modules.map((m) => ({
+        href: m.path,
+        label: m.label,
+        icon: ICON_BY_KEY[m.key] || LayoutDashboard,
+        key: m.key,
+      }));
+      setModulesError(null);
+    } catch (e: any) {
+      // Log full details to console (visible in browser devtools) — helps
+      // diagnose deployed-environment-only failures (CORS, 502, missing env).
+      // eslint-disable-next-line no-console
+      console.error('[admin/sidebar] /admin/me/modules failed:', e);
+      setModulesError(e?.message || String(e) || 'Unknown error');
+      // Fallback so the sidebar isn't blank — server still enforces access.
+      if (modules.length === 0) {
+        setModules(FALLBACK_MODULES);
+        LATEST_NAV_ITEMS = FALLBACK_MODULES.map((m) => ({
+          href: m.path,
+          label: m.label,
+          icon: ICON_BY_KEY[m.key] || LayoutDashboard,
+          key: m.key,
+        }));
+      }
+    } finally {
+      setModulesLoading(false);
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -173,22 +248,11 @@ export default function AdminLayout() {
       try {
         const me = await adminApi.me();
         setProfile(me);
-        try {
-          const mods = await adminApi.myModules();
-          setModules(mods.modules);
-          setGroupOrder(mods.group_order || groupOrder);
-          // Update legacy NAV_ITEMS proxy data for AdminSearchBar.
-          LATEST_NAV_ITEMS = mods.modules.map((m) => ({
-            href: m.path,
-            label: m.label,
-            icon: ICON_BY_KEY[m.key] || LayoutDashboard,
-            key: m.key,
-          }));
-        } catch {
-          // Non-fatal — sidebar simply stays empty until next reload.
-        }
+        await fetchModules();
         if (pathname === '/admin/login' || pathname === '/admin') router.replace('/admin/dashboard');
-      } catch {
+      } catch (e: any) {
+        // eslint-disable-next-line no-console
+        console.error('[admin/sidebar] /admin/auth/me failed:', e);
         await clearSession();
         if (!onLogin) router.replace('/admin/login');
       } finally {
@@ -253,6 +317,28 @@ export default function AdminLayout() {
             </TouchableOpacity>
           </View>
         </View>
+        {modulesError && (
+          <View style={styles.modulesErrorBanner} testID="admin-modules-error-banner">
+            <ShieldAlert size={14} color={COLORS.warning} />
+            <Text style={styles.modulesErrorText} numberOfLines={2}>
+              Could not load the live sidebar from the server — showing offline menu.
+              <Text style={styles.modulesErrorDetail}>{`  (${modulesError})`}</Text>
+            </Text>
+            <TouchableOpacity
+              onPress={fetchModules}
+              disabled={modulesLoading}
+              style={styles.modulesRetryBtn}
+              testID="admin-modules-retry"
+            >
+              {modulesLoading ? (
+                <ActivityIndicator size="small" color={COLORS.primary} />
+              ) : (
+                <RefreshCw size={14} color={COLORS.primary} />
+              )}
+              <Text style={styles.modulesRetryText}>Retry</Text>
+            </TouchableOpacity>
+          </View>
+        )}
         <Stack
           screenOptions={{
             headerShown: false,
@@ -352,4 +438,26 @@ const styles = StyleSheet.create({
   },
   topbarEmail: { color: COLORS.subtext, fontSize: FONT.sizes.xs, fontWeight: FONT.weights.semibold, maxWidth: 220 },
   topbarLogout: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.dangerLight },
+  modulesErrorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FEF3C7',
+    borderBottomWidth: 1,
+    borderBottomColor: '#FCD34D',
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: 6,
+  },
+  modulesErrorText: { flex: 1, color: '#92400E', fontSize: FONT.sizes.xs, fontWeight: FONT.weights.medium },
+  modulesErrorDetail: { fontWeight: FONT.weights.medium, color: '#A16207' },
+  modulesRetryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: COLORS.primaryLight,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: RADIUS.sm,
+  },
+  modulesRetryText: { color: COLORS.primary, fontSize: FONT.sizes.xs, fontWeight: FONT.weights.bold },
 });

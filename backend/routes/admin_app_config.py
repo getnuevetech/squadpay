@@ -128,6 +128,21 @@ def set_app_config_cache(cfg: dict) -> None:
     _APP_CONFIG_CACHE = dict(cfg or {})
 
 
+def is_maintenance_mode() -> bool:
+    """O(1) check used by request-path guards (e.g. create-bill endpoint).
+    Reads the in-process cache populated at startup + every admin save."""
+    ops = (_APP_CONFIG_CACHE or {}).get("ops") or {}
+    return bool(ops.get("maintenance_mode"))
+
+
+def maintenance_message() -> str:
+    ops = (_APP_CONFIG_CACHE or {}).get("ops") or {}
+    return str(
+        ops.get("maintenance_message")
+        or "SquadPay is briefly down for maintenance — we'll be right back."
+    )
+
+
 # ───────────────────── Load + persist ─────────────────────
 
 DEFAULT_EXTRA_FEES = [

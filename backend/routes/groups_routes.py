@@ -17,6 +17,13 @@ def attach_groups_routes(router: APIRouter, db):
 
     @router.post("/groups")
     async def create_group(body: CreateGroupIn):
+        # Phase P1 — Maintenance Mode guard. When admins toggle the global
+        # maintenance flag, new bills must NOT be accepted (existing groups
+        # keep working for payment finalisation, history, etc.).
+        from routes.admin_app_config import is_maintenance_mode, maintenance_message
+        if is_maintenance_mode():
+            raise HTTPException(503, maintenance_message())
+
         user = await db.users.find_one({"id": body.lead_id}, {"_id": 0})
         if not user:
             raise HTTPException(404, "Lead user not found")

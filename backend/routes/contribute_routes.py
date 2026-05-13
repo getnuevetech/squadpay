@@ -22,11 +22,11 @@ def attach_contribute_routes(router: APIRouter, db):
         """Member (or lead) pays their share via real Stripe Checkout (Phase F1)."""
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         if group.get("status") != "open":
             raise HTTPException(400, "Bill already paid; use repay instead")
         if group.get("is_blocked"):
-            raise HTTPException(403, "This group has been blocked by an administrator.")
+            raise HTTPException(403, "This squad has been blocked by an administrator.")
         user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
         if not user:
             raise HTTPException(404, "User not found")
@@ -35,14 +35,14 @@ def attach_contribute_routes(router: APIRouter, db):
         if not user.get("verified"):
             raise HTTPException(403, "Phone verification required before contributing")
         if not any(m["user_id"] == body.user_id for m in group.get("members", [])):
-            raise HTTPException(403, "Not a member of this group")
-        # A group is by definition multi-person — a single member cannot
-        # contribute toward a "group" bill until at least one other person
+            raise HTTPException(403, "Not a member of this squad")
+        # A squad is by definition multi-person — a single member cannot
+        # contribute toward a "squad" bill until at least one other person
         # joins. This prevents the app being used as a solo wallet.
         if len(group.get("members") or []) < 2:
             raise HTTPException(
                 400,
-                "A group needs at least 2 members before anyone can contribute. Invite someone first.",
+                "A squad needs at least 2 members before anyone can contribute. Invite someone first.",
             )
 
         enriched = await _recompute_group(group)
@@ -178,7 +178,7 @@ def attach_contribute_routes(router: APIRouter, db):
                     "txn_id": txn_id,
                 },
                 idempotency_key=txn_id,
-                product_name=f"SquadPay contribution — {group.get('title') or 'Group Bill'}",
+                product_name=f"SquadPay contribution — {group.get('title') or 'Squad Bill'}",
             )
         except HTTPException:
             raise

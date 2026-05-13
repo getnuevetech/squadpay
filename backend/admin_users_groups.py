@@ -243,7 +243,7 @@ def attach_users_and_groups_routes(router: APIRouter, db, attach_admin):
     async def get_group_detail(group_id: str, admin=Depends(attach_admin)):
         g = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not g:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         member_ids = [m["user_id"] for m in (g.get("members") or [])]
         users = await db.users.find({"id": {"$in": member_ids}}, {"_id": 0}).to_list(length=None)
         user_map = {u["id"]: u for u in users}
@@ -285,7 +285,7 @@ def attach_users_and_groups_routes(router: APIRouter, db, attach_admin):
     ):
         g = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not g:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         import datetime as dt
         update = {
             "is_blocked": bool(body.is_blocked),

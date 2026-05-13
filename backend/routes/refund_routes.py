@@ -50,9 +50,9 @@ def make_refund_router(db) -> APIRouter:
     async def refund_overpayment(group_id: str, body: RefundOverpaymentIn):
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         if body.user_id not in [m["user_id"] for m in (group.get("members") or [])]:
-            raise HTTPException(403, "User is not a member of this group")
+            raise HTTPException(403, "User is not a member of this squad")
 
         # Compute current overpaid amount from the projection helper.
         projected = await apply_calculations(group)

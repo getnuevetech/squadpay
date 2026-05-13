@@ -206,26 +206,54 @@ export default function AdminLayout() {
   // Phase 5b+ — split out modules fetching so we can retry it independently
   // from the profile/auth check. The earlier `try/catch with empty body` hid
   // network/CORS/server errors and left the sidebar mysteriously blank.
+  //
+  // P2 (June 2025) — Auto-retry-with-backoff. FastAPI's hot-reload window
+  // (~1.5–3s during dev) briefly returns 404 for /api/admin/me/modules,
+  // which made the sidebar flip to the fallback list and surface a
+  // confusing red banner. We now silently retry transient 404/502/503
+  // errors up to 4 times with exponential backoff (300ms→600→1200→2400),
+  // and only show the error UI if every attempt fails.
+  const TRANSIENT_STATUSES = [0, 404, 502, 503, 504];
+  const fetchModulesWithRetry = async (maxAttempts = 4): Promise<{ ok: boolean; lastErr?: any }> => {
+    let lastErr: any = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const mods = await adminApi.myModules();
+        setModules(mods.modules);
+        setGroupOrder(mods.group_order || groupOrder);
+        LATEST_NAV_ITEMS = mods.modules.map((m) => ({
+          href: m.path,
+          label: m.label,
+          icon: ICON_BY_KEY[m.key] || LayoutDashboard,
+          key: m.key,
+        }));
+        setModulesError(null);
+        return { ok: true };
+      } catch (e: any) {
+        lastErr = e;
+        const status = Number(e?.status || e?.response?.status || 0);
+        const isTransient = TRANSIENT_STATUSES.includes(status) || /Network|Failed to fetch|timeout/i.test(String(e?.message || ''));
+        if (attempt < maxAttempts && isTransient) {
+          // Exponential backoff with jitter
+          const delay = 300 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 150);
+          // eslint-disable-next-line no-console
+          console.warn(`[admin/sidebar] modules fetch failed (status=${status}, attempt=${attempt}/${maxAttempts}). Retrying in ${delay}ms…`);
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+        break;
+      }
+    }
+    return { ok: false, lastErr };
+  };
+
   const fetchModules = async () => {
     setModulesLoading(true);
-    try {
-      const mods = await adminApi.myModules();
-      setModules(mods.modules);
-      setGroupOrder(mods.group_order || groupOrder);
-      LATEST_NAV_ITEMS = mods.modules.map((m) => ({
-        href: m.path,
-        label: m.label,
-        icon: ICON_BY_KEY[m.key] || LayoutDashboard,
-        key: m.key,
-      }));
-      setModulesError(null);
-    } catch (e: any) {
-      // Log full details to console (visible in browser devtools) — helps
-      // diagnose deployed-environment-only failures (CORS, 502, missing env).
+    const { ok, lastErr } = await fetchModulesWithRetry();
+    if (!ok) {
       // eslint-disable-next-line no-console
-      console.error('[admin/sidebar] /admin/me/modules failed:', e);
-      setModulesError(e?.message || String(e) || 'Unknown error');
-      // Fallback so the sidebar isn't blank — server still enforces access.
+      console.error('[admin/sidebar] /admin/me/modules failed after retries:', lastErr);
+      setModulesError(lastErr?.message || String(lastErr) || 'Unknown error');
       if (modules.length === 0) {
         setModules(FALLBACK_MODULES);
         LATEST_NAV_ITEMS = FALLBACK_MODULES.map((m) => ({
@@ -235,9 +263,8 @@ export default function AdminLayout() {
           key: m.key,
         }));
       }
-    } finally {
-      setModulesLoading(false);
     }
+    setModulesLoading(false);
   };
 
   useEffect(() => {

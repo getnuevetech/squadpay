@@ -53,7 +53,7 @@ DEFAULT_PAGES = {
 <h4>My contribution failed</h4>
 <p>Stripe processes all payments. If a card is declined, double-check the card details, ZIP code, and that there are sufficient funds.</p>
 <h4>How do I leave a group?</h4>
-<p>Open the group, tap the menu in the top right, and choose "Leave group."</p>
+<p>Open the squad, tap the menu in the top right, and choose "Leave squad."</p>
 <h4>Is my data secure?</h4>
 <p>We never store full card numbers — only Stripe tokens. Phone numbers and personal info are encrypted at rest.</p>
 """.strip(),

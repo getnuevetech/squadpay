@@ -67,7 +67,7 @@ def attach_groups_routes(router: APIRouter, db):
             "id": gid,
             "code": code,
             "lead_id": body.lead_id,
-            "title": body.title or "Group Bill",
+            "title": body.title or "Squad Bill",
             "total_amount": round(final_total, 2),
             "original_total_amount": float(body.total_amount or 0),
             "tax": body.tax,
@@ -96,16 +96,16 @@ def attach_groups_routes(router: APIRouter, db):
     async def get_group_by_code(code: str):
         group = await db.groups.find_one({"code": code}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         return await _load_group_enriched(db, group["id"])
 
     @router.post("/groups/{group_id}/join")
     async def join_group(group_id: str, body: JoinGroupIn):
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         if group.get("is_blocked"):
-            raise HTTPException(403, "This group has been blocked by an administrator.")
+            raise HTTPException(403, "This squad has been blocked by an administrator.")
         user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
         if not user:
             raise HTTPException(404, "User not found")
@@ -151,9 +151,9 @@ def attach_groups_routes(router: APIRouter, db):
 
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         if group.get("is_blocked"):
-            raise HTTPException(403, "This group has been blocked by an administrator.")
+            raise HTTPException(403, "This squad has been blocked by an administrator.")
         if group.get("lead_id") != body.user_id:
             raise HTTPException(403, "Only the lead can change the split mode")
         if group.get("status") != "open":
@@ -196,9 +196,9 @@ def attach_groups_routes(router: APIRouter, db):
         """
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         if group.get("is_blocked"):
-            raise HTTPException(403, "This group has been blocked by an administrator.")
+            raise HTTPException(403, "This squad has been blocked by an administrator.")
         if group.get("lead_id") != body.user_id:
             raise HTTPException(403, "Only the lead can remove members")
         if group.get("status") != "open":
@@ -209,7 +209,7 @@ def attach_groups_routes(router: APIRouter, db):
         members = group.get("members", []) or []
         target = next((m for m in members if m.get("user_id") == body.target_id), None)
         if not target:
-            raise HTTPException(404, "Member is not part of this group")
+            raise HTTPException(404, "Member is not part of this squad")
 
         # Block if the target has put any money in (contribution or repayment).
         contributions_total = sum(
@@ -273,7 +273,7 @@ def attach_groups_routes(router: APIRouter, db):
         """Lead-only: update bill title, tax, or tip after creation."""
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         if group["lead_id"] != body.user_id:
             raise HTTPException(403, "Only the lead can edit the bill")
 
@@ -318,7 +318,7 @@ def attach_groups_routes(router: APIRouter, db):
     async def update_items(group_id: str, body: UpdateItemsIn):
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         if group.get("contributions"):
             raise HTTPException(
                 400,
@@ -338,7 +338,7 @@ def attach_groups_routes(router: APIRouter, db):
         """Lead-only: add new items to an existing group."""
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         if group["lead_id"] != body.user_id:
             raise HTTPException(403, "Only lead can add items")
         raw_status = group.get("status") or "open"
@@ -382,7 +382,7 @@ def attach_groups_routes(router: APIRouter, db):
         """Lead-only: remove an item from the bill."""
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         if group["lead_id"] != user_id:
             raise HTTPException(403, "Only lead can delete items")
         if group.get("status") == "closed":
@@ -411,7 +411,7 @@ def attach_groups_routes(router: APIRouter, db):
         """Lead-only: increase or decrease an item's quantity by ±1."""
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         if group["lead_id"] != body.user_id:
             raise HTTPException(403, "Only lead can change quantity")
         if group.get("status") == "closed":
@@ -441,7 +441,7 @@ def attach_groups_routes(router: APIRouter, db):
     async def assign_item(group_id: str, body: AssignIn):
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         item = next((i for i in group.get("items", []) if i["id"] == body.item_id), None)
         if not item:
             raise HTTPException(404, "Item not found")

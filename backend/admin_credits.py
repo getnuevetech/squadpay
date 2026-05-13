@@ -137,7 +137,7 @@ def attach_credits_routes(router: APIRouter, db, attach_admin):
     ):
         g = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not g:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         if g.get("status") != "open":
             raise HTTPException(400, "Cannot apply discount to a settled bill")
         original = float(g.get("original_total_amount") or g.get("total_amount") or 0)
@@ -185,7 +185,7 @@ def attach_credits_routes(router: APIRouter, db, attach_admin):
     ):
         g = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not g:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         original = float(g.get("original_total_amount") or g.get("total_amount") or 0)
         await db.groups.update_one(
             {"id": group_id},

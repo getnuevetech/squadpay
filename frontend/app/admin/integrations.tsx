@@ -262,7 +262,7 @@ export default function AdminIntegrations() {
     setSaving('run');
     try {
       const r = await adminApi.runRemindersNow();
-      setRunResult(`Scanned ${r.scanned} groups • sent_real=${r.sent_real} • logged=${r.logged} • skipped=${r.skipped}`);
+      setRunResult(`Scanned ${r.scanned} squads • sent_real=${r.sent_real} • logged=${r.logged} • skipped=${r.skipped}`);
     } catch (e: any) { setRunResult(`Error: ${e?.message || 'Failed'}`); }
     finally { setSaving(null); }
   };
@@ -365,7 +365,7 @@ export default function AdminIntegrations() {
 
         <Text style={styles.label}>Business name (used as card nickname prefix)</Text>
         <TextInput style={styles.input} value={issName} onChangeText={setIssName} placeholder="SquadPay" placeholderTextColor={COLORS.disabledText} testID="admin-issuing-name" />
-        <Text style={styles.helper}>Each group's card will be named "{issName.trim() || 'SquadPay'} - {'{Group title}'}".</Text>
+        <Text style={styles.helper}>Each squad's card will be named "{issName.trim() || 'SquadPay'} - {'{Squad title}'}".</Text>
 
         <Text style={styles.label}>Card disable mode</Text>
         <View style={styles.formRow}>
@@ -426,8 +426,8 @@ export default function AdminIntegrations() {
           <View style={{ flex: 1 }}>
             <Text style={styles.label}>Require lead KYC (per-lead cardholders)</Text>
             <Text style={styles.helper}>
-              When OFF — all groups share the single business cardholder above.{`\n`}
-              When ON — each group's lead gets their own Stripe Issuing cardholder, keyed to
+              When OFF — all squads share the single business cardholder above.{`\n`}
+              When ON — each squad's lead gets their own Stripe Issuing cardholder, keyed to
               the lead's verified phone + name. In Test Mode, individual cardholders go straight
               to status="active". In Live Mode, Stripe will require KYC docs (integrate Stripe
               Identity separately) before a card can be issued for that lead.
@@ -725,7 +725,7 @@ export default function AdminIntegrations() {
           <View style={styles.cardIcon}><Bell size={18} color={COLORS.warning} /></View>
           <View style={{ flex: 1 }}>
             <Text style={styles.cardTitle}>Reminders</Text>
-            <Text style={styles.cardSub}>Auto-nudge group members who haven't paid yet. Runs every 15 minutes in the background.</Text>
+            <Text style={styles.cardSub}>Auto-nudge squad members who haven't paid yet. Runs every 15 minutes in the background.</Text>
           </View>
           <StatusPill ok={view.reminders.enabled} label={view.reminders.enabled ? 'On' : 'Off'} />
         </View>
@@ -735,13 +735,13 @@ export default function AdminIntegrations() {
           <Switch value={rmEnabled} onValueChange={setRmEnabled} trackColor={{ false: COLORS.disabledBg, true: COLORS.warning }} thumbColor="#fff" testID="admin-reminders-enable" />
         </View>
 
-        <Text style={styles.label}>Schedule (hours after group creation, comma-separated)</Text>
+        <Text style={styles.label}>Schedule (hours after squad creation, comma-separated)</Text>
         <TextInput style={styles.input} value={rmHours} onChangeText={setRmHours} placeholder="24,72,168" placeholderTextColor={COLORS.disabledText} testID="admin-reminders-hours" />
         <Text style={styles.helper}>Default: 24h, 72h (3d), 168h (7d). Each member gets at most one reminder per offset.</Text>
 
         <View style={styles.formRow}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.label}>Max reminders / user / group</Text>
+            <Text style={styles.label}>Max reminders / user / squad</Text>
             <TextInput style={styles.input} value={rmMax} onChangeText={setRmMax} keyboardType="number-pad" testID="admin-reminders-max" />
           </View>
           <View style={[styles.toggleRow, { flex: 1, marginTop: 0 }]}>

@@ -76,6 +76,13 @@ attach_referrals_credits_routes(api_router, db)
 attach_misc_routes(api_router, db)
 attach_kyc_routes(api_router, db)
 
+# P2 (June 2025) — Recurring bills: per-group cadence + background cloner.
+try:
+    from routes.recurring_routes import attach_recurring_routes
+    attach_recurring_routes(api_router, db)
+except Exception as _e:
+    print("[startup] recurring routes attach failed:", _e)
+
 # ---------- Admin-managed legal pages (Support / Privacy / Terms) ----------
 try:
     from routes.legal_routes import attach_legal_routes
@@ -368,6 +375,14 @@ async def _on_startup():
         start_purge_loop(db, interval_seconds=21600)  # every 6 hours
     except Exception as e:
         print("[startup] purge cron failed:", e)
+
+    # P2 — June 2025: recurring-bills background loop. Clones squads on
+    # their configured cadence (weekly/monthly). Runs every 30 minutes.
+    try:
+        from recurring_groups_cron import start_recurring_loop
+        start_recurring_loop(db, interval_seconds=1800)
+    except Exception as e:
+        print("[startup] recurring cron failed:", e)
     # Phase G1: seed reconciliation defaults (idempotent)
     try:
         from reconciliation import ensure_reconciliation_settings

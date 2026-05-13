@@ -144,7 +144,7 @@ export const RevealCardModal: React.FC<Props> = ({ visible, onClose, groupId, us
       const g = await api.getGroup(groupId);
       const cardId = (g as any)?.virtual_card?.stripe_card_id;
       if (!cardId || !String(cardId).startsWith('ic_')) {
-        throw new Error('No active virtual card on this group');
+        throw new Error('No active virtual card on this squad');
       }
       const stripeJsLoaded = await ensureStripeJsLoaded(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || '');
       if (!stripeJsLoaded || !stripeJsLoaded.stripe) {

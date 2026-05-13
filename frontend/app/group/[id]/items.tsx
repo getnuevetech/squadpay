@@ -52,6 +52,8 @@ export default function ItemsScreen() {
   // /app/create.tsx — we just route the parsed items into appendItems
   // instead of replacing the bill.
   const [scanning, setScanning] = useState(false);
+  // Multi-receipt progress (P2): null when idle, {done, total} when batching.
+  const [scanProgress, setScanProgress] = useState<{ done: number; total: number } | null>(null);
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -184,6 +186,11 @@ export default function ItemsScreen() {
   // We deliberately ignore tax/tip the parser returns here — the bill already
   // has tax/tip set by the lead. If they need to update those, the dashboard
   // exposes an "Edit tax & tip" button.
+  //
+  // Multi-receipt support (P2, June 2025): leads can now pick MULTIPLE
+  // receipt images from the gallery in one go, or chain camera captures.
+  // We OCR each in sequence (parallel would blow through LLM rate-limits),
+  // show live "scanning 2/3 …" progress, and append the union at the end.
   const handleParsedReceipt = async (base64: string) => {
     if (!group || !userId) return;
     setScanning(true);
@@ -207,6 +214,62 @@ export default function ItemsScreen() {
       toast.error(friendlyError(e, "We couldn't read that receipt. Try a clearer photo or add items manually."));
     } finally {
       setScanning(false);
+    }
+  };
+
+  // Process N receipts sequentially. Each receipt's items get accumulated
+  // and we make ONE appendItems call at the end to keep the bill stable
+  // while OCR is running (parallel inserts caused races). If a single
+  // receipt fails OCR we keep going — failures don't block the batch.
+  const handleParsedReceipts = async (base64s: string[]) => {
+    if (!group || !userId || base64s.length === 0) return;
+    if (base64s.length === 1) {
+      await handleParsedReceipt(base64s[0]);
+      return;
+    }
+    setScanning(true);
+    setScanProgress({ done: 0, total: base64s.length });
+    const merged: { name: string; price: number; quantity: number }[] = [];
+    const failures: number[] = [];
+    try {
+      for (let i = 0; i < base64s.length; i += 1) {
+        setScanProgress({ done: i, total: base64s.length });
+        try {
+          const parsed = await api.scanReceipt(base64s[i]);
+          (parsed.items || []).forEach((it: any) => {
+            if (it?.name && Number(it?.price) > 0) {
+              merged.push({
+                name: String(it.name).trim(),
+                price: Number(it.price),
+                quantity: Math.max(1, parseInt(String(it.quantity || 1), 10) || 1),
+              });
+            }
+          });
+        } catch {
+          failures.push(i + 1);
+        }
+      }
+      setScanProgress({ done: base64s.length, total: base64s.length });
+      if (merged.length === 0) {
+        toast.error(
+          failures.length
+            ? `Couldn't read ${failures.length} of ${base64s.length} receipts. Try clearer photos.`
+            : 'No items detected on any receipt',
+        );
+        return;
+      }
+      const g = await api.appendItems(group.id, userId, merged);
+      setGroup(g);
+      const successCount = base64s.length - failures.length;
+      toast.success(
+        `Added ${merged.length} item${merged.length === 1 ? '' : 's'} from ${successCount} receipt${successCount === 1 ? '' : 's'}` +
+          (failures.length ? ` (${failures.length} skipped)` : ''),
+      );
+    } catch (e: any) {
+      toast.error(friendlyError(e, 'Receipt scanning failed. Add items manually.'));
+    } finally {
+      setScanning(false);
+      setScanProgress(null);
     }
   };
 
@@ -237,13 +300,23 @@ export default function ItemsScreen() {
         Alert.alert('Permission needed', 'Allow photo access to upload receipts.');
         return;
       }
+      // Multi-select gallery — lead can pick several receipts in one go and
+      // we OCR them all into the same bill. iOS/Android both support this
+      // when allowsMultipleSelection=true.
       const res = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         base64: true,
         quality: 0.6,
+        allowsMultipleSelection: true,
+        selectionLimit: 8,
       });
-      if (res.canceled || !res.assets?.[0]?.base64) return;
-      await handleParsedReceipt(res.assets[0].base64!);
+      if (res.canceled || !res.assets?.length) return;
+      const b64s = res.assets.map((a) => a.base64).filter((b): b is string => !!b);
+      if (b64s.length === 0) {
+        toast.error('Could not read those images');
+        return;
+      }
+      await handleParsedReceipts(b64s);
     } catch (e: any) {
       toast.error(e?.message || 'Upload failed');
     }
@@ -263,6 +336,18 @@ export default function ItemsScreen() {
       });
       if (res.canceled || !res.assets?.[0]?.base64) return;
       await handleParsedReceipt(res.assets[0].base64!);
+      // After a successful single capture, give the lead a quick "scan
+      // another?" prompt so multi-receipt camera flows feel native.
+      setTimeout(() => {
+        Alert.alert(
+          'Scanned!',
+          'Want to scan another receipt onto this bill?',
+          [
+            { text: 'No, done', style: 'cancel' },
+            { text: 'Scan another', onPress: () => captureReceipt() },
+          ],
+        );
+      }, 350);
     } catch (e: any) {
       toast.error(e?.message || 'Camera capture failed');
     }
@@ -633,6 +718,39 @@ export default function ItemsScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      {/* Multi-receipt scan progress modal — shows live progress when the
+          lead picks several receipts at once via the gallery. We block
+          dismiss while running so the OCR pipeline doesn't get orphaned. */}
+      <Modal
+        visible={!!scanProgress}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { /* non-dismissable while scanning */ }}
+      >
+        <View style={styles.scanBackdrop}>
+          <View style={styles.scanSheet} testID="items-scan-progress">
+            <ActivityIndicator size="large" color={COLORS.primary} />
+            <Text style={styles.scanTitle}>Scanning receipts</Text>
+            <Text style={styles.scanSub}>
+              {scanProgress
+                ? `Receipt ${Math.min(scanProgress.done + 1, scanProgress.total)} of ${scanProgress.total}`
+                : ''}
+            </Text>
+            <View style={styles.scanBarTrack}>
+              <View
+                style={[
+                  styles.scanBarFill,
+                  {
+                    width: `${scanProgress ? Math.round((scanProgress.done / Math.max(1, scanProgress.total)) * 100) : 0}%`,
+                  },
+                ]}
+              />
+            </View>
+            <Text style={styles.scanHint}>This takes ~3–5 sec per receipt. Items merge automatically.</Text>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -887,4 +1005,34 @@ const styles = StyleSheet.create({
   },
   assignAvatarText: { color: COLORS.primary, fontWeight: FONT.weights.bold, fontSize: FONT.sizes.sm },
   assignName: { color: COLORS.text, fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold, flex: 1 },
+  // Multi-receipt scan progress modal.
+  scanBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15,23,42,0.65)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: SPACING.lg,
+  },
+  scanSheet: {
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.xl,
+    paddingVertical: SPACING.xl,
+    paddingHorizontal: SPACING.lg,
+    alignItems: 'center',
+    gap: SPACING.sm,
+    width: '100%',
+    maxWidth: 360,
+  },
+  scanTitle: { fontSize: FONT.sizes.lg, fontWeight: FONT.weights.heavy, color: COLORS.text, marginTop: SPACING.sm },
+  scanSub: { fontSize: FONT.sizes.md, color: COLORS.subtext, fontWeight: FONT.weights.semibold },
+  scanBarTrack: {
+    width: '100%',
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: COLORS.border,
+    marginVertical: SPACING.sm,
+    overflow: 'hidden',
+  },
+  scanBarFill: { height: '100%', backgroundColor: COLORS.primary, borderRadius: 4 },
+  scanHint: { fontSize: FONT.sizes.xs, color: COLORS.subtext, textAlign: 'center', marginTop: 4 },
 });

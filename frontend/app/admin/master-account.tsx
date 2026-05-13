@@ -33,7 +33,7 @@ export default function AdminMasterAccount() {
       return;
     }
     const rows: (string | number)[][] = [
-      ['Created at', 'Created by', 'Group title', 'Lead', 'Source card', 'Amount', 'Balance after', 'Note'],
+      ['Created at', 'Created by', 'Squad title', 'Lead', 'Source card', 'Amount', 'Balance after', 'Note'],
     ];
     for (const e of items) {
       rows.push([
@@ -73,7 +73,7 @@ export default function AdminMasterAccount() {
     <ScrollView contentContainerStyle={{ paddingBottom: 80 }} horizontal={false}>
       <Text style={styles.heading} testID="admin-master-heading">Master Account</Text>
       <Text style={styles.subheading}>
-        Ledger of all leftover funds collected after group payments settle.
+        Ledger of all leftover funds collected after squad payments settle.
         Each entry traces back to the originating squad.
       </Text>
 
@@ -102,7 +102,7 @@ export default function AdminMasterAccount() {
         <View style={styles.tableWrap}>
           <View style={[styles.tableRow, styles.tableHeaderRow]}>
             <Text style={[styles.th, styles.colDate]}>Date</Text>
-            <Text style={[styles.th, styles.colGroup]}>Group</Text>
+            <Text style={[styles.th, styles.colGroup]}>Squad</Text>
             <Text style={[styles.th, styles.colLead]}>Lead</Text>
             <Text style={[styles.th, styles.colCard]}>Source ref</Text>
             <Text style={[styles.th, styles.colAmount, styles.right]}>Amount</Text>

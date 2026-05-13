@@ -183,11 +183,11 @@ def attach_native_contribute_routes(router: APIRouter, db):
         # but Phase 3 already proved the flow is tightly coupled).
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         if group.get("status") != "open":
             raise HTTPException(400, "Bill already paid; use repay instead")
         if group.get("is_blocked"):
-            raise HTTPException(403, "This group has been blocked by an administrator.")
+            raise HTTPException(403, "This squad has been blocked by an administrator.")
         user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
         if not user:
             raise HTTPException(404, "User not found")
@@ -196,9 +196,9 @@ def attach_native_contribute_routes(router: APIRouter, db):
         if not user.get("verified"):
             raise HTTPException(403, "Phone verification required before contributing")
         if not any(m["user_id"] == body.user_id for m in group.get("members", [])):
-            raise HTTPException(403, "Not a member of this group")
+            raise HTTPException(403, "Not a member of this squad")
         if len(group.get("members") or []) < 2:
-            raise HTTPException(400, "A group needs at least 2 members before anyone can contribute. Invite someone first.")
+            raise HTTPException(400, "A squad needs at least 2 members before anyone can contribute. Invite someone first.")
 
         enriched = await _recompute_group(group)
         per = next((p for p in enriched["per_user"] if p["user_id"] == body.user_id), None)
@@ -324,7 +324,7 @@ def attach_native_contribute_routes(router: APIRouter, db):
         if not tx:
             raise HTTPException(404, "PaymentIntent not found in our records")
         if tx.get("group_id") != group_id:
-            raise HTTPException(400, "PaymentIntent does not belong to this group")
+            raise HTTPException(400, "PaymentIntent does not belong to this squad")
         if tx.get("applied"):
             return {
                 "applied": True, "status": tx.get("status"),
@@ -380,7 +380,7 @@ def attach_native_contribute_routes(router: APIRouter, db):
 
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
 
         contributions = list(group.get("contributions") or [])
         contrib_id = new_id("c_")

@@ -36,7 +36,7 @@ export default function AdminGroupDetailPage() {
     if (!id) return;
     setBusy(true);
     try { setGroup(await adminApi.getGroup(id)); }
-    catch (e: any) { Alert.alert('Error', e?.message || 'Failed to load group'); }
+    catch (e: any) { Alert.alert('Error', e?.message || 'Failed to load squad'); }
     finally { setBusy(false); }
   }, [id]);
   useEffect(() => { load(); }, [load]);
@@ -99,7 +99,7 @@ export default function AdminGroupDetailPage() {
     <ScrollView contentContainerStyle={{ paddingBottom: 80 }}>
       <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} activeOpacity={0.7} testID="admin-group-back">
         <ArrowLeft size={16} color={COLORS.subtext} />
-        <Text style={styles.backText}>All groups</Text>
+        <Text style={styles.backText}>All squads</Text>
       </TouchableOpacity>
 
       <View style={styles.headerCard}>
@@ -162,7 +162,7 @@ export default function AdminGroupDetailPage() {
       <View style={styles.actionsCard}>
         {group.is_blocked ? (
           <TouchableOpacity onPress={onUnblock} style={[styles.actionBtn, { backgroundColor: COLORS.success }]} activeOpacity={0.85} testID="admin-group-unblock">
-            <ShieldCheck size={16} color="#fff" /><Text style={styles.actionBtnText}>Unblock group</Text>
+            <ShieldCheck size={16} color="#fff" /><Text style={styles.actionBtnText}>Unblock squad</Text>
           </TouchableOpacity>
         ) : (
           <View style={{ gap: 8 }}>
@@ -176,7 +176,7 @@ export default function AdminGroupDetailPage() {
               testID="admin-group-block-reason"
             />
             <TouchableOpacity onPress={onBlock} style={[styles.actionBtn, { backgroundColor: COLORS.danger }]} activeOpacity={0.85} testID="admin-group-block">
-              <Ban size={16} color="#fff" /><Text style={styles.actionBtnText}>Block group</Text>
+              <Ban size={16} color="#fff" /><Text style={styles.actionBtnText}>Block squad</Text>
             </TouchableOpacity>
           </View>
         )}

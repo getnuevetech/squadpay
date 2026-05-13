@@ -101,7 +101,7 @@ export default function AdminReconciliations() {
               <Text style={styles.label}>Auto-disable card after settlement</Text>
               <Text style={styles.helper}>
                 When ON — the Stripe Issuing card is automatically cancelled after reconciliation completes.
-                When OFF — admin must manually disable from the Groups page.
+                When OFF — admin must manually disable from the Squads page.
               </Text>
             </View>
             <Switch
@@ -128,7 +128,7 @@ export default function AdminReconciliations() {
             value={q}
             onChangeText={setQ}
             onSubmitEditing={load}
-            placeholder="Search group, lead, card id"
+            placeholder="Search squad, lead, card id"
             placeholderTextColor={COLORS.disabledText}
             testID="rcn-search"
           />

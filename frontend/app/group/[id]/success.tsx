@@ -52,8 +52,8 @@ export default function SuccessScreen() {
         <Text style={styles.sub} testID="success-subtitle">
           {isLeadPay
             ? viaStripe
-              ? "Stripe charged the bill in full. We'll continue tracking repayments from your group."
-              : "You paid the restaurant. We'll track repayments from your group."
+              ? "Stripe charged the bill in full. We'll continue tracking repayments from your squad."
+              : "You paid the restaurant. We'll track repayments from your squad."
             : isContribute
             ? "Your contribution is now in the Squad Wallet, the Squad Lead will pay the Merchant."
             : 'Your repayment has been recorded.'}

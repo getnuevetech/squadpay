@@ -1,551 +1,366 @@
-"""Phase B + Phase C — SquadPay admin endpoints test (admin_phase_bc.py).
+"""SquadPay backend test harness — June 2025 P1+P2 batch.
 
-Covers per review request:
-  A) OCR config defaults + PUT + RBAC
-  B) Income & Fees CSV export (headers + exact first line + since-filter)
-  C) Income & Fees PDF export (content-type + %PDF prefix)
-  D) Customer Service replies + per-user tickets lookup
-  E) CMS public + admin CRUD with slug uniqueness
-  F) Admin activity log (POST + GET by email + GET by id)
-  G) Super_admin-only admin edit (PUT /admin/admins/{id})
-  REGRESSION: audit-log/export, users/{id}, contribute-payment-intent
+Focus areas (per review request):
+  1. NEW Recurring-Bills endpoints (R1-R11)
+  2. App-wide "Squad" terminology regression on HTTP error strings
+  3. Regression smoke (admin login, root, groups list, create group, etc.)
+
+Run:
+    python /app/backend_test.py
 """
-from __future__ import annotations
-import asyncio
-import csv
-import datetime as dt
-import io
 import os
+import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+import json
+from datetime import datetime, timedelta, timezone
+from calendar import monthrange
+from typing import Optional
 
-import httpx
-from motor.motor_asyncio import AsyncIOMotorClient
+import requests
 
-BASE_URL = os.environ.get(
-    "EXPO_PUBLIC_BACKEND_URL",
-    "https://joint-pay-1.preview.emergentagent.com",
-).rstrip("/")
-API = f"{BASE_URL}/api"
-
+BASE = "http://localhost:8001/api"
 ADMIN_EMAIL = "admin@squadpay.us"
 ADMIN_PASSWORD = "Letmein@2007#ForReal"
 
-MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
-DB_NAME = os.environ.get("DB_NAME", "test_database")
+EXISTING_GID = "g_7f6e457006"
+EXISTING_LEAD = "u_4ab200b580"
 
-mongo_client = AsyncIOMotorClient(MONGO_URL)
-db = mongo_client[DB_NAME]
-
-results: List[Tuple[str, bool, str]] = []
-failures_verbatim: List[str] = []
+passes = []
+failures = []
 
 
-def record(name: str, ok: bool, info: str = ""):
-    results.append((name, ok, info))
-    status = "OK " if ok else "FAIL"
-    snippet = info[:300] if info else ""
-    print(f"  [{status}] {name} {('— ' + snippet) if snippet else ''}")
-    if not ok and info:
-        failures_verbatim.append(f"{name}: {info}")
+def record(ok: bool, label: str, detail: str = ""):
+    if ok:
+        passes.append(label)
+        print(f"  PASS  {label}")
+    else:
+        failures.append(f"{label} -- {detail}")
+        print(f"  FAIL  {label} -- {detail}")
 
 
-# ── helpers ─────────────────────────────────────────────────────────────
-async def admin_login(client: httpx.AsyncClient, email: str = ADMIN_EMAIL, password: str = ADMIN_PASSWORD) -> Dict[str, Any]:
-    r = await client.post(
-        f"{API}/admin/auth/login",
-        json={"email": email, "password": password},
-    )
-    r.raise_for_status()
-    return r.json()  # {token, admin}
+def expect_status(resp, want: int, label: str, want_detail_substr: Optional[str] = None):
+    actual = resp.status_code
+    body_txt = resp.text[:300]
+    detail = None
+    try:
+        body = resp.json()
+        if isinstance(body, dict):
+            detail = body.get("detail")
+    except Exception:
+        body = None
+    if actual != want:
+        record(False, label, f"want {want}, got {actual}: {body_txt}")
+        return False
+    if want_detail_substr is not None:
+        if not detail or want_detail_substr.lower() not in str(detail).lower():
+            record(False, label, f"want detail '{want_detail_substr}', got '{detail}'")
+            return False
+    record(True, label)
+    return True
 
 
-async def ensure_sms_mock(client: httpx.AsyncClient, token: str):
-    r = await client.post(
-        f"{API}/admin/integrations/sms-mode",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"mode": "mock"},
-    )
-    if r.status_code not in (200, 204):
-        print(f"[warn] could not set sms mock: {r.status_code} {r.text[:200]}")
+def section(title: str):
+    print(f"\n=== {title} ===")
 
 
-def fresh_phone(seed: int) -> str:
-    return f"+1832{seed % 10000000:07d}"
-
-
-async def register_user(client: httpx.AsyncClient, name: str, phone: str) -> Dict[str, Any]:
-    """Register and mark verified via direct mongo write to avoid the 5/min
-    send-otp rate-limit. Matches what /verify-otp would set."""
-    r = await client.post(f"{API}/auth/register", json={"name": name})
-    r.raise_for_status()
-    user = r.json()
-    await db.users.update_one(
-        {"id": user["id"]},
-        {"$set": {
-            "phone": phone,
-            "verified": True,
-            "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-        }},
-    )
-    user["phone"] = phone
-    user["verified"] = True
-    return user
-
-
-async def register_user_real_otp(client: httpx.AsyncClient, name: str, phone: str) -> Dict[str, Any]:
-    """Register + send-otp + verify-otp via the real endpoint chain (SMS mock mode)."""
-    r = await client.post(f"{API}/auth/register", json={"name": name})
-    r.raise_for_status()
-    user = r.json()
-    r = await client.post(f"{API}/auth/send-otp", json={"user_id": user["id"], "phone": phone})
-    if r.status_code != 200:
-        # Fall back to direct mongo verify if rate-limited or live mode failed.
-        await db.users.update_one(
-            {"id": user["id"]},
-            {"$set": {"phone": phone, "verified": True}},
-        )
-        user["phone"] = phone
-        user["verified"] = True
-        return user
-    r = await client.post(f"{API}/auth/verify-otp",
-                          json={"user_id": user["id"], "phone": phone, "code": "123456"})
-    if r.status_code != 200:
-        await db.users.update_one(
-            {"id": user["id"]},
-            {"$set": {"phone": phone, "verified": True}},
-        )
-        user["phone"] = phone
-        user["verified"] = True
-        return user
-    out = r.json()
-    # Return the merged/existing user record.
-    return out.get("user") if isinstance(out, dict) and out.get("user") else (out or user)
-
-
-# ── A) OCR config ────────────────────────────────────────────────────────
-async def test_A_ocr_config(client: httpx.AsyncClient, token: str):
-    print("\n[A] OCR config — defaults + PUT + RBAC")
-    H = {"Authorization": f"Bearer {token}"}
-
-    # Snapshot existing config so we can restore at the end.
-    existing = await db.app_config.find_one({"_id": "ocr"})
-    print(f"  pre-test app_config.ocr present? {existing is not None}")
-
-    # GET should return providers list with ≥1 entry. If db empty → default chain.
-    r = await client.get(f"{API}/admin/ocr-config", headers=H)
-    record("A.get_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
+def admin_login() -> Optional[str]:
+    r = requests.post(f"{BASE}/admin/auth/login",
+                      json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+                      timeout=15)
     if r.status_code == 200:
-        body = r.json()
-        providers = body.get("providers") or []
-        record("A.get_providers_nonempty", len(providers) >= 1, f"len={len(providers)} providers={providers}")
-        record("A.get_has_recent_attempts_field", "recent_attempts" in body, "")
-        # If there is no persisted config, default must match the spec.
-        if existing is None:
-            expected_default = [
-                {"provider": "openai", "model": "gpt-4o"},
-                {"provider": "anthropic", "model": "claude-sonnet-4-5-20250929"},
-                {"provider": "gemini", "model": "gemini-2.5-flash"},
-            ]
-            record("A.default_chain_when_empty", providers == expected_default,
-                   f"got {providers}")
+        tok = r.json().get("token")
+        record(bool(tok), "admin login (/admin/auth/login) returns token",
+               "no token in response" if not tok else "")
+        return tok
+    record(False, "admin login (/admin/auth/login) returns token",
+           f"{r.status_code}: {r.text[:200]}")
+    # Also try the path the review-request mentioned, for transparency.
+    r2 = requests.post(f"{BASE}/admin/login",
+                       json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+                       timeout=10)
+    record(r2.status_code == 200,
+           "admin login (/admin/login alias) returns 200",
+           f"{r2.status_code}: {r2.text[:120]}")
+    return None
 
-    # PUT new chain (super_admin).
-    new_chain = [
-        {"provider": "openai", "model": "gpt-4o-mini"},
-        {"provider": "anthropic", "model": "claude-haiku-4-5-20251001"},
+
+def make_user(name: str) -> Optional[dict]:
+    """Register + verify (mock OTP)."""
+    phone = f"+1832{int(time.time() * 1000) % 10000000:07d}"
+    r = requests.post(f"{BASE}/auth/register", json={"name": name, "phone": phone}, timeout=10)
+    if r.status_code != 200:
+        return None
+    user = r.json()
+    requests.post(f"{BASE}/auth/send-otp", json={"phone": phone}, timeout=10)
+    r2 = requests.post(f"{BASE}/auth/verify-otp",
+                       json={"phone": phone, "code": "123456", "name": name},
+                       timeout=10)
+    return r2.json() if r2.status_code == 200 else user
+
+
+def create_fresh_squad(lead_id: str):
+    body = {
+        "lead_id": lead_id,
+        "title": "Recur Test Bill",
+        "total_amount": 30.0,
+        "split_mode": "fast",
+        "items": [],
+        "tax": 0.0,
+        "tip": 0.0,
+    }
+    r = requests.post(f"{BASE}/groups", json=body, timeout=15)
+    if r.status_code == 200:
+        return r.json().get("id"), r.json()
+    return None, None
+
+
+def test_terminology():
+    section("2. Squad terminology regression on HTTP 404 detail strings")
+    cases = [
+        ("GET", "/groups/g_invalidnope", None, "GET /groups/{id} → 404 Squad not found"),
+        ("POST", "/groups/g_invalidnope/contribute",
+         {"user_id": "u_x", "amount": 1},
+         "POST /groups/{id}/contribute → 404 Squad not found"),
+        ("POST", "/groups/g_invalidnope/pay",
+         {"user_id": "u_x"},
+         "POST /groups/{id}/pay → 404 Squad not found"),
+        ("POST", "/groups/g_invalidnope/repay",
+         {"user_id": "u_x", "amount": 1},
+         "POST /groups/{id}/repay → 404 Squad not found"),
+        ("POST", "/groups/g_invalidnope/refund",
+         {"user_id": "u_x"},
+         "POST /groups/{id}/refund → 404 Squad not found"),
+        ("POST", "/groups/g_invalidnope/payout",
+         {"user_id": "u_x"},
+         "POST /groups/{id}/payout → 404 Squad not found"),
     ]
-    r = await client.put(f"{API}/admin/ocr-config", headers=H, json={"providers": new_chain})
-    record("A.put_200", r.status_code == 200, f"{r.status_code}: {r.text[:300]}")
-
-    # GET again — readback must match.
-    r = await client.get(f"{API}/admin/ocr-config", headers=H)
-    if r.status_code == 200:
-        got = r.json().get("providers") or []
-        record("A.readback_matches", got == new_chain, f"got {got}")
-
-    # PUT empty providers → 400.
-    r = await client.put(f"{API}/admin/ocr-config", headers=H, json={"providers": []})
-    record("A.put_empty_422_or_400", r.status_code in (400, 422), f"{r.status_code}: {r.text[:200]}")
-
-    # PUT without auth → 401.
-    r = await client.put(f"{API}/admin/ocr-config", json={"providers": new_chain})
-    record("A.put_no_auth_401", r.status_code == 401, f"{r.status_code}: {r.text[:200]}")
-
-    # PUT as support-role admin → 403.
-    support_email = f"support_bc_{int(time.time())}@squadpay.us"
-    r = await client.post(
-        f"{API}/admin/admins",
-        headers=H,
-        json={"email": support_email, "password": "Supp@1234!", "name": "Support BC", "role": "support"},
-    )
-    if r.status_code == 200:
-        support_token = (await admin_login(client, support_email, "Supp@1234!"))["token"]
-        r = await client.put(
-            f"{API}/admin/ocr-config",
-            headers={"Authorization": f"Bearer {support_token}"},
-            json={"providers": new_chain},
-        )
-        record("A.put_support_403", r.status_code == 403, f"{r.status_code}: {r.text[:200]}")
-    else:
-        record("A.support_admin_created", False, f"could not create support admin: {r.status_code} {r.text[:200]}")
-
-    # Restore previous config (or remove if it was absent).
-    if existing is None:
-        await db.app_config.delete_one({"_id": "ocr"})
-    else:
-        await db.app_config.replace_one({"_id": "ocr"}, existing, upsert=True)
+    for method, path, body, label in cases:
+        if method == "GET":
+            r = requests.get(f"{BASE}{path}", timeout=10)
+        else:
+            r = requests.post(f"{BASE}{path}", json=body, timeout=10)
+        expect_status(r, 404, label, "Squad not found")
 
 
-# ── B) Income & Fees CSV export ─────────────────────────────────────────
-async def test_B_income_fees_csv(client: httpx.AsyncClient, token: str):
-    print("\n[B] Income & Fees CSV export")
-    H = {"Authorization": f"Bearer {token}"}
+def test_recurrence(lead_id: str, gid: str, non_lead_id: str):
+    section("1. Recurring Bills endpoints")
 
-    r = await client.get(f"{API}/admin/income-fees/export.csv", headers=H)
-    record("B.csv_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
-    if r.status_code == 200:
-        ctype = r.headers.get("content-type", "")
-        cdisp = r.headers.get("content-disposition", "")
-        record("B.csv_content_type", "text/csv" in ctype, f"content-type={ctype}")
-        record("B.csv_attachment", "attachment" in cdisp.lower(), f"content-disposition={cdisp}")
-        first_line = r.text.splitlines()[0] if r.text else ""
-        expected = ("Group ID,Title,Status,Created at,Settled at,Lead ID,Members,"
-                    "Gross contributed,Transaction fees,Platform fees,"
-                    "Extra 1,Extra 2,Extra other,Total retained")
-        record("B.csv_first_line_exact", first_line == expected, f"got={first_line!r}")
+    # R1 — Non-lead caller → 403
+    r = requests.put(f"{BASE}/groups/{gid}/recurrence",
+                     json={"user_id": non_lead_id, "enabled": True,
+                           "cadence": "weekly", "anchor": 2, "skip_if_open": False},
+                     timeout=10)
+    expect_status(r, 403, "R1 PUT recurrence as non-lead → 403",
+                  "Only the lead can configure recurrence")
 
-    # Since-filter in the far future → only header, no data rows.
-    r = await client.get(
-        f"{API}/admin/income-fees/export.csv",
-        headers=H,
-        params={"since": "2099-01-01T00:00:00.000Z"},
-    )
-    record("B.csv_future_since_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
-    if r.status_code == 200:
-        lines = [ln for ln in r.text.splitlines() if ln.strip()]
-        record("B.csv_future_since_only_header", len(lines) == 1, f"lines={len(lines)} first={lines[0] if lines else ''}")
-
-
-# ── C) Income & Fees PDF export ─────────────────────────────────────────
-async def test_C_income_fees_pdf(client: httpx.AsyncClient, token: str):
-    print("\n[C] Income & Fees PDF export")
-    H = {"Authorization": f"Bearer {token}"}
-
-    r = await client.get(f"{API}/admin/income-fees/export.pdf", headers=H)
-    record("C.pdf_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
-    if r.status_code == 200:
-        ctype = r.headers.get("content-type", "")
-        cdisp = r.headers.get("content-disposition", "")
-        record("C.pdf_content_type", "application/pdf" in ctype, f"content-type={ctype}")
-        record("C.pdf_attachment", "attachment" in cdisp.lower(), f"content-disposition={cdisp}")
-        record("C.pdf_magic_prefix", r.content[:4] == b"%PDF", f"first8={r.content[:8]!r}")
-
-
-# ── D) Customer Service replies + tickets lookup ────────────────────────
-async def test_D_customer_service(client: httpx.AsyncClient, token: str):
-    print("\n[D] Customer Service replies + user-tickets lookup")
-    H = {"Authorization": f"Bearer {token}"}
-
-    ts = int(time.time())
-    tom = await register_user(client, f"TomQ {ts}", fresh_phone(ts * 11 + 7))
-    record("D.tom_registered", tom.get("verified") is True, f"id={tom['id']}")
-
-    r = await client.post(
-        f"{API}/contact",
-        json={
-            "name": tom["name"],
-            "email": "tomq@example.com",
-            "subject": "general_enquiry",
-            "message": "Phase B+C test",
-            "user_id": tom["id"],
-        },
-    )
-    record("D.contact_post_200", r.status_code == 200, f"{r.status_code}: {r.text[:300]}")
-    ticket_id = None
-    if r.status_code == 200:
-        ticket_id = r.json().get("ticket_id")
-        record("D.contact_returned_ticket_id", bool(ticket_id), f"ticket_id={ticket_id}")
-    if not ticket_id:
-        return
-
-    # GET /admin/users/{tom.id}/tickets → 1 item.
-    r = await client.get(f"{API}/admin/users/{tom['id']}/tickets", headers=H)
-    record("D.tickets_list_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
-    if r.status_code == 200:
+    # R2 — Lead enables weekly Wed 09:00 UTC anchor=2
+    base_now = datetime.now(timezone.utc).replace(microsecond=0, second=0)
+    r = requests.put(f"{BASE}/groups/{gid}/recurrence",
+                     json={"user_id": lead_id, "enabled": True,
+                           "cadence": "weekly", "anchor": 2, "skip_if_open": False},
+                     timeout=10)
+    ok = expect_status(r, 200, "R2 PUT recurrence as lead → 200")
+    if ok:
         body = r.json()
-        items = body.get("items") or []
-        total = body.get("total")
-        record("D.tickets_count_1", len(items) == 1 and total == 1,
-               f"len={len(items)} total={total}")
+        nxt = body.get("next_run_at")
+        if not nxt or not isinstance(nxt, str) or not nxt.endswith("Z"):
+            record(False, "R2 next_run_at is ISO 'Z' string", f"got {nxt!r}")
+        else:
+            record(True, "R2 next_run_at is ISO 'Z' string")
+            try:
+                dt = datetime.fromisoformat(nxt.replace("Z", "+00:00"))
+                today_wd = base_now.weekday()
+                days_ahead = (2 - today_wd) % 7
+                if days_ahead == 0:
+                    days_ahead = 7
+                expected = (base_now + timedelta(days=days_ahead)).replace(
+                    hour=9, minute=0, second=0, microsecond=0)
+                if abs((dt - expected).total_seconds()) <= 120 and dt.weekday() == 2:
+                    record(True, "R2 next_run_at is next Wednesday 09:00 UTC")
+                else:
+                    record(False, "R2 next_run_at is next Wednesday 09:00 UTC",
+                           f"got {dt.isoformat()}, expected ~{expected.isoformat()}")
+            except Exception as e:
+                record(False, "R2 next_run_at parse", str(e))
 
-    # Reply.
-    r = await client.post(
-        f"{API}/admin/contact-messages/{ticket_id}/reply",
-        headers=H,
-        json={"message": "Thanks Tom — we'll get back to you", "also_send_email": False},
-    )
-    record("D.reply_200", r.status_code == 200, f"{r.status_code}: {r.text[:300]}")
-    if r.status_code == 200:
-        t = r.json()
-        replies = t.get("replies") or []
-        record("D.reply_replies_len_1", len(replies) == 1, f"len={len(replies)} replies={replies[:1]}")
-        if replies:
-            rep = replies[0]
-            record("D.reply_direction_outgoing", rep.get("direction") == "outgoing", f"direction={rep.get('direction')}")
-            record("D.reply_from_email_admin", rep.get("from_email") == ADMIN_EMAIL, f"from_email={rep.get('from_email')}")
-        record("D.reply_status_open", t.get("status") == "open", f"status={t.get('status')}")
-
-    # Re-fetch list — reply reflected.
-    r = await client.get(f"{API}/admin/users/{tom['id']}/tickets", headers=H)
-    if r.status_code == 200:
-        items = r.json().get("items") or []
-        if items:
-            replies = items[0].get("replies") or []
-            record("D.tickets_list_reflects_reply", len(replies) == 1, f"replies len={len(replies)}")
-
-
-# ── E) CMS pages public + admin CRUD ────────────────────────────────────
-async def test_E_cms(client: httpx.AsyncClient, token: str):
-    print("\n[E] CMS public + admin CRUD")
-    H = {"Authorization": f"Bearer {token}"}
-
-    # Public list (no auth).
-    r = await client.get(f"{API}/cms/pages")
-    record("E.public_list_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
-    if r.status_code == 200:
-        record("E.public_list_items_key", "items" in r.json(), "")
-
-    # Clean any previous test pages so we get a deterministic 409 later.
-    await db.cms_pages.delete_many({"slug": {"$in": ["about-squadpay-bc-test", "about-bc"]}})
-
-    # Create.
-    r = await client.post(
-        f"{API}/admin/cms/pages",
-        headers=H,
-        json={"title": "About SquadPay (BC test)", "body": "# About\n\nHello", "visibility": "both"},
-    )
-    record("E.create_200", r.status_code == 200, f"{r.status_code}: {r.text[:300]}")
-    page_id = None
-    if r.status_code == 200:
+    # R3 — GET as lead returns same payload
+    r = requests.get(f"{BASE}/groups/{gid}/recurrence", params={"user_id": lead_id}, timeout=10)
+    if expect_status(r, 200, "R3 GET recurrence as lead → 200"):
         body = r.json()
-        page_id = body.get("id")
-        slug = body.get("slug")
-        record("E.create_slug_autogen", slug == "about-squadpay-bc-test", f"slug={slug}")
+        ok = (body.get("enabled") is True
+              and body.get("cadence") == "weekly"
+              and int(body.get("anchor", -1)) == 2
+              and "next_run_at" in body)
+        record(ok, "R3 GET returns same recurrence payload",
+               str(body)[:200] if not ok else "")
 
-    # Public fetch new slug.
-    r = await client.get(f"{API}/cms/pages/about-squadpay-bc-test")
-    record("E.public_get_new_slug_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
-    if r.status_code == 200:
+    # R4 — Disable
+    r = requests.put(f"{BASE}/groups/{gid}/recurrence",
+                     json={"user_id": lead_id, "enabled": False,
+                           "cadence": "weekly", "anchor": 0},
+                     timeout=10)
+    if expect_status(r, 200, "R4 PUT enabled:false → 200"):
         body = r.json()
-        record("E.public_get_has_body", bool(body.get("body")), f"body_present={bool(body.get('body'))}")
+        record(body.get("ok") is True and body.get("enabled") is False,
+               "R4 response is {ok:true, enabled:false}", str(body))
+    r = requests.get(f"{BASE}/groups/{gid}/recurrence", params={"user_id": lead_id}, timeout=10)
+    if expect_status(r, 200, "R4 GET after disable → 200"):
+        record(r.json().get("enabled") is False,
+               "R4 GET enabled:false", str(r.json()))
 
-    # Conflict on duplicate title (slugs collide).
-    r = await client.post(
-        f"{API}/admin/cms/pages",
-        headers=H,
-        json={"title": "About SquadPay (BC test)", "body": "Hi", "visibility": "both"},
-    )
-    record("E.duplicate_409", r.status_code == 409, f"{r.status_code}: {r.text[:200]}")
+    # R5 — Monthly anchor=31 clamp
+    r = requests.put(f"{BASE}/groups/{gid}/recurrence",
+                     json={"user_id": lead_id, "enabled": True,
+                           "cadence": "monthly", "anchor": 31, "skip_if_open": False},
+                     timeout=10)
+    if expect_status(r, 200, "R5 PUT monthly anchor=31 → 200"):
+        body = r.json()
+        nxt = body.get("next_run_at")
+        if nxt:
+            try:
+                dt = datetime.fromisoformat(nxt.replace("Z", "+00:00"))
+                last_day = monthrange(dt.year, dt.month)[1]
+                if dt.day == last_day and dt.hour == 9:
+                    record(True,
+                           f"R5 monthly anchor=31 clamps to last day "
+                           f"(month={dt.month}, day={dt.day}, last={last_day})")
+                else:
+                    record(False, "R5 monthly anchor=31 clamps to last day",
+                           f"got day={dt.day}, last_day={last_day}")
+            except Exception as e:
+                record(False, "R5 monthly parse", str(e))
 
-    if page_id:
-        # Rename slug to about-bc.
-        r = await client.put(
-            f"{API}/admin/cms/pages/{page_id}",
-            headers=H,
-            json={"slug": "about-bc"},
-        )
-        record("E.rename_200", r.status_code == 200, f"{r.status_code}: {r.text[:300]}")
-        if r.status_code == 200:
-            record("E.rename_slug_about_bc", r.json().get("slug") == "about-bc", f"slug={r.json().get('slug')}")
+    # R6 — invalid cadence
+    r = requests.put(f"{BASE}/groups/{gid}/recurrence",
+                     json={"user_id": lead_id, "enabled": True,
+                           "cadence": "biweekly", "anchor": 0},
+                     timeout=10)
+    expect_status(r, 400, "R6 PUT cadence=biweekly → 400")
 
-        # New slug works.
-        r = await client.get(f"{API}/cms/pages/about-bc")
-        record("E.public_new_slug_200", r.status_code == 200, f"{r.status_code}")
-        # Old slug 404.
-        r = await client.get(f"{API}/cms/pages/about-squadpay-bc-test")
-        record("E.public_old_slug_404", r.status_code == 404, f"{r.status_code}")
+    # R7 — weekly anchor=7
+    r = requests.put(f"{BASE}/groups/{gid}/recurrence",
+                     json={"user_id": lead_id, "enabled": True,
+                           "cadence": "weekly", "anchor": 7},
+                     timeout=10)
+    expect_status(r, 400, "R7 PUT weekly anchor=7 → 400")
 
-        # DELETE as super_admin → 200 with {ok:true}.
-        r = await client.delete(f"{API}/admin/cms/pages/{page_id}", headers=H)
-        record("E.delete_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
-        if r.status_code == 200:
-            record("E.delete_ok_true", r.json().get("ok") is True, f"body={r.text[:200]}")
-        # Public 404 after delete.
-        r = await client.get(f"{API}/cms/pages/about-bc")
-        record("E.deleted_public_404", r.status_code == 404, f"{r.status_code}")
+    # R8 — monthly anchor=32
+    r = requests.put(f"{BASE}/groups/{gid}/recurrence",
+                     json={"user_id": lead_id, "enabled": True,
+                           "cadence": "monthly", "anchor": 32},
+                     timeout=10)
+    expect_status(r, 400, "R8 PUT monthly anchor=32 → 400")
 
-    # Unknown id → 404.
-    r = await client.get(f"{API}/admin/cms/pages/cms_DOESNOTEXIST", headers=H)
-    record("E.unknown_id_404", r.status_code == 404, f"{r.status_code}: {r.text[:200]}")
+    # R9 — DELETE
+    r = requests.delete(f"{BASE}/groups/{gid}/recurrence",
+                        params={"user_id": lead_id}, timeout=10)
+    expect_status(r, 200, "R9 DELETE recurrence as lead → 200")
+    r = requests.get(f"{BASE}/groups/{gid}/recurrence",
+                     params={"user_id": lead_id}, timeout=10)
+    if expect_status(r, 200, "R9 GET after DELETE → 200"):
+        record(r.json().get("enabled") is False,
+               "R9 GET enabled:false after DELETE", str(r.json()))
 
+    # R10 — Non-lead GET → 403
+    r = requests.get(f"{BASE}/groups/{gid}/recurrence",
+                     params={"user_id": non_lead_id}, timeout=10)
+    expect_status(r, 403, "R10 GET as non-lead → 403")
 
-# ── F) Admin activity log ───────────────────────────────────────────────
-async def test_F_admin_activity(client: httpx.AsyncClient, token: str, admin_user: Dict[str, Any]):
-    print("\n[F] Admin activity log")
-    H = {"Authorization": f"Bearer {token}"}
-
-    r = await client.post(
-        f"{API}/admin/activity",
-        headers=H,
-        json={"action": "qa.test_event", "payload": {"note": "hello"}},
-    )
-    record("F.activity_post_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
-    activity_id = None
-    if r.status_code == 200:
-        activity_id = r.json().get("id")
-        record("F.activity_post_has_id", bool(activity_id), f"id={activity_id}")
-
-    # GET by email.
-    r = await client.get(f"{API}/admin/admins/{ADMIN_EMAIL}/activity", headers=H)
-    record("F.activity_get_by_email_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
-    if r.status_code == 200:
-        items = r.json().get("items") or []
-        actions = {it.get("action") for it in items}
-        record("F.activity_get_by_email_has_event", "qa.test_event" in actions,
-               f"actions sample={list(actions)[:10]}")
-
-    # GET by admin_id.
-    admin_id = admin_user.get("id")
-    if admin_id:
-        r = await client.get(f"{API}/admin/admins/{admin_id}/activity", headers=H)
-        record("F.activity_get_by_id_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
-        if r.status_code == 200:
-            items = r.json().get("items") or []
-            actions = {it.get("action") for it in items}
-            record("F.activity_get_by_id_has_event", "qa.test_event" in actions,
-                   f"actions sample={list(actions)[:10]}")
+    # R11 — Unknown group → "Squad not found"
+    r = requests.put(f"{BASE}/groups/g_doesnotexist/recurrence",
+                     json={"user_id": lead_id, "enabled": True,
+                           "cadence": "weekly", "anchor": 0},
+                     timeout=10)
+    expect_status(r, 404, "R11 PUT unknown group → 404", "Squad not found")
+    r = requests.get(f"{BASE}/groups/g_doesnotexist/recurrence",
+                     params={"user_id": lead_id}, timeout=10)
+    expect_status(r, 404, "R11 GET unknown group → 404", "Squad not found")
 
 
-# ── G) Super_admin-only admin edit ──────────────────────────────────────
-async def test_G_admin_edit_rbac(client: httpx.AsyncClient, token: str, admin_user: Dict[str, Any]):
-    print("\n[G] Super_admin-only admin edit")
-    H = {"Authorization": f"Bearer {token}"}
-    super_admin_id = admin_user["id"]
-    original_name = admin_user.get("name")
+def test_smoke(admin_token: Optional[str]):
+    section("3. Regression smoke")
 
-    # Edit as super_admin → 200.
-    r = await client.put(
-        f"{API}/admin/admins/{super_admin_id}",
-        headers=H,
-        json={"name": "Renamed (BC test)"},
-    )
-    record("G.super_admin_edit_200", r.status_code == 200, f"{r.status_code}: {r.text[:300]}")
-    if r.status_code == 200:
-        record("G.super_admin_name_updated", r.json().get("name") == "Renamed (BC test)",
-               f"name={r.json().get('name')}")
+    r = requests.get(f"{BASE}/", timeout=10)
+    if expect_status(r, 200, "GET / → 200"):
+        try:
+            msg = r.json().get("message", "")
+            record("SquadPay" in msg, "GET / message contains 'SquadPay'", msg)
+        except Exception:
+            record(False, "GET / message JSON", r.text[:200])
 
-    # Audit log has admin.admin_edit entry.
-    cnt = await db.audit_log.count_documents(
-        {"action": "admin.admin_edit", "target_id": super_admin_id}
-    )
-    record("G.audit_log_has_admin_edit", cnt >= 1, f"count={cnt}")
+    r = requests.get(f"{BASE}/users/{EXISTING_LEAD}/groups", timeout=15)
+    expect_status(r, 200, "GET /users/{lead}/groups → 200")
 
-    # Revert name.
-    r = await client.put(
-        f"{API}/admin/admins/{super_admin_id}",
-        headers=H,
-        json={"name": original_name or "Super Admin"},
-    )
-    record("G.super_admin_revert_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
-
-    # Create manager admin and try to PUT super_admin → 403.
-    mgr_email = f"manager_bc_{int(time.time())}@squadpay.us"
-    mgr_pw = "Mgr@9999!"
-    r = await client.post(
-        f"{API}/admin/admins",
-        headers=H,
-        json={"email": mgr_email, "password": mgr_pw, "name": "Manager BC", "role": "manager"},
-    )
-    if r.status_code == 200:
-        mgr_login = await admin_login(client, mgr_email, mgr_pw)
-        mgr_token = mgr_login["token"]
-        r = await client.put(
-            f"{API}/admin/admins/{super_admin_id}",
-            headers={"Authorization": f"Bearer {mgr_token}"},
-            json={"name": "Hacked by manager"},
-        )
-        record("G.manager_edit_403", r.status_code == 403, f"{r.status_code}: {r.text[:200]}")
-    else:
-        record("G.manager_created", False, f"could not create manager admin: {r.status_code} {r.text[:200]}")
-
-
-# ── REGRESSION smoke ────────────────────────────────────────────────────
-async def test_regression(client: httpx.AsyncClient, token: str):
-    print("\n[R] Regression smoke")
-    H = {"Authorization": f"Bearer {token}"}
-
-    # Phase A audit-log/export with action=block → CSV 200.
-    r = await client.get(f"{API}/admin/audit-log/export", headers=H, params={"action": "block"})
-    record("R.audit_log_export_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
-    if r.status_code == 200:
-        ctype = r.headers.get("content-type", "")
-        record("R.audit_log_export_csv", "text/csv" in ctype, f"content-type={ctype}")
-
-    # Phase A: GET /admin/users/{tom.id} → total_contributed present.
-    ts = int(time.time())
-    tom = await register_user(client, f"TomR {ts}", fresh_phone(ts * 13 + 5))
-    r = await client.get(f"{API}/admin/users/{tom['id']}", headers=H)
-    record("R.user_detail_200", r.status_code == 200, f"{r.status_code}: {r.text[:200]}")
-    if r.status_code == 200:
-        record("R.user_total_contributed_present", "total_contributed" in r.json(),
-               f"keys={list(r.json().keys())[:10]}")
-
-    # Phase 7: contribute-payment-intent for a fast-split $30 group, tom+alice members.
-    alice = await register_user(client, f"AliceR {ts}", fresh_phone(ts * 13 + 6))
-    r = await client.post(
-        f"{API}/groups",
-        json={
-            "lead_id": tom["id"],
-            "title": f"BC-regress {ts}",
-            "total_amount": 30.0,
+    fresh = make_user("RegSmokeUser")
+    if fresh:
+        # `title` is required by the CreateGroupIn model, but the route applies
+        # `body.title or "Squad Bill"` so an empty string falls through to the
+        # new default. This verifies the rename from "Group Bill" → "Squad Bill".
+        body = {
+            "lead_id": fresh["id"],
+            "title": "",
+            "total_amount": 12.5,
             "split_mode": "fast",
-            "tax": 0.0, "tip": 0.0, "items": [],
-        },
-    )
-    if r.status_code == 200:
-        g = r.json()
-        # alice joins
-        r = await client.post(f"{API}/groups/{g['id']}/join",
-                              json={"user_id": alice["id"], "joined_via": "code"})
-        # tom contribute-payment-intent (Phase 7)
-        r = await client.post(
-            f"{API}/groups/{g['id']}/contribute-payment-intent",
-            json={"user_id": tom["id"], "amount": 15.0, "notify_on_settled": False},
-        )
-        record("R.contribute_payment_intent_200", r.status_code == 200,
-               f"{r.status_code}: {r.text[:300]}")
+            "items": [],
+            "tax": 0.0,
+            "tip": 0.0,
+        }
+        r = requests.post(f"{BASE}/groups", json=body, timeout=15)
+        if expect_status(r, 200, "POST /groups (empty title) → 200"):
+            title = r.json().get("title")
+            record(title == "Squad Bill",
+                   "Default title is 'Squad Bill'",
+                   f"got {title!r}")
+            new_gid = r.json().get("id")
+            r2 = requests.get(f"{BASE}/groups/{new_gid}", timeout=10)
+            expect_status(r2, 200, "GET /groups/{new_gid} → 200")
+
+    if admin_token:
+        r = requests.get(f"{BASE}/admin/metrics",
+                         headers={"Authorization": f"Bearer {admin_token}"},
+                         timeout=15)
+        expect_status(r, 200, "GET /admin/metrics with super_admin → 200")
+
+
+def main():
+    print(f"Backend: {BASE}\n")
+
+    section("0. Admin login")
+    admin_token = admin_login()
+
+    section("Setup: create fresh users + squad for recurrence tests")
+    lead = make_user("RecLead")
+    time.sleep(0.05)
+    non_lead = make_user("RecNonLead")
+    if not lead or not non_lead:
+        record(False, "Setup users (fresh)",
+               "Could not create test users — falling back to existing IDs")
+        gid = EXISTING_GID
+        lead_id_for_rec = EXISTING_LEAD
+        non_lead_id = (non_lead or {}).get("id") or "u_nopermission"
     else:
-        record("R.group_create_200", False, f"{r.status_code}: {r.text[:300]}")
+        record(True, "Setup users (fresh)")
+        gid, _ = create_fresh_squad(lead["id"])
+        if not gid:
+            record(False, "Setup fresh squad", "fallback to EXISTING_GID")
+            gid = EXISTING_GID
+            lead_id_for_rec = EXISTING_LEAD
+        else:
+            record(True, "Setup fresh squad")
+            lead_id_for_rec = lead["id"]
+        non_lead_id = non_lead["id"]
 
+    test_terminology()
+    test_recurrence(lead_id_for_rec, gid, non_lead_id)
+    test_smoke(admin_token)
 
-# ── main ────────────────────────────────────────────────────────────────
-async def main():
-    print(f"Target backend: {API}\n")
-    timeout = httpx.Timeout(60.0, connect=15.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        login = await admin_login(client)
-        token = login["token"]
-        admin_user = login.get("admin") or {}
-        await ensure_sms_mock(client, token)
-
-        await test_A_ocr_config(client, token)
-        await test_B_income_fees_csv(client, token)
-        await test_C_income_fees_pdf(client, token)
-        await test_D_customer_service(client, token)
-        await test_E_cms(client, token)
-        await test_F_admin_activity(client, token, admin_user)
-        await test_G_admin_edit_rbac(client, token, admin_user)
-        await test_regression(client, token)
-
-    passed = sum(1 for _, ok, _ in results if ok)
-    failed = sum(1 for _, ok, _ in results if not ok)
-    print(f"\n=== TOTAL: {passed} PASS / {failed} FAIL / {len(results)} TOTAL ===")
-    if failures_verbatim:
-        print("\nFAILURES (verbatim):")
-        for line in failures_verbatim:
-            print(f"  - {line}")
+    print(f"\n{'='*60}\nSUMMARY: {len(passes)} PASS · {len(failures)} FAIL\n{'='*60}")
+    if failures:
+        print("\nFailures:")
+        for f in failures:
+            print(f"  - {f}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

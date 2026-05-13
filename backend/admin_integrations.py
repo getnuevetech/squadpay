@@ -493,7 +493,7 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
     ):
         group = await db.groups.find_one({"id": group_id})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         new_lead_id = (body.new_lead_user_id or "").strip()
         if not new_lead_id:
             raise HTTPException(400, "new_lead_user_id is required")
@@ -502,7 +502,7 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
         if new_lead_id not in member_ids:
             raise HTTPException(
                 400,
-                "Lead can only be reassigned to an existing member of this group.",
+                "Lead can only be reassigned to an existing member of this squad.",
             )
         old_lead_id = group.get("lead_id")
         if old_lead_id == new_lead_id:

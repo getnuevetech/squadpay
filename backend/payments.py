@@ -87,14 +87,14 @@ def attach_payment_routes(api_router: APIRouter, db):
         """
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         if group.get("is_blocked"):
-            raise HTTPException(403, "This group has been blocked by an administrator.")
+            raise HTTPException(403, "This squad has been blocked by an administrator.")
         if group.get("status") != "open":
             raise HTTPException(400, "Bill already paid")
         amount = float(group.get("total_amount") or 0)
         if amount <= 0:
-            raise HTTPException(400, "Group total must be > 0")
+            raise HTTPException(400, "Squad total must be > 0")
 
         origin = (body.origin_url or "").rstrip("/")
         if not origin.startswith("http"):

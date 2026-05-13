@@ -89,7 +89,7 @@ export default function AdminGroupsList() {
       </View>
 
       {busy ? <ActivityIndicator color={COLORS.primary} style={{ marginTop: 24 }} /> : null}
-      {!busy && items.length === 0 ? <Text style={styles.empty}>No groups match.</Text> : null}
+      {!busy && items.length === 0 ? <Text style={styles.empty}>No squads match.</Text> : null}
 
       {items.map((g) => {
         const c = statusBadgeColor(g.status, g.is_blocked);

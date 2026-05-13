@@ -92,7 +92,7 @@ export default function AdminUserDetailPage() {
   };
 
   const onClearLeadDiscount = async () => {
-    confirm('Clear lead auto-discount?', 'New groups by this lead will not get an automatic discount.', async () => {
+    confirm('Clear lead auto-discount?', 'New squads by this lead will not get an automatic discount.', async () => {
       try {
         await adminApi.setLeadDiscount(id!, { enabled: false });
         await load();
@@ -358,7 +358,7 @@ export default function AdminUserDetailPage() {
 
       <View style={styles.section}>
         <View style={styles.sectionHeader}><Crown size={14} color={COLORS.text} /><Text style={styles.sectionTitle}>Lead auto-discount</Text></View>
-        <Text style={styles.metaSmall}>Auto-applied to every NEW group this user creates as lead. Leave empty to disable.</Text>
+        <Text style={styles.metaSmall}>Auto-applied to every NEW squad this user creates as lead. Leave empty to disable.</Text>
         <View style={[styles.formRow, { marginTop: SPACING.sm }]}>
           <TouchableOpacity
             onPress={() => setLdType('flat')}
@@ -410,12 +410,12 @@ export default function AdminUserDetailPage() {
       </View>
 
       <View style={styles.section}>
-        <View style={styles.sectionHeader}><Crown size={14} color={COLORS.text} /><Text style={styles.sectionTitle}>Groups led ({user.led_groups.length})</Text></View>
+        <View style={styles.sectionHeader}><Crown size={14} color={COLORS.text} /><Text style={styles.sectionTitle}>Squads led ({user.led_groups.length})</Text></View>
         {user.led_groups.length === 0 ? <Text style={styles.empty}>None.</Text> : user.led_groups.map(renderGroup)}
       </View>
 
       <View style={styles.section}>
-        <View style={styles.sectionHeader}><UsersIcon size={14} color={COLORS.text} /><Text style={styles.sectionTitle}>Groups joined ({user.joined_groups.length})</Text></View>
+        <View style={styles.sectionHeader}><UsersIcon size={14} color={COLORS.text} /><Text style={styles.sectionTitle}>Squads joined ({user.joined_groups.length})</Text></View>
         {user.joined_groups.length === 0 ? <Text style={styles.empty}>None.</Text> : user.joined_groups.map(renderGroup)}
       </View>
 

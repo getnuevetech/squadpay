@@ -19,20 +19,20 @@ def attach_pay_routes(router: APIRouter, db):
         """Lead settles the bill with the merchant."""
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         if group["lead_id"] != body.user_id:
             raise HTTPException(403, "Only lead can pay the merchant")
         if group.get("status") != "open":
             raise HTTPException(400, "Bill already paid")
         if group.get("is_blocked"):
-            raise HTTPException(403, "This group has been blocked by an administrator.")
-        # A group is by definition multi-person — the lead can't settle the
+            raise HTTPException(403, "This squad has been blocked by an administrator.")
+        # A squad is by definition multi-person — the lead can't settle the
         # merchant until at least one other member has joined. This blocks
         # using the app as a solo wallet.
         if len(group.get("members") or []) < 2:
             raise HTTPException(
                 400,
-                "A group needs at least 2 members before the bill can be paid. Invite someone first.",
+                "A squad needs at least 2 members before the bill can be paid. Invite someone first.",
             )
         user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
         if not user or not user.get("verified"):
@@ -216,7 +216,7 @@ def attach_pay_routes(router: APIRouter, db):
     async def issue_card_now(group_id: str, body: _IssueCardIn):
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         if group["lead_id"] != body.user_id:
             raise HTTPException(403, "Only the lead can issue the virtual card")
         # Already issued? Just return the current card
@@ -260,7 +260,7 @@ def attach_pay_routes(router: APIRouter, db):
     async def repay(group_id: str, body: RepayIn):
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         if group.get("status") == "open":
             raise HTTPException(400, "Bill not yet settled with merchant; use contribute instead")
         user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
@@ -272,7 +272,7 @@ def attach_pay_routes(router: APIRouter, db):
         enriched = await _recompute_group(group)
         per = next((p for p in enriched["per_user"] if p["user_id"] == body.user_id), None)
         if not per:
-            raise HTTPException(403, "Not a member of this group")
+            raise HTTPException(403, "Not a member of this squad")
         if per["outstanding"] <= 0.01:
             raise HTTPException(400, "Nothing to repay")
         if body.amount > per["outstanding"] + 0.01:

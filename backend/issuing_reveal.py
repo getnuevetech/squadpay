@@ -112,16 +112,16 @@ def attach_reveal_routes(api_router: APIRouter, db):
 
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         vc = group.get("virtual_card") or {}
         card_id = vc.get("stripe_card_id")
         if not card_id:
-            raise HTTPException(400, "Group has no issued card")
+            raise HTTPException(400, "Squad has no issued card")
         if vc.get("status") == "inactive":
             raise HTTPException(400, "Card is disabled")
         # Only the group lead can reveal
         if group.get("lead_id") != body.user_id:
-            raise HTTPException(403, "Only the group lead can reveal card details")
+            raise HTTPException(403, "Only the squad lead can reveal card details")
 
         user = await db.users.find_one({"id": body.user_id}, {"_id": 0})
         if not user or user.get("is_blocked") or not user.get("verified"):
@@ -293,15 +293,15 @@ def attach_reveal_routes(api_router: APIRouter, db):
 
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         vc = group.get("virtual_card") or {}
         card_id = vc.get("stripe_card_id")
         if not card_id:
-            raise HTTPException(400, "Group has no issued card")
+            raise HTTPException(400, "Squad has no issued card")
         if vc.get("status") == "inactive":
             raise HTTPException(400, "Card is disabled")
         if group.get("lead_id") != user_id:
-            raise HTTPException(403, "Only the group lead can provision the card")
+            raise HTTPException(403, "Only the squad lead can provision the card")
 
         user = await db.users.find_one({"id": user_id}, {"_id": 0})
         if not user or user.get("is_blocked") or not user.get("verified"):

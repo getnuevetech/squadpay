@@ -278,7 +278,7 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
         # Header row matches the on-screen per-group ledger columns plus a few
         # bookkeeping fields (Group ID, lead, created/settled) for traceability.
         w.writerow([
-            "Group ID", "Group Name / Details", "Status", "Created at", "Settled at",
+            "Squad ID", "Squad Name / Details", "Status", "Created at", "Settled at",
             "Lead ID", "Members",
             "Transaction", "Platform Fee", "Extra 1", "Extra 2",
             "Tax", "Tips", "Total Items",
@@ -337,7 +337,7 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
             Paragraph("<b>SquadPay — Income & Fees Ledger</b>", styles["Title"]),
             Paragraph(
                 f"Generated {dt.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')} · "
-                f"{len(groups)} group(s)"
+                f"{len(groups)} squad(s)"
                 + (f" · status={status}" if status else "")
                 + (f" · since={since}" if since else "")
                 + (f" · until={until}" if until else ""),
@@ -348,7 +348,7 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
         # Totals row
         agg = {"tx": 0.0, "pl": 0.0, "e1": 0.0, "e2": 0.0, "tax": 0.0, "tips": 0.0, "items": 0, "contrib": 0.0, "total": 0.0}
         rows: List[List[Any]] = [[
-            "Group", "Status", "Created", "Lead", "Members",
+            "Squad", "Status", "Created", "Lead", "Members",
             "Transaction", "Platform Fee", "Extra 1", "Extra 2",
             "Tax", "Tips", "Items",
             "Member's Contribution", "Total Retained",
@@ -837,7 +837,7 @@ def attach_phase_d_routes(api_router: APIRouter, db, get_current_admin, require_
     async def list_group_receipts(group_id: str):
         g = await db.groups.find_one({"id": group_id}, {"_id": 0, "receipt_images": 1, "last_receipt_id": 1})
         if not g:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         return {"items": g.get("receipt_images") or [], "last_receipt_id": g.get("last_receipt_id")}
 
     api_router.include_router(r)

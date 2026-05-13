@@ -20,13 +20,14 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Swipeable } from 'react-native-gesture-handler';
-import { Receipt, CheckCircle2, Clock, Wallet, AlertCircle, Plus, Pencil, ChevronDown, UserPlus, Trash2, Split } from 'lucide-react-native';
+import { Receipt, CheckCircle2, Clock, Wallet, AlertCircle, Plus, Pencil, ChevronDown, UserPlus, Trash2, Split, Repeat } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 import { EditMetaModal } from '../../../src/EditMetaModal';
 import { ConfirmModal } from '../../../src/ConfirmModal';
+import { RecurrenceModal } from '../../../src/RecurrenceModal';
 import { toast } from '../../../src/components/Toast';
 import { Skeleton, SkeletonGroupRow } from '../../../src/components/Skeleton';
 import { HeroCard } from '../../../src/components/redesign/HeroCard';
@@ -52,6 +53,11 @@ export default function DashboardScreen() {
   // route rejects switches once any contribution has been made.
   const [splitModeTarget, setSplitModeTarget] = useState<'fast' | 'itemized' | null>(null);
   const [splitModeBusy, setSplitModeBusy] = useState(false);
+  // P2 (June 2025) — Recurring bills sheet. Lead can configure a weekly or
+  // monthly cadence and we auto-clone this squad on schedule (see backend
+  // recurring_groups_cron). Closed bills can still set recurrence so leads
+  // can flip on auto-repeat retroactively.
+  const [recurrenceVisible, setRecurrenceVisible] = useState(false);
 
   const load = useCallback(async () => {
     const u = await loadUser();
@@ -252,6 +258,27 @@ export default function DashboardScreen() {
                   <Split size={14} color={COLORS.primary} />
                   <Text style={styles.metaPillText}>
                     Split: <Text style={{ fontWeight: FONT.weights.heavy }}>{label}</Text>
+                  </Text>
+                </TouchableOpacity>
+              );
+            })()}
+            {/* P2 (June 2025) — Recurring bills entry-point. We always show
+                the pill (regardless of bill status) so a lead can flip
+                auto-repeat on after a bill is paid. The pill reflects
+                whether recurrence is currently active. */}
+            {(() => {
+              const rec: any = (group as any).recurrence || null;
+              const active = !!rec?.enabled;
+              return (
+                <TouchableOpacity
+                  testID="dashboard-recurrence-pill"
+                  style={[styles.metaPill, active && { borderColor: COLORS.primary, backgroundColor: COLORS.primaryLight }]}
+                  onPress={() => setRecurrenceVisible(true)}
+                  activeOpacity={0.7}
+                >
+                  <Repeat size={14} color={COLORS.primary} />
+                  <Text style={styles.metaPillText}>
+                    {active ? (rec.cadence === 'monthly' ? 'Monthly' : 'Weekly') : 'Auto-repeat'}
                   </Text>
                 </TouchableOpacity>
               );
@@ -583,6 +610,18 @@ export default function DashboardScreen() {
           group={group}
           userId={userId}
           field="tax_tip"
+        />
+      )}
+
+      {/* P2 (June 2025) — Recurring bills sheet. Lead-only. Refreshes the
+          group payload on save so the pill label reflects the new state. */}
+      {userId && (
+        <RecurrenceModal
+          visible={recurrenceVisible}
+          groupId={group.id}
+          userId={userId}
+          onClose={() => setRecurrenceVisible(false)}
+          onChanged={() => load()}
         />
       )}
 

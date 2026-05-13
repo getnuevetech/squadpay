@@ -82,11 +82,11 @@ async def _require_session(db, user_id: str, session_id: str) -> dict:
 async def _lead_available_cents(db, *, group_id: str, lead_id: str) -> int:
     group = await db.groups.find_one({"id": group_id}, {"_id": 0})
     if not group:
-        raise HTTPException(404, "Group not found")
+        raise HTTPException(404, "Squad not found")
     if group.get("lead_id") != lead_id:
-        raise HTTPException(403, "Only the lead may cash out from this group")
+        raise HTTPException(403, "Only the lead may cash out from this squad")
     if group.get("status") != "paid":
-        raise HTTPException(409, "Group is not yet fully paid")
+        raise HTTPException(409, "Squad is not yet fully paid")
     if (group.get("funding_mode") or "lead") != "group":
         raise HTTPException(409, "Cash-out is only available for member-funded squads")
     pipeline = [
@@ -461,7 +461,7 @@ def attach_payout_routes(api_router: APIRouter, db):
         await _require_session(db, user_id, session_id)
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(404, "Squad not found")
         reasons = []
         eligible = True
         if group.get("lead_id") != user_id:

@@ -114,22 +114,31 @@ async def _resolve_stripe_keys(db) -> Dict[str, Optional[str]]:
         pub = gc_pub or env_pub
         source = "mixed/incomplete"
 
-    # Account-suffix sanity check. Stripe keys are
-    #   <sk|pk>_<live|test>_<accountId>… — the first three underscore
-    # segments uniquely identify the account+mode.
+    # Account-id sanity check. Stripe keys are formatted as:
+    #   <sk|pk>_<live|test>_<ACCOUNT_PREFIX><RANDOM_KEY_TAIL>
+    # NOTE: Stripe does NOT separate the account prefix from the random key
+    # tail with an underscore — they're concatenated into one segment.
+    # The first ~16 chars of that segment are the account identifier (the
+    # same value Stripe uses for `acct_<ACCOUNT_PREFIX>`). The remainder is
+    # the per-key random suffix and DIFFERS between sk_ and pk_ even on the
+    # same account (which previously produced a false-positive mismatch).
     if secret and pub:
         try:
-            s_parts = secret.split("_")[:3]
-            p_parts = pub.split("_")[:3]
-            # Compare mode (live/test) and account id; the first segment
-            # differs by design (sk vs pk), so skip index 0.
-            if s_parts[1:3] != p_parts[1:3]:
+            s_parts = secret.split("_", 2)  # ['sk', 'test', '<acct><tail>']
+            p_parts = pub.split("_", 2)     # ['pk', 'test', '<acct><tail>']
+            same_mode = (len(s_parts) >= 2 and len(p_parts) >= 2 and s_parts[1] == p_parts[1])
+            # Compare only the account prefix portion of the third segment.
+            s_acct = (s_parts[2][:16] if len(s_parts) >= 3 else "")
+            p_acct = (p_parts[2][:16] if len(p_parts) >= 3 else "")
+            if not same_mode or s_acct != p_acct:
                 logger.warning(
                     "[stripe-keys] ACCOUNT MISMATCH source=%s "
-                    "secret=%s… publishable=%s… — PaymentSheet will fail with "
-                    "'No such payment_intent'. Verify both keys belong to "
-                    "the SAME Stripe account in admin Gateway config.",
-                    source, "_".join(s_parts), "_".join(p_parts),
+                    "secret_acct=%s publishable_acct=%s mode_secret=%s mode_pub=%s — "
+                    "PaymentSheet will fail with 'No such payment_intent'. "
+                    "Verify both keys belong to the SAME Stripe account in admin Gateway config.",
+                    source, s_acct, p_acct,
+                    s_parts[1] if len(s_parts) >= 2 else "?",
+                    p_parts[1] if len(p_parts) >= 2 else "?",
                 )
         except Exception:
             pass
@@ -138,14 +147,23 @@ async def _resolve_stripe_keys(db) -> Dict[str, Optional[str]]:
 
 
 def _stripe_keys_match(keys: Dict[str, Optional[str]]) -> bool:
-    """True iff the secret and publishable keys belong to the same Stripe account+mode."""
+    """True iff the secret and publishable keys belong to the same Stripe account+mode.
+
+    Compares the account prefix (first 16 chars of the third underscore-segment),
+    not the per-key random tail.
+    """
     s = keys.get("secret_key") or ""
     p = keys.get("publishable_key") or ""
     if not s or not p:
         return False
-    s_parts = s.split("_")[:3]
-    p_parts = p.split("_")[:3]
-    return len(s_parts) >= 3 and len(p_parts) >= 3 and s_parts[1:3] == p_parts[1:3]
+    s_parts = s.split("_", 2)
+    p_parts = p.split("_", 2)
+    if len(s_parts) < 3 or len(p_parts) < 3:
+        return False
+    same_mode = s_parts[1] == p_parts[1]
+    s_acct = s_parts[2][:16]
+    p_acct = p_parts[2][:16]
+    return same_mode and s_acct == p_acct
 
 
 async def _ensure_stripe_customer(db, user_id: str, secret_key: str) -> str:

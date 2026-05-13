@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
-import { Camera, Edit3, Trash2, Plus, Zap, Target, Sparkles, Upload } from 'lucide-react-native';
+import { Camera, Edit3, Trash2, Plus, Zap, Target, Upload } from 'lucide-react-native';
 import { Button } from '../src/Button';
 import { GradientButton } from '../src/components/GradientButton';
 import { api } from '../src/api';
@@ -23,7 +23,7 @@ import { COLORS, FONT, RADIUS, SPACING } from '../src/theme';
 import { toast } from '../src/components/Toast';
 import { friendlyError } from '../src/errors';
 
-type Mode = 'fast' | 'smart' | 'itemized';
+type Mode = 'fast' | 'itemized';
 
 type DraftItem = { name: string; price: string; quantity: string };
 
@@ -32,7 +32,7 @@ export default function CreateBillScreen() {
   const [title, setTitle] = useState('Squad Bill');
   const [tax, setTax] = useState('');
   const [tip, setTip] = useState('');
-  const [mode, setMode] = useState<Mode>('smart');
+  const [mode, setMode] = useState<Mode>('fast');
   const [items, setItems] = useState<DraftItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [scanning, setScanning] = useState(false);
@@ -239,8 +239,7 @@ export default function CreateBillScreen() {
           <View style={styles.modeRow}>
             {(
               [
-                { k: 'fast', title: 'Fast', sub: 'Equal', icon: <Zap size={18} color={mode === 'fast' ? '#fff' : COLORS.primary} /> },
-                { k: 'smart', title: 'Smart', sub: 'Balanced', icon: <Sparkles size={18} color={mode === 'smart' ? '#fff' : COLORS.primary} /> },
+                { k: 'fast', title: 'Equal', sub: 'Same for all', icon: <Zap size={18} color={mode === 'fast' ? '#fff' : COLORS.primary} /> },
                 { k: 'itemized', title: 'Itemized', sub: 'Per item', icon: <Target size={18} color={mode === 'itemized' ? '#fff' : COLORS.primary} /> },
               ] as const
             ).map((m) => (

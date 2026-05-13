@@ -337,6 +337,12 @@ async def _recompute_group(group: dict) -> dict:
     assignments = group.get("assignments", [])
     members = group.get("members", [])
     split_mode = group.get("split_mode", "itemized")
+    # June 2025 — legacy "smart" mode was a UX option that fell through to
+    # the itemized branch but never had per-item claims attached, so users
+    # saw "$0 share" until they manually claimed. We now treat "smart" as
+    # equal-split ("fast") so existing data renders correctly.
+    if split_mode == "smart":
+        split_mode = "fast"
     subtotal = sum(i["price"] * i["quantity"] for i in items)
     tax = group.get("tax", 0.0)
     tip = group.get("tip", 0.0)

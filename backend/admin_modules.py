@@ -60,6 +60,8 @@ MODULES: List[Dict] = [
      "default_roles": ["super_admin", "manager"]},
     {"key": "kyc_incentives", "label": "KYC Incentives", "group": "Marketing", "path": "/admin/kyc-incentives",
      "default_roles": ["super_admin", "manager"]},
+    {"key": "landing_page",  "label": "App Landing Page", "group": "Marketing", "path": "/admin/landing-page",
+     "default_roles": ["super_admin", "manager"]},
     {"key": "bulk_sms",        "label": "Bulk SMS",           "group": "Marketing",  "path": "/admin/bulk-sms",
      "default_roles": ["super_admin", "manager"]},
     {"key": "credit_rules",    "label": "Credit Rules",       "group": "Marketing",  "path": "/admin/credit-rules",

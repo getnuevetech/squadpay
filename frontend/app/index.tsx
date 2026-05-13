@@ -15,7 +15,7 @@
  *      pre-redesign source; copy it back over this file to fully revert.
  */
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -136,79 +136,7 @@ export default function HomeScreen() {
   // UNAUTH → Landing (Image 1 redesign)
   // ─────────────────────────────────────────────────────────────
   if (!user) {
-    return (
-      <SafeAreaView style={styles.landingWrap} testID="home-unauth">
-        <ScrollView
-          contentContainerStyle={styles.landingScroll}
-          showsVerticalScrollIndicator={false}
-          bounces={Platform.OS !== 'web'}
-        >
-          {/* Phone-frame illustration with hashtag chips + dots */}
-          <View style={styles.heroFrameSlot}>
-            <HeroPhoneFrame height={340} />
-          </View>
-
-          {/* Brand mark + wordmark — centered, big, like Image 1 */}
-          <View style={styles.brandRow}>
-            <SquadPayMark size={56} testID="landing-brand-mark" />
-          </View>
-
-          {/* Headline (matches the reference exactly) */}
-          <Text style={styles.headline}>
-            <Text style={styles.headlineDark}>Split the bill.{'\n'}</Text>
-            <Text style={styles.headlineViolet}>Pay together.</Text>
-          </Text>
-          <Text style={styles.subhead}>
-            Scan a receipt, share a link, and only pay for what you ordered.
-          </Text>
-
-          {/* Three feature cards removed per request — keeping only headline + 2 big CTAs. */}
-
-          {/* Two big CTA cards — Split a Bill (primary violet) + Join a Bill (secondary white) */}
-          <View style={styles.ctaPair}>
-            <Pressable
-              onPress={() => router.push('/auth?intent=split')}
-              style={({ pressed }) => [styles.ctaPrimary, pressed && { opacity: 0.94 }]}
-              testID="landing-split-bill"
-            >
-              <View style={styles.ctaPrimaryIcon}>
-                <Plus size={30} color="#fff" strokeWidth={2.8} />
-              </View>
-              <Text style={styles.ctaPrimaryText}>Split a Bill</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => router.push('/auth?intent=join')}
-              style={({ pressed }) => [styles.ctaSecondary, pressed && { opacity: 0.94 }]}
-              testID="landing-join-bill"
-            >
-              <View style={styles.ctaSecondaryIcon}>
-                <PlusSquare size={26} color={COLORS.primary} strokeWidth={2.4} />
-              </View>
-              <Text style={styles.ctaSecondaryText}>Join a Bill</Text>
-            </Pressable>
-          </View>
-
-          {/* Sign-in link for returning users (restored from previous design). */}
-          <Pressable
-            onPress={() => router.push('/auth?intent=signin')}
-            style={styles.signinRow}
-            testID="landing-signin"
-          >
-            <Text style={styles.signinPrompt}>Already have an account? </Text>
-            <Text style={styles.signinAction}>Sign in</Text>
-          </Pressable>
-
-          {/* Minimal legal footer */}
-          <View style={styles.legalRow}>
-            <Text testID="home-footer-support" style={styles.legalLink} onPress={() => router.push('/legal/support')}>Support</Text>
-            <Text style={styles.legalDot}>·</Text>
-            <Text testID="home-footer-privacy" style={styles.legalLink} onPress={() => router.push('/legal/privacy')}>Privacy</Text>
-            <Text style={styles.legalDot}>·</Text>
-            <Text testID="home-footer-terms" style={styles.legalLink} onPress={() => router.push('/legal/terms')}>Terms</Text>
-          </View>
-        </ScrollView>
-      </SafeAreaView>
-    );
+    return <UnauthLanding />;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -440,6 +368,110 @@ export default function HomeScreen() {
       </ScrollView>
       <BottomTabBar active="home" />
     </View>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// UnauthLanding — randomized BG shade per visit.
+// ─────────────────────────────────────────────────────────────
+const FALLBACK_BG_SHADES = ['#FAF7FF', '#F5F0FF', '#EDE4FE', '#F8F3FF', '#F0E7FE'];
+
+function UnauthLanding() {
+  const [bgShades, setBgShades] = useState<string[]>(FALLBACK_BG_SHADES);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const base = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '');
+        const res = await fetch(`${base}/runtime/landing-page`);
+        if (!res.ok) return;
+        const j = await res.json();
+        const shades: string[] = Array.isArray(j?.bg_purple_shades) && j.bg_purple_shades.length > 0
+          ? j.bg_purple_shades
+          : FALLBACK_BG_SHADES;
+        if (!cancelled) setBgShades(shades);
+      } catch {
+        // Silent fallback to hardcoded shades.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Re-pick on every fresh mount (one-time per landing visit).
+  const bg = useMemo(() => bgShades[Math.floor(Math.random() * bgShades.length)], [bgShades]);
+
+  return (
+    <SafeAreaView style={[styles.landingWrap, { backgroundColor: bg }]} testID="home-unauth">
+      <ScrollView
+        contentContainerStyle={styles.landingScroll}
+        showsVerticalScrollIndicator={false}
+        bounces={Platform.OS !== 'web'}
+      >
+        {/* Phone-frame illustration with hashtag chips + dots (random visuals) */}
+        <View style={styles.heroFrameSlot}>
+          <HeroPhoneFrame height={340} />
+        </View>
+
+        {/* Brand mark + wordmark — centered, big */}
+        <View style={styles.brandRow}>
+          <SquadPayMark size={56} testID="landing-brand-mark" />
+        </View>
+
+        {/* Headline */}
+        <Text style={styles.headline}>
+          <Text style={styles.headlineDark}>Split the bill.{'\n'}</Text>
+          <Text style={styles.headlineViolet}>Pay together.</Text>
+        </Text>
+        <Text style={styles.subhead}>
+          Scan a receipt, share a link, and only pay for what you ordered.
+        </Text>
+
+        {/* Two big CTA cards — Split a Bill (primary violet) + Join a Bill (secondary white) */}
+        <View style={styles.ctaPair}>
+          <Pressable
+            onPress={() => router.push('/auth?intent=split')}
+            style={({ pressed }) => [styles.ctaPrimary, pressed && { opacity: 0.94 }]}
+            testID="landing-split-bill"
+          >
+            <View style={styles.ctaPrimaryIcon}>
+              <Plus size={30} color="#fff" strokeWidth={2.8} />
+            </View>
+            <Text style={styles.ctaPrimaryText}>Split a Bill</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => router.push('/auth?intent=join')}
+            style={({ pressed }) => [styles.ctaSecondary, pressed && { opacity: 0.94 }]}
+            testID="landing-join-bill"
+          >
+            <View style={styles.ctaSecondaryIcon}>
+              <PlusSquare size={26} color={COLORS.primary} strokeWidth={2.4} />
+            </View>
+            <Text style={styles.ctaSecondaryText}>Join a Bill</Text>
+          </Pressable>
+        </View>
+
+        {/* Sign-in link for returning users */}
+        <Pressable
+          onPress={() => router.push('/auth?intent=signin')}
+          style={styles.signinRow}
+          testID="landing-signin"
+        >
+          <Text style={styles.signinPrompt}>Already have an account? </Text>
+          <Text style={styles.signinAction}>Sign in</Text>
+        </Pressable>
+
+        {/* Minimal legal footer */}
+        <View style={styles.legalRow}>
+          <Text testID="home-footer-support" style={styles.legalLink} onPress={() => router.push('/legal/support')}>Support</Text>
+          <Text style={styles.legalDot}>·</Text>
+          <Text testID="home-footer-privacy" style={styles.legalLink} onPress={() => router.push('/legal/privacy')}>Privacy</Text>
+          <Text style={styles.legalDot}>·</Text>
+          <Text testID="home-footer-terms" style={styles.legalLink} onPress={() => router.push('/legal/terms')}>Terms</Text>
+        </View>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 

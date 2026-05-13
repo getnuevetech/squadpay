@@ -161,6 +161,15 @@ class NotificationConfigIn(BaseModel):
     push_enabled: bool = False
 
 
+# June 2025 — Landing Page dynamic visuals: random-rotating pools for
+# phone-frame color, background shade, hashtags, and avatars.
+class LandingPageConfigIn(BaseModel):
+    phone_frame_colors: List[str] | None = None
+    bg_purple_shades: List[str] | None = None
+    hashtags: List[str] | None = None
+    avatars: Dict[str, List[str]] | None = None
+
+
 class CmsPageIn(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     slug: Optional[str] = Field(default=None, max_length=120)
@@ -951,6 +960,49 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
                 "destructive": False,
                 "target_type": "settings",
                 "target_id": "notification_config",
+                "payload": body.model_dump(),
+            })
+        except Exception:
+            pass
+        return {"ok": True, **cfg}
+
+    # June 2025 — Landing Page dynamic visuals: public read endpoint
+    # (no auth) + admin manage endpoints.
+    @public_r.get("/runtime/landing-page")
+    async def runtime_get_landing_page():
+        from landing_page_config import get_landing_page_config
+        return await get_landing_page_config(db)
+
+    @r.get("/admin/landing-page")
+    async def admin_get_landing_page(admin=Depends(get_current_admin)):
+        from landing_page_config import get_landing_page_config
+        return await get_landing_page_config(db)
+
+    @r.put("/admin/landing-page")
+    async def admin_set_landing_page(
+        body: LandingPageConfigIn = Body(...),
+        admin=Depends(get_current_admin),
+        _gate=Depends(require_role("super_admin", "manager")),
+    ):
+        from landing_page_config import set_landing_page_config
+        admin_email = admin.get("email") if isinstance(admin, dict) else None
+        cfg = await set_landing_page_config(
+            db,
+            phone_frame_colors=body.phone_frame_colors,
+            bg_purple_shades=body.bg_purple_shades,
+            hashtags=body.hashtags,
+            avatars=body.avatars,
+            admin_email=admin_email,
+        )
+        try:
+            await db.audit_log.insert_one({
+                "id": _new_id("aud_"),
+                "at": _now(),
+                "admin_email": admin_email or "?",
+                "action": "admin.landing_page_update",
+                "destructive": False,
+                "target_type": "settings",
+                "target_id": "landing_page",
                 "payload": body.model_dump(),
             })
         except Exception:

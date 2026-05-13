@@ -4,7 +4,7 @@ import { View, Text, TouchableOpacity, StyleSheet, Platform, ActivityIndicator, 
 import {
   LayoutDashboard, ScrollText, Users, LogOut, Shield, UserCog, Receipt, Gift,
   Plug, Wallet, RefreshCw, Lock, BarChart3, FileText, KeyRound, Percent,
-  Megaphone, MessageSquare, Coins, Inbox, ShieldCheck, ShieldAlert, CircleDollarSign, Layers, Hash, BellRing,
+  Megaphone, MessageSquare, Coins, Inbox, ShieldCheck, ShieldAlert, CircleDollarSign, Layers, Hash, BellRing, Sparkles,
 } from 'lucide-react-native';
 import { adminApi, AdminProfile, getProfile, getToken, clearSession, adminActivityApi } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
@@ -25,6 +25,7 @@ const ICON_BY_KEY: Record<string, any> = {
   notifications: Megaphone,
   notification_config: BellRing,
   kyc_incentives: ShieldCheck,
+  landing_page: Sparkles,
   bulk_sms: MessageSquare,
   credit_rules: Coins,
   platform_fees: Percent,
@@ -69,6 +70,7 @@ const FALLBACK_MODULES: ModuleEntry[] = [
   { key: 'notifications',     label: 'Notifications',    group: 'Marketing',  path: '/admin/notifications',     sensitive: false },
   { key: 'notification_config', label: 'Notification Config', group: 'Marketing', path: '/admin/notification-config', sensitive: false },
   { key: 'kyc_incentives',    label: 'KYC Incentives',      group: 'Marketing', path: '/admin/kyc-incentives',     sensitive: false },
+  { key: 'landing_page',      label: 'App Landing Page',    group: 'Marketing', path: '/admin/landing-page',       sensitive: false },
   { key: 'bulk_sms',          label: 'Bulk SMS',         group: 'Marketing',  path: '/admin/bulk-sms',          sensitive: false },
   { key: 'credit_rules',      label: 'Credit Rules',     group: 'Marketing',  path: '/admin/credit-rules',      sensitive: false },
   { key: 'referrals',         label: 'Referrals',        group: 'Marketing',  path: '/admin/referrals',         sensitive: false },

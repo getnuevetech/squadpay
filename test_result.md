@@ -11241,3 +11241,86 @@ agent_communication:
         • To validate push end-to-end, kick off an EAS build (next
           action), install on device, then trigger a shortfall flow.
 
+
+backend:
+  - task: "Landing Page dynamic visuals (random colors / avatars / hashtags / background)"
+    implemented: true
+    working: true
+    file: "/app/backend/landing_page_config.py, /app/backend/routes/admin_phase_bc.py, /app/backend/admin_modules.py, /app/frontend/src/components/redesign/HeroPhoneFrame.tsx, /app/frontend/app/index.tsx, /app/frontend/app/admin/landing-page.tsx, /app/frontend/src/adminApi.ts, /app/frontend/app/admin/_layout.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            User wanted random-rotating visuals on the unauth landing
+            screen to keep the app feeling fresh for young-adult audience.
+            Built BOTH admin-configurable pools AND hardcoded fallbacks.
+
+            BACKEND:
+            • New module landing_page_config.py: 4 pools persisted in
+              app_config._id="landing_page":
+                - phone_frame_colors: 1-10 hex (default 5 violet shades)
+                - bg_purple_shades:   1-10 hex (default 5 light purples)
+                - hashtags:           1-10 strings (default 3, was 2)
+                - avatars:            3 slots × 1-5 image URLs each
+                                      (slot_left, slot_right_man, slot_right_woman)
+            • Hex/URL/string validation with auto-fallback to defaults.
+
+            ENDPOINTS:
+            • GET /api/runtime/landing-page (PUBLIC, no auth) — for FE
+            • GET/PUT /api/admin/landing-page — for admin manage
+
+            FRONTEND HERO:
+            • Rewrote HeroPhoneFrame.tsx (~330 lines) to fetch
+              /runtime/landing-page on mount and pick random values per
+              visit. Frame border + Split Now button now use a random hex
+              from the pool. Three hashtag chips (top-left dark,
+              bottom-right light, NEW top-right accent) — admin pool
+              determines content.
+            • app/index.tsx UnauthLanding extracted into its own component
+              that also fetches /runtime/landing-page and picks a random
+              bg_purple_shade for the whole background.
+            • Sensible hardcoded fallbacks always present (5 colors, 3
+              hashtags, 3 avatars per slot) so the landing never breaks
+              even with no network or empty admin config.
+
+            ADMIN UI:
+            • New page /admin/landing-page with editable lists for all 4
+              pools. Hex inputs show live color swatches; URL inputs show
+              image preview thumbnails; trash + add buttons per row.
+            • Sidebar nav entry "App Landing Page" added under Marketing.
+
+agent_communication:
+    - agent: "main"
+      message: |
+        ✅ Landing Page dynamic visuals complete.
+
+        4 random-rotating pools on the unauth landing screen, all
+        admin-configurable with hardcoded fallbacks:
+        • Phone-frame border + Split Now button color
+        • Background light-purple shade
+        • Hashtag chips (NOW 3 chips, was 2 — added top-right accent slot)
+        • Avatar faces × 3 slots
+
+        Admin manages via new /admin/landing-page page (under Marketing).
+        FE fetches /api/runtime/landing-page on mount and re-randomizes
+        per landing visit. Defaults are bundled so the screen always
+        renders correctly with or without network.
+
+        TO VERIFY: Log out, reload landing page multiple times — you
+        should see colors, hashtags, and avatars rotate each time.
+
+        Files changed (8):
+          backend (3):
+            landing_page_config.py (new)
+            routes/admin_phase_bc.py (endpoints)
+            admin_modules.py (module registration)
+          frontend (5):
+            src/components/redesign/HeroPhoneFrame.tsx (rewritten)
+            app/index.tsx (UnauthLanding component with random BG)
+            app/admin/landing-page.tsx (new admin page)
+            app/admin/_layout.tsx (sidebar nav + icon)
+            src/adminApi.ts (landingPageConfigApi)
+

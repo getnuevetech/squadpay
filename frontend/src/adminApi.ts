@@ -1368,7 +1368,27 @@ export const notificationConfigApi = {
     }),
 };
 
-// ----- KYC Incentive Config (Lead + Non-Lead) -----
+// ----- Landing Page dynamic visuals -----
+export type LandingPageConfig = {
+  phone_frame_colors: string[];
+  bg_purple_shades: string[];
+  hashtags: string[];
+  avatars: {
+    slot_left: string[];
+    slot_right_man: string[];
+    slot_right_woman: string[];
+  };
+  updated_at?: string;
+  updated_by?: string;
+};
+export const landingPageConfigApi = {
+  get: () => _aRequest<LandingPageConfig>('/admin/landing-page'),
+  set: (cfg: Partial<Omit<LandingPageConfig, 'updated_at' | 'updated_by'>>) =>
+    _aRequest<{ ok: boolean } & LandingPageConfig>('/admin/landing-page', {
+      method: 'PUT',
+      body: JSON.stringify(cfg),
+    }),
+};
 export type KycIncentiveConfig = {
   role: 'lead' | 'member';
   enabled: boolean;

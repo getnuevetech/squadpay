@@ -132,7 +132,7 @@ export default function SummaryScreen() {
         return { text: 'Shortfall split among all Squad members', color: COLORS.warning, bg: COLORS.warningLight };
       }
     }
-    if (group.funding_mode === 'group') return { text: 'Group-funded', color: COLORS.success, bg: COLORS.successLight };
+    if (group.funding_mode === 'group') return { text: 'Squad-funded', color: COLORS.success, bg: COLORS.successLight };
     if (group.funding_mode === 'shortfall') return { text: 'Shortfall covered by lead', color: COLORS.warning, bg: COLORS.warningLight };
     return { text: 'Lead-funded', color: COLORS.primary, bg: COLORS.primaryLight };
   })();

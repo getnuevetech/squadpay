@@ -1181,7 +1181,9 @@ export type TicketReply = {
 
 // Shared request helper — re-uses the same authenticated fetch pattern as the
 // rest of adminApi. We bind to the module-level `request` via a wrapper.
-async function _aRequest<T>(path: string, init?: RequestInit & { skipAuth?: boolean }): Promise<T> {
+// Exported so other admin pages can build new endpoints without re-implementing
+// auth/header plumbing.
+export async function _aRequest<T>(path: string, init?: RequestInit & { skipAuth?: boolean }): Promise<T> {
   const token = await getToken();
   const isAbsolute = path.startsWith('http');
   const isAdmin = path.startsWith('/admin');

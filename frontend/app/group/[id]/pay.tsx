@@ -12,7 +12,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Check, CreditCard, Lock, Smartphone, Wallet, ShieldCheck, Sparkles, Receipt } from 'lucide-react-native';
+import { Apple, Check, CreditCard, Lock, Smartphone, Wallet, ShieldCheck, Sparkles, Receipt } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { GradientButton } from '../../../src/components/GradientButton';
 import { api, Group } from '../../../src/api';
@@ -107,6 +107,9 @@ export default function PayScreen() {
   // so React's Rules of Hooks (consistent order across renders) is preserved.
   const [nativePayBusy, setNativePayBusy] = useState(false);
   const [nativePayAvailable, setNativePayAvailable] = useState(false);
+  // #13 — admin-controlled wallet flags. Default both ON so first-loads
+  // don't suppress the button; refresh from server below.
+  const [walletFlags, setWalletFlags] = useState({ apple: true, google: true });
 
   useEffect(() => {
     if (Platform.OS === 'web') return;
@@ -115,6 +118,10 @@ export default function PayScreen() {
       try {
         const r = await api.stripePublishableKey();
         setNativePayAvailable(!!r.configured);
+        setWalletFlags({
+          apple: r.apple_pay_enabled !== false,
+          google: r.google_pay_enabled !== false,
+        });
       } catch {}
     })();
   }, [kind]);
@@ -986,7 +993,7 @@ export default function PayScreen() {
                 icon={<CreditCard size={18} color="#fff" />}
                 disabled={!isVerified || blockedNoAmount}
               />
-              {kind === 'contribute' && isVerified && !blockedNoAmount && nativePayAvailable && Platform.OS !== 'web' && (
+              {kind === 'contribute' && isVerified && !blockedNoAmount && nativePayAvailable && Platform.OS !== 'web' && ((Platform.OS === 'ios' && walletFlags.apple) || (Platform.OS === 'android' && walletFlags.google)) && (
                 <Button
                   title={
                     nativePayBusy
@@ -999,7 +1006,7 @@ export default function PayScreen() {
                   onPress={onPayWithWallet}
                   loading={nativePayBusy}
                   testID="pay-wallet-btn"
-                  leftIcon={<Wallet size={16} color={COLORS.primary} />}
+                  leftIcon={Platform.OS === 'ios' ? <Apple size={16} color={COLORS.primary} fill={COLORS.primary} /> : <Smartphone size={16} color={COLORS.primary} />}
                   style={{ marginTop: SPACING.sm }}
                 />
               )}

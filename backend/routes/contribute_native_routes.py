@@ -394,8 +394,13 @@ def attach_native_contribute_routes(router: APIRouter, db):
     async def get_publishable_key():
         keys = await _resolve_stripe_keys(db)
         pk = keys["publishable_key"]
+        # Pull current wallet enable flags so the FE can hide the native
+        # Apple Pay / Google Pay button when admin disables them.
+        wallet_cfg = await db.app_config.find_one({"_id": "wallet"}) or {}
         return {
             "publishable_key": pk,
             "configured": bool(pk),
             "merchant_identifier": "merchant.us.squadpay",
+            "apple_pay_enabled": wallet_cfg.get("apple_pay_enabled", True),
+            "google_pay_enabled": wallet_cfg.get("google_pay_enabled", True),
         }

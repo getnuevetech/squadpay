@@ -56,6 +56,23 @@ import { BottomTabBar } from '../src/components/redesign/BottomTabBar';
 // Feature flag — flip to "off" in .env to render legacy screen via the backup file.
 const REDESIGN_ON = (process.env.EXPO_PUBLIC_REDESIGN || 'on').toLowerCase() !== 'off';
 
+/**
+ * Render an ISO timestamp as a human-friendly relative time
+ * ("Just now" / "5m ago" / "2h ago" / "3d ago"). Falls back to
+ * the locale date string for older entries.
+ */
+function formatRelativeTime(iso?: string | null): string {
+  if (!iso) return '';
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return '';
+  const diff = Date.now() - t;
+  if (diff < 60_000) return 'Just now';
+  if (diff < 3600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
 export default function HomeScreen() {
   const router = useRouter();
   const [user, setUser] = useState<Awaited<ReturnType<typeof refreshUser>>>(null);
@@ -387,6 +404,14 @@ export default function HomeScreen() {
                     <Text style={styles.groupMeta}>
                       {item.member_count} Squad members · ${Number(item.total || 0).toFixed(2)}
                     </Text>
+                    {/* #8 — When the squad was created. Shown in compact
+                        relative form (e.g. "2h ago", "3d ago") so the user can
+                        glance and find the most recent bill quickly. */}
+                    {(item as any).created_at ? (
+                      <Text style={styles.groupMetaTimestamp} testID={`home-row-ts-${item.id}`}>
+                        {formatRelativeTime((item as any).created_at)} · {new Date((item as any).created_at).toLocaleDateString()}
+                      </Text>
+                    ) : null}
                     {item.members_preview && item.members_preview.length > 0 ? (
                       <View style={styles.memberStack}>
                         {item.members_preview.slice(0, 4).map((m: any, idx: number) => (
@@ -640,6 +665,7 @@ const styles = StyleSheet.create({
   groupIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.primaryLight, alignItems: 'center', justifyContent: 'center' },
   groupTitle: { fontSize: 15, fontWeight: FONT.weights.bold, color: COLORS.text },
   groupMeta: { fontSize: 12, color: COLORS.subtext, marginTop: 2 },
+  groupMetaTimestamp: { fontSize: 11, color: COLORS.subtext, marginTop: 2, fontStyle: 'italic' },
   memberStack: { flexDirection: 'row', alignItems: 'center', marginTop: 6 },
   memberStackItem: { borderWidth: 2, borderColor: COLORS.surface, borderRadius: 999 },
   memberStackMore: {

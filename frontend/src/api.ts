@@ -584,7 +584,13 @@ export const api = {
 
   // ───────── Phase 7 — Native Apple Pay / Google Pay via Stripe PaymentSheet ─────────
   stripePublishableKey: () =>
-    request<{ publishable_key: string | null; configured: boolean; merchant_identifier: string }>(
+    request<{
+      publishable_key: string | null;
+      configured: boolean;
+      merchant_identifier: string;
+      apple_pay_enabled?: boolean;
+      google_pay_enabled?: boolean;
+    }>(
       '/stripe/publishable-key',
     ),
 

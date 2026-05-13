@@ -634,5 +634,55 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
         out = await db.admins.find_one({"id": admin_id}, {"_id": 0, "password_hash": 0})
         return out
 
+    # ============================ Wallet (Apple/Google Pay) config ===
+    # Phase D (#13) — admins can independently enable/disable Apple Pay and
+    # Google Pay buttons in the member checkout flow. When disabled, the FE
+    # falls back to Stripe Checkout WebView (which still surfaces wallet
+    # buttons in supported browsers — cheaper-per-transaction trade-off).
+    class WalletConfigIn(BaseModel):
+        apple_pay_enabled: bool = True
+        google_pay_enabled: bool = True
+
+    @r.get("/admin/wallet-config")
+    async def get_wallet_config(admin=Depends(get_current_admin)):
+        cfg = await db.app_config.find_one({"_id": "wallet"}) or {}
+        return {
+            "apple_pay_enabled": cfg.get("apple_pay_enabled", True),
+            "google_pay_enabled": cfg.get("google_pay_enabled", True),
+            "updated_at": cfg.get("updated_at"),
+            "updated_by": cfg.get("updated_by"),
+        }
+
+    @r.put("/admin/wallet-config")
+    async def set_wallet_config(
+        body: WalletConfigIn,
+        admin=Depends(get_current_admin),
+        _gate=Depends(require_role("super_admin", "manager")),
+    ):
+        await db.app_config.update_one(
+            {"_id": "wallet"},
+            {"$set": {
+                "apple_pay_enabled": body.apple_pay_enabled,
+                "google_pay_enabled": body.google_pay_enabled,
+                "updated_at": _now(),
+                "updated_by": (admin.get("email") if isinstance(admin, dict) else None),
+            }},
+            upsert=True,
+        )
+        try:
+            await db.audit_log.insert_one({
+                "id": _new_id("aud_"),
+                "at": _now(),
+                "admin_email": (admin.get("email") if isinstance(admin, dict) else "?"),
+                "action": "admin.wallet_config_update",
+                "destructive": False,
+                "target_type": "settings",
+                "target_id": "wallet",
+                "payload": body.model_dump(),
+            })
+        except Exception:
+            pass
+        return {"ok": True, **body.model_dump()}
+
     api_router.include_router(public_r)
     api_router.include_router(r)

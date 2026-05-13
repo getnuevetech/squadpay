@@ -126,6 +126,18 @@ export default function CashOutScreen() {
 
   const webViewRef = useRef<WebView>(null);
 
+  // Subtle KYC auto-redirect (June 2025) — when the lead first lands on
+  // the not_linked phase, we give them a few seconds to read the warm
+  // reassurance message, then auto-open Stripe verification. They can
+  // tap "Open Stripe Now" to skip the countdown, or "Give me a moment"
+  // to cancel and read longer. We only auto-redirect ONCE per visit
+  // (autoRedirectFired) so cancelling sticks for the rest of the
+  // session.
+  const AUTO_REDIRECT_SECONDS = 7;
+  const [autoRedirectIn, setAutoRedirectIn] = useState<number | null>(null);
+  const [autoRedirectFired, setAutoRedirectFired] = useState(false);
+  const [autoRedirectCancelled, setAutoRedirectCancelled] = useState(false);
+
   // ── Initial load: read session + fetch eligibility
   useEffect(() => {
     (async () => {
@@ -177,9 +189,33 @@ export default function CashOutScreen() {
     }
   }, []);
 
+  // Kick off the friendly auto-redirect timer the moment we enter the
+  // not_linked phase. We only do this once per visit; if the lead taps
+  // "Give me a moment" we leave the buttons in place and never auto-fire.
+  useEffect(() => {
+    if (phase !== 'not_linked') return;
+    if (autoRedirectFired || autoRedirectCancelled) return;
+    setAutoRedirectIn(AUTO_REDIRECT_SECONDS);
+  }, [phase, autoRedirectFired, autoRedirectCancelled]);
+
+  useEffect(() => {
+    if (autoRedirectIn == null) return;
+    if (autoRedirectCancelled) return;
+    if (autoRedirectIn <= 0) {
+      setAutoRedirectIn(null);
+      setAutoRedirectFired(true);
+      handleConnect();
+      return;
+    }
+    const t = setTimeout(() => setAutoRedirectIn((s) => (s == null ? null : s - 1)), 1000);
+    return () => clearTimeout(t);
+  }, [autoRedirectIn, autoRedirectCancelled]);
+
   // ── "Connect" tap → fetch authorize URL → open WebView
   const handleConnect = async () => {
     if (!userId || !sessionId || !group_id) return;
+    setAutoRedirectIn(null);
+    setAutoRedirectFired(true);
     setPhase('loading');
     try {
       const r = await api.payoutAuthorizeUrl(userId, sessionId, RETURN_URL, REFRESH_URL, group_id);
@@ -332,51 +368,52 @@ export default function CashOutScreen() {
               ${eligibility?.available_usd?.toFixed(2) || '0.00'}
             </Text>
           </View>
-          <Text style={styles.bodyHeader}>Connect your payout account</Text>
+          <Text style={styles.bodyHeader}>You stepped up — let's get your money home.</Text>
           <Text style={styles.bodyText}>
-            We use Stripe to verify your identity and send money straight to your debit card.
-            Funds typically arrive in seconds. Stripe handles all card details — SquadPay never
-            sees them.
+            When you lead a Squad, you're the one who fronts the bill and looks
+            out for everyone. Now it's your turn to get paid back — and we want
+            to be absolutely sure those funds land in <Text style={{ fontWeight: '700' }}>your</Text> hands, and only yours.
+            {'\n\n'}
+            Stripe will ask you a few quick questions to confirm it's really
+            you. It's a one-time setup that protects your Squad's money from
+            anyone else trying to claim it — and from this point on, every
+            Pay Out you make is fast and friction-free.
           </Text>
 
-          {/* Subtle KYC reassurance card — leads often pause at the
-              "ID verification" step. We frame it plainly: it's a one-
-              time legal step, it's for THEIR protection, and SquadPay
-              doesn't store the data. */}
+          {/* Soft trust strip — single line, lockup-style, sits just under
+              the warm message so the lead's eye lands on it before the CTA. */}
           <View style={styles.kycCard} testID="kyc-explainer">
             <View style={styles.kycHeader}>
               <ShieldCheck size={18} color={COLORS.primary} />
-              <Text style={styles.kycHeaderText}>One-time identity check</Text>
-            </View>
-            <View style={styles.kycRow}>
-              <Text style={styles.kycBullet}>•</Text>
-              <Text style={styles.kycText}>
-                Required by US law for anyone receiving money to a bank or debit card.
-              </Text>
-            </View>
-            <View style={styles.kycRow}>
-              <Text style={styles.kycBullet}>•</Text>
-              <Text style={styles.kycText}>
-                Protects you — confirms only YOU can withdraw funds from your Squads.
-              </Text>
-            </View>
-            <View style={styles.kycRow}>
-              <Text style={styles.kycBullet}>•</Text>
-              <Text style={styles.kycText}>
-                Takes about 60 seconds — and you'll never see this screen again on future Pay Outs.
-              </Text>
-            </View>
-            <View style={styles.kycRow}>
-              <Text style={styles.kycBullet}>•</Text>
-              <Text style={styles.kycText}>
-                Stripe handles the verification — SquadPay never sees or stores your ID details.
-              </Text>
+              <Text style={styles.kycHeaderText}>Stripe handles it — SquadPay never sees your details.</Text>
             </View>
           </View>
 
+          {/* Auto-redirect banner. Counts down from AUTO_REDIRECT_SECONDS,
+              then opens Stripe's hosted onboarding via handleConnect.
+              The lead can tap "Open Stripe Now" to skip the wait, or
+              "Give me a moment" to cancel and read longer. */}
+          {autoRedirectIn != null && !autoRedirectCancelled && (
+            <View style={styles.autoRedirectCard} testID="kyc-auto-redirect">
+              <ActivityIndicator color={COLORS.primary} />
+              <Text style={styles.autoRedirectText}>
+                Opening Stripe verification in <Text style={{ fontWeight: '800' }}>{autoRedirectIn}s</Text>…
+              </Text>
+              <TouchableOpacity
+                onPress={() => { setAutoRedirectCancelled(true); setAutoRedirectIn(null); }}
+                hitSlop={8}
+                testID="kyc-give-me-a-moment"
+              >
+                <Text style={styles.autoRedirectCancel}>Give me a moment</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
           <TouchableOpacity style={styles.primaryBtn} onPress={handleConnect} testID="connect-stripe-btn">
             <ExternalLink size={18} color="#fff" />
-            <Text style={styles.primaryBtnText}>Connect with Stripe</Text>
+            <Text style={styles.primaryBtnText}>
+              {autoRedirectIn != null && !autoRedirectCancelled ? 'Open Stripe Now' : 'Continue with Stripe'}
+            </Text>
           </TouchableOpacity>
           {/* Per spec: no third-party fee disclosures here. SquadPay's
               single platform fee is the only fee surface presented to
@@ -633,6 +670,33 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     lineHeight: 18,
     flex: 1,
+  },
+  // Auto-redirect card — sits BETWEEN the trust strip and the green CTA.
+  // Uses a soft white-on-bg so it doesn't compete with the warm copy
+  // above, but the spinner + countdown make the auto-redirect feel
+  // intentional, not pushy.
+  autoRedirectCard: {
+    marginTop: SPACING.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
+    backgroundColor: COLORS.card,
+    borderRadius: RADIUS.md,
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.md,
+    borderWidth: 1,
+    borderColor: 'rgba(124, 92, 246, 0.12)',
+  },
+  autoRedirectText: {
+    ...FONT.caption,
+    color: COLORS.text,
+    flex: 1,
+  },
+  autoRedirectCancel: {
+    ...FONT.caption,
+    color: COLORS.primary,
+    fontWeight: '700' as const,
+    textDecorationLine: 'underline',
   },
   statusCard: {
     backgroundColor: COLORS.card,

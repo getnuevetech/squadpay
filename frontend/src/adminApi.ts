@@ -695,6 +695,10 @@ export type IncomeFeesGroup = {
   lead_id: string;
   members_count: number;
   gross_contributed: number;
+  // Phase: per-group tabular ledger — surface tax/tips/item count
+  tax: number;
+  tips: number;
+  total_items: number;
   fees: {
     transaction_fees: number;
     platform_fees: number;

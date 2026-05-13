@@ -175,6 +175,12 @@ def attach_income_fees_routes(api_router: APIRouter, db, require_admin):
                 "lead_id": g.get("lead_id"),
                 "members_count": len(g.get("members") or []),
                 "gross_contributed": round(contributed, 2),
+                # Tax + tips + item count surfaced for the tabular per-group
+                # ledger view. Tax/tips live at the group root (set by
+                # itemized split flow), default 0 for fast-split bills.
+                "tax": round(float(g.get("tax") or 0), 2),
+                "tips": round(float(g.get("tip") or g.get("tips") or 0), 2),
+                "total_items": len(g.get("items") or []),
                 "fees": fees,
                 "contributions": rows,
                 "virtual_card_last4": ((g.get("virtual_card") or {}).get("last4")),

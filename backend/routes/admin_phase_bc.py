@@ -275,23 +275,35 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
         groups = await _collect_income_groups(status, since, until)
         buf = io.StringIO()
         w = csv.writer(buf)
+        # Header row matches the on-screen per-group ledger columns plus a few
+        # bookkeeping fields (Group ID, lead, created/settled) for traceability.
         w.writerow([
-            "Group ID", "Title", "Status", "Created at", "Settled at", "Lead ID",
-            "Members", "Gross contributed", "Transaction fees", "Platform fees",
-            "Extra 1", "Extra 2", "Extra other", "Total retained",
+            "Group ID", "Group Name / Details", "Status", "Created at", "Settled at",
+            "Lead ID", "Members",
+            "Transaction", "Platform Fee", "Extra 1", "Extra 2",
+            "Tax", "Tips", "Total Items",
+            "Member's Contribution", "Total Retained",
         ])
         for g in groups:
             fees = _fee_breakdown_for_group(g)
+            tax = float(g.get("tax") or 0)
+            tips = float(g.get("tip") or g.get("tips") or 0)
+            total_items = len(g.get("items") or [])
             w.writerow([
                 g.get("id"), g.get("title") or "Bill", g.get("status"),
                 _safe_iso(g.get("created_at")),
                 _safe_iso(g.get("paid_at") or g.get("settled_at")),
                 g.get("lead_id"),
                 len(g.get("members") or []),
+                f"{fees['transaction_fees']:.2f}",
+                f"{fees['platform_fees']:.2f}",
+                f"{fees['extra_1']:.2f}",
+                f"{fees['extra_2']:.2f}",
+                f"{tax:.2f}",
+                f"{tips:.2f}",
+                total_items,
                 f"{float((g.get('funding') or {}).get('total_contributed') or 0):.2f}",
-                f"{fees['transaction_fees']:.2f}", f"{fees['platform_fees']:.2f}",
-                f"{fees['extra_1']:.2f}", f"{fees['extra_2']:.2f}",
-                f"{fees['extra_other']:.2f}", f"{fees['total_retained']:.2f}",
+                f"{fees['total_retained']:.2f}",
             ])
         body = buf.getvalue()
         fn = f"income_fees_{dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
@@ -334,49 +346,59 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
             Spacer(1, 10),
         ]
         # Totals row
-        agg = {"tx": 0.0, "pl": 0.0, "e1": 0.0, "e2": 0.0, "eo": 0.0, "total": 0.0, "gross": 0.0}
+        agg = {"tx": 0.0, "pl": 0.0, "e1": 0.0, "e2": 0.0, "tax": 0.0, "tips": 0.0, "items": 0, "contrib": 0.0, "total": 0.0}
         rows: List[List[Any]] = [[
-            "Group", "Title", "Status", "Created", "Lead", "Members",
-            "Gross", "TX fees", "Platform", "Extra 1", "Extra 2", "Other", "Total retained",
+            "Group", "Status", "Created", "Lead", "Members",
+            "Transaction", "Platform Fee", "Extra 1", "Extra 2",
+            "Tax", "Tips", "Items",
+            "Member's Contribution", "Total Retained",
         ]]
         for g in groups:
             fees = _fee_breakdown_for_group(g)
+            tax = float(g.get("tax") or 0)
+            tips = float(g.get("tip") or g.get("tips") or 0)
+            items_n = len(g.get("items") or [])
             gross = float((g.get("funding") or {}).get("total_contributed") or 0)
             agg["tx"] += fees["transaction_fees"]
             agg["pl"] += fees["platform_fees"]
             agg["e1"] += fees["extra_1"]
             agg["e2"] += fees["extra_2"]
-            agg["eo"] += fees["extra_other"]
+            agg["tax"] += tax
+            agg["tips"] += tips
+            agg["items"] += items_n
+            agg["contrib"] += gross
             agg["total"] += fees["total_retained"]
-            agg["gross"] += gross
             rows.append([
-                (g.get("id") or "")[:14],
-                (g.get("title") or "Bill")[:28],
+                (g.get("title") or "Bill")[:32],
                 g.get("status") or "",
                 (_safe_iso(g.get("created_at")) or "")[:10],
                 (g.get("lead_id") or "")[:12],
                 str(len(g.get("members") or [])),
-                _money(gross),
                 _money(fees["transaction_fees"]),
                 _money(fees["platform_fees"]),
                 _money(fees["extra_1"]),
                 _money(fees["extra_2"]),
-                _money(fees["extra_other"]),
+                _money(tax),
+                _money(tips),
+                str(items_n),
+                _money(gross),
                 _money(fees["total_retained"]),
             ])
         rows.append([
-            "", "TOTAL", "", "", "", "",
-            _money(agg["gross"]), _money(agg["tx"]), _money(agg["pl"]),
-            _money(agg["e1"]), _money(agg["e2"]), _money(agg["eo"]),
-            _money(agg["total"]),
+            "TOTAL", "", "", "", "",
+            _money(agg["tx"]), _money(agg["pl"]),
+            _money(agg["e1"]), _money(agg["e2"]),
+            _money(agg["tax"]), _money(agg["tips"]),
+            str(agg["items"]),
+            _money(agg["contrib"]), _money(agg["total"]),
         ])
         tbl = Table(rows, repeatRows=1)
         tbl.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#7a3fef")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
-            ("ALIGN", (6, 1), (-1, -1), "RIGHT"),
+            ("FONTSIZE", (0, 0), (-1, -1), 7),
+            ("ALIGN", (5, 1), (-1, -1), "RIGHT"),
             ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#f5f3ff")]),
             ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#ede9fe")),
             ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),

@@ -16,8 +16,8 @@ import {
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { ArrowLeft, ChevronDown, Receipt, TrendingUp, Download, FileDown } from 'lucide-react-native';
-import { adminApi, IncomeFeesResponse, incomeFeesApi } from '../../src/adminApi';
+import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Receipt, TrendingUp, Download, FileDown } from 'lucide-react-native';
+import { adminApi, IncomeFeesResponse, IncomeFeesGroup, incomeFeesApi } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
 import { toast } from '../../src/components/Toast';
 import { Alert } from 'react-native';
@@ -121,7 +121,10 @@ export default function AdminIncomeFees() {
         </View>
       </View>
 
-      {/* Per-group table */}
+      {/* Per-group ledger — tabular paginated view.
+          Each row = one group with all fee/tax/tips/contribution columns
+          side-by-side for spreadsheet-style scanning. Horizontal scroll on
+          narrow screens so columns don't squish. */}
       <Text style={[styles.sectionTitle, { marginTop: SPACING.lg, marginBottom: SPACING.sm }]}>
         Per-group ledger
       </Text>
@@ -129,69 +132,141 @@ export default function AdminIncomeFees() {
       {data.groups.length === 0 ? (
         <Text style={{ color: COLORS.subtext }}>No bills yet.</Text>
       ) : (
-        data.groups.map((g) => {
-          const isOpen = !!open[g.id];
-          return (
-            <View key={g.id} style={styles.groupCard}>
-              <TouchableOpacity
-                style={styles.groupRow}
-                onPress={() => setOpen((p) => ({ ...p, [g.id]: !p[g.id] }))}
-                activeOpacity={0.7}
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.groupTitle} numberOfLines={1}>{g.title}</Text>
-                  <Text style={styles.groupMeta}>
-                    {g.status} · {g.members_count} members · ${g.gross_contributed.toFixed(2)} contributed
-                    {g.virtual_card_last4 ? ` · card ••${g.virtual_card_last4}` : ''}
-                  </Text>
-                </View>
-                <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={styles.groupAmount}>${g.fees.total_retained.toFixed(2)}</Text>
-                  <Text style={styles.groupAmountLabel}>retained</Text>
-                </View>
-                <View style={[{ marginLeft: 8 }, isOpen && { transform: [{ rotate: '180deg' }] }]}>
-                  <ChevronDown size={18} color={COLORS.subtext} />
-                </View>
-              </TouchableOpacity>
-
-              {isOpen && (
-                <View style={styles.expandPane}>
-                  <View style={styles.bdMini}>
-                    <BdRow small label="Transaction" amount={g.fees.transaction_fees} />
-                    <BdRow small label="Platform" amount={g.fees.platform_fees} />
-                    <BdRow small label="Extra 1" amount={g.fees.extra_1} />
-                    <BdRow small label="Extra 2" amount={g.fees.extra_2} />
-                  </View>
-                  <Text style={styles.contribHeading}>Contributions ({g.contributions.length})</Text>
-                  {g.contributions.length === 0 ? (
-                    <Text style={styles.empty}>No contributions yet.</Text>
-                  ) : (
-                    g.contributions.map((c, i) => (
-                      <View key={i} style={styles.contribRow}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.contribName}>{c.user_name}</Text>
-                          <Text style={styles.contribMeta}>
-                            {c.ts ? new Date(c.ts).toLocaleString() : '—'} · ${c.amount.toFixed(2)} paid
-                          </Text>
-                        </View>
-                        <View style={{ alignItems: 'flex-end' }}>
-                          <Text style={styles.contribAmount}>${c.fee_slice_total.toFixed(2)}</Text>
-                          <Text style={styles.contribMetaSmall}>
-                            Tx ${c.transaction_fee.toFixed(2)} · Pl ${c.platform_fee.toFixed(2)}
-                            {c.extra_1 > 0 ? ` · E1 $${c.extra_1.toFixed(2)}` : ''}
-                            {c.extra_2 > 0 ? ` · E2 $${c.extra_2.toFixed(2)}` : ''}
-                          </Text>
-                        </View>
-                      </View>
-                    ))
-                  )}
-                </View>
-              )}
-            </View>
-          );
-        })
+        <PerGroupLedgerTable groups={data.groups} />
       )}
     </ScrollView>
+  );
+}
+
+/**
+ * Paginated tabular ledger view of per-group income & fees.
+ *
+ * Columns: Group Name/Details · Transaction · Platform fee · Extra 1 ·
+ * Extra 2 · Tax · Tips · Total Items · Member's Contribution · Retained.
+ * Expand a row to see the per-member contribution slice underneath.
+ */
+function PerGroupLedgerTable({ groups }: { groups: IncomeFeesGroup[] }) {
+  const [page, setPage] = useState(0);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const PAGE_SIZE = 25;
+  const totalPages = Math.max(1, Math.ceil(groups.length / PAGE_SIZE));
+  const start = page * PAGE_SIZE;
+  const slice = groups.slice(start, start + PAGE_SIZE);
+
+  return (
+    <View>
+      <ScrollView horizontal showsHorizontalScrollIndicator>
+        <View style={styles.ledgerTable}>
+          {/* Header row */}
+          <View style={[styles.ledgerRow, styles.ledgerHeaderRow]}>
+            <Text style={[styles.ledgerTh, styles.colGroup]}>Group Name / Details</Text>
+            <Text style={[styles.ledgerTh, styles.colNum, styles.right]}>Transaction</Text>
+            <Text style={[styles.ledgerTh, styles.colNum, styles.right]}>Platform Fee</Text>
+            <Text style={[styles.ledgerTh, styles.colNum, styles.right]}>Extra 1</Text>
+            <Text style={[styles.ledgerTh, styles.colNum, styles.right]}>Extra 2</Text>
+            <Text style={[styles.ledgerTh, styles.colNum, styles.right]}>Tax</Text>
+            <Text style={[styles.ledgerTh, styles.colNum, styles.right]}>Tips</Text>
+            <Text style={[styles.ledgerTh, styles.colCount, styles.right]}>Items</Text>
+            <Text style={[styles.ledgerTh, styles.colNum, styles.right]}>Contribution</Text>
+            <Text style={[styles.ledgerTh, styles.colNum, styles.right]}>Retained</Text>
+            <Text style={[styles.ledgerTh, styles.colCaret]}> </Text>
+          </View>
+
+          {slice.map((g, idx) => {
+            const isOpen = openId === g.id;
+            return (
+              <View key={g.id}>
+                <TouchableOpacity
+                  onPress={() => setOpenId(isOpen ? null : g.id)}
+                  activeOpacity={0.7}
+                  style={[styles.ledgerRow, idx % 2 === 0 ? styles.rowEven : styles.rowOdd]}
+                  testID={`income-fees-row-${g.id}`}
+                >
+                  <View style={[styles.ledgerCell, styles.colGroup]}>
+                    <Text style={styles.ledgerStrong} numberOfLines={1}>{g.title}</Text>
+                    <Text style={styles.ledgerSub} numberOfLines={1}>
+                      {g.status} · {g.members_count} members · {g.created_at ? new Date(g.created_at).toLocaleDateString() : '—'}
+                    </Text>
+                  </View>
+                  <Text style={[styles.ledgerTd, styles.colNum, styles.right]}>${g.fees.transaction_fees.toFixed(2)}</Text>
+                  <Text style={[styles.ledgerTd, styles.colNum, styles.right]}>${g.fees.platform_fees.toFixed(2)}</Text>
+                  <Text style={[styles.ledgerTd, styles.colNum, styles.right]}>${g.fees.extra_1.toFixed(2)}</Text>
+                  <Text style={[styles.ledgerTd, styles.colNum, styles.right]}>${g.fees.extra_2.toFixed(2)}</Text>
+                  <Text style={[styles.ledgerTd, styles.colNum, styles.right]}>${(g.tax || 0).toFixed(2)}</Text>
+                  <Text style={[styles.ledgerTd, styles.colNum, styles.right]}>${(g.tips || 0).toFixed(2)}</Text>
+                  <Text style={[styles.ledgerTd, styles.colCount, styles.right]}>{g.total_items || 0}</Text>
+                  <Text style={[styles.ledgerTd, styles.colNum, styles.right, { color: COLORS.success, fontWeight: FONT.weights.bold }]}>${g.gross_contributed.toFixed(2)}</Text>
+                  <Text style={[styles.ledgerTd, styles.colNum, styles.right, styles.ledgerStrong]}>${g.fees.total_retained.toFixed(2)}</Text>
+                  <View style={[styles.colCaret, isOpen && { transform: [{ rotate: '180deg' }] }]}>
+                    <ChevronDown size={14} color={COLORS.subtext} />
+                  </View>
+                </TouchableOpacity>
+
+                {/* Expanded — per-member contribution slice rows */}
+                {isOpen && (
+                  <View style={styles.expandRow}>
+                    <View style={styles.expandInner}>
+                      <Text style={styles.expandHeading}>
+                        Contributions ({g.contributions.length})
+                      </Text>
+                      {g.contributions.length === 0 ? (
+                        <Text style={styles.empty}>No contributions yet.</Text>
+                      ) : (
+                        g.contributions.map((c, i) => (
+                          <View key={i} style={styles.contribRow}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.contribName}>{c.user_name}</Text>
+                              <Text style={styles.contribMeta}>
+                                {c.ts ? new Date(c.ts).toLocaleString() : '—'} · paid ${c.amount.toFixed(2)}
+                              </Text>
+                            </View>
+                            <View style={{ alignItems: 'flex-end' }}>
+                              <Text style={styles.contribAmount}>${c.fee_slice_total.toFixed(2)} retained</Text>
+                              <Text style={styles.contribMetaSmall}>
+                                Tx ${c.transaction_fee.toFixed(2)} · Pl ${c.platform_fee.toFixed(2)}
+                                {c.extra_1 > 0 ? ` · E1 $${c.extra_1.toFixed(2)}` : ''}
+                                {c.extra_2 > 0 ? ` · E2 $${c.extra_2.toFixed(2)}` : ''}
+                              </Text>
+                            </View>
+                          </View>
+                        ))
+                      )}
+                    </View>
+                  </View>
+                )}
+              </View>
+            );
+          })}
+        </View>
+      </ScrollView>
+
+      {/* Pagination footer */}
+      {groups.length > PAGE_SIZE && (
+        <View style={styles.pageBar}>
+          <TouchableOpacity
+            disabled={page === 0}
+            onPress={() => setPage(Math.max(0, page - 1))}
+            style={[styles.pageBtn, page === 0 && { opacity: 0.4 }]}
+            testID="income-fees-prev"
+          >
+            <ChevronLeft size={14} color={COLORS.text} />
+            <Text style={styles.pageBtnText}>Prev</Text>
+          </TouchableOpacity>
+          <Text style={styles.pageMeta}>
+            Page {page + 1} of {totalPages} · {slice.length} of {groups.length} groups
+          </Text>
+          <TouchableOpacity
+            disabled={page + 1 >= totalPages}
+            onPress={() => setPage(page + 1)}
+            style={[styles.pageBtn, page + 1 >= totalPages && { opacity: 0.4 }]}
+            testID="income-fees-next"
+          >
+            <Text style={styles.pageBtnText}>Next</Text>
+            <ChevronRight size={14} color={COLORS.text} />
+          </TouchableOpacity>
+        </View>
+      )}
+    </View>
   );
 }
 
@@ -252,4 +327,27 @@ const styles = StyleSheet.create({
   contribAmount: { color: COLORS.success, fontWeight: FONT.weights.bold, fontSize: FONT.sizes.sm },
   contribMetaSmall: { color: COLORS.subtext, fontSize: 10, marginTop: 2 },
   empty: { color: COLORS.subtext, fontSize: 12, textAlign: 'center', paddingVertical: SPACING.sm },
+  // ───────── Per-group tabular ledger ─────────
+  ledgerTable: { minWidth: 1100, backgroundColor: COLORS.surface, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden' },
+  ledgerRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 10, gap: 6, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  ledgerHeaderRow: { backgroundColor: COLORS.bg, borderBottomWidth: 2 },
+  rowEven: { backgroundColor: COLORS.surface },
+  rowOdd: { backgroundColor: COLORS.bg },
+  ledgerTh: { fontSize: 10, color: COLORS.subtext, fontWeight: FONT.weights.bold, textTransform: 'uppercase', letterSpacing: 0.4 },
+  ledgerTd: { fontSize: FONT.sizes.sm, color: COLORS.text },
+  ledgerCell: { justifyContent: 'center' },
+  ledgerStrong: { fontSize: FONT.sizes.sm, color: COLORS.text, fontWeight: FONT.weights.semibold },
+  ledgerSub: { fontSize: 10, color: COLORS.subtext, marginTop: 2 },
+  right: { textAlign: 'right' },
+  colGroup: { width: 240 },
+  colNum: { width: 100 },
+  colCount: { width: 70 },
+  colCaret: { width: 24, alignItems: 'center' },
+  expandRow: { backgroundColor: COLORS.bg, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  expandInner: { padding: SPACING.md },
+  expandHeading: { color: COLORS.subtext, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: FONT.weights.semibold, marginBottom: 8 },
+  pageBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: SPACING.md, padding: SPACING.sm, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS.md },
+  pageBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, height: 32, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.bg },
+  pageBtnText: { fontSize: FONT.sizes.xs, color: COLORS.text, fontWeight: FONT.weights.semibold },
+  pageMeta: { fontSize: FONT.sizes.xs, color: COLORS.subtext },
 });

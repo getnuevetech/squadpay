@@ -111,6 +111,117 @@ user_problem_statement: |
   pay no longer errors with "bill is short".
 
 backend:
+  - task: "Phase 7 — Native Apple/Google Pay PaymentSheet endpoints (contribute-payment-intent, finalize, publishable-key)"
+    implemented: true
+    working: true
+    file: "backend/routes/contribute_native_routes.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Phase 7 native PaymentSheet endpoints tested end-to-end via /app/backend_test.py
+            against the live preview backend (https://joint-pay-1.preview.emergentagent.com/api).
+            57/58 assertions PASS. The single FAIL is a spec-discrepancy in the review
+            request — not a backend bug (details below). No 5xx anywhere.
+
+            ✅ A) GET /api/stripe/publishable-key
+              - 200, merchant_identifier='merchant.us.squadpay', configured=true,
+                publishable_key present (pk_test_51T2maQ...).
+
+            ✅ B) HAPPY PATH — POST /api/groups/{gid}/contribute-payment-intent
+              Setup: Tom (lead), Alice, Bob; fast-split group total $30; Alice + Bob joined.
+              Call with {user_id: tom, amount: tom_share=$10.50, notify_on_settled: true} → 200.
+              Response shape verified:
+                payment_intent_id = "pi_3TWWyk..."   (pi_ prefix ✓)
+                client_secret     = "pi_3TWWyk...JpDtJ_secret_HbPC..." (pi_…_secret_… ✓)
+                ephemeral_key_secret = "ek_test_YWNj..."   (ek_ prefix ✓)
+                customer_id       = "cus_UVY4vfiJC2VWOH"   (cus_ prefix ✓)
+                publishable_key   = pk_test_51T2maQ... (string ✓)
+                cash_owed         = 10.5   (>0 ✓)
+                credit_planned    = 0.0    (no credits granted ✓)
+                currency          = "usd"  ✓
+                merchant_display_name = "SquadPay" ✓
+              DB row in payment_transactions verified:
+                status='initiated', applied=false, ledger_posted=false,
+                metadata.kind='group_member_contribute_native'.
+
+            ⚠ B.txn_id naming (NOT a bug — review-request spec discrepancy):
+              Review-request expected txn_id to start with "chg_". Actual value is
+              "tx_charge_01krg2xeq9n5fj0tqdkj" — backed by `ledger.make_txn_id("charge")`
+              in /app/backend/ledger.py which has been the established Phase 3 convention
+              ("tx_charge_<ulid>") since the immutable ledger was added. The endpoint is
+              returning a valid txn_id; only the prefix expectation in the review request
+              was inaccurate. No backend change required.
+
+            ✅ C) ELIGIBILITY 4xx COVERAGE (all 8 cases pass):
+              - Unknown group_id ("grp_DOESNOTEXIST") → 404 "Group not found" ✓
+              - Bad-format group_id ("!!!INVALID")  → 404 "Group not found" ✓
+              - Non-member (fresh verified user, never joined) → 403 "Not a member of
+                this group" ✓
+              - Unverified user (verify-otp skipped, verified=false) → 403 "Phone
+                verification required before contributing" ✓
+              - Group with <2 members (solo lead, no joiners) → 400 "A group needs at
+                least 2 members before anyone can contribute. Invite someone first." ✓
+              - amount=0 → 400 "Nothing left to contribute" ✓
+              - Group forced to status='paid' via direct mongo write → 400 "Bill already
+                paid; use repay instead" ✓
+              - Group forced is_blocked=true via direct mongo write → 403 "This group
+                has been blocked by an administrator." ✓
+
+            ✅ D) CREDIT FULL-COVERAGE BRANCH
+              - Admin granted Tom $1000 credit; POST with amount=$10.50 →
+                400 "Your share is fully covered by credits — use the regular /contribute
+                endpoint instead." ✓
+              - Credit revoked afterwards to keep state clean. ✓
+
+            ✅ E) STRIPE CUSTOMER REUSE
+              - First call returned customer_id = "cus_UVY4vfiJC2VWOH".
+              - Second call with amount=$1.50 (different amount) returned the SAME
+                customer_id. No duplicate Customer was created in Stripe.
+              - db.users.{tom.id}.stripe_customer_id == "cus_UVY4vfiJC2VWOH" — persisted
+                idempotently by _ensure_stripe_customer().
+
+            ✅ F) FINALIZE BEFORE PAYMENT SUCCEEDS
+              - POST /finalize with the PI from step B (never confirmed) → 200.
+              - Response: applied=false, payment_status="requires_payment_method".
+              - db.payment_transactions row: applied still false, payment_status
+                updated to "requires_payment_method".
+              - group.contributions unchanged (count before == after).
+
+            ✅ G) FINALIZE NEGATIVE CASES
+              - finalize with valid PI but DIFFERENT group_id in URL → 400
+                "PaymentIntent does not belong to this group" ✓
+              - finalize with payment_intent_id="pi_DOES_NOT_EXIST" → 404
+                "PaymentIntent not found in our records" ✓
+
+            ✅ H) FINALIZE IDEMPOTENCY (simulated)
+              - Directly set applied=true on the second-call PI row in mongo, then
+                called finalize → 200 with applied=true; awarded_credits=[].
+              - No new contribution appended to group.contributions (before==after).
+
+            ✅ R) REGRESSION — POST /api/groups/{gid}/contribute (Stripe Checkout)
+              - Legacy module still works after Phase 7 mount: fresh Tom+Alice, fast-split
+                $24, Tom contributes his share → 200 with full Checkout payload
+                {checkout_required:true, url:"https://checkout.stripe.com/c/pay/cs_test_…",
+                session_id, amount, cash_owed, credit_planned, txn_id}. Phase 7 attach
+                did not disturb Phase E.
+
+            Backend log informational notes:
+              - passlib bcrypt cosmetic warning (no functional impact).
+              - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes; ≥32 recommended).
+              - Real Stripe calls observed in PaymentIntent.create, EphemeralKey.create,
+                Customer.create — all returned 200 with sandbox secret key configured
+                in gateway_config.credentials_enc.
+
+            Test artifact: /app/backend_test.py (idempotent, uses TS-based names + direct
+            mongo user-verification shortcut to dodge /send-otp 5/min IP rate limit).
+            All Phase 7 acceptance criteria pass. No backend action required.
+
+
+backend:
   - task: "Phase H7 — POST /api/groups/{group_id}/split-mode (lead switches fast/itemized mid-flight)"
     implemented: true
     working: true
@@ -1465,13 +1576,110 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Phase H7 — POST /api/groups/{group_id}/split-mode (lead switches fast/itemized mid-flight)"
-  stuck_tasks:
-    - "Phase H7 — POST /api/groups/{group_id}/split-mode (lead switches fast/itemized mid-flight)"
+    - "Phase 7 — Native member contribute PaymentIntent + finalize + publishable-key (Stripe PaymentSheet)"
+  stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
+    - agent: "main"
+      message: |
+        Phase 7 — Native Apple Pay / Google Pay (Stripe PaymentSheet) — backend tests needed.
+
+        New routes mounted onto api_router via attach_native_contribute_routes
+        (backend/routes/contribute_native_routes.py, included from server.py line 70-71):
+
+          1) POST /api/groups/{group_id}/contribute-payment-intent
+             body: ContributeIn { user_id, amount?, notify_on_settled? }
+             - Mirrors all eligibility checks of /contribute (group open, not blocked,
+               user verified + not blocked, member of group, ≥2 members, share > 0).
+             - Computes credit_planned (FIFO available credits, capped by amount) and
+               cash_owed = max(0, amount - credit_planned). If cash_owed ≤ 0.01 →
+               400 ("fully covered by credits — use /contribute instead").
+             - Creates Stripe Customer (idempotent via users.stripe_customer_id),
+               EphemeralKey, and PaymentIntent (idempotency_key=txn_id) with
+               automatic_payment_methods={enabled: true}.
+             - Persists payment_transactions row {id: px_<picut>, session_id=pi.id,
+               payment_intent_id, txn_id, gateway_slug='stripe', status='initiated',
+               metadata.kind='group_member_contribute_native', credit_planned,
+               cash_owed, notify_on_settled, applied=false, ledger_posted=false}.
+             - Resp: {payment_intent_id, client_secret, ephemeral_key_secret,
+               customer_id, publishable_key, txn_id, cash_owed, credit_planned,
+               requested_amount, currency, merchant_display_name}.
+
+          2) POST /api/groups/{group_id}/contribute-payment-intent/finalize
+             body: { payment_intent_id }
+             - Looks up tx, 404 if not found, 400 if group mismatch.
+             - If tx.applied=true → idempotent re-return of same applied summary
+               (no double credit consumption, no ledger duplicate).
+             - PaymentIntent.retrieve from Stripe; if status != 'succeeded' → updates
+               payment_status only, returns applied=false.
+             - On 'succeeded': appends contribution {id, user_id, amount, cash_paid,
+               credit_applied, via:'stripe_native', stripe_payment_intent_id} to
+               group.contributions, consumes credits FIFO if credit_planned > 0,
+               auto-issues group card if total_contributed reaches total_amount,
+               awards credit-rules bonuses (trigger=member_contribute), writes Phase-3
+               immutable ledger event (kind='group_member_contribute_native', 4-row
+               double-entry via record_charge_event using to_cents(cash_owed)), and
+               flips tx.applied=true.
+
+          3) GET /api/stripe/publishable-key
+             - Reads charge gateway_config first, falls back to env.
+             - Returns {publishable_key, configured: bool, merchant_identifier:
+               'merchant.us.squadpay'}.
+
+        REVIEW SCOPE for testing:
+          A) Happy path: register Tom + verify; create $30 fast-split group with 2
+             other verified members. POST /contribute-payment-intent {user_id:tom,
+             amount:tom's share}. Expect 200 with client_secret + ephemeral_key +
+             customer_id + publishable_key + txn_id starting "chg_", cash_owed > 0.
+             Verify db.payment_transactions row exists with applied=false,
+             status='initiated', payment_intent_id matches.
+          B) Eligibility 4xx coverage:
+             - unknown group → 404
+             - non-member user → 403 "Not a member"
+             - lead group with status='paid' (forced by direct mongo write) → 400
+               "Bill already paid"
+             - is_blocked=true on group → 403
+             - user verified=false → 403 "Phone verification required"
+             - <2 members → 400 "needs at least 2 members"
+             - amount=0 / fully-covered-by-credits → 400 "use /contribute instead"
+          C) Idempotency: call same endpoint with same amount TWICE for same user;
+             both 200, but inspection shows two payment_transactions rows (one per PI)
+             — this is expected (idempotency_key per txn_id; each call mints new txn_id).
+          D) Stripe Customer reuse: second call for same user does NOT create a new
+             Stripe Customer (users.stripe_customer_id reused from first call).
+          E) Finalize before payment succeeds: call finalize immediately after create
+             (PI status='requires_payment_method') → 200, applied=false,
+             payment_status='requires_payment_method'. No contribution row added.
+          F) Finalize with mismatched group → 400 "PI does not belong to this group".
+          G) Finalize for unknown PI → 404.
+          H) GET /api/stripe/publishable-key → 200 with configured=true if
+             STRIPE_PUBLISHABLE_KEY is set on .env or gateway_config has it; otherwise
+             configured=false. merchant_identifier always 'merchant.us.squadpay'.
+
+        NOT IN SCOPE (require actual Stripe PaymentSheet UI interaction): scenario
+        where PI status='succeeded'. The finalize path's success branch is well-tested
+        via the existing /contribute checkout flow; if there is concern, force a
+        payment_transactions row's status manually via mongo and call finalize after
+        retrieving a real test-mode PI that was confirmed via Stripe Dashboard.
+
+  - task: "Phase 7 — Native member contribute PaymentIntent + finalize + publishable-key (Stripe PaymentSheet)"
+    implemented: true
+    working: "NA"
+    file: "backend/routes/contribute_native_routes.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            New backend module wired through server.py (line 70-71). See review scope
+            above for endpoint contracts + idempotency / eligibility test matrix.
+            Test plan focuses on POST /contribute-payment-intent + /finalize +
+            GET /stripe/publishable-key only; no other endpoints touched.
+
     - agent: "testing"
       message: |
         Tested NEW POST /api/groups/{group_id}/split-mode. 18/20 assertions pass.

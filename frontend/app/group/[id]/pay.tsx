@@ -102,6 +102,23 @@ export default function PayScreen() {
   // NOTE: kept up here (above the early-return guard) so hook order stays stable.
   const [otpMocked, setOtpMocked] = useState<boolean | null>(null);
 
+  // Phase 7 — Native wallet pay (Apple Pay / Google Pay via Stripe PaymentSheet).
+  // IMPORTANT: declared above the `if (!group || !userId) return null;` early-return
+  // so React's Rules of Hooks (consistent order across renders) is preserved.
+  const [nativePayBusy, setNativePayBusy] = useState(false);
+  const [nativePayAvailable, setNativePayAvailable] = useState(false);
+
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    if (kind !== 'contribute') return;
+    (async () => {
+      try {
+        const r = await api.stripePublishableKey();
+        setNativePayAvailable(!!r.configured);
+      } catch {}
+    })();
+  }, [kind]);
+
   useEffect(() => {
     (async () => {
       const u = await refreshUser();
@@ -426,22 +443,8 @@ export default function PayScreen() {
   };
 
   // ──────────────────────────────────────────────────────────────────────
-  // Phase 7 — Native wallet pay (Apple Pay / Google Pay via Stripe PaymentSheet)
+  // Phase 7 — Native wallet pay handler (state + effect hoisted to top of component)
   // ──────────────────────────────────────────────────────────────────────
-  const [nativePayBusy, setNativePayBusy] = useState(false);
-  const [nativePayAvailable, setNativePayAvailable] = useState(false);
-
-  useEffect(() => {
-    if (Platform.OS === 'web') return;
-    if (kind !== 'contribute') return;
-    (async () => {
-      try {
-        const r = await api.stripePublishableKey();
-        setNativePayAvailable(!!r.configured);
-      } catch {}
-    })();
-  }, [kind]);
-
   const onPayWithWallet = async () => {
     if (Platform.OS === 'web') return;
     if (!isVerified) { setVerifyStep('phone'); return; }

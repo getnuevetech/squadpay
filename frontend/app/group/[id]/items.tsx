@@ -346,7 +346,7 @@ export default function ItemsScreen() {
           >
             <ArrowLeft size={20} color={COLORS.text} />
           </TouchableOpacity>
-          <Text style={[styles.title, { flex: 1, marginLeft: 8 }]}>Who ordered what?</Text>
+          <Text style={[styles.title, { flex: 1, marginLeft: 8, fontSize: FONT.sizes.md }]} numberOfLines={1}>Who ordered what?</Text>
           {isLead && group.status !== 'closed' && (
             <View style={styles.headerActions} testID="items-header-actions">
               {/* Upload — pick a receipt image from the gallery, OCR, append. */}

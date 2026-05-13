@@ -80,7 +80,7 @@ export default function GroupCardScreen() {
                 // Refresh group to pick up the newly minted card
                 const fresh = await api.getGroup(id);
                 setGroup(fresh);
-                if (!data?.already_issued) toast.success('Virtual card provisioned!');
+                if (!data?.already_issued) toast.success('Squad card provisioned!');
               }
             }
           } catch (e) {
@@ -167,7 +167,7 @@ export default function GroupCardScreen() {
         >
           <ArrowLeft size={20} color={COLORS.text} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Virtual Card</Text>
+        <Text style={styles.headerTitle}>Squad Card</Text>
         <View style={{ width: 40 }} />
       </View>
 

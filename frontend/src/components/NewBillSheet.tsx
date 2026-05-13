@@ -8,6 +8,7 @@ import React from 'react';
 import { Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Plus, QrCode, X } from 'lucide-react-native';
 import { COLORS, FONT, RADIUS, SHADOW, SPACING } from '../theme';
+import { SquadPayMark } from './redesign/SquadPayMark';
 
 type Props = {
   visible: boolean;
@@ -22,13 +23,15 @@ export function NewBillSheet({ visible, onClose, onStart, onJoin, testID = 'new-
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose} testID={`${testID}-backdrop`}>
         <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()} testID={testID}>
+          {/* Header — replaces the previous "New bill" + helper subtitle with
+              the SquadPay brand mark (consistent with the homepage hero), so
+              users always recognize where the choice originates. */}
           <View style={styles.header}>
-            <Text style={styles.title}>New bill</Text>
+            <SquadPayMark size={36} testID={`${testID}-brand`} />
             <TouchableOpacity onPress={onClose} hitSlop={10} testID={`${testID}-close`}>
               <X size={20} color={COLORS.text} />
             </TouchableOpacity>
           </View>
-          <Text style={styles.subtitle}>What would you like to do?</Text>
 
           <TouchableOpacity
             style={styles.row}
@@ -43,7 +46,7 @@ export function NewBillSheet({ visible, onClose, onStart, onJoin, testID = 'new-
               <Plus size={20} color="#fff" />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.rowTitle}>Start a new bill</Text>
+              <Text style={styles.rowTitle}>Start a Bill</Text>
               <Text style={styles.rowSub}>Snap a receipt or enter the total to split.</Text>
             </View>
           </TouchableOpacity>
@@ -61,8 +64,8 @@ export function NewBillSheet({ visible, onClose, onStart, onJoin, testID = 'new-
               <QrCode size={20} color="#fff" />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.rowTitle}>Join a bill</Text>
-              <Text style={styles.rowSub}>Use the 8-character code or scan a QR.</Text>
+              <Text style={styles.rowTitle}>Join a Bill</Text>
+              <Text style={styles.rowSub}>Use the squad code or scan a QR.</Text>
             </View>
           </TouchableOpacity>
         </Pressable>

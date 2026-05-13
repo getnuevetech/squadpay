@@ -264,7 +264,7 @@ export default function HomeScreen() {
             {/* Big headline matching Image 2 */}
             <View style={{ paddingHorizontal: SPACING.md, marginTop: SPACING.lg }}>
               <Text style={styles.heroHeadline}>
-                <Text style={styles.heroHeadlineWhite}>Split bills{'\n'}with your </Text>
+                <Text style={styles.heroHeadlineWhite}>Split Bill{'\n'}with Your </Text>
                 <Text style={styles.heroHeadlineLavender}>squad.</Text>
               </Text>
               <Text style={styles.heroSub}>

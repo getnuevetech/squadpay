@@ -311,13 +311,16 @@ export default function PayScreen() {
     const myShortfallOwed = myPer?.shortfall_owed || 0;
     amount = Math.max(0, myShare + myShortfallOwed - myContrib);
     const hasShortfall = myShortfallOwed > 0.01;
-    title = hasShortfall ? 'Pay your share + shortfall' : 'Contribute upfront';
+    title = hasShortfall ? 'Pay your share + shortfall' : 'CONTRIBUTE YOUR SHARE';
     summary = hasShortfall
       ? `Includes your shortfall obligation of $${myShortfallOwed.toFixed(2)}. Pay so the bill can be settled.`
-      : `Pay your share into the group wallet so the lead doesn't have to cover it.`;
+      : '';
     actorIcon = <Wallet color={COLORS.primary} size={18} />;
-    actorTitle = 'Group wallet';
-    actorSub = 'Funds held until the merchant is paid';
+    // Replace the legacy "Group wallet · Funds held until the merchant is paid"
+    // pill with the actual squad name so the user immediately recognizes
+    // which bill they're contributing to.
+    actorTitle = group.title || 'Your squad';
+    actorSub = '';
   } else {
     amount = myPer?.outstanding || 0;
     title = 'Pay your share';

@@ -88,6 +88,8 @@ MODULES: List[Dict] = [
      "default_roles": ["super_admin"], "sensitive": True},
     {"key": "capabilities",    "label": "Capabilities",       "group": "System",     "path": "/admin/capabilities",
      "default_roles": ["super_admin"], "sensitive": True},
+    {"key": "gateways",        "label": "Payment Gateways",   "group": "System",     "path": "/admin/gateways",
+     "default_roles": ["super_admin"], "sensitive": True},
 ]
 
 VALID_KEYS: Set[str] = {m["key"] for m in MODULES}

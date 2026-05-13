@@ -334,6 +334,34 @@ export const adminApi = {
       body: JSON.stringify({ enabled }),
     }),
 
+  // ─────────────── Payment Gateway Configuration (June 2025 Phase 2) ───────────────
+  gatewayCatalog: () =>
+    request<{
+      charge_providers: any[];
+      payout_providers: any[];
+      active: { charge: string | null; payout: string | null };
+    }>('/gateways/catalog'),
+  gatewayState: () =>
+    request<{
+      items: any[];
+      active: { charge: string | null; payout: string | null };
+    }>('/gateways'),
+  saveGatewayCredentials: (
+    group: 'charge' | 'payout',
+    slug: string,
+    credentials: Record<string, string>,
+    settings?: Record<string, any>,
+  ) =>
+    request<any>(`/gateways/${group}/${encodeURIComponent(slug)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ credentials, ...(settings ? { settings } : {}) }),
+    }),
+  activateGateway: (group: 'charge' | 'payout', provider_slug: string) =>
+    request<{ ok: boolean; group: string; active: string }>(
+      `/gateways/${group}/activate`,
+      { method: 'POST', body: JSON.stringify({ provider_slug }) },
+    ),
+
   // Customer Service (Contact Us tickets).
   listContactMessages: (page: number = 1, page_size: number = 25, opts: { status?: string; subject?: string; q?: string } = {}) => {
     const qs = new URLSearchParams({ page: String(page), page_size: String(page_size) });

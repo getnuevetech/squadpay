@@ -117,6 +117,14 @@ except Exception as _e:
     print("[startup] capability routes attach failed:", _e)
 
 
+# ---------- Payment Gateway Configuration (June 2025 Phase 2) ----------
+try:
+    from gateway_config import attach_gateway_routes as _attach_gateway_routes
+    _attach_gateway_routes(api_router, db, _adm_factory_early(db))
+except Exception as _e:
+    print("[startup] gateway routes attach failed:", _e)
+
+
 # ---------- Admin dashboard ----------
 from admin_routes import build_admin_router  # noqa: E402
 api_router.include_router(build_admin_router(db))
@@ -331,6 +339,13 @@ async def _on_startup():
         await seed_capabilities(db)
     except Exception as e:
         print("[startup] seed capabilities failed:", e)
+
+    # June 2025 (Phase 2): warm the active-gateway cache + pin Stripe charge
+    try:
+        from gateway_config import seed_default_active_gateways
+        await seed_default_active_gateways(db)
+    except Exception as e:
+        print("[startup] seed gateways failed:", e)
 
 
 @app.on_event("shutdown")

@@ -35,6 +35,7 @@ const ICON_BY_KEY: Record<string, any> = {
   admins: Users,
   access: ShieldCheck,
   capabilities: Layers,
+  gateways: Plug,
 };
 
 type ModuleEntry = {

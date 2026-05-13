@@ -137,6 +137,36 @@ export default function CashOutScreen() {
   const [autoRedirectIn, setAutoRedirectIn] = useState<number | null>(null);
   const [autoRedirectFired, setAutoRedirectFired] = useState(false);
   const [autoRedirectCancelled, setAutoRedirectCancelled] = useState(false);
+  // KYC incentive (June 2025) — fetched once on mount. We pick ONE random
+  // message from the admin-configured pool so different leads see
+  // different angles. The credit_amount is shown as a small earned-reward
+  // chip just above the CTA. All admin-tunable via /admin/kyc-incentive.
+  const [kycIncentive, setKycIncentive] = useState<{
+    enabled: boolean;
+    credit_amount: number;
+    message: string | null;
+  }>({ enabled: true, credit_amount: 10, message: null });
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch(`${process.env.EXPO_PUBLIC_BACKEND_URL || ''}/api/runtime/kyc-incentive`);
+        if (!r.ok) return;
+        const j = await r.json();
+        if (!alive) return;
+        const pool: string[] = (j.messages && j.messages.length) ? j.messages : [
+          'Stripe handles it — SquadPay just makes sure your money gets back to you.',
+        ];
+        const picked = pool[Math.floor(Math.random() * pool.length)];
+        setKycIncentive({
+          enabled: j.enabled !== false,
+          credit_amount: Number(j.credit_amount || 0),
+          message: picked,
+        });
+      } catch { /* fall back to default state */ }
+    })();
+    return () => { alive = false; };
+  }, []);
 
   // ── Initial load: read session + fetch eligibility
   useEffect(() => {
@@ -368,43 +398,43 @@ export default function CashOutScreen() {
               ${eligibility?.available_usd?.toFixed(2) || '0.00'}
             </Text>
           </View>
-          <Text style={styles.bodyHeader}>You stepped up — let's get your money home.</Text>
+          {/* Short headline + 1-line rotating message from the admin
+              pool. The reward chip just below is the real anchor — it
+              gives the lead a concrete reason to KYC vs. just collecting
+              via Venmo/Zelle outside the app. */}
+          <Text style={styles.bodyHeader}>One quick check, then you're paid.</Text>
           <Text style={styles.bodyText}>
-            When you lead a Squad, you're the one who fronts the bill and looks
-            out for everyone. Now it's your turn to get paid back — and we want
-            to be absolutely sure those funds land in <Text style={{ fontWeight: '700' }}>your</Text> hands, and only yours.
-            {'\n\n'}
-            Stripe will ask you a few quick questions to confirm it's really
-            you. It's a one-time setup that protects your Squad's money from
-            anyone else trying to claim it — and from this point on, every
-            Pay Out you make is fast and friction-free.
+            {kycIncentive.message || 'Stripe handles it — SquadPay just makes sure your money gets back to you.'}
           </Text>
 
-          {/* Soft trust strip — single line, lockup-style, sits just under
-              the warm message so the lead's eye lands on it before the CTA. */}
-          <View style={styles.kycCard} testID="kyc-explainer">
-            <View style={styles.kycHeader}>
-              <ShieldCheck size={18} color={COLORS.primary} />
-              <Text style={styles.kycHeaderText}>Stripe handles it — SquadPay never sees your details.</Text>
+          {/* Reward chip — only renders when admin has the incentive
+              enabled and credit > 0. Sits between message and CTA so
+              the eye lands on it last before tapping. */}
+          {kycIncentive.enabled && kycIncentive.credit_amount > 0 && (
+            <View style={styles.rewardChip} testID="kyc-reward-chip">
+              <Text style={styles.rewardChipBadge}>EARN ${kycIncentive.credit_amount.toFixed(0)}</Text>
+              <Text style={styles.rewardChipText}>
+                ${kycIncentive.credit_amount.toFixed(0)} SquadPay credit lands in your wallet the moment you finish.
+              </Text>
             </View>
-          </View>
+          )}
 
           {/* Auto-redirect banner. Counts down from AUTO_REDIRECT_SECONDS,
               then opens Stripe's hosted onboarding via handleConnect.
-              The lead can tap "Open Stripe Now" to skip the wait, or
+              The lead can tap "Open Stripe Now" to skip the countdown, or
               "Give me a moment" to cancel and read longer. */}
           {autoRedirectIn != null && !autoRedirectCancelled && (
             <View style={styles.autoRedirectCard} testID="kyc-auto-redirect">
               <ActivityIndicator color={COLORS.primary} />
               <Text style={styles.autoRedirectText}>
-                Opening Stripe verification in <Text style={{ fontWeight: '800' }}>{autoRedirectIn}s</Text>…
+                Opening Stripe in <Text style={{ fontWeight: '800' }}>{autoRedirectIn}s</Text>…
               </Text>
               <TouchableOpacity
                 onPress={() => { setAutoRedirectCancelled(true); setAutoRedirectIn(null); }}
                 hitSlop={8}
                 testID="kyc-give-me-a-moment"
               >
-                <Text style={styles.autoRedirectCancel}>Give me a moment</Text>
+                <Text style={styles.autoRedirectCancel}>Wait</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -697,6 +727,36 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
     fontWeight: '700' as const,
     textDecorationLine: 'underline',
+  },
+  // Reward chip — bright primary tint, two-line layout. Sits between
+  // the rotating message and the auto-redirect banner so it's the
+  // emotional anchor before the CTA.
+  rewardChip: {
+    marginTop: SPACING.md,
+    backgroundColor: COLORS.primary,
+    borderRadius: RADIUS.md,
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
+  },
+  rewardChipBadge: {
+    backgroundColor: '#fff',
+    color: COLORS.primary,
+    fontWeight: '900' as const,
+    fontSize: 11,
+    letterSpacing: 0.5,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  rewardChipText: {
+    ...FONT.caption,
+    color: '#fff',
+    fontWeight: '600' as const,
+    flex: 1,
   },
   statusCard: {
     backgroundColor: COLORS.card,

@@ -122,6 +122,14 @@ class WalletConfigIn(BaseModel):
     issuing_enabled: bool = True
 
 
+# KYC incentive (June 2025) — short rotating messages + a one-time
+# credit awarded the first time a lead completes Stripe Connect KYC.
+class KycIncentiveIn(BaseModel):
+    enabled: bool = True
+    credit_amount: float = Field(10.0, ge=0, le=500)
+    messages: list[str] = Field(default_factory=list)
+
+
 class CmsPageIn(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     slug: Optional[str] = Field(default=None, max_length=120)
@@ -505,6 +513,14 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
             "issuing_enabled": bool(cfg.get("issuing_enabled", True)),
         }
 
+    # KYC incentive (June 2025) — public read so the Pay Out screen can show
+    # a short, randomly-rotated message + the configured credit amount
+    # BEFORE redirecting the lead into Stripe's hosted KYC flow.
+    @public_r.get("/runtime/kyc-incentive")
+    async def public_kyc_incentive():
+        from kyc_incentive import get_kyc_incentive
+        return await get_kyc_incentive(db)
+
     @r.get("/admin/cms/pages")
     async def cms_admin_list(admin=Depends(get_current_admin)):
         cursor = db.cms_pages.find({}, {"_id": 0}).sort("updated_at", -1)
@@ -706,6 +722,49 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
         except Exception:
             pass
         return {"ok": True, **body.model_dump()}
+
+    # ─────────────────────────── KYC Incentive ──────────────────────────
+    # Admin can configure: enabled toggle, one-time credit amount, and a
+    # rotating message pool (3-10 short messages). The Pay Out screen
+    # picks one at random per visit. Granting is idempotent — see
+    # /app/backend/kyc_incentive.py.
+    @r.get("/admin/kyc-incentive")
+    async def admin_get_kyc_incentive(admin=Depends(get_current_admin)):
+        from kyc_incentive import get_kyc_incentive
+        return await get_kyc_incentive(db)
+
+    @r.put("/admin/kyc-incentive")
+    async def admin_set_kyc_incentive(
+        body: KycIncentiveIn = Body(...),
+        admin=Depends(get_current_admin),
+        _gate=Depends(require_role("super_admin", "manager")),
+    ):
+        from kyc_incentive import set_kyc_incentive
+        admin_email = admin.get("email") if isinstance(admin, dict) else None
+        try:
+            cfg = await set_kyc_incentive(
+                db,
+                enabled=body.enabled,
+                credit_amount=body.credit_amount,
+                messages=body.messages,
+                admin_email=admin_email,
+            )
+        except ValueError as ve:
+            raise HTTPException(400, str(ve))
+        try:
+            await db.audit_log.insert_one({
+                "id": _new_id("aud_"),
+                "at": _now(),
+                "admin_email": admin_email or "?",
+                "action": "admin.kyc_incentive_update",
+                "destructive": False,
+                "target_type": "settings",
+                "target_id": "kyc_incentive",
+                "payload": body.model_dump(),
+            })
+        except Exception:
+            pass
+        return {"ok": True, **cfg}
 
     api_router.include_router(public_r)
     api_router.include_router(r)

@@ -280,12 +280,25 @@ def attach_payout_routes(api_router: APIRouter, db):
             if acct_info["details_submitted"]:
                 ext_cards = await adapter.list_external_cards(mapping["account_id"])
                 cards = await _upsert_user_cards(db, body.user_id, "stripe_connect", ext_cards)
+            # KYC incentive (June 2025) — grant the one-time credit the
+            # FIRST time payouts go live for this user. Idempotent — see
+            # /app/backend/kyc_incentive.py.
+            granted_credit = None
+            if acct_info["payouts_enabled"]:
+                try:
+                    from kyc_incentive import maybe_grant_kyc_credit
+                    granted_credit = await maybe_grant_kyc_credit(
+                        db, user_id=body.user_id, source="stripe_connect"
+                    )
+                except Exception as _e:
+                    pass
             return {
                 "ok": True,
                 "details_submitted": acct_info["details_submitted"],
                 "payouts_enabled": acct_info["payouts_enabled"],
                 "requirements_due": acct_info.get("requirements", {}).get("currently_due", []),
                 "cards": cards,
+                "kyc_credit_granted": granted_credit,
             }
 
         # ── Astra: full OAuth code exchange

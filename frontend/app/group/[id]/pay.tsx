@@ -452,16 +452,6 @@ export default function PayScreen() {
       Alert.alert('Nothing to pay', 'Amount is zero.');
       return;
     }
-    let initPaymentSheet: any, presentPaymentSheet: any;
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const m = require('@stripe/stripe-react-native');
-      initPaymentSheet = m.initPaymentSheet;
-      presentPaymentSheet = m.presentPaymentSheet;
-    } catch {
-      Alert.alert('Not available', 'Wallet payments are not available in this build.');
-      return;
-    }
     setNativePayBusy(true);
     try {
       const pi = await api.contributePaymentIntent(group.id, {
@@ -469,23 +459,19 @@ export default function PayScreen() {
         amount,
         notify_on_settled: notifyOnSettled,
       });
-      const init = await initPaymentSheet({
+      // Platform-resolved helper — on web this is a stub that returns error.
+      // On native it bridges to @stripe/stripe-react-native PaymentSheet.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { payWithNativeWallet } = require('../../../src/wallet_pay');
+      const res = await payWithNativeWallet({
         merchantDisplayName: pi.merchant_display_name || 'SquadPay',
         customerId: pi.customer_id,
         customerEphemeralKeySecret: pi.ephemeral_key_secret,
         paymentIntentClientSecret: pi.client_secret,
-        applePay: { merchantCountryCode: 'US' },
-        googlePay: { merchantCountryCode: 'US', testEnv: true, currencyCode: 'USD' },
-        allowsDelayedPaymentMethods: false,
         returnURL: 'squadpay://stripe-redirect',
       });
-      if (init?.error) throw new Error(init.error.message || 'Could not init payment sheet');
-      const res = await presentPaymentSheet();
-      if (res?.error) {
-        // user cancel is a soft failure
-        if (res.error.code === 'Canceled') return;
-        throw new Error(res.error.message || 'Payment failed');
-      }
+      if (res.status === 'cancel') return;
+      if (res.status === 'error') throw new Error(res.message || 'Payment failed');
       // Finalize on backend
       const fin = await api.finalizeContributePaymentIntent(group.id, pi.payment_intent_id);
       if (fin.applied) {

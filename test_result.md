@@ -1679,6 +1679,55 @@ agent_communication:
             above for endpoint contracts + idempotency / eligibility test matrix.
             Test plan focuses on POST /contribute-payment-intent + /finalize +
             GET /stripe/publishable-key only; no other endpoints touched.
+        - working: true
+          agent: "testing"
+          comment: |
+            Phase 7 backend end-to-end tested via deep_testing_backend_v2 — 57/58
+            assertions PASS, zero 5xx. Real Stripe API calls verified in backend logs
+            (Customer.create, EphemeralKey.create, PaymentIntent.create,
+            PaymentIntent.retrieve — all 200). Covered scenarios:
+              A) GET /api/stripe/publishable-key (200, merchant_identifier=
+                 'merchant.us.squadpay', configured=true).
+              B) Happy path PI create — real Stripe Customer + EphemeralKey + PI;
+                 db.payment_transactions row kind='group_member_contribute_native',
+                 applied=false, ledger_posted=false.
+              C) Eligibility 4xx coverage — all 8 cases pass (unknown/bad-format
+                 group → 404; non-member → 403; unverified → 403; <2 members → 400;
+                 amount=0 → 400; status='paid' → 400; is_blocked → 403).
+              D) Credit full-coverage branch returns 400.
+              E) Stripe Customer reuse — second call returns same cus_…;
+                 db.users.stripe_customer_id persisted.
+              F) Finalize before payment succeeds — applied=false,
+                 payment_status='requires_payment_method', no contribution row.
+              G) Finalize negative cases — wrong group_id → 400, unknown PI → 404.
+              H) Finalize idempotency — applied=true short-circuits cleanly.
+              R) Regression smoke — legacy POST /api/groups/{gid}/contribute
+                 (Stripe Checkout) still returns 200 with full payload.
+            One cosmetic spec-mismatch: txn_id starts with `tx_charge_` not `chg_` —
+            this matches the existing Phase-3 ledger.make_txn_id convention shared
+            with the Checkout path; no backend change required. Working=true.
+        - working: true
+          agent: "main"
+          comment: |
+            Frontend hook-order fix: state declarations for `nativePayBusy`,
+            `nativePayAvailable` and the `useEffect` that calls
+            api.stripePublishableKey() moved ABOVE the early-return guard
+            (`if (!group || !userId) return null;`) in pay.tsx — they were
+            previously declared after, which violated Rules of Hooks and would
+            crash the screen on conditional re-renders.
+
+            Web-bundle fix: `@stripe/stripe-react-native` is a native-only module
+            that crashes Metro on web (codegenNativeComponent). Introduced
+            platform-resolved shims so the native module is NEVER imported on
+            web bundles:
+              - /app/frontend/src/components/StripeNativeProvider.web.tsx (passthrough)
+              - /app/frontend/src/wallet_pay.ts (native — wraps PaymentSheet)
+              - /app/frontend/src/wallet_pay.web.ts (web stub — returns error)
+            pay.tsx now `require('../../../src/wallet_pay')` inside the onPayWithWallet
+            handler instead of requiring '@stripe/stripe-react-native' directly,
+            so Metro's static analysis picks `wallet_pay.web.ts` on web and
+            `wallet_pay.ts` on iOS/Android. Verified: web bundle compiles, home
+            page renders cleanly, no 500 from /expo-router/entry.bundle.
 
     - agent: "testing"
       message: |

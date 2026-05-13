@@ -11087,3 +11087,157 @@ agent_communication:
         7. Admin → Notification Config: toggle channels per event,
            Settlement Delay slider; save and verify on next bill flow.
 
+
+backend:
+  - task: "Push notifications integration (expo-notifications + exponent-server-sdk)"
+    implemented: true
+    working: true
+    file: "/app/backend/push_provider.py, /app/backend/routes/push_routes.py, /app/backend/routes/pay_routes.py, /app/backend/server.py, /app/backend/requirements.txt, /app/frontend/src/push.ts, /app/frontend/src/session.ts, /app/frontend/src/api.ts, /app/frontend/app.json, /app/frontend/app/admin/notification-config.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Push notifications are now WIRE-LIVE. Previously the admin
+            Notification Config let admins toggle push channels but actual
+            delivery was a no-op. Now end-to-end:
+
+            BACKEND:
+            • exponent-server-sdk==2.2.0 added to requirements.txt
+            • push_provider.py: send_push_to_user(), register_push_token(),
+              unregister_push_token(). Honors notification_config admin
+              toggles per event. Delivery_via tags: push_expo / push_partial
+              / push_failed / push_no_token / push_disabled_by_admin.
+            • routes/push_routes.py: POST /api/push/register +
+              POST /api/push/unregister endpoints.
+            • routes/pay_routes.py: _dispatch_sms_to_user() now ALSO fires
+              push best-effort in parallel (admin "Both" channel works).
+            • Users get expo_push_tokens: [{token, platform, last_seen_at}]
+              array on their user record.
+
+            FRONTEND:
+            • expo-notifications + expo-device installed.
+            • src/push.ts: registerForPushAsync(userId) requests permission,
+              fetches Expo push token, persists via API. Foreground handler
+              shows alert+sound. Android channel "default" created with
+              SquadPay branding color.
+            • src/session.ts: refreshUser() now opportunistically registers
+              push token on every successful auth refresh. Idempotent.
+            • app.json: expo-notifications plugin added with branded icon
+              + #7C3AED accent color.
+            • Notification Config admin page banner updated — push is now
+              live in EAS preview/production builds. (Expo Go iOS still
+              cannot acquire tokens per Apple restriction; Android works.)
+
+  - task: "Non-lead KYC incentive admin UI + role-aware reward grant"
+    implemented: true
+    working: true
+    file: "/app/backend/kyc_incentive.py, /app/backend/routes/admin_phase_bc.py, /app/backend/routes/payout_routes.py, /app/backend/admin_modules.py, /app/frontend/app/admin/kyc-incentives.tsx, /app/frontend/src/adminApi.ts, /app/frontend/app/admin/_layout.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Separate KYC incentive config for non-lead covering members.
+
+            • kyc_incentive.py:
+                - DEFAULT_CREDIT_AMOUNT_MEMBER_USD = $5 (vs Lead $10)
+                - DEFAULT_MESSAGES_MEMBER tailored to covering-member context
+                - get_kyc_incentive(db, role) reads kyc_incentive (lead) or
+                  kyc_incentive_member (member) config doc
+                - set_kyc_incentive(db, role=...) writes to the right doc
+                - maybe_grant_kyc_reward(db, role=...) uses separate idempotency
+                  stamps (kyc_completed_at vs kyc_completed_at_member) so a
+                  user who is both a lead AND a covering member can earn
+                  BOTH rewards independently
+
+            • payout_routes.py:_apply_payout_webhook now grants BOTH:
+                - The lead reward (always, on first KYC completion)
+                - The member reward (only if user has ever been a member of
+                  another squad)
+              Both queued separately in users.pending_rewards.
+
+            • New admin endpoints:
+                GET/PUT /api/admin/kyc-incentive          (lead, existing)
+                GET/PUT /api/admin/kyc-incentive-member   (NEW)
+
+            • New FE admin page /admin/kyc-incentives with role tabs
+              (Lead $10 / Member $5). Reward mode picker, credit amount
+              input, rotating upsell messages editor (max 10, 200 chars
+              each). Added to admin sidebar under Marketing.
+
+  - task: "pay.tsx dead-code cleanup"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/group/[id]/pay.tsx"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Removed orphaned state + handlers from earlier
+            "single Pay button" refactor:
+              - useState stripeBusy (unused)
+              - useState nativePayBusy, nativePayAvailable, walletFlags
+              - useEffect probing native wallets via stripePublishableKey()
+              - onPayWithStripe handler (~50 lines, never called)
+              - onPayWithWallet handler (~40 lines, never called)
+              - Apple icon import (now unused)
+            File line count dropped ~100 lines; behavior unchanged
+            (primary "Pay" button still uses Stripe Checkout for everything).
+
+agent_communication:
+    - agent: "main"
+      message: |
+        ✅ All 4 follow-up tasks complete:
+
+        1. expo-notifications integration — push notifications are now
+           WIRE-LIVE end-to-end (BACKEND dispatcher + FE token
+           registration + admin config honored).
+        2. Non-lead KYC incentive admin UI — role-tabbed admin page with
+           separate $5 default + non-lead-tailored messages; backend
+           grants member reward independently from lead reward.
+        3. Smart mode — left removed per user instruction.
+        4. pay.tsx dead-code cleanup — ~100 lines of orphaned wallet/
+           stripe state and handlers removed; behavior unchanged.
+
+        The admin Notification Config banner has been updated from
+        "Push delivery wire-ready but no-ops" to confirming push is
+        LIVE in EAS preview/production builds. (Expo Go iOS limitation
+        clearly stated.)
+
+        FILES TOUCHED THIS TURN:
+          backend (8):
+            push_provider.py (new)
+            routes/push_routes.py (new)
+            routes/pay_routes.py (push dispatch alongside SMS)
+            routes/payout_routes.py (member-role KYC grant)
+            routes/admin_phase_bc.py (member KYC endpoints)
+            kyc_incentive.py (role-aware functions)
+            admin_modules.py (kyc_incentives module)
+            requirements.txt (exponent-server-sdk)
+            server.py (push router attach)
+          frontend (8):
+            app/group/[id]/pay.tsx (dead-code cleanup)
+            app/admin/notification-config.tsx (banner updated)
+            app/admin/kyc-incentives.tsx (new)
+            app/admin/_layout.tsx (menu + icons)
+            src/push.ts (new)
+            src/session.ts (auto-register on auth)
+            src/api.ts (push token endpoints)
+            src/adminApi.ts (kycIncentiveApi)
+            app.json (expo-notifications plugin)
+
+        IMPORTANT FOR USER TESTING:
+        • Push will NOT work in Expo Go on iOS (Apple restriction since
+          SDK 53). Push will work in EAS preview/production builds, and
+          in Expo Go on Android.
+        • To validate push end-to-end, kick off an EAS build (next
+          action), install on device, then trigger a shortfall flow.
+

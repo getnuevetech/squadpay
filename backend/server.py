@@ -88,6 +88,12 @@ except Exception as _e:
 try:
     from routes.refund_routes import make_refund_router
     api_router.include_router(make_refund_router(db))
+    # June 2025 — push notification token registration.
+    try:
+        from routes.push_routes import make_push_router
+        api_router.include_router(make_push_router(db))
+    except Exception as _e:
+        print("[startup] push routes attach failed:", _e)
 except Exception as _e:
     print("[startup] refund routes attach failed:", _e)
 

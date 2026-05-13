@@ -639,6 +639,21 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ payment_intent_id }),
     }),
+
+  // June 2025 — Push notification token registration.
+  registerPushToken: (user_id: string, token: string, platform?: string) =>
+    request<{ ok: boolean; token_tail?: string; platform?: string }>(
+      '/push/register',
+      {
+        method: 'POST',
+        body: JSON.stringify({ user_id, token, platform }),
+      },
+    ),
+  unregisterPushToken: (user_id: string, token: string) =>
+    request<{ ok: boolean; removed: number }>('/push/unregister', {
+      method: 'POST',
+      body: JSON.stringify({ user_id, token }),
+    }),
 };
 
 export { BACKEND_URL };

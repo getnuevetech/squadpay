@@ -779,6 +779,7 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
                 reward_mode=body.reward_mode,
                 credit_amount=body.credit_amount,
                 messages=body.messages,
+                role="lead",
                 admin_email=admin_email,
             )
         except ValueError as ve:
@@ -792,6 +793,51 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
                 "destructive": False,
                 "target_type": "settings",
                 "target_id": "kyc_incentive",
+                "payload": body.model_dump(),
+            })
+        except Exception:
+            pass
+        return {"ok": True, **cfg}
+
+    # June 2025 — Non-lead (covering member) KYC incentive. Separate
+    # config doc with smaller default ($5 vs lead's $10) and
+    # member-tailored messages. Awarded when a non-lead member completes
+    # Stripe Connect onboarding for the first time, to enable their
+    # Pay Out of repaid covers.
+    @r.get("/admin/kyc-incentive-member")
+    async def admin_get_kyc_incentive_member(admin=Depends(get_current_admin)):
+        from kyc_incentive import get_kyc_incentive
+        return await get_kyc_incentive(db, role="member")
+
+    @r.put("/admin/kyc-incentive-member")
+    async def admin_set_kyc_incentive_member(
+        body: KycIncentiveIn = Body(...),
+        admin=Depends(get_current_admin),
+        _gate=Depends(require_role("super_admin", "manager")),
+    ):
+        from kyc_incentive import set_kyc_incentive
+        admin_email = admin.get("email") if isinstance(admin, dict) else None
+        try:
+            cfg = await set_kyc_incentive(
+                db,
+                enabled=body.enabled,
+                reward_mode=body.reward_mode,
+                credit_amount=body.credit_amount,
+                messages=body.messages,
+                role="member",
+                admin_email=admin_email,
+            )
+        except ValueError as ve:
+            raise HTTPException(400, str(ve))
+        try:
+            await db.audit_log.insert_one({
+                "id": _new_id("aud_"),
+                "at": _now(),
+                "admin_email": admin_email or "?",
+                "action": "admin.kyc_incentive_member_update",
+                "destructive": False,
+                "target_type": "settings",
+                "target_id": "kyc_incentive_member",
                 "payload": body.model_dump(),
             })
         except Exception:

@@ -223,6 +223,14 @@
           "merchantIdentifier": "merchant.us.squadpay",
           "enableGooglePay": true
         }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#7C3AED",
+          "sounds": []
+        }
       ]
     ],
     "experiments": {

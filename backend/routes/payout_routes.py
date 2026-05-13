@@ -310,17 +310,38 @@ def attach_payout_routes(api_router: APIRouter, db):
                 ext_cards = await adapter.list_external_cards(mapping["account_id"])
                 cards = await _upsert_user_cards(db, body.user_id, "stripe_connect", ext_cards)
             # KYC incentive (June 2025) — stamp a pending one-shot reward
-            # that auto-applies to the lead's NEXT squad. We never touch
+            # that auto-applies to the user's NEXT squad. We never touch
             # any stored balance here — SquadPay does not hold member
-            # funds. Idempotent.
+            # funds. Idempotent. Both lead and member configs are
+            # eligible and granted independently; the bill engine
+            # consumes whichever applies for the squad context.
             granted_reward = None
+            granted_reward_member = None
             if acct_info["payouts_enabled"]:
                 try:
                     from kyc_incentive import maybe_grant_kyc_reward
                     granted_reward = await maybe_grant_kyc_reward(
-                        db, user_id=body.user_id, source="stripe_connect"
+                        db, user_id=body.user_id, source="stripe_connect", role="lead"
                     )
-                except Exception as _e:
+                except Exception:
+                    pass
+                # Member-role reward: granted if the user has ever covered
+                # a shortfall in any squad (so they have legitimate
+                # non-lead Pay Out activity). Cheap heuristic: any group
+                # where they are a member but not the lead. Idempotent
+                # via separate kyc_completed_at_member stamp.
+                try:
+                    has_member_role = await db.groups.find_one(
+                        {"members.user_id": body.user_id,
+                         "lead_id": {"$ne": body.user_id}},
+                        {"_id": 0, "id": 1},
+                    )
+                    if has_member_role:
+                        from kyc_incentive import maybe_grant_kyc_reward
+                        granted_reward_member = await maybe_grant_kyc_reward(
+                            db, user_id=body.user_id, source="stripe_connect", role="member"
+                        )
+                except Exception:
                     pass
             return {
                 "ok": True,
@@ -329,6 +350,7 @@ def attach_payout_routes(api_router: APIRouter, db):
                 "requirements_due": acct_info.get("requirements", {}).get("currently_due", []),
                 "cards": cards,
                 "kyc_reward_granted": granted_reward,
+                "kyc_reward_granted_member": granted_reward_member,
             }
 
         # ── Astra: full OAuth code exchange

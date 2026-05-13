@@ -71,20 +71,55 @@ DEFAULT_MESSAGES: list[str] = [
     "Lock in your Squad's funds. Only you can withdraw them.",
 ]
 
+# June 2025 — Non-lead (covering member) incentive uses smaller default
+# amount and member-tailored messaging. Admin can fully override.
+DEFAULT_MESSAGES_MEMBER: list[str] = [
+    "Verify once — get your loan repayments deposited fast.",
+    "Stripe checks it's you. Then your covered $$ comes home.",
+    "Quick check, then your repayment pulls straight to your bank.",
+]
+
 DEFAULT_CREDIT_AMOUNT_USD = 10.00
+DEFAULT_CREDIT_AMOUNT_MEMBER_USD = 5.00
 DEFAULT_REWARD_MODE = "credit_off_next_bill"
 
 VALID_REWARD_MODES = {"credit_off_next_bill", "waive_platform_fees_next_bill"}
+VALID_ROLES = {"lead", "member"}
 
 
-async def get_kyc_incentive(db: Any) -> dict:
-    """Returns the public-facing KYC incentive config."""
-    doc = await db.app_config.find_one({"_id": "kyc_incentive"}) or {}
+def _config_id_for_role(role: str) -> str:
+    if role not in VALID_ROLES:
+        raise ValueError(f"role must be one of {sorted(VALID_ROLES)}")
+    return "kyc_incentive" if role == "lead" else "kyc_incentive_member"
+
+
+def _defaults_for_role(role: str) -> dict:
+    if role == "member":
+        return {
+            "credit_amount": DEFAULT_CREDIT_AMOUNT_MEMBER_USD,
+            "messages": DEFAULT_MESSAGES_MEMBER,
+        }
     return {
+        "credit_amount": DEFAULT_CREDIT_AMOUNT_USD,
+        "messages": DEFAULT_MESSAGES,
+    }
+
+
+async def get_kyc_incentive(db: Any, role: str = "lead") -> dict:
+    """Returns the public-facing KYC incentive config for the given role.
+
+    role="lead"   → reads `app_config._id == 'kyc_incentive'` (default $10)
+    role="member" → reads `app_config._id == 'kyc_incentive_member'` (default $5)
+    """
+    cfg_id = _config_id_for_role(role)
+    defaults = _defaults_for_role(role)
+    doc = await db.app_config.find_one({"_id": cfg_id}) or {}
+    return {
+        "role": role,
         "enabled": bool(doc.get("enabled", True)),
         "reward_mode": doc.get("reward_mode", DEFAULT_REWARD_MODE),
-        "credit_amount": float(doc.get("credit_amount", DEFAULT_CREDIT_AMOUNT_USD)),
-        "messages": list(doc.get("messages") or DEFAULT_MESSAGES),
+        "credit_amount": float(doc.get("credit_amount", defaults["credit_amount"])),
+        "messages": list(doc.get("messages") or defaults["messages"]),
     }
 
 
@@ -95,6 +130,7 @@ async def set_kyc_incentive(
     reward_mode: str,
     credit_amount: float,
     messages: list[str],
+    role: str = "lead",
     admin_email: str | None = None,
 ) -> dict:
     if reward_mode not in VALID_REWARD_MODES:
@@ -106,53 +142,46 @@ async def set_kyc_incentive(
     if not isinstance(messages, list) or any(not isinstance(m, str) for m in messages):
         raise ValueError("messages must be a list of strings")
     cleaned = [m.strip()[:200] for m in messages if m.strip()][:10]
+    defaults = _defaults_for_role(role)
+    cfg_id = _config_id_for_role(role)
     await db.app_config.update_one(
-        {"_id": "kyc_incentive"},
+        {"_id": cfg_id},
         {"$set": {
             "enabled": bool(enabled),
             "reward_mode": reward_mode,
             "credit_amount": round(float(credit_amount), 2),
-            "messages": cleaned or DEFAULT_MESSAGES,
+            "messages": cleaned or defaults["messages"],
             "updated_at": now_iso(),
             "updated_by": admin_email,
+            "role": role,
         }},
         upsert=True,
     )
-    return await get_kyc_incentive(db)
+    return await get_kyc_incentive(db, role=role)
 
 
-async def maybe_grant_kyc_reward(db: Any, *, user_id: str, source: str = "stripe_connect") -> dict | None:
-    """Grants the configured KYC reward to `user_id` IF:
-      • incentive is enabled
-      • user has not previously received a KYC reward (idempotent via
-        the `kyc_completed_at` stamp)
-    Returns the reward dict that was queued, or None if nothing happened.
+async def maybe_grant_kyc_reward(db: Any, *, user_id: str, source: str = "stripe_connect", role: str = "lead") -> dict | None:
+    """Grants the configured KYC reward to `user_id` IF eligible.
 
-    Storage model (June 2025 — generalized):
-        `users.pending_rewards: []`   ← array of reward dicts, source-tagged
-                                          so the same mechanism can carry
-                                          future marketing / referral credits
-                                          without colliding with this KYC
-                                          grant.
-
-    This function only handles the KYC source. Marketing campaigns
-    should call `grant_pending_reward(...)` directly with a unique
-    `kind` like "marketing:summer25" so the auditor can disambiguate.
+    role="lead"   → consumes/awards from the lead KYC config
+    role="member" → consumes/awards from the member KYC config
+    Idempotent: kyc_completed_at_<role> is the dedupe stamp.
     """
-    cfg = await get_kyc_incentive(db)
+    cfg = await get_kyc_incentive(db, role=role)
     if not cfg["enabled"]:
         return None
 
-    user = await db.users.find_one({"id": user_id}, {"_id": 0, "kyc_completed_at": 1})
+    stamp_field = "kyc_completed_at" if role == "lead" else "kyc_completed_at_member"
+    user = await db.users.find_one({"id": user_id}, {"_id": 0, stamp_field: 1})
     if not user:
         return None
-    if user.get("kyc_completed_at"):
+    if user.get(stamp_field):
         return None  # idempotent
 
     now = now_iso()
     reward = {
-        "id": f"rwd_kyc_{user_id}_{int(__import__('time').time())}",
-        "kind": "kyc",
+        "id": f"rwd_kyc_{role}_{user_id}_{int(__import__('time').time())}",
+        "kind": f"kyc_{role}",
         "source": source,
         "mode": cfg["reward_mode"],
         "amount": (
@@ -165,13 +194,10 @@ async def maybe_grant_kyc_reward(db: Any, *, user_id: str, source: str = "stripe
     }
 
     # Conditional update so two concurrent syncs can't double-stamp.
-    # The kyc_completed_at stamp is the dedupe key for KYC specifically;
-    # marketing rewards live in the same `pending_rewards` array but use
-    # their own dedupe (campaign_id) — see grant_pending_reward() below.
     res = await db.users.update_one(
-        {"id": user_id, "kyc_completed_at": {"$exists": False}},
+        {"id": user_id, stamp_field: {"$exists": False}},
         {
-            "$set": {"kyc_completed_at": now},
+            "$set": {stamp_field: now},
             "$push": {"pending_rewards": reward},
         },
     )

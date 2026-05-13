@@ -24,6 +24,17 @@ async def _dispatch_sms_to_user(db, user_id: str, body: str, event_key: str | No
         - "sms_disabled_by_admin" if the event_key is set to "off" or "push"
     """
     try:
+        # Best-effort push dispatch (parallel; never blocks SMS).
+        # Admin-config honored inside push_provider.send_push_to_user().
+        if event_key:
+            try:
+                from push_provider import send_push_to_user
+                await send_push_to_user(
+                    db, user_id, title="SquadPay", body=body[:240], event_key=event_key,
+                )
+            except Exception as e:
+                logger.warning("[push] dispatch alongside SMS failed: %s", e)
+
         # Respect admin Notification Config: skip SMS if event is disabled.
         if event_key:
             try:

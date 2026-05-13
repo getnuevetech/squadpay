@@ -149,11 +149,12 @@ export default function AdminNotificationConfigScreen() {
 
         {/* Push status banner */}
         <View style={s.pushBanner}>
-          <Smartphone size={18} color={COLORS.warning} />
+          <Smartphone size={18} color={COLORS.success} />
           <Text style={s.pushBannerText}>
-            Push delivery is wire-ready but no-ops in this build (
-            <Text style={{ fontWeight: '700' }}>expo-notifications</Text> integration
-            pending). Your choices will activate automatically in the next mobile build.
+            Push notifications are <Text style={{ fontWeight: '700' }}>live</Text> in
+            production builds (EAS preview/production). In <Text style={{ fontWeight: '700' }}>Expo Go</Text>{' '}
+            iOS, push tokens cannot be acquired (Apple restriction) — your changes
+            take effect once you install the next mobile build.
           </Text>
         </View>
 

@@ -12,7 +12,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Apple, Check, CreditCard, Lock, Smartphone, Wallet, ShieldCheck, Sparkles, Receipt } from 'lucide-react-native';
+import { Check, CreditCard, Lock, Smartphone, Wallet, ShieldCheck, Sparkles, Receipt } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { GradientButton } from '../../../src/components/GradientButton';
 import { api, Group } from '../../../src/api';
@@ -78,7 +78,9 @@ export default function PayScreen() {
   const [userId, setUserId] = useState<string | null>(null);
   const [isVerified, setIsVerified] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [stripeBusy, setStripeBusy] = useState(false);
+  // (June 2025) stripeBusy state removed along with the duplicate
+  // "Pay with Stripe" secondary button — primary "Pay" CTA now handles
+  // Stripe Checkout exclusively.
   const [stripeBanner, setStripeBanner] = useState<string | null>(null);
 
   // Inline verification state
@@ -102,29 +104,11 @@ export default function PayScreen() {
   // NOTE: kept up here (above the early-return guard) so hook order stays stable.
   const [otpMocked, setOtpMocked] = useState<boolean | null>(null);
 
-  // Phase 7 — Native wallet pay (Apple Pay / Google Pay via Stripe PaymentSheet).
-  // IMPORTANT: declared above the `if (!group || !userId) return null;` early-return
-  // so React's Rules of Hooks (consistent order across renders) is preserved.
-  const [nativePayBusy, setNativePayBusy] = useState(false);
-  const [nativePayAvailable, setNativePayAvailable] = useState(false);
-  // #13 — admin-controlled wallet flags. Default both ON so first-loads
-  // don't suppress the button; refresh from server below.
-  const [walletFlags, setWalletFlags] = useState({ apple: true, google: true });
-
-  useEffect(() => {
-    if (Platform.OS === 'web') return;
-    if (kind !== 'contribute') return;
-    (async () => {
-      try {
-        const r = await api.stripePublishableKey();
-        setNativePayAvailable(!!r.configured);
-        setWalletFlags({
-          apple: r.apple_pay_enabled !== false,
-          google: r.google_pay_enabled !== false,
-        });
-      } catch {}
-    })();
-  }, [kind]);
+  // June 2025 — Phase 7 native-wallet (Apple/Google Pay) state REMOVED.
+  // We now route ALL contributions exclusively through Stripe Checkout
+  // (which natively surfaces wallets in the browser). The duplicate
+  // "Pay with Stripe" secondary button was also removed for clarity.
+  // If wallets are re-enabled later, restore via admin Wallets config.
 
   useEffect(() => {
     (async () => {
@@ -234,58 +218,9 @@ export default function PayScreen() {
     if (stripe_cancel) setStripeBanner('Stripe payment was cancelled.');
   }, [stripe_cancel]);
 
-  const onPayWithStripe = async () => {
-    if (!group || !id) return;
-    if (group.funding && (group.funding.remaining_to_collect || 0) <= 0.01) {
-      Alert.alert('Already covered', 'There is no remaining balance to charge.');
-      return;
-    }
-    setStripeBusy(true);
-    try {
-      const origin = Platform.OS === 'web' && typeof window !== 'undefined'
-        ? window.location.origin
-        : (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/api$/, '');
-      let appReturnUrl: string | undefined;
-      if (Platform.OS !== 'web') {
-        try {
-          const Linking = require('expo-linking');
-          appReturnUrl = Linking.createURL(`/group/${id}/pay`);
-        } catch {}
-      }
-      const r = await api.createCheckoutSession(id, origin, appReturnUrl);
-      if (Platform.OS === 'web' && typeof window !== 'undefined') {
-        window.location.href = r.url;
-      } else {
-        try {
-          const WebBrowser = require('expo-web-browser');
-          const result = await WebBrowser.openAuthSessionAsync(r.url, appReturnUrl || origin);
-          if (result?.type === 'success' && typeof result.url === 'string') {
-            try {
-              const Linking = require('expo-linking');
-              const parsed = Linking.parse(result.url);
-              const qp: any = parsed?.queryParams || {};
-              if (qp.stripe_cancel) {
-                setStripeBanner('Stripe payment was cancelled.');
-              } else if (qp.session_id) {
-                router.replace(`/group/${id}/pay?kind=lead&session_id=${encodeURIComponent(qp.session_id)}`);
-              }
-            } catch {
-              try { setGroup(await api.getGroup(id)); } catch {}
-            }
-          } else if (result?.type === 'cancel' || result?.type === 'dismiss') {
-            setStripeBanner('Stripe payment was cancelled or dismissed.');
-            try { setGroup(await api.getGroup(id)); } catch {}
-          }
-        } catch {
-          Alert.alert('Open in browser', r.url);
-        }
-      }
-    } catch (e: any) {
-      Alert.alert('Stripe error', e?.message || 'Could not start Stripe checkout.');
-    } finally {
-      setStripeBusy(false);
-    }
-  };
+  // June 2025 — onPayWithStripe + onPayWithWallet handlers removed.
+  // All contributions now flow through Stripe Checkout via the primary
+  // "Pay" button (api.contribute). See doPay() below.
 
   if (!group || !userId) return null;
 
@@ -453,49 +388,10 @@ export default function PayScreen() {
   };
 
   // ──────────────────────────────────────────────────────────────────────
-  // Phase 7 — Native wallet pay handler (state + effect hoisted to top of component)
+  // June 2025 — onPayWithWallet handler REMOVED. Native Apple/Google Pay
+  // via Stripe PaymentSheet is disabled; Stripe Checkout natively surfaces
+  // wallets in the browser at standard rate.
   // ──────────────────────────────────────────────────────────────────────
-  const onPayWithWallet = async () => {
-    if (Platform.OS === 'web') return;
-    if (!isVerified) { setVerifyStep('phone'); return; }
-    if (blockedNoAmount || amount <= 0) {
-      Alert.alert('Nothing to pay', 'Amount is zero.');
-      return;
-    }
-    setNativePayBusy(true);
-    try {
-      const pi = await api.contributePaymentIntent(group.id, {
-        user_id: userId,
-        amount,
-        notify_on_settled: notifyOnSettled,
-      });
-      // Platform-resolved helper — on web this is a stub that returns error.
-      // On native it bridges to @stripe/stripe-react-native PaymentSheet.
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { payWithNativeWallet } = require('../../../src/wallet_pay');
-      const res = await payWithNativeWallet({
-        merchantDisplayName: pi.merchant_display_name || 'SquadPay',
-        customerId: pi.customer_id,
-        customerEphemeralKeySecret: pi.ephemeral_key_secret,
-        paymentIntentClientSecret: pi.client_secret,
-        returnURL: 'squadpay://stripe-redirect',
-      });
-      if (res.status === 'cancel') return;
-      if (res.status === 'error') throw new Error(res.message || 'Payment failed');
-      // Finalize on backend
-      const fin = await api.finalizeContributePaymentIntent(group.id, pi.payment_intent_id);
-      if (fin.applied) {
-        try { (globalThis as any).__SQUADPAY_AWARDED_CREDITS__ = fin.awarded_credits || []; } catch {}
-        router.replace(`/group/${group.id}/success?amount=${amount.toFixed(2)}&kind=contribute&via=wallet`);
-      } else {
-        Alert.alert('Payment status', `Stripe reports: ${fin.payment_status}`);
-      }
-    } catch (e: any) {
-      Alert.alert('Payment failed', e?.message || 'Please try card payment instead.');
-    } finally {
-      setNativePayBusy(false);
-    }
-  };
 
   const doPay = async () => {
     if (!isVerified) {

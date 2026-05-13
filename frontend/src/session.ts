@@ -38,6 +38,13 @@ export async function refreshUser(): Promise<User | null> {
   try {
     const fresh = await api.getUser(u.id);
     await saveUser(fresh);
+    // June 2025 — opportunistically register Expo push token for this user.
+    // No-op on web / Expo Go iOS / permission denied. Safe to call repeatedly
+    // (idempotent on the backend by token).
+    try {
+      const { registerForPushAsync } = await import('./push');
+      registerForPushAsync(fresh.id).catch(() => {});
+    } catch {}
     return fresh;
   } catch {
     return u;

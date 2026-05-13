@@ -377,6 +377,7 @@ export default function HomeScreen() {
 const FALLBACK_BG_SHADES = ['#FAF7FF', '#F5F0FF', '#EDE4FE', '#F8F3FF', '#F0E7FE'];
 
 function UnauthLanding() {
+  const router = useRouter();
   const [bgShades, setBgShades] = useState<string[]>(FALLBACK_BG_SHADES);
   useEffect(() => {
     let cancelled = false;

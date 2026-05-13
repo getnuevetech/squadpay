@@ -7,7 +7,8 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from pydantic import BaseModel, Field
 
-from admin import write_audit, require_role
+from admin import write_audit, require_role  # noqa: F401  (kept for back-compat)
+from admin_modules import require_module
 
 
 class ReferralSettingsIn(BaseModel):
@@ -41,7 +42,7 @@ def attach_referrals_routes(router: APIRouter, db, attach_admin):
         body: ReferralSettingsIn,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin", "manager")),
+        _check=Depends(require_module("referrals")),
     ):
         update = {
             "key": "referrals",

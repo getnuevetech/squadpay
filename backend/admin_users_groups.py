@@ -6,7 +6,8 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from pydantic import BaseModel
 
-from admin import write_audit, require_role
+from admin import write_audit, require_role  # noqa: F401  (kept for back-compat)
+from admin_modules import require_module
 
 
 class BlockPayload(BaseModel):
@@ -138,7 +139,7 @@ def attach_users_and_groups_routes(router: APIRouter, db, attach_admin):
         body: BlockPayload,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin", "manager")),
+        _check=Depends(require_module("users")),
     ):
         u = await db.users.find_one({"id": user_id}, {"_id": 0})
         if not u:
@@ -253,7 +254,7 @@ def attach_users_and_groups_routes(router: APIRouter, db, attach_admin):
         body: BlockPayload,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin", "manager")),
+        _check=Depends(require_module("squads")),
     ):
         g = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not g:

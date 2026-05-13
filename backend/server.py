@@ -109,6 +109,14 @@ except Exception as _e:
     print("[startup] module registry routes attach failed:", _e)
 
 
+# ---------- Capability Registry (June 2025 — payment/feature on-off switches) ----------
+try:
+    from app_capabilities import attach_capability_routes as _attach_capability_routes
+    _attach_capability_routes(api_router, db, _adm_factory_early(db))
+except Exception as _e:
+    print("[startup] capability routes attach failed:", _e)
+
+
 # ---------- Admin dashboard ----------
 from admin_routes import build_admin_router  # noqa: E402
 api_router.include_router(build_admin_router(db))
@@ -316,6 +324,13 @@ async def _on_startup():
         await seed_system_roles(db)
     except Exception as e:
         print("[startup] seed roles failed:", e)
+
+    # June 2025: seed capability registry (virtual_card on/off, lead_debit_card etc.)
+    try:
+        from app_capabilities import seed_capabilities
+        await seed_capabilities(db)
+    except Exception as e:
+        print("[startup] seed capabilities failed:", e)
 
 
 @app.on_event("shutdown")

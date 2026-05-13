@@ -311,6 +311,29 @@ export const adminApi = {
       method: 'DELETE',
     }),
 
+  // ─────────────── Capability Registry (feature on/off, June 2025) ───────────────
+  listCapabilities: () =>
+    request<{
+      group_order: string[];
+      items: Array<{
+        key: string;
+        label: string;
+        description: string;
+        group: string;
+        enabled: boolean;
+        sensitive: boolean;
+        updated_at: string;
+      }>;
+    }>('/capabilities'),
+  setCapability: (key: string, enabled: boolean) =>
+    request<{
+      key: string; label: string; description: string; group: string;
+      enabled: boolean; sensitive: boolean; updated_at: string;
+    }>(`/capabilities/${encodeURIComponent(key)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+
   // Customer Service (Contact Us tickets).
   listContactMessages: (page: number = 1, page_size: number = 25, opts: { status?: string; subject?: string; q?: string } = {}) => {
     const qs = new URLSearchParams({ page: String(page), page_size: String(page_size) });

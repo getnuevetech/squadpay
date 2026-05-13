@@ -4,7 +4,8 @@ from typing import Optional, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from admin import write_audit, require_role
+from admin import write_audit, require_role  # noqa: F401  (kept for back-compat)
+from admin_modules import require_module
 
 
 def _new_id(prefix: str = "cr_") -> str:
@@ -64,7 +65,7 @@ def attach_credits_routes(router: APIRouter, db, attach_admin):
         body: GrantCreditIn,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin", "manager")),
+        _check=Depends(require_module("credit_rules")),
     ):
         u = await db.users.find_one({"id": user_id}, {"_id": 0})
         if not u:
@@ -100,7 +101,7 @@ def attach_credits_routes(router: APIRouter, db, attach_admin):
         credit_id: str,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin", "manager")),
+        _check=Depends(require_module("credit_rules")),
     ):
         row = await db.credits.find_one({"id": credit_id, "user_id": user_id}, {"_id": 0})
         if not row:
@@ -132,7 +133,7 @@ def attach_credits_routes(router: APIRouter, db, attach_admin):
         body: DiscountIn,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin", "manager")),
+        _check=Depends(require_module("credit_rules")),
     ):
         g = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not g:
@@ -180,7 +181,7 @@ def attach_credits_routes(router: APIRouter, db, attach_admin):
         group_id: str,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin", "manager")),
+        _check=Depends(require_module("credit_rules")),
     ):
         g = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not g:
@@ -210,7 +211,7 @@ def attach_credits_routes(router: APIRouter, db, attach_admin):
         body: LeadDiscountIn,
         request: Request,
         admin=Depends(attach_admin),
-        _check=Depends(require_role("super_admin", "manager")),
+        _check=Depends(require_module("credit_rules")),
     ):
         u = await db.users.find_one({"id": user_id}, {"_id": 0})
         if not u:

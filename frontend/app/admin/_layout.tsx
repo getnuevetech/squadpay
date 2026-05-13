@@ -4,7 +4,7 @@ import { View, Text, TouchableOpacity, StyleSheet, Platform, ActivityIndicator, 
 import {
   LayoutDashboard, ScrollText, Users, LogOut, Shield, UserCog, Receipt, Gift,
   Plug, Wallet, RefreshCw, Lock, BarChart3, FileText, KeyRound, Percent,
-  Megaphone, MessageSquare, Coins, Inbox, ShieldCheck, ShieldAlert, CircleDollarSign,
+  Megaphone, MessageSquare, Coins, Inbox, ShieldCheck, ShieldAlert, CircleDollarSign, Layers,
 } from 'lucide-react-native';
 import { adminApi, AdminProfile, getProfile, getToken, clearSession } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
@@ -34,6 +34,7 @@ const ICON_BY_KEY: Record<string, any> = {
   legal_pages: FileText,
   admins: Users,
   access: ShieldCheck,
+  capabilities: Layers,
 };
 
 type ModuleEntry = {

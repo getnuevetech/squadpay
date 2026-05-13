@@ -10819,3 +10819,88 @@ agent_communication:
         Pending: user wants EAS Android+iOS builds. Blocked-by-keys concern
         is REMOVED (keys do match). Awaiting user confirmation on build
         platform / profile before kicking off `eas build`.
+
+
+backend:
+  - task: "5-state Squad lifecycle state machine (Open → Contributing → Contributed → Lead Paid → Bill Settled)"
+    implemented: true
+    working: true
+    file: "/app/backend/core.py, /app/backend/settlement_config.py, /app/backend/settlement_cron.py, /app/backend/routes/payout_routes.py, /app/backend/routes/admin_phase_bc.py, /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Major lifecycle rewrite per user spec — Bill Settled was firing
+            the moment contributions hit 100% (before Lead had actually been
+            paid out by Stripe Connect). Now:
+
+            • derived_status mapping rewritten in core.py:
+                raw=open    → open / contributing
+                raw=open + funded + has_outstanding → contributed
+                raw=paid    → contributed (UNLESS lead_payout_paid_at is set, then bill_settled — back-compat)
+                raw=lead_paid → lead_paid
+                raw=closed  → bill_settled
+
+            • New module settlement_config.py: admin-configurable delay 0-240min, default 20.
+
+            • New module settlement_cron.py: 60s background loop scans groups in `lead_paid`
+              past their delay and flips to `closed` + sets `bill_settled_at`.
+
+            • routes/payout_routes.py:_apply_payout_webhook now reacts to Stripe
+              payout.paid event:
+                - Updates group.status from {open,paid} → lead_paid
+                - Stamps lead_payout_paid_at = now()
+              (This is what kicks off the 20-min settlement cron timer.)
+
+            • payout eligibility check expanded to accept status in {paid, lead_paid}
+              so the Pay Out CTA remains available throughout the Contributed window
+              and during the Lead Paid hold-window before final settlement.
+
+            • New admin endpoints (admin_phase_bc.py):
+                GET  /api/admin/settlement-delay   → {minutes: 20}
+                PUT  /api/admin/settlement-delay   → {minutes: <0..240>}
+
+            • FE StatusBadge labels updated for the 5-state machine.
+              Legacy bill_created / settled_with_debt / repaying / settled
+              kept as back-compat aliases.
+
+            Verified against existing DB: all `status="paid"` groups now
+            display "Contributed" (not "Bill Settled"). One legacy `closed`
+            row correctly shows "Bill Settled". `g_b0b26fe782` (status=open,
+            partial collection) shows "Contributing". Behavior matches spec.
+
+agent_communication:
+    - agent: "main"
+      message: |
+        Phase 1 of the big logic rewrite shipped:
+
+        ✅ 5-state Squad lifecycle (Open / Contributing / Contributed /
+           Lead Paid / Bill Settled)
+        ✅ Bill Settled NO LONGER fires when contributions hit 100% — it
+           now fires ONLY after Stripe Connect payout.paid webhook + admin-
+           configured delay (default 20 min).
+        ✅ Background settlement cron running (60s interval).
+        ✅ Admin can configure settlement delay via /api/admin/settlement-delay.
+        ✅ Lead Pay Out remains active across {Contributed, Lead Paid} states.
+        ✅ Existing data verified — all legacy "paid" rows correctly show
+           "Contributed" not "Bill Settled".
+
+        Still remaining for full user spec (will tackle next turns):
+        ⏳ Phase 2 — Owing-member Stripe Checkout enforcement when shortfall
+           is covered as a Loan (today they see "Pay your share" but no
+           charge happens, no SMS sent — user explicitly flagged this bug).
+        ⏳ Phase 2 — Proportional cover repayment split across multiple
+           covering members.
+        ⏳ Phase 2 — Remove "Cover for Group" exposure from member pay screens
+           (only Lead's "Call shortfall" page should surface it).
+        ⏳ Phase 3 — Non-lead Stripe Connect onboarding for covering members.
+        ⏳ Phase 3 — Non-lead KYC incentive admin config (separate from Lead's).
+        ⏳ Phase 4 — Notification Config admin page (SMS-wired, Push deferred
+           until expo-notifications integration).
+
+        Recommending user verify Phase 1 ("Bill Settled" now waits for actual
+        Stripe payout + 20min) before I continue with Phase 2-4 to avoid
+        compounding any mistakes.

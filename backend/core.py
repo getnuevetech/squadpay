@@ -554,18 +554,57 @@ async def _recompute_group(group: dict) -> dict:
     card_status = vc.get("status")
     card_swiped = card_spent > 0.005 or (card_status == "inactive" and bool(vc.get("transactions")))
 
-    if raw_status == "open":
-        if not group.get("contributions"):
-            derived_status = "bill_created"
-        elif total_contributed + 0.01 >= total_amount and not has_outstanding:
+    # ─── 5-State Squad Lifecycle (June 2025 spec) ────────────────────────────
+    #  Open         → freshly created, lead only, no items/contributions
+    #  Contributing → items added OR members added, still collecting
+    #  Contributed  → value coverage == 100% (incl. lead/member covers).
+    #                 Lead Pay Out becomes available here.
+    #                 NOTE: owing-member back-collection happens in parallel;
+    #                 it does NOT block Lead Pay Out per product spec.
+    #  Lead Paid    → Stripe Connect `payout.paid` webhook fired for lead.
+    #                 (raw status = "lead_paid" in DB)
+    #  Bill Settled → admin-configured delay (default 20min) after Lead Paid.
+    #                 (raw status = "closed" in DB)
+    #
+    # Legacy raw status `paid` from pre-June-2025 data is treated as
+    # `Bill Settled` (most existing rows are settled merchants).
+    items_count = len(group.get("items") or [])
+    members_count = len(group.get("members") or [])
+    contribs_count = len(group.get("contributions") or [])
+    # "Value coverage" = total money in the squad (real contributions + active
+    # covers that fill the gap). Lead/member covers count toward funding.
+    cover_amount = 0.0
+    if settlement:
+        # Settlement records who's covering — when a cover is in place we
+        # consider its amount as "money in" toward the grand total, since
+        # the covering party has committed to fund the merchant.
+        # The actual repayment from owing members is tracked separately
+        # via shortfall_obligations + repayments.
+        cover_amount = float(settlement.get("amount") or 0.0)
+    value_covered = total_contributed + cover_amount
+    funding_complete = (value_covered + 0.01) >= total_amount and total_amount > 0
+
+    if raw_status == "closed":
+        derived_status = "bill_settled"
+    elif raw_status == "lead_paid":
+        derived_status = "lead_paid"
+    elif raw_status == "paid":
+        # `paid` now means "funding complete, awaiting lead pay-out".
+        # Legacy rows already past Stripe transfer carry lead_payout_paid_at;
+        # we surface those as bill_settled for back-compat.
+        if group.get("lead_payout_paid_at"):
+            derived_status = "bill_settled"
+        else:
+            derived_status = "contributed"
+    elif raw_status == "open":
+        if items_count == 0 and members_count <= 1 and contribs_count == 0:
+            derived_status = "open"
+        elif funding_complete and not has_outstanding:
+            derived_status = "contributed"
+        elif funding_complete and has_outstanding:
             derived_status = "contributed"
         else:
             derived_status = "contributing"
-    elif raw_status == "paid":
-        if card_swiped:
-            derived_status = "settled_with_debt" if (lead_loaned or has_outstanding) else "bill_settled"
-        else:
-            derived_status = "settled_with_debt" if (lead_loaned or has_outstanding) else "contributed"
     else:
         derived_status = "bill_settled"
 

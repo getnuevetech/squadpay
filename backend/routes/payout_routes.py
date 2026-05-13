@@ -85,7 +85,7 @@ async def _lead_available_cents(db, *, group_id: str, lead_id: str) -> int:
         raise HTTPException(404, "Squad not found")
     if group.get("lead_id") != lead_id:
         raise HTTPException(403, "Only the lead may cash out from this squad")
-    if group.get("status") != "paid":
+    if group.get("status") not in ("paid", "lead_paid"):
         raise HTTPException(409, "Squad is not yet fully paid")
     if (group.get("funding_mode") or "lead") != "group":
         raise HTTPException(409, "Cash-out is only available for member-funded squads")
@@ -481,7 +481,7 @@ def attach_payout_routes(api_router: APIRouter, db):
         if group.get("lead_id") != user_id:
             reasons.append("not_lead")
             eligible = False
-        if group.get("status") != "paid":
+        if group.get("status") not in ("paid", "lead_paid"):
             reasons.append("group_not_paid")
             eligible = False
         if (group.get("funding_mode") or "lead") != "group":
@@ -572,4 +572,30 @@ async def _apply_payout_webhook(db, evt) -> dict:
             {"provider_payout_id": evt.provider_payout_id},
             {"$set": {"status": status, "updated_at": now_iso(), "last_webhook_at": now_iso()}},
         )
+
+    # June 2025 — when the Stripe Connect payout actually lands ("paid"),
+    # transition the SQUAD into the `lead_paid` state. The background
+    # settlement cron (settlement_cron.py) then flips it to `closed`
+    # ("Bill Settled") after the admin-configured grace window
+    # (default 20 min, see settlement_config.py).
+    # We only act on the Lead's cash-out (kind="lead_cash_out") — covering-
+    # member payouts (Phase 3) will get their own state machine.
+    if status == "paid" and (payout.get("kind") or "lead_cash_out") == "lead_cash_out":
+        gid = payout.get("group_id")
+        if gid:
+            now = now_iso()
+            res = await db.groups.update_one(
+                {"id": gid, "status": {"$in": ["open", "paid"]}},
+                {"$set": {
+                    "status": "lead_paid",
+                    "lead_payout_paid_at": now,
+                    "updated_at": now,
+                }},
+            )
+            if res.modified_count:
+                logger.info(
+                    "[stripe-connect-webhook] %s → lead_paid (payout=%s, settlement timer started)",
+                    gid, evt.provider_payout_id,
+                )
+
     return {"ok": True, "payout_id": payout["id"], "new_status": status or payout.get("status")}

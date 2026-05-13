@@ -143,6 +143,13 @@ class MarketingRewardIn(BaseModel):
     note: str | None = None
 
 
+# June 2025 — Squad lifecycle: admin-configurable delay between
+# `Lead Paid` (Stripe Connect payout webhook fired) and `Bill Settled`
+# (final terminal state). Bounded 0..240 min, default 20.
+class SettlementDelayIn(BaseModel):
+    minutes: int = Field(20, ge=0, le=240)
+
+
 class CmsPageIn(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     slug: Optional[str] = Field(default=None, max_length=120)
@@ -821,6 +828,42 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
         except Exception:
             pass
         return {"ok": True, "reward": granted}
+
+    # June 2025 — Squad lifecycle: admin-configurable settlement delay.
+    @r.get("/admin/settlement-delay")
+    async def admin_get_settlement_delay(admin=Depends(get_current_admin)):
+        from settlement_config import get_settlement_delay_minutes
+        m = await get_settlement_delay_minutes(db)
+        return {"minutes": m}
+
+    @r.put("/admin/settlement-delay")
+    async def admin_set_settlement_delay(
+        body: SettlementDelayIn = Body(...),
+        admin=Depends(get_current_admin),
+        _gate=Depends(require_role("super_admin", "manager")),
+    ):
+        from settlement_config import set_settlement_delay_minutes
+        admin_email = admin.get("email") if isinstance(admin, dict) else None
+        try:
+            cfg = await set_settlement_delay_minutes(
+                db, minutes=body.minutes, admin_email=admin_email
+            )
+        except ValueError as ve:
+            raise HTTPException(400, str(ve))
+        try:
+            await db.audit_log.insert_one({
+                "id": _new_id("aud_"),
+                "at": _now(),
+                "admin_email": admin_email or "?",
+                "action": "admin.settlement_delay_update",
+                "destructive": False,
+                "target_type": "settings",
+                "target_id": "settlement_delay",
+                "payload": body.model_dump(),
+            })
+        except Exception:
+            pass
+        return {"ok": True, **cfg}
 
     api_router.include_router(public_r)
     api_router.include_router(r)

@@ -3,24 +3,28 @@ import { View, Text, StyleSheet } from 'react-native';
 import { COLORS, FONT, RADIUS } from './theme';
 
 export type DerivedStatus =
-  | 'bill_created'
+  | 'open'
   | 'contributing'
   | 'contributed'
+  | 'lead_paid'
   | 'bill_settled'
+  // legacy values kept for back-compat with older API responses
+  | 'bill_created'
   | 'settled_with_debt'
-  // legacy values (older docs/tests may still emit these)
   | 'repaying'
   | 'settled';
 
 const STATUS_META: Record<DerivedStatus, { label: string; bg: string; fg: string }> = {
-  bill_created: { label: 'Bill Created', bg: COLORS.primaryLight, fg: COLORS.primary },
+  open: { label: 'Open', bg: COLORS.primaryLight, fg: COLORS.primary },
   contributing: { label: 'Contributing', bg: COLORS.warningLight, fg: COLORS.warning },
   contributed: { label: 'Contributed', bg: '#DBEAFE', fg: '#1D4ED8' },
+  lead_paid: { label: 'Lead Paid', bg: '#E0E7FF', fg: '#4338CA' },
   bill_settled: { label: 'Bill Settled', bg: COLORS.successLight, fg: COLORS.success },
-  settled_with_debt: { label: 'Settled · Debt', bg: '#FEF3C7', fg: '#92400E' },
-  // legacy mappings for back-compat
-  repaying: { label: 'Repaying', bg: '#FEF3C7', fg: '#92400E' },
-  settled: { label: 'Settled', bg: COLORS.successLight, fg: COLORS.success },
+  // legacy mappings — map onto closest new state
+  bill_created: { label: 'Open', bg: COLORS.primaryLight, fg: COLORS.primary },
+  settled_with_debt: { label: 'Contributed', bg: '#DBEAFE', fg: '#1D4ED8' },
+  repaying: { label: 'Contributing', bg: COLORS.warningLight, fg: COLORS.warning },
+  settled: { label: 'Bill Settled', bg: COLORS.successLight, fg: COLORS.success },
 };
 
 export function StatusBadge({

@@ -368,6 +368,15 @@ async def _on_startup():
         start_purge_loop(db, interval_seconds=21600)  # every 6 hours
     except Exception as e:
         print("[startup] purge cron failed:", e)
+
+    # June 2025 — Squad lifecycle: settlement cron flips `lead_paid` →
+    # `closed` (Bill Settled) after admin-configured grace window.
+    try:
+        import asyncio as _asyncio
+        from settlement_cron import settlement_cron_loop
+        _asyncio.create_task(settlement_cron_loop(db))
+    except Exception as e:
+        print("[startup] settlement cron failed:", e)
     # Phase G1: seed reconciliation defaults (idempotent)
     try:
         from reconciliation import ensure_reconciliation_settings

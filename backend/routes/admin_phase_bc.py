@@ -47,7 +47,7 @@ from email.message import EmailMessage
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, Query, Body
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -685,4 +685,159 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
         return {"ok": True, **body.model_dump()}
 
     api_router.include_router(public_r)
+    api_router.include_router(r)
+
+
+class JoinCodeConfigIn(BaseModel):
+    charset: str = Field(..., description="numeric | alpha | alphanumeric")
+    length: int = Field(..., ge=4, le=12)
+
+
+class StoreReceiptIn(BaseModel):
+    group_id: str
+    image_base64: str  # raw base64 (no data: prefix)
+    compress: bool = True
+
+
+def attach_phase_d_routes(api_router: APIRouter, db, get_current_admin, require_role):
+    """Phase D — admin-configurable join code + OCR receipt storage."""
+    r = APIRouter()
+
+    # ============================ Join code config (#5) ===================
+    @r.get("/admin/join-code-config")
+    async def get_join_code_config(admin=Depends(get_current_admin)):
+        cfg = await db.app_config.find_one({"_id": "join_code"}) or {}
+        return {
+            "charset": cfg.get("charset") or "numeric",
+            "length": int(cfg.get("length") or 6),
+            "updated_at": cfg.get("updated_at"),
+            "updated_by": cfg.get("updated_by"),
+        }
+
+    @r.put("/admin/join-code-config")
+    async def set_join_code_config(
+        body: JoinCodeConfigIn = Body(...),
+        admin=Depends(get_current_admin),
+        _gate=Depends(require_role("super_admin", "manager")),
+    ):
+        if body.charset not in ("numeric", "alpha", "alphanumeric"):
+            raise HTTPException(400, "charset must be numeric, alpha, or alphanumeric")
+        await db.app_config.update_one(
+            {"_id": "join_code"},
+            {"$set": {
+                "charset": body.charset,
+                "length": body.length,
+                "updated_at": _now(),
+                "updated_by": (admin.get("email") if isinstance(admin, dict) else None),
+            }},
+            upsert=True,
+        )
+        return {"ok": True, "charset": body.charset, "length": body.length}
+
+    # ============================ OCR receipt storage (#9) ================
+    @r.post("/receipts/store")
+    async def store_receipt(body: StoreReceiptIn = Body(...)):
+        from PIL import Image
+        import base64
+        import io as _io
+
+        # Strip optional data-URI prefix
+        b64 = body.image_base64
+        if b64.startswith("data:"):
+            b64 = b64.split(",", 1)[1]
+
+        try:
+            raw = base64.b64decode(b64)
+        except Exception:
+            raise HTTPException(400, "image_base64 is not valid base64")
+
+        original_size = len(raw)
+        stored_b64 = b64
+        mime = "image/jpeg"
+        if body.compress:
+            try:
+                im = Image.open(_io.BytesIO(raw))
+                if im.mode in ("RGBA", "P"):
+                    im = im.convert("RGB")
+                # Cap longest side at 1600px — keeps text readable and shrinks
+                # 6-12MB phone photos down to ~200-400KB JPEG.
+                max_side = 1600
+                if max(im.size) > max_side:
+                    ratio = max_side / max(im.size)
+                    new_size = (int(im.size[0] * ratio), int(im.size[1] * ratio))
+                    im = im.resize(new_size, Image.LANCZOS)
+                out = _io.BytesIO()
+                im.save(out, format="JPEG", quality=72, optimize=True)
+                compressed = out.getvalue()
+                stored_b64 = base64.b64encode(compressed).decode("ascii")
+                mime = "image/jpeg"
+            except Exception as e:
+                logger.warning("[receipt-store] compress failed, storing raw: %s", e)
+
+        now_dt = dt.datetime.now(dt.timezone.utc)
+        expires_dt = now_dt + dt.timedelta(days=90)
+        doc = {
+            "id": _new_id("rcpt_"),
+            "group_id": body.group_id,
+            "mime": mime,
+            "image_base64": stored_b64,
+            "original_size": original_size,
+            "stored_size": len(stored_b64),
+            "created_at": now_dt.isoformat(),
+            # Mongo TTL index on this field auto-deletes after 90 days.
+            "expires_at": expires_dt,
+        }
+        await db.receipts.insert_one(doc)
+
+        # Push a lightweight reference onto the group so callers can find
+        # it without scanning the receipts collection.
+        ref = {
+            "receipt_id": doc["id"],
+            "mime": mime,
+            "stored_size": len(stored_b64),
+            "created_at": doc["created_at"],
+            "expires_at": expires_dt.isoformat(),
+        }
+        await db.groups.update_one(
+            {"id": body.group_id},
+            {"$push": {"receipt_images": ref}, "$set": {"last_receipt_id": doc["id"]}},
+        )
+
+        # Ensure the TTL index exists (no-op if already created).
+        try:
+            await db.receipts.create_index("expires_at", expireAfterSeconds=0)
+        except Exception:
+            pass
+
+        return {
+            "ok": True,
+            "receipt_id": doc["id"],
+            "mime": mime,
+            "stored_bytes": len(stored_b64),
+            "original_bytes": original_size,
+            "expires_at": expires_dt.isoformat(),
+            "url": f"/api/receipts/{doc['id']}",
+        }
+
+    @r.get("/receipts/{receipt_id}")
+    async def get_receipt(receipt_id: str):
+        rcpt = await db.receipts.find_one({"id": receipt_id}, {"_id": 0})
+        if not rcpt:
+            raise HTTPException(404, "Receipt not found (or it has expired)")
+        return {
+            "id": rcpt["id"],
+            "group_id": rcpt.get("group_id"),
+            "mime": rcpt.get("mime"),
+            "image_base64": rcpt.get("image_base64"),
+            "created_at": rcpt.get("created_at"),
+            "expires_at": rcpt.get("expires_at").isoformat() if isinstance(rcpt.get("expires_at"), dt.datetime) else rcpt.get("expires_at"),
+        }
+
+    @r.get("/groups/{group_id}/receipts")
+    async def list_group_receipts(group_id: str):
+        g = await db.groups.find_one({"id": group_id}, {"_id": 0, "receipt_images": 1, "last_receipt_id": 1})
+        if not g:
+            raise HTTPException(404, "Group not found")
+        return {"items": g.get("receipt_images") or [], "last_receipt_id": g.get("last_receipt_id")}
+
     api_router.include_router(r)

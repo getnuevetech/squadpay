@@ -112,9 +112,39 @@ def new_id(prefix: str = "") -> str:
     return f"{prefix}{uuid.uuid4().hex[:10]}"
 
 
-def new_short_code(length: int = 8) -> str:
-    alphabet = string.ascii_letters + string.digits
+def new_short_code(length: int = 8, charset: str = "alphanumeric") -> str:
+    """Generate a random short code for squad join codes.
+
+    `charset` controls the alphabet:
+      - "numeric"      → digits only (0-9)            — most user-friendly
+      - "alpha"        → uppercase A-Z only
+      - "alphanumeric" → A-Z + 0-9 (default, legacy)
+
+    Admins can set the active charset + length via app_config._id=join_code.
+    """
+    if charset == "numeric":
+        alphabet = string.digits
+    elif charset == "alpha":
+        alphabet = string.ascii_uppercase
+    else:
+        # Legacy default — uppercase + digits (excludes ambiguous chars later
+        # if we want to harden, but keep simple for now).
+        alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+async def get_join_code_config(db) -> Dict[str, Any]:
+    """Read admin-configured join-code format + length, with safe defaults.
+
+    Defaults to 6-digit numeric (per user spec — easiest to share verbally
+    and type into the join field). Admin can override via the
+    /admin/join-code-config endpoint.
+    """
+    cfg = await db.app_config.find_one({"_id": "join_code"}) or {}
+    return {
+        "charset": cfg.get("charset") or "numeric",
+        "length": int(cfg.get("length") or 6),
+    }
 
 
 def _gen_referral_code(length: int = 6) -> str:

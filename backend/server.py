@@ -222,11 +222,12 @@ except Exception as _e:
 # OCR provider chain, Income/Fees CSV+PDF, Customer Service replies,
 # CMS pages (public + admin), admin activity log + super_admin-only edit.
 try:
-    from routes.admin_phase_bc import attach_phase_bc_routes
+    from routes.admin_phase_bc import attach_phase_bc_routes, attach_phase_d_routes
     from admin import require_role as _require_role
     attach_phase_bc_routes(api_router, db, _adm_factory(db), _require_role)
+    attach_phase_d_routes(api_router, db, _adm_factory(db), _require_role)
 except Exception as _e:
-    print("[startup] phase B+C routes attach failed:", _e)
+    print("[startup] phase B+C+D routes attach failed:", _e)
 
 
 # ---------- Admin: Full-content search (Batch June 2025) ----------

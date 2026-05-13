@@ -64,23 +64,88 @@ class ContributePIFinalizeIn(BaseModel):
 
 
 async def _resolve_stripe_keys(db) -> Dict[str, Optional[str]]:
-    """Pull the live secret + publishable key, preferring admin-saved values."""
+    """Pull the live secret + publishable key.
+
+    CRITICAL: returns BOTH keys from the SAME source (gateway_config OR env)
+    — never mixed. A mixed-source pair almost always means one key is from
+    account A and the other is from account B, which produces Stripe's
+    confusing "No such payment_intent" error when the FE PaymentSheet tries
+    to confirm a PI that was created on a different account.
+
+    Resolution order:
+      1. gateway_config.charge.stripe.credentials_enc — if BOTH secret and
+         publishable are present, use them as a pair.
+      2. Environment (STRIPE_API_KEY + STRIPE_PUBLISHABLE_KEY) — used only if
+         the gateway_config pair is incomplete.
+
+    The returned keys are also fingerprint-checked: Stripe's `_<account_id>_`
+    prefix (e.g. `sk_test_51T2maQ…`, `pk_test_51T2maQ…`) must match between
+    secret and publishable. If they don't, we log a warning so admins can
+    fix the config — but we still return the pair so the caller can decide
+    whether to fail loudly or fall through.
+    """
     from integrations import decrypt_secret
+
     cfg = await db.gateway_config.find_one(
         {"group": "charge", "provider_slug": "stripe"}, {"_id": 0}
     )
     creds = (cfg or {}).get("credentials_enc") or {}
-    secret = None
+
+    gc_secret: Optional[str] = None
+    gc_pub: Optional[str] = creds.get("publishable_key")
     if creds.get("secret_key"):
         try:
-            secret = decrypt_secret(creds["secret_key"])
+            gc_secret = decrypt_secret(creds["secret_key"])
         except Exception:
-            secret = None
-    pub = creds.get("publishable_key") or os.environ.get("STRIPE_PUBLISHABLE_KEY")
-    return {
-        "secret_key": secret or os.environ.get("STRIPE_API_KEY"),
-        "publishable_key": pub,
-    }
+            gc_secret = None
+
+    env_secret = os.environ.get("STRIPE_API_KEY")
+    env_pub = os.environ.get("STRIPE_PUBLISHABLE_KEY")
+
+    # Prefer the gateway_config PAIR when both are present.
+    if gc_secret and gc_pub:
+        secret, pub, source = gc_secret, gc_pub, "gateway_config"
+    elif env_secret and env_pub:
+        secret, pub, source = env_secret, env_pub, "env"
+    else:
+        # Incomplete — fall back to whatever we have. Caller may still work
+        # for read-only ops but PaymentSheet will fail.
+        secret = gc_secret or env_secret
+        pub = gc_pub or env_pub
+        source = "mixed/incomplete"
+
+    # Account-suffix sanity check. Stripe keys are
+    #   <sk|pk>_<live|test>_<accountId>… — the first three underscore
+    # segments uniquely identify the account+mode.
+    if secret and pub:
+        try:
+            s_parts = secret.split("_")[:3]
+            p_parts = pub.split("_")[:3]
+            # Compare mode (live/test) and account id; the first segment
+            # differs by design (sk vs pk), so skip index 0.
+            if s_parts[1:3] != p_parts[1:3]:
+                logger.warning(
+                    "[stripe-keys] ACCOUNT MISMATCH source=%s "
+                    "secret=%s… publishable=%s… — PaymentSheet will fail with "
+                    "'No such payment_intent'. Verify both keys belong to "
+                    "the SAME Stripe account in admin Gateway config.",
+                    source, "_".join(s_parts), "_".join(p_parts),
+                )
+        except Exception:
+            pass
+
+    return {"secret_key": secret, "publishable_key": pub, "source": source}
+
+
+def _stripe_keys_match(keys: Dict[str, Optional[str]]) -> bool:
+    """True iff the secret and publishable keys belong to the same Stripe account+mode."""
+    s = keys.get("secret_key") or ""
+    p = keys.get("publishable_key") or ""
+    if not s or not p:
+        return False
+    s_parts = s.split("_")[:3]
+    p_parts = p.split("_")[:3]
+    return len(s_parts) >= 3 and len(p_parts) >= 3 and s_parts[1:3] == p_parts[1:3]
 
 
 async def _ensure_stripe_customer(db, user_id: str, secret_key: str) -> str:
@@ -270,6 +335,20 @@ def attach_native_contribute_routes(router: APIRouter, db):
             }
 
         keys = await _resolve_stripe_keys(db)
+        if not keys.get("secret_key"):
+            raise HTTPException(500, "Stripe is not configured. Ask an admin to set the secret key in Gateway config.")
+        # #12 — Refuse to create a PI when the secret + publishable keys
+        # belong to different Stripe accounts. PaymentSheet would later fail
+        # with the very confusing "No such payment_intent" error. We catch it
+        # upfront so the user sees an actionable message.
+        if keys.get("publishable_key") and not _stripe_keys_match(keys):
+            raise HTTPException(
+                500,
+                "Stripe key mismatch: the secret key and publishable key belong "
+                "to DIFFERENT Stripe accounts. The native Apple/Google Pay sheet "
+                "will fail with 'No such payment_intent'. Ask an admin to update "
+                "Gateway config so both keys are from the SAME account.",
+            )
         _stripe_sdk.api_key = keys["secret_key"]
         try:
             pi = _stripe_sdk.PaymentIntent.retrieve(body.payment_intent_id)

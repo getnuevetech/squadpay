@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from core import (
     CreateGroupIn, JoinGroupIn, RemoveMemberIn, UpdateItemsIn, AppendItemsIn,
     UpdateGroupMetaIn, ItemPatchIn, AssignIn, SetSplitModeIn,
-    new_id, new_short_code, now_iso,
+    new_id, new_short_code, now_iso, get_join_code_config,
     _apply_group_discount, _load_group_enriched, _recompute_group,
 )
 
@@ -30,7 +30,19 @@ def attach_groups_routes(router: APIRouter, db):
         if user.get("is_blocked"):
             raise HTTPException(403, "Your account has been blocked. Please contact support.")
         gid = new_id("g_")
-        code = new_short_code(8)
+        # Phase D (#5) — Use admin-configured charset + length for the join
+        # code. Default is 6-digit numeric. We retry up to 10 times if the
+        # generated code happens to collide with an existing group's code.
+        jc_cfg = await get_join_code_config(db)
+        code = None
+        for _ in range(10):
+            candidate = new_short_code(jc_cfg["length"], jc_cfg["charset"])
+            if not await db.groups.find_one({"code": candidate}, {"_id": 0, "id": 1}):
+                code = candidate
+                break
+        if not code:
+            # Fallback: bump length by 2 to escape a colliding charset.
+            code = new_short_code(jc_cfg["length"] + 2, jc_cfg["charset"])
         items = []
         for it in body.items:
             items.append({"id": new_id("it_"), "name": it.name, "price": it.price, "quantity": it.quantity})

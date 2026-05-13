@@ -174,8 +174,16 @@ def start_purge_loop(db, interval_seconds: int = 21600) -> None:
 
 def attach_purge_admin_route(router, db, admin_dep) -> None:
     from fastapi import Depends
+    from admin_modules import require_module
 
     @router.post("/admin/users/run-purge-cron")
-    async def run_purge_cron(_admin=Depends(admin_dep)):
-        """Manually trigger the 30-day hard-purge run (super-admin only)."""
+    async def run_purge_cron(
+        _admin=Depends(admin_dep),
+        _gate=Depends(require_module("users")),
+    ):
+        """Manually trigger the 30-day hard-purge run.
+
+        Gated by the `users` admin module (super-admin or any role with
+        `users` access). Background cron still runs every 6 hours regardless.
+        """
         return await purge_expired_accounts(db)

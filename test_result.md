@@ -1724,23 +1724,30 @@ agent_communication:
 
   - task: "Phase A — total_contributed in admin user list + detail"
     implemented: true
-    working: "NA"
+    working: true
     file: "backend/admin_users_groups.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         - working: "NA"
           agent: "main"
           comment: "List endpoint sums contributions across all groups in one pass. Detail endpoint also sums repayments paid by user."
+        - working: true
+          agent: "testing"
+          comment: |
+            Verified 56/56 assertions for Phase A. total_contributed correct in
+            both list + detail; includes credit-applied portions (alice's
+            amount=10, credit_applied=5, cash_paid=5 contribution still
+            increases total by 10). Repayments also included. No regressions.
 
   - task: "Phase A — Audit log filter expansion + CSV export"
     implemented: true
-    working: "NA"
+    working: true
     file: "backend/admin_routes.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
         - working: "NA"
           agent: "main"
@@ -1749,6 +1756,15 @@ agent_communication:
             target_id, destructive, date_from/date_to. Response shape adds `total`.
             New /audit-log/export endpoint streams CSV with same filter set,
             capped at 50k rows.
+        - working: true
+          agent: "testing"
+          comment: |
+            Substring + case-insensitive action filter, target_type, target_id,
+            destructive bool, and date_from/date_to all work; `total` accurate.
+            CSV export: 200, text/csv, attachment header, exact 8-col header
+            row, filter pass-through validated (?action=block reduces row count
+            to only block actions). RBAC consistent — both endpoints 401 when
+            no bearer and 403 for support-role admins.
 
     - agent: "main"
       message: |

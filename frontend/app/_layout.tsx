@@ -68,6 +68,11 @@ export default function RootLayout() {
               header; suppress the auto stack header to avoid the double
               back-arrow. */}
           <Stack.Screen name="payout/cash-out" options={{ headerShown: false, title: 'Pay Out' }} />
+          {/* Stripe Connect onboarding deep-links back here once verification
+              is complete. Both routes whisk the user back to the cash-out
+              screen — see app/payout/return.tsx and app/payout/refresh.tsx. */}
+          <Stack.Screen name="payout/return" options={{ headerShown: false, title: 'Pay Out' }} />
+          <Stack.Screen name="payout/refresh" options={{ headerShown: false, title: 'Pay Out' }} />
         </Stack>
         <ToastHost />
         <SessionGuard />

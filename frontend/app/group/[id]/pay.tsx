@@ -591,7 +591,58 @@ export default function PayScreen() {
         }
         return;
       } else {
-        await api.repay(group.id, userId, amount);
+        // June 2025 — owing-member repayment (Loan shortfall). The
+        // backend now routes the SAME `contribute` Stripe Checkout flow
+        // when the user has an outstanding shortfall_owed obligation,
+        // so the owing member is actually charged real money (not just
+        // recorded). The contribute webhook handles ledger + cover
+        // attribution + SMS to covering members.
+        const origin =
+          Platform.OS === 'web' && typeof window !== 'undefined'
+            ? window.location.origin
+            : (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/api$/, '');
+        let appReturnUrl: string | undefined;
+        if (Platform.OS !== 'web') {
+          try {
+            const Linking = require('expo-linking');
+            appReturnUrl = Linking.createURL(`/group/${group.id}/pay`);
+          } catch {}
+        }
+        const r: any = await api.contribute(group.id, userId, amount, false, origin, appReturnUrl);
+        if (r.checkout_required === false) {
+          router.replace(
+            `/group/${group.id}/success?amount=${amount.toFixed(2)}&kind=repay&via=credit`,
+          );
+          return;
+        }
+        if (Platform.OS === 'web' && typeof window !== 'undefined') {
+          window.location.href = r.url;
+        } else {
+          try {
+            const WebBrowser = require('expo-web-browser');
+            const result = await WebBrowser.openAuthSessionAsync(r.url, appReturnUrl || origin);
+            if (result?.type === 'success' && typeof result.url === 'string') {
+              try {
+                const Linking = require('expo-linking');
+                const parsed = Linking.parse(result.url);
+                const qp: any = parsed?.queryParams || {};
+                if (qp.stripe_cancel) {
+                  setStripeBanner('Stripe payment was cancelled.');
+                } else if (qp.contrib_session_id) {
+                  router.replace(`/group/${group.id}/pay?kind=repay&contrib_session_id=${encodeURIComponent(qp.contrib_session_id)}`);
+                }
+              } catch {
+                try { setGroup(await api.getGroup(group.id)); } catch {}
+              }
+            } else if (result?.type === 'cancel' || result?.type === 'dismiss') {
+              setStripeBanner('Stripe payment was cancelled or dismissed.');
+              try { setGroup(await api.getGroup(group.id)); } catch {}
+            }
+          } catch {
+            Alert.alert('Open in browser', r.url);
+          }
+        }
+        return;
       }
       router.replace(
         `/group/${group.id}/success?amount=${amount.toFixed(2)}&kind=${kind || 'repay'}`,

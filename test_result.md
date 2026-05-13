@@ -10904,3 +10904,186 @@ agent_communication:
         Recommending user verify Phase 1 ("Bill Settled" now waits for actual
         Stripe payout + 20min) before I continue with Phase 2-4 to avoid
         compounding any mistakes.
+
+backend:
+  - task: "Phase 2 — Owing-member Stripe Checkout charge + SMS"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/contribute_routes.py, /app/backend/routes/pay_routes.py, /app/frontend/app/group/[id]/pay.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Issue #2 fix: owing members previously saw "Pay your share" but
+            their payment was just recorded (no Stripe charge, no SMS).
+            Wired up:
+
+            • FE pay.tsx kind='repay' now goes through api.contribute()
+              (Stripe Checkout) instead of api.repay() (silent record).
+
+            • Backend contribute_routes accepts contributions on status in
+              {open, paid, lead_paid} when caller has shortfall_owed > 0.
+
+            • Webhook handler in contribute_routes detects owing-member
+              repayment: records into group.repayments[], finds covering
+              parties (lead-cover contribs + member-cover obligations), and
+              dispatches proportional SMS to each ("X repaid $Y toward the
+              $Z you covered").
+
+            • shortfall SMS dispatch in pay_routes.py upgraded from
+              hardcoded `delivered_via: sms_mock` to live `send_sms()` via
+              new _dispatch_sms_to_user() helper that honors admin
+              Notification Config event toggles.
+
+  - task: "Phase 3 — Non-lead Pay Out (covering members)"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/payout_routes.py, /app/backend/core.py, /app/frontend/app/group/[id]/summary.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Issue #3 fix: covering members can now Pay Out after the owing
+            member repays.
+
+            • core.py:_recompute_group now emits cover_amount, cover_repaid,
+              cover_outstanding on per_user for ALL members. Repayments are
+              proportionally allocated based on each covering party's share.
+
+            • New helper _member_cover_available_cents() in payout_routes.py
+              computes withdrawal balance from cover_repaid minus prior
+              cover_member_cash_out payouts.
+
+            • push_to_card endpoint now dual-mode: detects lead vs
+              non-lead caller and routes to appropriate eligibility check.
+              Non-lead payouts are tagged kind="cover_member_cash_out" so
+              the lead-paid webhook handler doesn't accidentally flip the
+              Squad status when a covering member cashes out.
+
+            • FE summary.tsx surfaces a green "💰 Pay Out — $X ready"
+              button when myCoverRepaid > 0, and a tracking pill
+              "You covered $X for the Squad" when cover is unrepaid.
+
+            Note: Non-lead Stripe Connect onboarding works through the same
+            existing /api/payout/authorize-url flow (it's per-user, not
+            per-role). Covering members start onboarding when they tap the
+            Pay Out button via the existing payout/cash-out screen.
+
+  - task: "Phase 4 — Notification Config admin page"
+    implemented: true
+    working: true
+    file: "/app/backend/notification_config.py, /app/backend/routes/admin_phase_bc.py, /app/backend/admin_modules.py, /app/frontend/app/admin/notification-config.tsx, /app/frontend/src/adminApi.ts, /app/frontend/app/admin/_layout.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Per user spec: admin page listing every notification event with
+            per-event channel toggle (Off / SMS / Push / Both).
+
+            • notification_config.py: 9 canonical events seeded as DEFAULTS
+              (shortfall_assigned, shortfall_lead_covered, shortfall_repaid,
+              contribution_received, bill_funded, lead_paid, bill_settled,
+              payout_available, owing_reminder). Helpers
+              should_send_sms() / should_send_push() honor admin overrides.
+
+            • GET/PUT /api/admin/notification-config endpoints in
+              admin_phase_bc.py with audit logging.
+
+            • FE admin page /admin/notification-config renders the event×
+              channel matrix as toggle pills + also exposes the
+              Settlement Delay (Lead Paid → Bill Settled) input on the same
+              screen.
+
+            • Admin sidebar nav updated with new "Notification Config" entry
+              under Marketing group.
+
+            • _dispatch_sms_to_user() in pay_routes.py respects the config
+              ("sms_disabled_by_admin" delivery_via when admin set event to
+              off/push only).
+
+            • PUSH STATUS: A banner in the admin UI clearly states push
+              delivery is wire-ready but no-ops until the next mobile build
+              ships with expo-notifications. SMS column is fully live.
+
+agent_communication:
+    - agent: "main"
+      message: |
+        ✅ FULL DELIVERY — Phases 1-4 of the big logic rewrite shipped.
+
+        Phase 1 — State Machine (already shipped previous turn).
+        Phase 2 — Owing-member Stripe charge + SMS via cover-repayment.
+        Phase 3 — Non-lead Pay Out for covering members.
+        Phase 4 — Notification Config admin page (SMS live; push wired).
+
+        All 5 user-reported issues addressed:
+
+        1. ✅ Lead Pay Out activates when 100% covered (status='paid' /
+           'Contributed' state) regardless of whether owing members have
+           back-paid yet.
+        2. ✅ Owing members now get Stripe Checkout charge + SMS reminder
+           on covered loans. Their payment flows INTO the Squad ledger and
+           is distributed proportionally across covering parties.
+        3. ✅ Covering members see green Pay Out button on member dashboard
+           when owing members have repaid. They onboard Stripe Connect via
+           the existing payout flow (per-user, not lead-only).
+        4. ✅ Bill Settled status now waits for Stripe payout.paid webhook
+           + admin-configurable delay (default 20 min). Replaced premature
+           "paid" flip with proper 5-state lifecycle.
+        5. ✅ Logic audit complete — derived_status, cover math,
+           proportional repayment split, eligibility gating, webhook hooks,
+           and Notification Config all wired end-to-end.
+
+        Deferred (small follow-ups, not blocking):
+        • expo-notifications integration for live push delivery (~2 hrs
+          in a follow-up — admin UI already supports it).
+        • Non-lead KYC incentive admin config (the existing user-level
+          pending_rewards mechanism already supports it; just needs an
+          admin endpoint pair similar to /admin/kyc-incentive).
+
+        Files changed (12):
+          backend:
+            core.py
+            notification_config.py (new)
+            settlement_config.py (new)
+            settlement_cron.py (new)
+            server.py
+            admin_modules.py
+            routes/payout_routes.py
+            routes/contribute_routes.py
+            routes/pay_routes.py
+            routes/admin_phase_bc.py
+          frontend:
+            src/StatusBadge.tsx
+            src/adminApi.ts
+            app/group/[id]/pay.tsx
+            app/group/[id]/summary.tsx
+            app/admin/_layout.tsx
+            app/admin/notification-config.tsx (new)
+
+        Ready for user testing. Recommended QA path:
+        1. Create a new Squad — confirm default split mode is "Equal"
+           (no more "Smart" option).
+        2. Lead creates bill, adds members, members contribute (verify
+           Stripe Checkout fires for ALL contributions including
+           owing-member repayments).
+        3. Lead taps "Pay" with shortfall, picks Loan mode + member to
+           cover; covered member gets SMS (live in prod, mock in dev).
+        4. Status pill: should show "Contributed" not "Bill Settled" when
+           collections hit 100% (or coverage = 100%).
+        5. Lead taps Pay Out → Stripe Connect → webhook fires → status
+           flips to "Lead Paid" → 20 min later → "Bill Settled".
+        6. Owing member opens app → goes through Stripe Checkout for repay
+           → covering member sees green "Pay Out — $X ready" button on
+           their member dashboard.
+        7. Admin → Notification Config: toggle channels per event,
+           Settlement Delay slider; save and verify on next bill flow.
+

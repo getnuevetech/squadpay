@@ -103,6 +103,35 @@ async def _lead_available_cents(db, *, group_id: str, lead_id: str) -> int:
     return max(credit_cents - debit_cents, 0)
 
 
+async def _member_cover_available_cents(db, *, group_id: str, user_id: str) -> int:
+    """How much a covering member can cash out (June 2025 Phase 3).
+
+    A non-lead member earns Pay-Out eligibility when they covered a
+    shortfall (as a Loan) and the owing member has subsequently repaid
+    part/all of it via Stripe. The covering member can withdraw the
+    proportional repaid amount minus anything they've already cashed out.
+    """
+    group = await db.groups.find_one({"id": group_id}, {"_id": 0})
+    if not group:
+        raise HTTPException(404, "Squad not found")
+    # Recompute to populate cover_amount / cover_repaid / cover_outstanding.
+    from core import _recompute_group
+    enriched = await _recompute_group(group)
+    per = next((p for p in enriched["per_user"] if p["user_id"] == user_id), None)
+    if not per:
+        return 0
+    # Available = cover_repaid minus what they've already withdrawn.
+    already_paid_out_cents = 0
+    async for d in db.payouts.find(
+        {"group_id": group_id, "user_id": user_id, "kind": "cover_member_cash_out",
+         "status": {"$nin": ["failed", "canceled"]}},
+        {"_id": 0, "amount_cents": 1},
+    ):
+        already_paid_out_cents += int(d.get("amount_cents") or 0)
+    repaid_cents = to_cents(float(per.get("cover_repaid") or 0))
+    return max(repaid_cents - already_paid_out_cents, 0)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Encryption helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -377,9 +406,28 @@ def attach_payout_routes(api_router: APIRouter, db):
     async def push_to_card(body: PushToCardIn):
         await _require_session(db, body.user_id, body.session_id)
 
-        available_cents = await _lead_available_cents(
-            db, group_id=body.group_id, lead_id=body.user_id
-        )
+        # June 2025 — dual-mode cash-out. If caller is the Squad lead, use
+        # the ledger-based merchant_payable balance (existing behavior).
+        # Otherwise, check covering-member eligibility: they may withdraw
+        # the proportional repaid amount of the shortfall they covered.
+        grp = await db.groups.find_one({"id": body.group_id}, {"_id": 0, "lead_id": 1})
+        is_lead = bool(grp and grp.get("lead_id") == body.user_id)
+        if is_lead:
+            available_cents = await _lead_available_cents(
+                db, group_id=body.group_id, lead_id=body.user_id
+            )
+            payout_kind = "lead_cash_out"
+        else:
+            available_cents = await _member_cover_available_cents(
+                db, group_id=body.group_id, user_id=body.user_id
+            )
+            if available_cents <= 0:
+                raise HTTPException(
+                    403,
+                    "Only the lead or a covering member with a repaid loan may cash out from this squad.",
+                )
+            payout_kind = "cover_member_cash_out"
+
         requested_cents = to_cents(body.amount)
         if requested_cents > available_cents:
             raise HTTPException(
@@ -454,7 +502,7 @@ def attach_payout_routes(api_router: APIRouter, db):
                     "card_id": body.card_id,
                 },
                 provider_fee_cents=int(result.fee_cents or 0),
-                kind="lead_cash_out",
+                kind=payout_kind,
             )
             await db.payouts.update_one(
                 {"txn_id": txn_id},

@@ -150,6 +150,17 @@ class SettlementDelayIn(BaseModel):
     minutes: int = Field(20, ge=0, le=240)
 
 
+# June 2025 — Notification Config: admin chooses delivery channel per
+# notification event type. Push is wire-ready but no-ops until
+# expo-notifications integration ships.
+class NotificationConfigIn(BaseModel):
+    events: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Map of event_key → channel. Channel ∈ {off, sms, push, both}",
+    )
+    push_enabled: bool = False
+
+
 class CmsPageIn(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     slug: Optional[str] = Field(default=None, max_length=120)
@@ -859,6 +870,41 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
                 "destructive": False,
                 "target_type": "settings",
                 "target_id": "settlement_delay",
+                "payload": body.model_dump(),
+            })
+        except Exception:
+            pass
+        return {"ok": True, **cfg}
+
+    # June 2025 — Notification Config admin endpoints.
+    @r.get("/admin/notification-config")
+    async def admin_get_notification_config(admin=Depends(get_current_admin)):
+        from notification_config import get_notification_config
+        return await get_notification_config(db)
+
+    @r.put("/admin/notification-config")
+    async def admin_set_notification_config(
+        body: NotificationConfigIn = Body(...),
+        admin=Depends(get_current_admin),
+        _gate=Depends(require_role("super_admin", "manager")),
+    ):
+        from notification_config import set_notification_config
+        admin_email = admin.get("email") if isinstance(admin, dict) else None
+        cfg = await set_notification_config(
+            db,
+            events=body.events,
+            push_enabled=body.push_enabled,
+            admin_email=admin_email,
+        )
+        try:
+            await db.audit_log.insert_one({
+                "id": _new_id("aud_"),
+                "at": _now(),
+                "admin_email": admin_email or "?",
+                "action": "admin.notification_config_update",
+                "destructive": False,
+                "target_type": "settings",
+                "target_id": "notification_config",
                 "payload": body.model_dump(),
             })
         except Exception:

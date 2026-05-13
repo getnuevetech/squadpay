@@ -152,6 +152,13 @@ export default function SummaryScreen() {
   const memberCanRepay = group.status !== 'open' && myOutstanding > 0.01;
   // Lead-specific: lead must contribute own share before paying merchant
   const leadShareCovered = isLead && myContributed >= myShare - 0.01;
+  // June 2025 — Covering-member Pay Out CTA. When a non-lead member
+  // covered a shortfall as a Loan and the owing member has since repaid
+  // part/all of it, the covering member can withdraw the proportional
+  // amount through Stripe Connect (same payout flow as Lead).
+  const myCoverOutstanding = Number((myPer as any)?.cover_outstanding || 0);
+  const myCoverRepaid = Number((myPer as any)?.cover_repaid || 0);
+  const memberCanCashOutCover = !isLead && myCoverRepaid > 0.01;
 
   return (
     <SafeAreaView edges={['bottom']} style={{ flex: 1, backgroundColor: COLORS.bg }}>
@@ -477,6 +484,23 @@ export default function SummaryScreen() {
             testID="summary-repay-btn"
             onPress={handleRepay}
           />
+        )}
+        {!isLead && memberCanCashOutCover && (
+          <Button
+            title={`💰 Pay Out — $${myCoverRepaid.toFixed(2)} ready`}
+            testID="summary-cover-payout-btn"
+            onPress={() => router.push('/payout/cash-out')}
+          />
+        )}
+        {!isLead && myCoverOutstanding > 0.01 && myCoverRepaid <= 0.01 && (
+          <View style={{ padding: 12, backgroundColor: COLORS.warningLight, borderRadius: 8 }}>
+            <Text style={{ color: COLORS.warning, fontWeight: '600' }}>
+              You covered ${myCoverOutstanding.toFixed(2)} for the Squad
+            </Text>
+            <Text style={{ color: COLORS.muted, fontSize: 12, marginTop: 4 }}>
+              You'll get a Pay Out button here once the owing member repays.
+            </Text>
+          </View>
         )}
         {!isLead && group.status !== 'open' && myOutstanding <= 0.01 && (
           <Button title="All settled" onPress={() => router.replace('/')} variant="secondary" testID="summary-settled-btn" />

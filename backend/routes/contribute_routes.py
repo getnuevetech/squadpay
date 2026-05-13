@@ -19,11 +19,26 @@ def attach_contribute_routes(router: APIRouter, db):
 
     @router.post("/groups/{group_id}/contribute")
     async def contribute(group_id: str, body: ContributeIn, request: Request):
-        """Member (or lead) pays their share via real Stripe Checkout (Phase F1)."""
+        """Member (or lead) pays their share via real Stripe Checkout (Phase F1).
+
+        June 2025 — Also handles OWING-MEMBER repayments for covered shortfalls.
+        When a Squad is already at status="paid" or "lead_paid" but the
+        caller has a shortfall_owed obligation (loan from a covering
+        member), this endpoint routes their payment through Stripe Checkout
+        and the repayment is distributed proportionally to covering members.
+        """
         group = await db.groups.find_one({"id": group_id}, {"_id": 0})
         if not group:
             raise HTTPException(404, "Squad not found")
-        if group.get("status") != "open":
+
+        # Pre-fetch caller's shortfall obligation (if any) to allow repayment
+        # on paid/lead_paid squads without breaking the original
+        # status-gate for normal contributions.
+        _enriched_for_check = await _recompute_group(group)
+        _per_check = next((p for p in _enriched_for_check["per_user"] if p["user_id"] == body.user_id), None)
+        _has_shortfall = bool(_per_check and float(_per_check.get("shortfall_owed") or 0) > 0.01 and float(_per_check.get("outstanding") or 0) > 0.01)
+        _allowed_statuses = {"open"} | ({"paid", "lead_paid"} if _has_shortfall else set())
+        if group.get("status") not in _allowed_statuses:
             raise HTTPException(400, "Bill already paid; use repay instead")
         if group.get("is_blocked"):
             raise HTTPException(403, "This squad has been blocked by an administrator.")
@@ -262,7 +277,97 @@ def attach_contribute_routes(router: APIRouter, db):
             credit_planned = float(meta.get("credit_planned") or 0)
 
             group = await db.groups.find_one({"id": group_id}, {"_id": 0})
-            if group and group.get("status") == "open":
+            # June 2025 — owing-member repayment branch. When the Squad is
+            # already funded (status=paid/lead_paid) and the caller has an
+            # outstanding shortfall_owed, treat their Stripe charge as a
+            # REPAYMENT (settles their obligation; covering members get
+            # notified for back-collection / non-lead pay-out).
+            if group and group.get("status") in ("paid", "lead_paid"):
+                enriched_chk = await _recompute_group(group)
+                per_chk = next((p for p in enriched_chk["per_user"] if p["user_id"] == user_id), None)
+                owed = float((per_chk or {}).get("shortfall_owed") or 0)
+                outstanding = float((per_chk or {}).get("outstanding") or 0)
+                if owed > 0.01 and outstanding > 0.01:
+                    repayments = list(group.get("repayments") or [])
+                    repay_id = new_id("r_")
+                    actual_amount = round(cash_owed, 2)
+                    repayments.append({
+                        "id": repay_id,
+                        "user_id": user_id,
+                        "amount": actual_amount,
+                        "via": "stripe",
+                        "stripe_session_id": session_id,
+                        "at": now_iso(),
+                    })
+                    await db.groups.update_one(
+                        {"id": group_id}, {"$set": {"repayments": repayments}}
+                    )
+                    # Distribute notification SMS to covering parties
+                    # proportional to their cover amount. Find who covered
+                    # for this owing user: contributions marked is_shortfall
+                    # with covers=this_user (lead-covered case) OR
+                    # shortfall_obligations.covers=this_user (member-covered).
+                    covering_contribs = [
+                        c for c in (group.get("contributions") or [])
+                        if c.get("is_shortfall") and user_id in (c.get("covers") or [])
+                    ]
+                    covering_obligations = [
+                        o for o in (group.get("shortfall_obligations") or [])
+                        if user_id in (o.get("covers") or []) and o.get("user_id") != user_id
+                    ]
+                    cover_total = sum(float(c.get("amount") or 0) for c in covering_contribs) + \
+                                  sum(float(o.get("amount") or 0) for o in covering_obligations)
+                    covering_users: list[tuple[str, float]] = []
+                    if cover_total > 0:
+                        for c in covering_contribs:
+                            covering_users.append((c.get("user_id"), float(c.get("amount") or 0)))
+                        for o in covering_obligations:
+                            covering_users.append((o.get("user_id"), float(o.get("amount") or 0)))
+                    # Send SMS to each covering user with their proportional
+                    # share of the repayment that just landed.
+                    notifs = list(group.get("notifications") or [])
+                    try:
+                        from sms_providers import send_sms
+                        repayer_user = await db.users.find_one({"id": user_id}, {"_id": 0, "name": 1}) or {}
+                        repayer_name = repayer_user.get("name") or "A squad member"
+                        for cov_uid, cov_amt in covering_users:
+                            share = round((cov_amt / cover_total) * actual_amount, 2) if cover_total else actual_amount
+                            msg = (
+                                f"{repayer_name} just repaid ${share:.2f} toward the ${cov_amt:.2f} "
+                                f"you covered. Open SquadPay to cash it out."
+                            )
+                            via = "sms_failed"
+                            try:
+                                u = await db.users.find_one({"id": cov_uid}, {"_id": 0, "phone": 1}) or {}
+                                if u.get("phone"):
+                                    sent_real, _info, prov = await send_sms(db, u["phone"], msg)
+                                    via = f"sms_{prov or 'live'}" if sent_real else ("sms_mock" if prov == "mock" else "sms_failed")
+                                else:
+                                    via = "sms_no_phone"
+                            except Exception:
+                                via = "sms_failed"
+                            notifs.append({
+                                "id": new_id("n_"),
+                                "user_id": cov_uid,
+                                "kind": "shortfall_repaid",
+                                "amount": share,
+                                "message": msg,
+                                "at": now_iso(),
+                                "delivered_via": via,
+                            })
+                        if covering_users:
+                            await db.groups.update_one(
+                                {"id": group_id}, {"$set": {"notifications": notifs}}
+                            )
+                    except Exception as e:
+                        logger.warning("[repay-webhook] cover-member notify failed: %s", e)
+
+                    logger.info(
+                        "[repay-webhook] %s repaid $%.2f → %d covering parties notified (cover_total=$%.2f)",
+                        user_id, actual_amount, len(covering_users), cover_total,
+                    )
+
+            elif group and group.get("status") == "open":
                 contributions = list(group.get("contributions") or [])
                 contrib_id = new_id("c_")
                 credit_consumed, _events = await _consume_user_credits(

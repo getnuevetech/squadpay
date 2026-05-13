@@ -1,4 +1,5 @@
 """Pay merchant + repay loan + user/groups list (Batch B refactor)."""
+import asyncio
 import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException
@@ -10,6 +11,41 @@ from core import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _dispatch_sms_to_user(db, user_id: str, body: str, event_key: str | None = None) -> str:
+    """Best-effort SMS dispatch to a user, honoring admin Notification Config.
+
+    Returns delivery_via tag for the notification record:
+        - "sms_<provider>" on real send
+        - "sms_mock" in dev/mock mode
+        - "sms_no_phone" if user has no phone
+        - "sms_failed" on any error
+        - "sms_disabled_by_admin" if the event_key is set to "off" or "push"
+    """
+    try:
+        # Respect admin Notification Config: skip SMS if event is disabled.
+        if event_key:
+            try:
+                from notification_config import should_send_sms
+                if not await should_send_sms(db, event_key):
+                    return "sms_disabled_by_admin"
+            except Exception:
+                pass  # On config failure, fall through to legacy default-on.
+        u = await db.users.find_one({"id": user_id}, {"_id": 0, "phone": 1})
+        phone = (u or {}).get("phone")
+        if not phone:
+            return "sms_no_phone"
+        from sms_providers import send_sms
+        sent_real, info, provider = await send_sms(db, phone, body)
+        if sent_real:
+            return f"sms_{provider or 'live'}"
+        if provider == "mock":
+            return "sms_mock"
+        return "sms_failed"
+    except Exception as e:
+        logger.warning("[shortfall-sms] dispatch failed for %s: %s", user_id, e)
+        return "sms_failed"
 
 
 def attach_pay_routes(router: APIRouter, db):
@@ -93,6 +129,7 @@ def attach_pay_routes(router: APIRouter, db):
                         if is_loan
                         else f"Lead covered the ${shortfall:.2f} shortfall as a gift — no repayment needed."
                     )
+                    via = await _dispatch_sms_to_user(db, bid, msg, event_key="shortfall_lead_covered")
                     notifications.append({
                         "id": new_id("n_"),
                         "user_id": bid,
@@ -100,7 +137,7 @@ def attach_pay_routes(router: APIRouter, db):
                         "amount": shortfall,
                         "message": msg,
                         "at": now_iso(),
-                        "delivered_via": "sms_mock",
+                        "delivered_via": via,
                     })
             elif mode == "member":
                 if not body.funder_member_id:
@@ -116,14 +153,16 @@ def attach_pay_routes(router: APIRouter, db):
                     "covers": [b for b in beneficiaries if b != funder_id],
                     "at": now_iso(),
                 })
+                msg = f"You've been asked to cover a ${shortfall:.2f} shortfall on the bill. Open SquadPay to pay your share."
+                via = await _dispatch_sms_to_user(db, funder_id, msg, event_key="shortfall_assigned")
                 notifications.append({
                     "id": new_id("n_"),
                     "user_id": funder_id,
                     "kind": "shortfall_assigned",
                     "amount": shortfall,
-                    "message": f"You've been asked to cover a ${shortfall:.2f} shortfall on the bill.",
+                    "message": msg,
                     "at": now_iso(),
-                    "delivered_via": "sms_mock",
+                    "delivered_via": via,
                 })
                 awaiting_obligations = True
             elif mode == "split_equal":
@@ -143,14 +182,16 @@ def attach_pay_routes(router: APIRouter, db):
                         "covers": beneficiaries,
                         "at": now_iso(),
                     })
+                    msg = f"Bill is short — your share of the shortfall is ${amt:.2f}. Open SquadPay to pay."
+                    via = await _dispatch_sms_to_user(db, uid, msg, event_key="shortfall_assigned")
                     notifications.append({
                         "id": new_id("n_"),
                         "user_id": uid,
                         "kind": "shortfall_assigned",
                         "amount": amt,
-                        "message": f"Bill is short — your share of the shortfall is ${amt:.2f}.",
+                        "message": msg,
                         "at": now_iso(),
-                        "delivered_via": "sms_mock",
+                        "delivered_via": via,
                     })
                 is_loan = True
                 awaiting_obligations = True

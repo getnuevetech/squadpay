@@ -526,6 +526,42 @@ async def _recompute_group(group: dict) -> dict:
         already_paid = p["contributed"] + p["repaid"]
         p["overpaid"] = round(max(0.0, already_paid - owed_for_overpaid_calc), 2)
 
+    # June 2025 — Cover tracking for non-lead Pay Out eligibility.
+    # Compute per-user `cover_amount` (how much THIS user covered for OTHERS)
+    # and `cover_repaid` (how much of that has been repaid by owing members
+    # so far). The FE uses (cover_amount - cover_repaid) to surface a Pay
+    # Out CTA on covering members' dashboards.
+    cover_by_user: Dict[str, float] = {}
+    # 1. Lead-cover contributions (is_shortfall=True with covers list)
+    for c in contributions:
+        if c.get("is_shortfall") and c.get("covers"):
+            cov_uid = c.get("user_id")
+            cover_by_user[cov_uid] = cover_by_user.get(cov_uid, 0.0) + float(c.get("amount", 0))
+    # 2. Member-cover obligations (assigned to a member to fund the shortfall)
+    for o in obligations:
+        if o.get("kind") in ("shortfall_member", "shortfall_split") and o.get("covers"):
+            cov_uid = o.get("user_id")
+            cover_by_user[cov_uid] = cover_by_user.get(cov_uid, 0.0) + float(o.get("amount", 0))
+    # Cover repaid = sum of repayments from owing users whose `covers` list
+    # included the covering user — distributed proportionally by cover share.
+    # (Approximation: total repayments × this_user_cover / total_cover.)
+    total_cover = round(sum(cover_by_user.values()), 2)
+    total_owed_repayments = round(sum(
+        float(r.get("amount") or 0)
+        for r in repayments
+        # Only repayments from members who had obligations (not lead) count
+        if any(o.get("user_id") == r.get("user_id") for o in obligations)
+    ), 2)
+    for p in per_user:
+        cov = round(cover_by_user.get(p["user_id"], 0.0), 2)
+        p["cover_amount"] = cov
+        if total_cover > 0:
+            cov_repaid = round((cov / total_cover) * total_owed_repayments, 2)
+        else:
+            cov_repaid = 0.0
+        p["cover_repaid"] = cov_repaid
+        p["cover_outstanding"] = round(max(0.0, cov - cov_repaid), 2)
+
     total_contributed = round(sum(contrib_by_user.values()), 2)
     total_repaid = round(sum(repaid_by_user.values()), 2)
     total_amount = group.get("total_amount") or round(total, 2)
@@ -540,20 +576,6 @@ async def _recompute_group(group: dict) -> dict:
     raw_status = group.get("status", "open")
     settlement = group.get("shortfall_settlement") or {}
     has_outstanding = any(p["outstanding"] > 0.01 for p in per_user)
-    lead_loaned = (
-        settlement.get("mode") == "lead"
-        and settlement.get("is_loan", False)
-        and any(
-            p["outstanding"] > 0.01
-            for p in per_user
-            if p["user_id"] in (settlement.get("beneficiaries") or [])
-        )
-    )
-    vc = group.get("virtual_card") or {}
-    card_spent = float(vc.get("spent") or 0.0)
-    card_status = vc.get("status")
-    card_swiped = card_spent > 0.005 or (card_status == "inactive" and bool(vc.get("transactions")))
-
     # ─── 5-State Squad Lifecycle (June 2025 spec) ────────────────────────────
     #  Open         → freshly created, lead only, no items/contributions
     #  Contributing → items added OR members added, still collecting

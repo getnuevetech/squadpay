@@ -231,8 +231,8 @@ async def grant_pending_reward(
     if amount < 0:
         raise ValueError("amount must be >= 0")
 
-    user = await db.users.find_one({"id": user_id}, {"_id": 0, "pending_rewards": 1})
-    if not user:
+    user = await db.users.find_one({"id": user_id}, {"_id": 0, "id": 1, "pending_rewards": 1})
+    if user is None:
         return None
 
     if dedupe_key:

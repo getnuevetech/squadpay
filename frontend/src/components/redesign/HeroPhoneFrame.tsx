@@ -42,9 +42,16 @@ const FALLBACK_AVATARS_RIGHT_WOMAN = [
   'https://images.unsplash.com/photo-1554151228-14d9def656e4?crop=entropy&cs=srgb&fm=jpg&w=200&q=80',
 ];
 
-function pick<T>(arr: T[] | undefined | null, fallback: T): T {
-  if (!arr || arr.length === 0) return fallback;
-  return arr[Math.floor(Math.random() * arr.length)];
+/**
+ * Pick a random element from `arr` if non-empty, else from `fallback`.
+ * NOTE: `fallback` is ALWAYS an array so we still randomize even when the
+ * remote config endpoint is unreachable (e.g. on a freshly-deployed
+ * frontend whose backend hasn't been redeployed yet — previously we'd
+ * return a single fallback value and the visuals never rotated).
+ */
+function pick<T>(arr: T[] | undefined | null, fallback: T[]): T {
+  const src = arr && arr.length > 0 ? arr : fallback;
+  return src[Math.floor(Math.random() * src.length)];
 }
 
 function pickN<T>(arr: T[] | undefined | null, fallback: T[], n: number): T[] {

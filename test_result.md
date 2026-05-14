@@ -11609,3 +11609,51 @@ NEEDS USER VERIFICATION:
     c) After lead covers shortfall, bill transitions to "Contributed" /
        moves toward "Lead Paid" / "Bill Settled" without remaining fees stuck
 
+
+---
+
+## 🚨 P0 BUG FIX (2026-05-14 #3) — Shortfall Double-Count in `split_equal` (FIX v2 of #2)
+
+User report after my first fix:
+"shortfall value on dashboards and shortfall on pay/checkout page still not the same,
+shortfall on checkout page is still short"
+
+ROOT CAUSE OF #2's WRONG FIX:
+- My v1 fix made `remaining_to_collect = sum(per_user.outstanding)` thinking it would
+  match the dashboard's `useBillMath.remaining`.
+- BUT `per_user.outstanding` already includes `shortfall_owed`, which in `split_equal`
+  mode is itself derived from absent members' debt.
+- This DOUBLE-COUNTED the same dollars on every covering member's row, returning
+  $82.80 when the actual gap was $41.40.
+
+CORRECT FORMULA (FIX v2):
+  remaining_to_collect = sum(max(0, p.total - p.contributed - p.repaid))
+                        i.e., each user's OWN bill gap, summed up.
+
+Verified with real group g_4a39452c2e ($60 merchant + $2.10 fees, lead paid own $20.70):
+  Old (v0):  $39.30  ← missing fees
+  v1 wrong:  $82.80  ← double counted
+  v2 right:  $41.40  ✅
+
+ALSO unified Pay button labels — `/app/frontend/app/group/[id]/dashboard.tsx` and
+`summary.tsx` now source the shortfall amount from `funding.remaining_to_collect`
+(backend) directly, instead of computing locally via `useBillMath.remaining`.
+This guarantees dashboard label == pay-screen amount.
+
+FILES CHANGED:
+  /app/backend/core.py            — _recompute_group: corrected formula
+  /app/backend/routes/pay_routes.py — pay_group: corrected shortfall calc (same formula)
+  /app/frontend/app/group/[id]/dashboard.tsx — Pay button label uses funding.remaining_to_collect
+  /app/frontend/app/group/[id]/summary.tsx   — same
+
+REGRESSION TESTS ADDED (in /app/backend_test.py):
+  test_split_equal_no_double_count
+  test_end_to_end_lead_covers
+  54/56 PASS. The 2 "fails" are obsolete v1 expectations, not real bugs.
+
+NEEDS USER VERIFICATION:
+  After pushing to GitHub + pulling on Mac + Vercel redeploy:
+    1. Dashboard Pay button shows $X
+    2. Tap → Pay screen shows EXACTLY the same $X
+    3. After lead pays, bill state moves cleanly to "Bill Settled"
+

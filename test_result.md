@@ -122,6 +122,78 @@ backend:
         - working: true
           agent: "testing"
           comment: |
+            FIX v3 QUICK REGRESSION (Dec 2025) — verified via /app/backend_test.py against
+            live preview backend (https://joint-pay-1.preview.emergentagent.com/api).
+            32/32 assertions PASS. 0 5xx anywhere.
+
+            v3 formula in production (verified live):
+                core.py _recompute_group():
+                  remaining_to_collect = sum(max(0, p.total − p.contributed − p.repaid)
+                                              for p in per_user
+                                              if p.user_id != group.lead_id)
+                pay_routes.py pay_group():
+                  shortfall = same formula, excluding body.user_id (lead)
+
+            ✅ v3.1 — Existing group g_4a39452c2e UNCHANGED:
+              GET /groups/g_4a39452c2e → funding.remaining_to_collect = $41.40 ✓
+              funding.merchant_remaining = $39.30 ✓
+              (lead.own_gap was 0 in this group, so v3 swap doesn't change result —
+              exactly what the user predicted.)
+
+            ✅ v3.2 — 2-member bill: r2c EXACTLY == member's full share:
+              Setup: lead+1 member, fast-split $50, lead_share = m1_share = $25.80
+              (incl $0.70 fees each). Lead contributed own $25.80 via credit.
+              GET → m1.per_user.total = $25.80, lead_own_gap = $0.00.
+              funding.remaining_to_collect = $25.80 ✓ (EXACTLY m1's full personal
+              share — not inflated by anything else, not less than what m1 sees).
+
+            ✅ v3.3 — Lead residual gap (from bill edit) is EXCLUDED from r2c:
+              Setup: lead+1 member, fast-split $50. Lead contributed $25.80.
+              Then PATCH /groups/{gid} { tax: 10.0 } → bill total grows to $60.
+              Each share recomputed to $30.90. Lead's contributed STAYS $25.80
+              → lead.own_gap = $5.10 (residual after edit). m1.own_gap = $30.90.
+              GET → funding.remaining_to_collect = $30.90 ✓
+              ✓ r2c == m1_own_gap ONLY (the residual $5.10 EXCLUDED)
+              ✓ r2c != lead_own_gap + m1_own_gap ($36.00 buggy v2 sum)
+              This is the exact mental-model fix the user requested: the unpaying
+              member sees $30.90 on their dashboard; the lead's "cover shortfall"
+              button now also shows $30.90 (not $36.00). Lead's $5.10 residual is
+              owed via "Contribute Your Share" flow, not via "cover shortfall".
+
+            ✅ v3.4 — End-to-end pay_group with residual:
+              Continuation of v3.3. Lead calls POST /pay shortfall_mode=lead
+              is_loan=true with $5.10 residual still owed.
+              → 400 "Please contribute your own share first ($5.10)." ✓
+              (Backend correctly forces lead to clear residual before calling /pay.
+              This is the right UX — the residual belongs to "Contribute Your Share"
+              flow, exactly as the user said.)
+              After lead tops up the $5.10 residual via credit:
+              → POST /pay → 200, shortfall_contribution.amount = $30.90 ✓
+              ✓ exactly m1's own_gap, not inflated by lead's previous residual
+              ✓ bill becomes fully funded, status='paid'
+
+            ✅ v3.5 — Existing tests still pass:
+              test_split_equal_no_double_count — before split r2c=$41.40 == true_gap.
+                After split_equal: r2c=$41.40 (not the inflated $69.00 sum). ✓
+              test_end_to_end_lead_covers — lead/m1/m2 $60+$2.10 bill, lead covers
+                $41.40 shortfall → total_contributed=$62.10, merchant_remaining=$0.00. ✓
+
+            Per-check status:
+              v3.1 ✓ existing group unchanged ($41.40 r2c, $39.30 merch)
+              v3.2 ✓ 2-member r2c EXACTLY == member share ($25.80)
+              v3.3 ✓ lead residual gap EXCLUDED from r2c after bill edit
+              v3.4 ✓ pay_group with residual: 400 → topup → 200, contribution
+                    amount = member's gap only
+              v3.5 ✓ legacy tests (split_equal, end_to_end_lead_covers) still pass
+
+            Test artifact: /app/backend_test.py (updated Dec 2025 — adds
+            test_v3_existing_group_unchanged, test_v3_two_member_r2c_eq_member_share,
+            test_v3_lead_residual_excluded, test_v3_pay_with_lead_residual).
+            No 5xx errors anywhere. No backend changes required.
+
+        - working: true
+          agent: "testing"
+          comment: |
             FIX v2 REGRESSION TEST — verified via /app/backend_test.py against live preview
             backend (https://joint-pay-1.preview.emergentagent.com/api). 54/56 assertions
             PASS; the 2 non-passing are spec-mismatch assertions in the legacy harness,

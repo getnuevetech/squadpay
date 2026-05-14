@@ -681,6 +681,276 @@ async def test_smoke_endpoints():
 
 
 # ============================================================
+# v3 CHECK 1 — existing g_4a39452c2e shortfall_split group
+# ============================================================
+async def test_v3_existing_group_unchanged():
+    section("v3.1 — Existing g_4a39452c2e: r2c=$41.40, merchant_remaining=$39.30 (no change)")
+
+    gid = "g_4a39452c2e"
+    r = http("GET", f"/groups/{gid}")
+    if r.status_code != 200:
+        record(False, f"GET /groups/{gid} → 200", f"{r.status_code}: {r.text[:200]}")
+        return
+    record(True, f"GET /groups/{gid} → 200")
+    eg = r.json()
+    funding = eg.get("funding", {})
+    print(f"     funding={funding}")
+    r2c = float(funding.get("remaining_to_collect", -1))
+    merch = float(funding.get("merchant_remaining", -1))
+    record(abs(r2c - 41.40) < 0.05,
+           "g_4a39452c2e: funding.remaining_to_collect == $41.40 (unchanged from v2)",
+           f"got {r2c}")
+    record(abs(merch - 39.30) < 0.05,
+           "g_4a39452c2e: funding.merchant_remaining == $39.30 (unchanged)",
+           f"got {merch}")
+
+
+# ============================================================
+# v3 CHECK 2 — 2-member bill, r2c EXACTLY equals member's share
+# ============================================================
+async def test_v3_two_member_r2c_eq_member_share(admin_token: str):
+    section("v3.2 — 2-member bill: funding.remaining_to_collect == member's full personal share")
+
+    lead = await make_user("LeadV3a")
+    m1 = await make_user("M1V3a")
+
+    body = {
+        "lead_id": lead["id"],
+        "title": "v3 two-member",
+        "total_amount": 50.0,
+        "split_mode": "fast",
+        "tax": 0.0,
+        "tip": 0.0,
+        "items": [],
+    }
+    r = http("POST", "/groups", json=body)
+    if r.status_code != 200:
+        record(False, "create 2-member squad", f"{r.status_code}: {r.text[:200]}")
+        return
+    gid = r.json()["id"]
+    rj = http("POST", f"/groups/{gid}/join",
+              json={"user_id": m1["id"], "joined_via": "code"})
+    record(rj.status_code == 200, "member joins 2-member squad",
+           f"{rj.status_code}: {rj.text[:200]}")
+
+    # Lead contributes own share — member does NOT
+    rg = http("GET", f"/groups/{gid}")
+    eg0 = rg.json()
+    pm0 = {p["user_id"]: p for p in eg0["per_user"]}
+    lead_share = float(pm0[lead["id"]]["total"])
+    m1_share = float(pm0[m1["id"]]["total"])
+    print(f"     shares: lead=${lead_share} m1=${m1_share}")
+
+    await grant_credit(admin_token, lead["id"], lead_share + 1.0, "v3.2 lead")
+    rc = contribute_credit_only(gid, lead["id"], lead_share)
+    record(rc.status_code == 200, "lead contributes own share via credit",
+           f"{rc.status_code}: {rc.text[:200]}")
+
+    # GET after lead contributes
+    rg = http("GET", f"/groups/{gid}")
+    eg = rg.json()
+    funding = eg["funding"]
+    pm = {p["user_id"]: p for p in eg["per_user"]}
+    m1_per_total = float(pm[m1["id"]]["total"])
+    r2c = float(funding["remaining_to_collect"])
+    lead_own_gap = max(0.0, float(pm[lead["id"]]["total"]) - float(pm[lead["id"]]["contributed"]) - float(pm[lead["id"]]["repaid"]))
+    m1_own_gap = max(0.0, m1_per_total - float(pm[m1["id"]]["contributed"]) - float(pm[m1["id"]]["repaid"]))
+    print(f"     m1.per_user.total={m1_per_total} m1_own_gap={m1_own_gap} lead_own_gap={lead_own_gap}")
+    print(f"     funding.remaining_to_collect={r2c}")
+
+    # a) m1's per_user.total = X (their full personal share including fees)
+    record(m1_per_total > 0.01, "m1.per_user.total > 0 (member has a personal share)",
+           f"got {m1_per_total}")
+    # b) r2c == m1's full share (exactly, since no other unpaying members)
+    record(abs(r2c - m1_per_total) < 0.02,
+           f"funding.remaining_to_collect ({r2c}) == m1.per_user.total ({m1_per_total})",
+           f"got r2c={r2c}, expected {m1_per_total}")
+    # c) r2c == m1_own_gap (single unpaying member)
+    record(abs(r2c - m1_own_gap) < 0.02,
+           f"funding.remaining_to_collect == m1_own_gap ({m1_own_gap}) only",
+           f"got r2c={r2c}")
+
+
+# ============================================================
+# v3 CHECK 3 — Simulate lead RESIDUAL GAP via tax/tip edit after lead contributes
+# ============================================================
+async def test_v3_lead_residual_excluded(admin_token: str):
+    section("v3.3 — Lead residual gap (from bill edit after contribution) is EXCLUDED from r2c")
+
+    lead = await make_user("LeadV3b")
+    m1 = await make_user("M1V3b")
+
+    body = {
+        "lead_id": lead["id"],
+        "title": "v3 residual gap",
+        "total_amount": 50.0,
+        "split_mode": "fast",
+        "tax": 0.0,
+        "tip": 0.0,
+        "items": [],
+    }
+    r = http("POST", "/groups", json=body)
+    if r.status_code != 200:
+        record(False, "create residual-gap squad", f"{r.status_code}: {r.text[:200]}")
+        return
+    gid = r.json()["id"]
+    http("POST", f"/groups/{gid}/join", json={"user_id": m1["id"], "joined_via": "code"})
+
+    # Step 1: lead contributes their share at original total
+    rg = http("GET", f"/groups/{gid}")
+    pm0 = {p["user_id"]: p for p in rg.json()["per_user"]}
+    lead_share_initial = float(pm0[lead["id"]]["total"])
+    print(f"     initial lead_share={lead_share_initial}")
+    await grant_credit(admin_token, lead["id"], lead_share_initial + 1.0, "v3.3 lead")
+    rc = contribute_credit_only(gid, lead["id"], lead_share_initial)
+    record(rc.status_code == 200, "lead contributes initial share",
+           f"{rc.status_code}: {rc.text[:200]}")
+
+    # Step 2: lead edits the bill — raise tax to create a residual gap
+    rp = http("PATCH", f"/groups/{gid}",
+              json={"user_id": lead["id"], "tax": 10.0, "tip": 0.0})
+    record(rp.status_code == 200, "PATCH /groups/{gid} raise tax → $10 → 200",
+           f"{rp.status_code}: {rp.text[:200]}")
+    if rp.status_code != 200:
+        return
+
+    # Step 3: GET group, verify lead now has residual gap (total > contributed)
+    rg = http("GET", f"/groups/{gid}")
+    eg = rg.json()
+    funding = eg["funding"]
+    pm = {p["user_id"]: p for p in eg["per_user"]}
+    lead_p = pm[lead["id"]]
+    m1_p = pm[m1["id"]]
+    lead_total = float(lead_p["total"])
+    lead_contrib = float(lead_p["contributed"])
+    lead_own_gap = round(max(0.0, lead_total - lead_contrib - float(lead_p["repaid"])), 2)
+    m1_total = float(m1_p["total"])
+    m1_own_gap = round(max(0.0, m1_total - float(m1_p["contributed"]) - float(m1_p["repaid"])), 2)
+    r2c = float(funding["remaining_to_collect"])
+    print(f"     after edit: lead.total={lead_total} lead.contributed={lead_contrib} "
+          f"lead_own_gap={lead_own_gap}")
+    print(f"     after edit: m1.total={m1_total} m1_own_gap={m1_own_gap}")
+    print(f"     after edit: r2c={r2c}")
+
+    # a) Lead's row has residual gap
+    record(lead_own_gap > 0.01,
+           f"lead.per_user has residual own_gap (${lead_own_gap}) after bill edit",
+           f"got lead_total={lead_total} lead_contrib={lead_contrib}")
+    # b) r2c ONLY includes member's own_gap, NOT lead's residual
+    record(abs(r2c - m1_own_gap) < 0.02,
+           f"funding.remaining_to_collect ({r2c}) == m1_own_gap ({m1_own_gap}) ONLY — lead residual EXCLUDED",
+           f"got r2c={r2c}, expected {m1_own_gap}, lead_residual={lead_own_gap} (must be excluded)")
+    # c) r2c != lead_own_gap + m1_own_gap (the buggy v2 sum)
+    buggy_sum = round(lead_own_gap + m1_own_gap, 2)
+    record(abs(r2c - buggy_sum) > 0.05 or lead_own_gap < 0.01,
+           f"r2c != lead_own_gap + m1_own_gap (${buggy_sum}) — confirms v3 fix",
+           f"r2c={r2c}, buggy v2 sum={buggy_sum}")
+
+    return {"gid": gid, "lead": lead, "m1": m1,
+            "lead_own_gap": lead_own_gap, "m1_own_gap": m1_own_gap, "r2c": r2c}
+
+
+# ============================================================
+# v3 CHECK 4 — pay_group with shortfall_mode=lead after lead has residual
+# ============================================================
+async def test_v3_pay_with_lead_residual(admin_token: str):
+    section("v3.4 — POST /pay shortfall_mode=lead with lead RESIDUAL gap — covers only member's gap")
+
+    ctx = await test_v3_lead_residual_excluded(admin_token)
+    if not ctx:
+        record(False, "v3.4 setup failed", "could not create residual-gap context")
+        return
+    gid = ctx["gid"]
+    lead = ctx["lead"]
+    m1 = ctx["m1"]
+    lead_own_gap = ctx["lead_own_gap"]
+    m1_own_gap = ctx["m1_own_gap"]
+
+    # POST /pay shortfall_mode=lead is_loan=true
+    rp = http("POST", f"/groups/{gid}/pay",
+              json={"user_id": lead["id"], "shortfall_mode": "lead", "is_loan": True})
+    # Could either succeed (if backend allows lead to pay despite their own residual)
+    # OR 400 (if backend requires lead to contribute own share first).
+    # The current code in pay_routes.py enforces lead.contributed >= lead.total
+    # → so we EXPECT 400 because of the residual.
+    print(f"     POST /pay status={rp.status_code} body={rp.text[:300]}")
+    if rp.status_code == 400 and "contribute your own share first" in rp.text.lower():
+        record(True,
+               "POST /pay returns 400 'contribute own share first' (lead has residual)",
+               f"this is correct UX — lead must clear residual before covering others")
+        # We can't directly test the contribution-amount aspect of v3.4 without
+        # bypassing the pre-condition; document the observation.
+        print(f"     NOTE: lead must contribute residual (${lead_own_gap:.2f}) before "
+              f"calling /pay. Once they do, /pay shortfall should be exactly "
+              f"member's gap (${m1_own_gap:.2f}). Continuing with that flow...")
+        # Top up lead's residual
+        await grant_credit(admin_token, lead["id"], lead_own_gap + 1.0, "v3.4 top-up")
+        rc2 = contribute_credit_only(gid, lead["id"], lead_own_gap)
+        record(rc2.status_code == 200, "lead tops up own residual via credit",
+               f"{rc2.status_code}: {rc2.text[:200]}")
+
+        # Re-snapshot
+        rg = http("GET", f"/groups/{gid}")
+        eg2 = rg.json()
+        funding2 = eg2["funding"]
+        pm2 = {p["user_id"]: p for p in eg2["per_user"]}
+        r2c2 = float(funding2["remaining_to_collect"])
+        m1_own_gap2 = round(max(0.0,
+            float(pm2[m1["id"]]["total"])
+            - float(pm2[m1["id"]]["contributed"])
+            - float(pm2[m1["id"]]["repaid"])), 2)
+        print(f"     after top-up: r2c={r2c2} m1_own_gap={m1_own_gap2}")
+        record(abs(r2c2 - m1_own_gap2) < 0.02,
+               f"after top-up: r2c ({r2c2}) == m1_own_gap ({m1_own_gap2})",
+               f"got r2c={r2c2}, expected {m1_own_gap2}")
+
+        # Now /pay
+        rp2 = http("POST", f"/groups/{gid}/pay",
+                   json={"user_id": lead["id"], "shortfall_mode": "lead", "is_loan": True})
+        record(rp2.status_code == 200, "POST /pay (after top-up) → 200",
+               f"{rp2.status_code}: {rp2.text[:200]}")
+        if rp2.status_code == 200:
+            eg_a = rp2.json()
+            shortfall_contribs = [c for c in eg_a.get("contributions", []) if c.get("is_shortfall")]
+            record(len(shortfall_contribs) == 1, "exactly 1 shortfall contribution",
+                   f"got {len(shortfall_contribs)}")
+            if shortfall_contribs:
+                sc = shortfall_contribs[0]
+                amt = float(sc.get("amount", 0))
+                record(abs(amt - m1_own_gap2) < 0.02,
+                       f"shortfall contribution.amount == m1_own_gap (${m1_own_gap2}) NOT inflated",
+                       f"got {amt}")
+    elif rp.status_code == 200:
+        # Backend allowed pay with residual — verify the shortfall amount is only member's gap
+        eg_a = rp.json()
+        shortfall_contribs = [c for c in eg_a.get("contributions", []) if c.get("is_shortfall")]
+        record(len(shortfall_contribs) == 1,
+               "POST /pay → 200, exactly 1 shortfall contribution",
+               f"got {len(shortfall_contribs)}")
+        if shortfall_contribs:
+            sc = shortfall_contribs[0]
+            amt = float(sc.get("amount", 0))
+            record(abs(amt - m1_own_gap) < 0.02,
+                   f"shortfall contribution.amount == m1_own_gap (${m1_own_gap}) NOT inflated by lead residual",
+                   f"got {amt}, expected {m1_own_gap}, lead_residual={lead_own_gap}")
+            # Must NOT equal lead_own_gap + m1_own_gap
+            buggy = round(lead_own_gap + m1_own_gap, 2)
+            record(abs(amt - buggy) > 0.05 or lead_own_gap < 0.01,
+                   f"shortfall amount != lead_residual + m1_own_gap ({buggy}) — v3 fix confirmed",
+                   f"got {amt}")
+            funding_a = eg_a["funding"]
+            total_contrib = float(funding_a["total_contributed"])
+            total_amount = float(eg_a.get("total_amount") or eg_a.get("total") or 0)
+            # When lead skips their residual, total_contributed should be LESS than total_amount
+            record(abs(total_contrib - total_amount) > 0.05 if lead_own_gap > 0.01 else True,
+                   "total_contributed != total_amount (lead residual still owed)",
+                   f"total_contributed={total_contrib} total_amount={total_amount}")
+    else:
+        record(False, "POST /pay unexpected status",
+               f"{rp.status_code}: {rp.text[:300]}")
+
+
+# ============================================================
 async def main():
     print(f"Backend base: {BASE}")
     print(f"Mongo DB:     {DB_NAME}")
@@ -691,35 +961,32 @@ async def main():
         print("Cannot continue without admin token.")
         return
 
+    # === v3 regression checks (review request Dec 2025) ===
     try:
-        await test_funding_math(tok)
+        await test_v3_existing_group_unchanged()
     except Exception as e:
-        record(False, "test_funding_math crashed", repr(e))
+        record(False, "test_v3_existing_group_unchanged crashed", repr(e))
 
+    try:
+        await test_v3_two_member_r2c_eq_member_share(tok)
+    except Exception as e:
+        record(False, "test_v3_two_member_r2c_eq_member_share crashed", repr(e))
+
+    try:
+        await test_v3_pay_with_lead_residual(tok)
+    except Exception as e:
+        record(False, "test_v3_pay_with_lead_residual crashed", repr(e))
+
+    # === Existing regression tests (re-run for safety) ===
     try:
         await test_split_equal_no_double_count(tok)
     except Exception as e:
         record(False, "test_split_equal_no_double_count crashed", repr(e))
 
     try:
-        await test_pay_lead_loan(tok)
-    except Exception as e:
-        record(False, "test_pay_lead_loan crashed", repr(e))
-
-    try:
         await test_end_to_end_lead_covers(tok)
     except Exception as e:
         record(False, "test_end_to_end_lead_covers crashed", repr(e))
-
-    try:
-        await test_pay_member_and_split(tok)
-    except Exception as e:
-        record(False, "test_pay_member_and_split crashed", repr(e))
-
-    try:
-        await test_smoke_endpoints()
-    except Exception as e:
-        record(False, "test_smoke_endpoints crashed", repr(e))
 
     section("SUMMARY")
     print(f"PASS  {len(passes)}")

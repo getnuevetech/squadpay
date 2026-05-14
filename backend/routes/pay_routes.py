@@ -106,15 +106,16 @@ def attach_pay_routes(router: APIRouter, db):
         ]
         total_contributed = sum(float(c["amount"]) for c in contributions)  # noqa: F841 — kept for backwards-compatible accounting hooks
         total = float(group.get("total_amount") or 0.0)  # noqa: F841 — kept for backwards-compatible accounting hooks
-        # CRITICAL (June 2025 bug fix v2): The shortfall the lead is
-        # covering = sum of each OTHER member's own bill gap
-        # (total − contributed − repaid). We MUST NOT sum
-        # `p.outstanding` because that field also includes
-        # `shortfall_owed` — which is itself derived from absent
-        # members' debt. Summing outstandings would double-count the
-        # same dollars (once on the absent member's row, once on each
-        # remaining member's row in `shortfall_split` mode), causing
-        # the lead to be charged 2× or 3× the actual gap.
+        # CRITICAL (June 2025 bug fix v3) — USER MENTAL MODEL:
+        # The shortfall the lead is covering = sum of the OTHER (non-lead)
+        # members' OWN bill gaps. The lead's own share is handled by the
+        # separate "Contribute Your Share" flow before this path runs;
+        # any residual gap on the lead's row (e.g. from a fee
+        # re-calculation after a post-edit bill change) must NOT inflate
+        # the shortfall amount the lead sees.
+        #
+        # Same formula as `funding.remaining_to_collect` in core.py —
+        # kept locally here for explicitness and unit-test isolation.
         shortfall = round(
             sum(
                 max(

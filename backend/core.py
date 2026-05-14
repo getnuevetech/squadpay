@@ -643,21 +643,32 @@ async def _recompute_group(group: dict) -> dict:
             "total_contributed": total_contributed,
             "total_repaid": total_repaid,
             "lead_shortfall": round(lead_shortfall, 2),
-            # CRITICAL (June 2025 bug fix v2): `remaining_to_collect` must
-            # equal the merchant + fees gap that is still owed to the bill
-            # — WITHOUT double-counting shortfall_owed obligations. When
-            # `shortfall_split` mode is active, every remaining member
-            # gets a `shortfall_owed` carved out of the absent members'
-            # debt; summing per_user.outstanding then counts the SAME
-            # dollars on both the absent member's row AND on every
-            # covering member's row. The clean math is each user's OWN
-            # bill gap (total − contributed − repaid), summed up.
+            # CRITICAL (June 2025 bug fix v3) — USER MENTAL MODEL:
+            # `remaining_to_collect` = exact sum of the unpaying NON-LEAD
+            # members' personal gaps. The lead's own share is handled by
+            # the separate "Contribute Your Share" flow before this
+            # value is ever surfaced — so we MUST exclude the lead row
+            # from this sum.
             #
-            # Example (3 members, $60 merchant + $2.10 fees, lead paid
-            # own $20.70, 2 absent → shortfall_split):
-            #   sum(outstanding)         = $82.80  ❌ double counted
-            #   sum(own_gap)             = $41.40  ✅ correct
-            #   total - total_contributed = $39.30 (was old value, missed fees)
+            # Why excluding the lead matters:
+            # If a bill is edited (tax/tip changed, items added, fees
+            # recalculated) after the lead already contributed, the
+            # lead's own per_user.total can grow slightly above what
+            # they originally contributed, leaving a residual own_gap
+            # of a few dollars. Summing the lead's own_gap into
+            # `remaining_to_collect` (v2 behaviour) inflated the
+            # "cover shortfall" amount by that residual — confusing
+            # the user because the unpaying member's row clearly
+            # showed only $43.65 while the lead button showed $48.48.
+            #
+            # New invariant:
+            #   member sees:  per_user.total (their personal share)
+            #   lead covers:  sum of all OTHER members' (total − contributed − repaid)
+            #
+            # When there is exactly 1 unpaying member, those two
+            # numbers are identical. When there are N unpaying
+            # members, lead covers the SUM of their N personal
+            # shares — which is exactly what the lead expects.
             "remaining_to_collect": round(
                 sum(
                     max(
@@ -667,6 +678,7 @@ async def _recompute_group(group: dict) -> dict:
                         - float(p.get("repaid", 0.0)),
                     )
                     for p in per_user
+                    if p.get("user_id") != group.get("lead_id")
                 ),
                 2,
             ),

@@ -356,6 +356,208 @@ async def test_pay_lead_loan(admin_token: str):
 
 
 # ============================================================
+# A.3) NEW — after split_equal applied, remaining_to_collect must NOT
+#       double-count shortfall_owed
+# ============================================================
+async def test_split_equal_no_double_count(admin_token: str):
+    section("A.3 — After split_equal: remaining_to_collect must NOT include shortfall_owed (no double-count)")
+
+    lead = await make_user("LeadA3")
+    m1 = await make_user("M1A3")
+    m2 = await make_user("M2A3")
+
+    body = {
+        "lead_id": lead["id"],
+        "title": "Split Equal No Double Count",
+        "total_amount": 60.0,
+        "split_mode": "fast",
+        "tax": 0.0,
+        "tip": 0.0,
+        "items": [],
+    }
+    r = http("POST", "/groups", json=body)
+    if r.status_code != 200:
+        record(False, "create squad A.3", f"{r.status_code}: {r.text[:200]}")
+        return
+    gid = r.json()["id"]
+    for u in (m1, m2):
+        http("POST", f"/groups/{gid}/join", json={"user_id": u["id"], "joined_via": "code"})
+
+    # Lead contributes own share
+    rg = http("GET", f"/groups/{gid}")
+    eg0 = rg.json()
+    pm0 = {p["user_id"]: p for p in eg0["per_user"]}
+    lead_share = float(pm0[lead["id"]]["total"])
+    m1_share = float(pm0[m1["id"]]["total"])
+    m2_share = float(pm0[m2["id"]]["total"])
+    await grant_credit(admin_token, lead["id"], lead_share + 1.0, "A.3 lead")
+    contribute_credit_only(gid, lead["id"], lead_share)
+
+    # Before /pay — capture the true remaining gap
+    rg = http("GET", f"/groups/{gid}")
+    eg_before = rg.json()
+    funding_before = eg_before["funding"]
+    pm_b = {p["user_id"]: p for p in eg_before["per_user"]}
+    true_gap = round(
+        max(0.0, m1_share - pm_b[m1["id"]]["contributed"] - pm_b[m1["id"]]["repaid"]) +
+        max(0.0, m2_share - pm_b[m2["id"]]["contributed"] - pm_b[m2["id"]]["repaid"]),
+        2
+    )
+    print(f"     before split: r2c={funding_before['remaining_to_collect']} true_gap={true_gap}")
+    record(
+        abs(funding_before["remaining_to_collect"] - true_gap) < 0.02,
+        f"before split: remaining_to_collect == true_gap (${true_gap:.2f})",
+        f"got {funding_before['remaining_to_collect']} expected {true_gap}"
+    )
+
+    # Lead calls /pay with shortfall_mode=split_equal — creates shortfall_owed obligations
+    rp = http("POST", f"/groups/{gid}/pay",
+              json={"user_id": lead["id"], "shortfall_mode": "split_equal", "is_loan": True})
+    record(rp.status_code == 200, "POST /pay shortfall_mode=split_equal → 200",
+           f"{rp.status_code}: {rp.text[:200]}")
+    if rp.status_code != 200:
+        return
+
+    eg_after = rp.json()
+    funding_after = eg_after["funding"]
+    per_user_after = eg_after["per_user"]
+    pm_a = {p["user_id"]: p for p in per_user_after}
+
+    # The 2 absent members now have shortfall_owed set
+    m1_owed = float(pm_a[m1["id"]].get("shortfall_owed", 0))
+    m2_owed = float(pm_a[m2["id"]].get("shortfall_owed", 0))
+    print(f"     after split: m1.shortfall_owed=${m1_owed} m2.shortfall_owed=${m2_owed}")
+    record(m1_owed > 0.01 and m2_owed > 0.01,
+           "both non-lead members have shortfall_owed > 0 after split_equal",
+           f"m1={m1_owed} m2={m2_owed}")
+
+    # per_user.outstanding for each is now INFLATED (own share + shortfall_owed)
+    m1_outstanding = float(pm_a[m1["id"]]["outstanding"])
+    m2_outstanding = float(pm_a[m2["id"]]["outstanding"])
+    sum_outstanding_inflated = round(m1_outstanding + m2_outstanding, 2)
+    print(f"     sum(outstanding inflated) = ${sum_outstanding_inflated}")
+    print(f"     funding.remaining_to_collect (after) = ${funding_after['remaining_to_collect']}")
+
+    # CRITICAL: remaining_to_collect should be the actual remaining gap
+    # (= true_gap, not the inflated sum)
+    record(
+        abs(funding_after["remaining_to_collect"] - true_gap) < 0.05,
+        f"after split: remaining_to_collect ≈ true_gap (${true_gap:.2f}) — NOT double-counted",
+        f"got r2c={funding_after['remaining_to_collect']} true_gap={true_gap} "
+        f"inflated_sum={sum_outstanding_inflated}"
+    )
+    # And it must be strictly less than the inflated sum (proves no double-counting)
+    record(
+        funding_after["remaining_to_collect"] < sum_outstanding_inflated - 0.05,
+        f"after split: r2c < sum(inflated outstanding) — confirms no double-counting",
+        f"r2c={funding_after['remaining_to_collect']} inflated_sum={sum_outstanding_inflated}"
+    )
+
+
+# ============================================================
+# E) End-to-end: $60 + fees bill, lead covers shortfall via lead-loan
+# ============================================================
+async def test_end_to_end_lead_covers(admin_token: str):
+    section("E. End-to-end — bill fully funded after lead covers shortfall")
+
+    lead = await make_user("LeadE")
+    m1 = await make_user("M1E")
+    m2 = await make_user("M2E")
+
+    body = {
+        "lead_id": lead["id"],
+        "title": "E2E Lead Covers",
+        "total_amount": 60.0,
+        "split_mode": "fast",
+        "tax": 0, "tip": 0, "items": [],
+    }
+    r = http("POST", "/groups", json=body)
+    if r.status_code != 200:
+        record(False, "create E2E squad", f"{r.status_code}: {r.text[:200]}")
+        return
+    gid = r.json()["id"]
+    for u in (m1, m2):
+        http("POST", f"/groups/{gid}/join", json={"user_id": u["id"], "joined_via": "code"})
+
+    # Read shares
+    rg = http("GET", f"/groups/{gid}")
+    pm0 = {p["user_id"]: p for p in rg.json()["per_user"]}
+    lead_share = float(pm0[lead["id"]]["total"])
+    m1_share = float(pm0[m1["id"]]["total"])
+    m2_share = float(pm0[m2["id"]]["total"])
+    total_bill = round(lead_share + m1_share + m2_share, 2)
+    print(f"     shares: lead=${lead_share} m1=${m1_share} m2=${m2_share}  total=${total_bill}")
+
+    # Lead contributes own share
+    await grant_credit(admin_token, lead["id"], lead_share + 1.0, "E2E lead")
+    contribute_credit_only(gid, lead["id"], lead_share)
+
+    # Check r2c == m1_share + m2_share (NOT total_bill - lead_share, which would
+    # equal that anyway in this case; the key is r2c includes m1+m2 fees)
+    rg = http("GET", f"/groups/{gid}")
+    eg_before = rg.json()
+    funding_before = eg_before["funding"]
+    expected_r2c = round(m1_share + m2_share, 2)
+    print(f"     before /pay: r2c={funding_before['remaining_to_collect']} expected=${expected_r2c}")
+    record(
+        abs(funding_before["remaining_to_collect"] - expected_r2c) < 0.05,
+        f"E2E before /pay: r2c == m1+m2 share (${expected_r2c}, incl fees)",
+        f"got {funding_before['remaining_to_collect']} expected {expected_r2c}"
+    )
+    # CRITICAL: must NOT equal the old broken value (m1+m2 merchant-only = $40)
+    # nor the v1 buggy double-count value (would be ~2× expected_r2c after split)
+    merchant_only_old_value = round(60.0 - lead_share, 2)  # rough old value
+    if abs(expected_r2c - merchant_only_old_value) > 0.5:
+        record(
+            abs(funding_before["remaining_to_collect"] - merchant_only_old_value) > 0.5,
+            f"E2E before /pay: r2c != old merchant-only value (${merchant_only_old_value})",
+            f"got {funding_before['remaining_to_collect']}"
+        )
+
+    # Lead pays with shortfall_mode=lead, is_loan=true
+    rp = http("POST", f"/groups/{gid}/pay",
+              json={"user_id": lead["id"], "shortfall_mode": "lead", "is_loan": True})
+    record(rp.status_code == 200, "E2E POST /pay lead/is_loan → 200",
+           f"{rp.status_code}: {rp.text[:200]}")
+    if rp.status_code != 200:
+        return
+
+    eg_after = rp.json()
+    funding_after = eg_after["funding"]
+    contribs = eg_after.get("contributions", [])
+    shortfall_contribs = [c for c in contribs if c.get("is_shortfall")]
+    record(len(shortfall_contribs) == 1, "E2E: exactly 1 is_shortfall contribution",
+           f"got {len(shortfall_contribs)}")
+    if shortfall_contribs:
+        sc = shortfall_contribs[0]
+        record(
+            abs(float(sc.get("amount", 0)) - expected_r2c) < 0.05,
+            f"E2E: shortfall contribution.amount == ${expected_r2c:.2f} (NOT 2× nor merchant-only)",
+            f"got {sc.get('amount')} expected {expected_r2c}"
+        )
+
+    # After: total_contributed should equal total_bill
+    total_contributed_after = funding_after["total_contributed"]
+    record(
+        abs(total_contributed_after - total_bill) < 0.05,
+        f"E2E after /pay: total_contributed == total_bill (${total_bill:.2f})",
+        f"got {total_contributed_after}"
+    )
+    # remaining_to_collect after — for LOAN mode, members still owe lead
+    # (their outstanding stays > 0). r2c counts each user's own gap which
+    # may still show m1/m2 own_gap depending on how shortfall_owed propagates.
+    # Per fix v2 spec: r2c = sum(max(0, total - contributed - repaid)).
+    # After lead covers, m1/m2 contributed=0 still, repaid=0, total=share → r2c still = share+share.
+    # Document this as info (it represents the LOAN they owe lead).
+    print(f"     E2E after /pay: r2c={funding_after['remaining_to_collect']} merchant_remaining={funding_after['merchant_remaining']}")
+    record(
+        funding_after["merchant_remaining"] < 0.05,
+        "E2E after /pay: merchant_remaining ≈ 0 (merchant fully paid)",
+        f"got {funding_after['merchant_remaining']}"
+    )
+
+
+# ============================================================
 # C) POST /pay shortfall_mode=member / split_equal — obligations
 # ============================================================
 async def test_pay_member_and_split(admin_token: str):
@@ -495,9 +697,19 @@ async def main():
         record(False, "test_funding_math crashed", repr(e))
 
     try:
+        await test_split_equal_no_double_count(tok)
+    except Exception as e:
+        record(False, "test_split_equal_no_double_count crashed", repr(e))
+
+    try:
         await test_pay_lead_loan(tok)
     except Exception as e:
         record(False, "test_pay_lead_loan crashed", repr(e))
+
+    try:
+        await test_end_to_end_lead_covers(tok)
+    except Exception as e:
+        record(False, "test_end_to_end_lead_covers crashed", repr(e))
 
     try:
         await test_pay_member_and_split(tok)

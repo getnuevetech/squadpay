@@ -643,18 +643,32 @@ async def _recompute_group(group: dict) -> dict:
             "total_contributed": total_contributed,
             "total_repaid": total_repaid,
             "lead_shortfall": round(lead_shortfall, 2),
-            # CRITICAL (June 2025 bug fix): `remaining_to_collect` must
-            # equal the sum of all per_user outstanding amounts — which
-            # already includes each member's transaction_fee +
-            # platform_fee + extra_fees. Previously this returned
-            # `total_amount - total_contributed` (merchant-only), which
-            # was LOWER than what the frontend `useBillMath.remaining`
-            # showed (grandTotal - contributed, fees included). When the
-            # lead opened the Pay screen to cover a shortfall, the
-            # amount dropped, and paying that lower value left fees
-            # uncollected — the bill would never close.
+            # CRITICAL (June 2025 bug fix v2): `remaining_to_collect` must
+            # equal the merchant + fees gap that is still owed to the bill
+            # — WITHOUT double-counting shortfall_owed obligations. When
+            # `shortfall_split` mode is active, every remaining member
+            # gets a `shortfall_owed` carved out of the absent members'
+            # debt; summing per_user.outstanding then counts the SAME
+            # dollars on both the absent member's row AND on every
+            # covering member's row. The clean math is each user's OWN
+            # bill gap (total − contributed − repaid), summed up.
+            #
+            # Example (3 members, $60 merchant + $2.10 fees, lead paid
+            # own $20.70, 2 absent → shortfall_split):
+            #   sum(outstanding)         = $82.80  ❌ double counted
+            #   sum(own_gap)             = $41.40  ✅ correct
+            #   total - total_contributed = $39.30 (was old value, missed fees)
             "remaining_to_collect": round(
-                sum(p.get("outstanding", 0.0) for p in per_user), 2
+                sum(
+                    max(
+                        0.0,
+                        float(p.get("total", 0.0))
+                        - float(p.get("contributed", 0.0))
+                        - float(p.get("repaid", 0.0)),
+                    )
+                    for p in per_user
+                ),
+                2,
             ),
             # Merchant-only shortfall is still exposed for any caller
             # that needs the raw merchant gap (e.g. accounting).

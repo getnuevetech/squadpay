@@ -106,17 +106,23 @@ def attach_pay_routes(router: APIRouter, db):
         ]
         total_contributed = sum(float(c["amount"]) for c in contributions)  # noqa: F841 — kept for backwards-compatible accounting hooks
         total = float(group.get("total_amount") or 0.0)  # noqa: F841 — kept for backwards-compatible accounting hooks
-        # CRITICAL (June 2025 bug fix): The shortfall the lead is covering
-        # must be the FULL outstanding amount (merchant share + fees), not
-        # just the merchant gap. Using `total - total_contributed` left
-        # platform/transaction fees uncollected after the lead covered,
-        # leaving the bill "stuck" — never transitioning to bill_settled.
-        # `enriched["per_user"]` carries each member's true `outstanding`
-        # which already includes their fees, so summing those gives the
-        # exact amount the lead must cover for the bill to be complete.
+        # CRITICAL (June 2025 bug fix v2): The shortfall the lead is
+        # covering = sum of each OTHER member's own bill gap
+        # (total − contributed − repaid). We MUST NOT sum
+        # `p.outstanding` because that field also includes
+        # `shortfall_owed` — which is itself derived from absent
+        # members' debt. Summing outstandings would double-count the
+        # same dollars (once on the absent member's row, once on each
+        # remaining member's row in `shortfall_split` mode), causing
+        # the lead to be charged 2× or 3× the actual gap.
         shortfall = round(
             sum(
-                float(p.get("outstanding", 0.0) or 0.0)
+                max(
+                    0.0,
+                    float(p.get("total", 0.0) or 0.0)
+                    - float(p.get("contributed", 0.0) or 0.0)
+                    - float(p.get("repaid", 0.0) or 0.0),
+                )
                 for p in enriched.get("per_user", [])
                 if p.get("user_id") != body.user_id
             ),

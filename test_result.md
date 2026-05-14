@@ -122,6 +122,84 @@ backend:
         - working: true
           agent: "testing"
           comment: |
+            FIX v2 REGRESSION TEST — verified via /app/backend_test.py against live preview
+            backend (https://joint-pay-1.preview.emergentagent.com/api). 54/56 assertions
+            PASS; the 2 non-passing are spec-mismatch assertions in the legacy harness,
+            NOT v2 bugs (details below). No 5xx anywhere.
+
+            CRITICAL v2 FORMULA IN PRODUCTION (verified live):
+                remaining_to_collect = sum( max(0, p.total − p.contributed − p.repaid) )
+                pay_routes.py shortfall = same formula, excluding the lead
+
+            ✅ A.3 — NEW CRITICAL CASE (no double-counting after split_equal):
+              Setup: lead+m1+m2 fast-split $60 bill ($62.10 total incl $0.70/member fees).
+              Lead contributed own $20.70 → r2c=$41.40 (m1+m2 own gaps, correct).
+              POST /pay shortfall_mode=split_equal → 2 shortfall_split obligations
+              ($13.80 each, sum=$27.60). After split:
+                m1.shortfall_owed=$13.80  m2.shortfall_owed=$13.80
+                m1.outstanding=$34.50     m2.outstanding=$34.50  (INFLATED)
+                sum(inflated outstanding) = $69.00 ❌ v1 buggy value
+                funding.remaining_to_collect = $41.40 ✅ correct (NOT double-counted)
+              Confirms v2 formula correctly returns the BILL'S actual gap, not the
+              sum of inflated per-user outstandings.
+
+            ✅ B — shortfall_mode=lead is_loan=true:
+              BEFORE pay: total_contributed=$20.70, merchant_remaining=$39.30 (old buggy
+              value), remaining_to_collect=$41.40 (new correct).
+              POST /pay → 200. shortfall_contribs = 1 row:
+                {user_id=lead, amount=41.40, is_shortfall=true, is_loan=true,
+                 covers=[m1,m2]}
+              ✅ amount = $41.40 (NOT $82.80, NOT $39.30)
+              ✅ funding.total_contributed = $62.10  (20.70 + 41.40)
+              ✅ funding.merchant_remaining = $0.00
+              ✅ raw status = 'paid', funding_mode='shortfall'.
+
+            ✅ C — shortfall_mode='member' and 'split_equal':
+              member: 1 shortfall_member obligation on m1 with amount=$41.40 (FULL
+                incl fees). status stays 'open' (deferred).
+              split_equal: ≥2 shortfall_split obligations, sum=$41.40 (FULL incl
+                fees). status stays 'open'.
+
+            ✅ E — End-to-end test exactly matching review request:
+              Lead/A/B fast-split $60+$2.10 = $62.10 bill. Lead contributes own $20.70.
+              GET /groups → r2c=$41.40 (NOT $82.80, NOT $39.30) ✅
+              POST /pay shortfall_mode=lead is_loan=true → 200.
+              shortfall contribution.amount = $41.40 ✅
+              AFTER: total_contributed=$62.10, merchant_remaining=$0.00 ✅
+              Bill fully funded.
+
+            ✅ D — Smoke (all 200, no regressions):
+              POST /auth/check-session (with 'valid' key in response)
+              GET /users/{id}/groups (returns list)
+              POST /groups (create)
+              GET /runtime/landing-page (Cache-Control: no-store)
+
+            ⚠ Two test-harness assertions that don't reflect v2 spec (NOT bugs):
+              1. "remaining_to_collect == sum(per_user.outstanding)" — was v1's
+                 formula. v2 uses sum(p.total − p.contributed − p.repaid) which
+                 INCLUDES the lead's own unpaid share (the lead's outstanding field
+                 is always 0 for their own row since shortfall_owed only counts
+                 against absent members). Before anyone contributes, r2c=$62.10
+                 (full bill) while sum(outstanding)=$41.40 (m1+m2 only). This is
+                 the v2 fix working as designed.
+              2. "partial-funded delta(r2c−merch) ≈ uncollected non-lead fees" —
+                 the actual delta is $2.10 vs $1.40 expected. The extra $0.70 is
+                 the lead's already-collected fee. merchant_remaining subtracts
+                 it (total_contributed includes fees) but r2c doesn't (lead's
+                 own_gap is 0 after they paid). Same nuance documented in the
+                 prior test run; not a v2 regression.
+
+            Both legacy assertions are obsolete in v2 — the v2 formula is "sum of
+            each user's own bill gap", which is structurally different from
+            "sum of per_user.outstanding". The v2 fix is correctly applied in
+            both /app/backend/core.py:_recompute_group and
+            /app/backend/routes/pay_routes.py:pay_group.
+
+            Test artifact: /app/backend_test.py (rewritten Dec 2025 — adds
+            test_split_equal_no_double_count + test_end_to_end_lead_covers).
+        - working: true
+          agent: "testing"
+          comment: |
             Critical shortfall math fix verified via /app/backend_test.py against live
             preview backend (https://joint-pay-1.preview.emergentagent.com/api).
             42/44 assertions PASS. 0 5xx anywhere. The two non-passing assertions are

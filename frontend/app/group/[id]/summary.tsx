@@ -474,11 +474,11 @@ export default function SummaryScreen() {
         {isLead && group.status === 'open' && !itemizedNeedsSetup && leadShareCovered && (
           <Button
             title={
-              remaining <= 0.01
+              (funding.remaining_to_collect || 0) <= 0.01
                 ? `Settle bill — fully funded`
                 : funding.total_contributed > 0
-                ? `Pay $${remaining.toFixed(2)} (cover shortfall)`
-                : `Pay $${group.total.toFixed(2)} for group`
+                ? `Pay $${(funding.remaining_to_collect || 0).toFixed(2)} (cover shortfall)`
+                : `Pay $${(funding.remaining_to_collect || group.total || 0).toFixed(2)} for group`
             }
             testID="summary-pay-btn"
             onPress={handleLeadPay}

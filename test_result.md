@@ -11324,3 +11324,41 @@ agent_communication:
             app/admin/_layout.tsx (sidebar nav + icon)
             src/adminApi.ts (landingPageConfigApi)
 
+
+---
+
+## 📌 BACKLOG (P2/P3) — Real-Time Ledger Reconciliation (added 2026-05-13)
+
+**Goal:** Real-time double-entry ledger reconciliation between SquadPay's internal books
+and payment gateways (Stripe, Astra, future PSPs) so admin reports can show charge
+balance, payout balance, fees, refunds, and chargebacks reconciled against PSP truth.
+
+**Scope when this phase starts:**
+
+1. Add reporting-grade Stripe webhooks:
+   - balance.available
+   - charge.succeeded / charge.refunded / charge.dispute.*
+   - payment_intent.succeeded / payment_intent.payment_failed
+   - transfer.created / transfer.paid / transfer.reversed
+   - payout.paid / payout.failed / payout.reconciliation_completed
+   - application_fee.created
+   - refund.*
+   - radar.early_fraud_warning.created
+
+2. Astra: poll /balance hourly + extend transfer webhook handler with fee/net fields.
+
+3. New collections:
+   - ledger_events  (append-only PSP source-of-truth stream)
+   - ledger_entries (internal double-entry book)
+   - recon_runs     (daily reconciliation batch)
+   - recon_variances (mismatches needing admin attention)
+
+4. New admin pages:
+   - /admin/reconciliation (daily variance dashboard)
+   - /admin/ledger/{txn_id} (drill-down per txn)
+   - /admin/balance (internal vs gateway balance side-by-side)
+
+5. Slack/email alerts when variance > configurable threshold.
+
+**Not blocking MVP. Pick up after EAS build + push notification testing.**
+

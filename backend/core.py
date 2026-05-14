@@ -658,6 +658,15 @@ async def _recompute_group(group: dict) -> dict:
             ),
             # Merchant-only shortfall is still exposed for any caller
             # that needs the raw merchant gap (e.g. accounting).
+            #
+            # NOTE: `merchant_remaining` is NOT guaranteed to be ≤
+            # `remaining_to_collect`. Before the lead contributes their
+            # own share, `sum(per_user.outstanding)` excludes the lead's
+            # own row (lead has no shortfall_owed against themselves),
+            # so the merchant gap can be larger than the fees-inclusive
+            # sum. Once the lead has contributed, the relationship
+            # reverses and `remaining_to_collect ≥ merchant_remaining`
+            # by the amount of uncollected non-lead fees.
             "merchant_remaining": round(max(0.0, total_amount - total_contributed), 2),
             "fees_total": round(sum(p["transaction_fee"] + p["platform_fee"] for p in per_user), 2),
         },

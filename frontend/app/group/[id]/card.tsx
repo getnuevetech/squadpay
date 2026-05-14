@@ -170,7 +170,7 @@ export default function GroupCardScreen() {
   const hasCard = !!(vc && vc.stripe_card_id);
   const collected = group.funding?.total_contributed || 0;
   const total = group.total || 0;
-  const fullyFunded = collected >= total - 0.01;
+  const fullyFunded = total > 0.01 && collected >= total - 0.01;
   const isActive = hasCard && vc.status === 'active';
   const isDisabled = hasCard && vc.status === 'inactive';
   // Card "balance" is what members have actually contributed (not the

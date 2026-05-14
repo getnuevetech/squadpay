@@ -314,7 +314,8 @@ export default function SummaryScreen() {
             } else if (obligationOwed > 0.01 && outstanding > 0.01) {
               status = { icon: <AlertCircle size={12} color={COLORS.warning} />, text: `Shortfall +$${obligationOwed.toFixed(2)} due`, color: COLORS.warning };
             } else if (outstanding <= 0.01 && (contributed > 0 || repaid > 0 || group.status === 'closed')) {
-              status = { icon: <CheckCircle2 size={12} color={COLORS.success} />, text: contributed >= share - 0.01 ? 'Contributed' : 'Settled', color: COLORS.success };
+              // June 2025 — same share=0 guard as the lead row (see dashboard.tsx).
+              status = { icon: <CheckCircle2 size={12} color={COLORS.success} />, text: share > 0.01 && contributed >= share - 0.01 ? 'Contributed' : 'Settled', color: COLORS.success };
             } else if (group.status === 'open') {
               status = { icon: <Clock size={12} color={COLORS.warning} />, text: contributed > 0 ? `Partial ($${contributed.toFixed(2)})` : 'Not yet paid', color: COLORS.warning };
             } else {

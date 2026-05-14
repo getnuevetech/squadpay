@@ -261,6 +261,7 @@ export default function HomeScreen() {
                     const isLead = featured.lead_id === user.id;
                     const status = (featured as any).status || 'open';
                     const userOutstanding = Number((featured as any).user_outstanding || 0);
+                    const userShare = Number((featured as any).user_share || 0);
                     // A group needs ≥2 members before any payment can land.
                     // Send the user straight to the group lobby (which has
                     // the invite QR / share link) instead of a doomed Pay
@@ -268,6 +269,21 @@ export default function HomeScreen() {
                     const memberCount = Number(featured.member_count || 0);
                     if (memberCount < 2) {
                       router.push(`/group/${featured.id}`);
+                      return;
+                    }
+                    // June 2025 — Itemized mode with no claims yet: route
+                    // to /items so the user can add/claim items before
+                    // hitting a "Nothing to pay" alert. Catches the case
+                    // where lead switched Equal → Itemized and shares are
+                    // all $0.
+                    const splitMode = String((featured as any).split_mode || 'fast').toLowerCase();
+                    if (
+                      status === 'open' &&
+                      splitMode !== 'fast' &&
+                      userShare <= 0.01 &&
+                      userOutstanding <= 0.01
+                    ) {
+                      router.push(`/group/${featured.id}/items`);
                       return;
                     }
                     let kind: 'contribute' | 'repay' | 'lead' = 'contribute';

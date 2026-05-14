@@ -11785,3 +11785,49 @@ NEEDS USER VERIFICATION:
        - Pay button reads "Choose a settlement option above" (disabled)
        - Picking "I cover it" / "Ask a member" / "Split equally" activates button
        - Button label becomes "Pay $X"
+
+---
+
+## 🚨 P0 BUG FIX (2026-05-14 #5) — Cover-Shortfall Includes Lead's Residual Gap
+
+User report:
+"1 lead and 1 squad. Unpaying Squad sees $43.65. Lead cover pay button shows
+$48.48, Lead already contributed... If unpaying Squad(s) have $43.65, that is
+the exact value to make total bill, not $48.48."
+
+ROOT CAUSE:
+- v2 formula `sum(p.total − p.contributed − p.repaid)` across ALL users.
+- If the bill is edited after the lead contributed (tax/tip/items change →
+  fees recalc), the lead's own per_user.total can grow slightly above what
+  they originally contributed, leaving a residual own_gap of a few dollars.
+- That residual was added to `remaining_to_collect`, inflating the
+  "cover shortfall" amount the lead saw.
+- User's reported $48.48 - $43.65 = $4.83 was exactly this residual.
+
+USER'S MENTAL MODEL (NOW IMPLEMENTED):
+  member sees:  per_user.total                    (their personal share)
+  lead covers:  sum of OTHER members' own_gaps    (excludes lead from sum)
+
+FILES CHANGED:
+  /app/backend/core.py            — `funding.remaining_to_collect` excludes lead row
+  /app/backend/routes/pay_routes.py — `shortfall` in pay_group excludes lead row
+  /app/frontend/app/group/[id]/dashboard.tsx — "Contribute Your Share" button
+                                                 shows REMAINING gap, not full share
+  /app/frontend/app/group/[id]/summary.tsx   — same
+  Lead share warning banners — show remaining gap, not full share
+
+REGRESSION VERIFIED BY BACKEND AGENT (32/32 PASS):
+  ✅ Existing group g_4a39452c2e: unchanged ($41.40, lead had 0 residual)
+  ✅ 2-member bill: remaining_to_collect = member.total exactly ($25.80)
+  ✅ Lead residual gap simulation (tax bump $0→$10 post-contribute):
+       lead.own_gap=$5.10, member.own_gap=$30.90
+       remaining_to_collect = $30.90  ✅ (member only, NOT $36.00)
+  ✅ POST /pay with shortfall_mode=lead while lead has residual → 400 with
+       guard "contribute own share first ($5.10)" — correct
+  ✅ After lead tops up residual → POST /pay charges $30.90 (member-only)
+  ✅ Legacy tests (test_split_equal_no_double_count, test_end_to_end_lead_covers) still pass
+
+NEEDS USER VERIFICATION on Vercel after push:
+  - Member's "your share" = $43.65 → Lead's Pay button now shows $43.65 (not $48.48)
+  - If lead has any residual gap, "Contribute Your Share $X.XX" button (where
+    X.XX is the gap only, not the full share)

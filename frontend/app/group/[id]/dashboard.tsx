@@ -582,7 +582,7 @@ export default function DashboardScreen() {
           <View style={styles.warnCard} testID="dashboard-lead-share-banner">
             <AlertCircle size={18} color={COLORS.warning} />
             <Text style={styles.warnText}>
-              Contribute your own ${myShare.toFixed(2)} share into the Squad
+              Contribute your remaining ${Math.max(0, myShare - myContributed).toFixed(2)} share into the Squad
             </Text>
           </View>
         )}
@@ -655,7 +655,7 @@ export default function DashboardScreen() {
         {/* Lead must contribute their own share BEFORE paying the merchant */}
         {group.status === 'open' && !needsMoreMembers && !itemizedNeedsSetup && !leadShareCovered && (
           <Button
-            title={`Contribute Your Share\n$${myShare.toFixed(2)}`}
+            title={`Contribute Your Share\n$${Math.max(0, myShare - myContributed).toFixed(2)}`}
             testID="dashboard-contribute-btn"
             onPress={handleContribute}
           />

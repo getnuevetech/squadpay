@@ -398,7 +398,7 @@ export default function SummaryScreen() {
           <View style={styles.warnCard} testID="summary-lead-share-banner">
             <AlertCircle size={18} color={COLORS.warning} />
             <Text style={styles.warnText}>
-              Contribute your own ${myShare.toFixed(2)} share into the Squad
+              Contribute your remaining ${Math.max(0, myShare - myContributed).toFixed(2)} share into the Squad
             </Text>
           </View>
         )}
@@ -466,7 +466,7 @@ export default function SummaryScreen() {
         {/* Lead must contribute their own share BEFORE paying the merchant */}
         {isLead && group.status === 'open' && !itemizedNeedsSetup && !leadShareCovered && (
           <Button
-            title={`Contribute Your Share\n$${myShare.toFixed(2)}`}
+            title={`Contribute Your Share\n$${Math.max(0, myShare - myContributed).toFixed(2)}`}
             testID="summary-contribute-btn"
             onPress={handleContribute}
           />

@@ -208,7 +208,18 @@ export default function DashboardScreen() {
     }
   };
 
-  const leadShareCovered = myContributed >= myShare - 0.01;
+  // CRITICAL: when myShare == 0 (e.g. itemized mode + no items claimed),
+  // `0 >= -0.01` is TRUE — which would erroneously mark the lead as
+  // "share covered" and hide the contribute CTA. Guard with share > 0.01.
+  const leadShareCovered = myShare > 0.01 && myContributed >= myShare - 0.01;
+
+  // Detect the "itemized but nothing claimed" state. In this state we MUST
+  // NOT show the Pay button or "Contributed" badges — the lead must first
+  // add items and have members claim them so each share is computed.
+  const isItemized = (group.split_mode || 'fast').toLowerCase() !== 'fast';
+  const hasItems = (group.items || []).length > 0;
+  const hasAnyClaims = (group.assignments || []).length > 0;
+  const itemizedNeedsSetup = isItemized && (!hasItems || !hasAnyClaims);
 
   return (
     <SafeAreaView edges={['bottom']} style={{ flex: 1, backgroundColor: COLORS.bg }}>
@@ -418,7 +429,11 @@ export default function DashboardScreen() {
               if (group.status === 'open') {
                 if (obligationOwed > 0.01 && outstanding > 0.01) {
                   status = { icon: <AlertCircle size={12} color={COLORS.warning} />, text: `Shortfall +$${obligationOwed.toFixed(2)} due`, color: COLORS.warning };
-                } else if (contributed >= share - 0.01) {
+                } else if (isItemized && memberClaims.length === 0) {
+                  // Itemized mode + no items claimed by this lead yet —
+                  // do NOT say "Contributed" just because share == 0.
+                  status = { icon: <Clock size={12} color={COLORS.warning} />, text: 'No items claimed', color: COLORS.warning };
+                } else if (share > 0.01 && contributed >= share - 0.01) {
                   status = { icon: <CheckCircle2 size={12} color={COLORS.success} />, text: 'Contributed', color: COLORS.success };
                 } else {
                   // Mirror the member-row copy so users see consistent
@@ -558,11 +573,24 @@ export default function DashboardScreen() {
           </View>
         )}
 
-        {group.status === 'open' && !leadShareCovered && !needsMoreMembers && (
+        {group.status === 'open' && !leadShareCovered && !needsMoreMembers && !itemizedNeedsSetup && myShare > 0.01 && (
           <View style={styles.warnCard} testID="dashboard-lead-share-banner">
             <AlertCircle size={18} color={COLORS.warning} />
             <Text style={styles.warnText}>
               Contribute your own ${myShare.toFixed(2)} share into the Squad
+            </Text>
+          </View>
+        )}
+
+        {/* June 2025 — Itemized setup banner. Replaces the "contribute your
+            share" prompt when share == 0 because nothing's been claimed yet. */}
+        {group.status === 'open' && !needsMoreMembers && itemizedNeedsSetup && (
+          <View style={styles.warnCard} testID="dashboard-itemized-setup-banner">
+            <AlertCircle size={18} color={COLORS.warning} />
+            <Text style={styles.warnText}>
+              {!hasItems
+                ? 'Add items to the bill so members can claim them — each share is set by what you claim.'
+                : 'Items added but none claimed yet — assign items to members to set each share.'}
             </Text>
           </View>
         )}
@@ -608,15 +636,26 @@ export default function DashboardScreen() {
             onPress={() => router.push(`/group/${group.id}`)}
           />
         )}
+        {/* June 2025 — itemized mode but no items added / no claims yet.
+            Replace the broken "Pay $X for group" CTA (which fires when
+            share == 0 because nothing is claimed) with a clear
+            "Add / Claim items" CTA that routes to the items screen. */}
+        {group.status === 'open' && !needsMoreMembers && itemizedNeedsSetup && (
+          <Button
+            title={!hasItems ? 'Add items to the bill' : 'Claim items to set shares'}
+            testID="dashboard-itemized-setup-btn"
+            onPress={() => router.push(`/group/${group.id}/items`)}
+          />
+        )}
         {/* Lead must contribute their own share BEFORE paying the merchant */}
-        {group.status === 'open' && !needsMoreMembers && !leadShareCovered && (
+        {group.status === 'open' && !needsMoreMembers && !itemizedNeedsSetup && !leadShareCovered && (
           <Button
             title={`Contribute Your Share\n$${myShare.toFixed(2)}`}
             testID="dashboard-contribute-btn"
             onPress={handleContribute}
           />
         )}
-        {group.status === 'open' && !needsMoreMembers && leadShareCovered && (
+        {group.status === 'open' && !needsMoreMembers && !itemizedNeedsSetup && leadShareCovered && (
           <Button
             title={
               remaining <= 0.01

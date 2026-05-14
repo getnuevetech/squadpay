@@ -150,8 +150,18 @@ export default function SummaryScreen() {
   // Member CTA logic — outstanding already includes shortfall obligations
   const memberCanContribute = group.status === 'open' && myOutstanding > 0.01 && !isLead;
   const memberCanRepay = group.status !== 'open' && myOutstanding > 0.01;
-  // Lead-specific: lead must contribute own share before paying merchant
-  const leadShareCovered = isLead && myContributed >= myShare - 0.01;
+  // Lead-specific: lead must contribute own share before paying merchant.
+  // CRITICAL: guard `myShare > 0.01` — when myShare == 0 (itemized + no
+  // claims), `0 >= -0.01` would be TRUE and erroneously mark the lead as
+  // covered, hiding the contribute CTA and surfacing a "Pay $X for group"
+  // button despite no claims existing.
+  const leadShareCovered = isLead && myShare > 0.01 && myContributed >= myShare - 0.01;
+
+  // Detect "itemized but nothing claimed" state so we can swap CTAs.
+  const isItemized = (group.split_mode || 'fast').toLowerCase() !== 'fast';
+  const hasItems = (group.items || []).length > 0;
+  const hasAnyClaims = (group.assignments || []).length > 0;
+  const itemizedNeedsSetup = isItemized && (!hasItems || !hasAnyClaims);
   // June 2025 — Covering-member Pay Out CTA. When a non-lead member
   // covered a shortfall as a Loan and the owing member has since repaid
   // part/all of it, the covering member can withdraw the proportional
@@ -279,7 +289,9 @@ export default function SummaryScreen() {
               if (group.status === 'open') {
                 if (obligationOwed > 0.01 && outstanding > 0.01) {
                   status = { icon: <AlertCircle size={12} color={COLORS.warning} />, text: `Shortfall +$${obligationOwed.toFixed(2)} due`, color: COLORS.warning };
-                } else if (contributed >= share - 0.01) {
+                } else if (isItemized && memberClaims.length === 0) {
+                  status = { icon: <Clock size={12} color={COLORS.warning} />, text: 'No items claimed', color: COLORS.warning };
+                } else if (share > 0.01 && contributed >= share - 0.01) {
                   status = { icon: <CheckCircle2 size={12} color={COLORS.success} />, text: 'Contributed', color: COLORS.success };
                 } else {
                   // Mirror the member-row labels so the lead row uses the
@@ -381,11 +393,24 @@ export default function SummaryScreen() {
           </View>
         )}
 
-        {group.status === 'open' && isLead && !leadShareCovered && (
+        {group.status === 'open' && isLead && !leadShareCovered && !itemizedNeedsSetup && myShare > 0.01 && (
           <View style={styles.warnCard} testID="summary-lead-share-banner">
             <AlertCircle size={18} color={COLORS.warning} />
             <Text style={styles.warnText}>
               Contribute your own ${myShare.toFixed(2)} share into the Squad
+            </Text>
+          </View>
+        )}
+
+        {/* June 2025 — Itemized setup banner. Replaces the "contribute your
+            share" prompt when share == 0 because nothing's been claimed yet. */}
+        {group.status === 'open' && itemizedNeedsSetup && (
+          <View style={styles.warnCard} testID="summary-itemized-setup-banner">
+            <AlertCircle size={18} color={COLORS.warning} />
+            <Text style={styles.warnText}>
+              {!hasItems
+                ? 'Bill is in Itemized mode but no items added yet. Each share is $0 until items are added and claimed.'
+                : 'No items claimed yet — each member\'s share will be $0 until they claim items.'}
             </Text>
           </View>
         )}
@@ -427,15 +452,25 @@ export default function SummaryScreen() {
       </ScrollView>
 
       <View style={styles.bottomBar}>
+        {/* June 2025 — itemized mode but no items / no claims. For LEAD only:
+            surface a clear "Add / Claim items" CTA instead of the broken
+            "Pay $X for group" button that fires when share == 0. */}
+        {isLead && group.status === 'open' && itemizedNeedsSetup && (
+          <Button
+            title={!hasItems ? 'Add items to the bill' : 'Claim items to set shares'}
+            testID="summary-itemized-setup-btn"
+            onPress={() => router.push(`/group/${group.id}/items`)}
+          />
+        )}
         {/* Lead must contribute their own share BEFORE paying the merchant */}
-        {isLead && group.status === 'open' && !leadShareCovered && (
+        {isLead && group.status === 'open' && !itemizedNeedsSetup && !leadShareCovered && (
           <Button
             title={`Contribute Your Share\n$${myShare.toFixed(2)}`}
             testID="summary-contribute-btn"
             onPress={handleContribute}
           />
         )}
-        {isLead && group.status === 'open' && leadShareCovered && (
+        {isLead && group.status === 'open' && !itemizedNeedsSetup && leadShareCovered && (
           <Button
             title={
               remaining <= 0.01
@@ -468,6 +503,17 @@ export default function SummaryScreen() {
             }
             testID="summary-contribute-btn"
             onPress={handleContribute}
+          />
+        )}
+        {/* June 2025 — non-lead in itemized mode with no items claimed yet:
+            point them to the items screen to claim their items. Without this
+            CTA the bottom bar would be empty (since share = 0 → memberCanContribute
+            = false and "Contributed ✓ waiting for lead" requires share > 0). */}
+        {!isLead && group.status === 'open' && itemizedNeedsSetup && (myPer?.contributed || 0) <= 0.01 && (
+          <Button
+            title="Claim your items"
+            testID="summary-member-claim-btn"
+            onPress={() => router.push(`/group/${group.id}/items`)}
           />
         )}
         {!isLead && group.status === 'open' && !memberCanContribute && myShare > 0 && (

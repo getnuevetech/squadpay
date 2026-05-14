@@ -11362,3 +11362,43 @@ balance, payout balance, fees, refunds, and chargebacks reconciled against PSP t
 
 **Not blocking MVP. Pick up after EAS build + push notification testing.**
 
+
+---
+
+## 🚨 P0 BUG FIX (2026-05-14) — Split-Mode Switch Bugs
+
+User-reported critical issue: Switching from Equal → Itemized split:
+1. Knocked all member shares to $0 (correct math, broken UX)
+2. Wrongly stamped the lead's row as "Contributed"
+3. Replaced contribute CTA with "Pay $X for group" button
+4. Removed Pay button from non-lead members
+
+ROOT CAUSE: Comparison `contributed >= share - 0.01` evaluates `0 >= -0.01`
+= TRUE when share is $0 (which happens immediately after switch to itemized
+before any items are claimed). This made `leadShareCovered = true`,
+hiding the contribute prompt and surfacing the Pay button.
+
+FIX APPLIED (frontend only — backend logic was already correct):
+
+  /app/frontend/app/group/[id]/dashboard.tsx
+    • leadShareCovered now guards `myShare > 0.01`
+    • Added `isItemized`, `hasItems`, `hasAnyClaims`, `itemizedNeedsSetup` flags
+    • Lead row "Contributed" badge now requires `share > 0.01`
+    • Bottom Pay button replaced with "Add/Claim items" CTA when itemizedNeedsSetup
+    • Lead share warning banner only shows when myShare > 0.01 and not itemizedNeedsSetup
+    • Added itemized-setup warning banner
+
+  /app/frontend/app/group/[id]/summary.tsx
+    • Same guards for leadShareCovered + lead row badge
+    • Same itemized-needs-setup CTA for lead
+    • New "Claim your items" CTA for non-lead members in itemizedNeedsSetup state
+    • Same itemized-setup warning banner
+
+NEEDS USER VERIFICATION on:
+  - Create new bill, set Equal mode, add 2+ members
+  - Switch to Itemized → confirm:
+    a) Lead row badge says "No items claimed" (not "Contributed")
+    b) Bottom CTA is "Add items / Claim items" (not "Pay $X for group")
+    c) Non-lead users see "Claim your items" CTA (not blank bottom bar)
+    d) Switching back to Equal restores normal Contribute/Pay flow
+

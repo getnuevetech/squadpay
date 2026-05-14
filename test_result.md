@@ -11657,3 +11657,59 @@ NEEDS USER VERIFICATION:
     2. Tap → Pay screen shows EXACTLY the same $X
     3. After lead pays, bill state moves cleanly to "Bill Settled"
 
+
+---
+
+## 🚨 P0 BUG FIX (2026-05-14 #4) — Shortfall Banner Mismatch + No Mode Confirmation
+
+User report:
+"this does not make sense — You'll cover the remaining $8.93 — yet the pay
+page shows half — when it is not yet shared between the squad. Also the
+shortfall pay button should take lead to the shortfall decision page where
+lead decides how to pay it, why is the shortfall button asking lead to
+automatically pay"
+
+TWO BUGS:
+
+1. SHORTFALL BANNER USED WRONG SOURCE
+   - dashboard.tsx line 607 + summary.tsx line 423 used
+     `useBillMath.remaining` (frontend-computed grandTotal − contributed)
+     while the Pay button + pay screen used `funding.remaining_to_collect`
+     (backend-computed sum-of-own-gaps).
+   - These can diverge by reward discounts, unclaimed itemized totals,
+     and rounding.
+   - FIX: Both banners now read `funding.remaining_to_collect` —
+     guaranteed match with Pay button label and Pay screen amount.
+
+2. PAY BUTTON SKIPPED THE SHORTFALL DECISION
+   - pay.tsx defaulted `shortfallMode = 'lead'` — so when the lead
+     navigated from the dashboard's "Pay $X (cover shortfall)" button,
+     they could reflex-tap the Pay button and front the whole shortfall
+     without consciously seeing the options.
+   - FIX:
+     a) `shortfallMode` default changed from `'lead'` to `null`.
+     b) New flag `requiresShortfallChoice` blocks the Pay button when
+        `kind=lead`, there IS a shortfall, AND no mode picked.
+     c) Pay button title now reads "Choose a settlement option above"
+        when blocked, instead of "Pay $X".
+     d) New inline warning banner above the picker:
+        "Pick how you want to settle this shortfall below before paying."
+     e) Hard guard inside `doPay()` shows an Alert if somehow triggered
+        without a mode pick (defense in depth).
+
+FILES CHANGED:
+  /app/frontend/app/group/[id]/dashboard.tsx — banner source
+  /app/frontend/app/group/[id]/summary.tsx   — banner source
+  /app/frontend/app/group/[id]/pay.tsx       — null default, blocker,
+                                                banner, Alert guard,
+                                                added AlertCircle import,
+                                                added warnCard/warnText styles
+
+NEEDS USER VERIFICATION:
+  After GitHub push → Mac pull → Vercel redeploy:
+    1. Dashboard banner $X == Pay button $X == Pay screen $X (all 3 match)
+    2. Lead taps Pay → lands on pay screen
+       - Sees "Pick how to settle this shortfall…" warning at top
+       - Pay button reads "Choose a settlement option above" (disabled)
+       - Picking "I cover it" / "Ask a member" / "Split equally" activates button
+       - Button label becomes "Pay $X"

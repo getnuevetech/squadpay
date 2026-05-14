@@ -12,7 +12,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Check, CreditCard, Lock, Smartphone, Wallet, ShieldCheck, Sparkles, Receipt } from 'lucide-react-native';
+import { AlertCircle, Check, CreditCard, Lock, Smartphone, Wallet, ShieldCheck, Sparkles, Receipt } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { GradientButton } from '../../../src/components/GradientButton';
 import { api, Group } from '../../../src/api';
@@ -96,7 +96,14 @@ export default function PayScreen() {
   const [creditBalance, setCreditBalance] = useState(0);
 
   // Shortfall settlement (lead pay flow only)
-  const [shortfallMode, setShortfallMode] = useState<'lead' | 'member' | 'split_equal'>('lead');
+  //
+  // June 2025 — the lead MUST consciously pick a shortfall settlement
+  // mode before they can pay. Previously this defaulted to 'lead' which
+  // meant tapping the dashboard's "Pay $X (cover shortfall)" button
+  // would immediately let the lead front the entire shortfall without
+  // ever seeing the picker. We start as `null` and the Pay button is
+  // disabled until a mode is picked (see `requiresShortfallChoice`).
+  const [shortfallMode, setShortfallMode] = useState<'lead' | 'member' | 'split_equal' | null>(null);
   const [isLoan, setIsLoan] = useState<boolean>(true);
   const [funderMemberId, setFunderMemberId] = useState<string | null>(null);
   // Phase H6.4 — track whether the OTP we just sent was mocked or live so the
@@ -271,6 +278,19 @@ export default function PayScreen() {
 
   const blockedNoAmount = amount <= 0;
 
+  // June 2025 — Lead MUST consciously pick a shortfall settlement mode
+  // when there IS a shortfall to settle. Without an explicit pick, the
+  // Pay button is disabled and a prompt is surfaced. This prevents the
+  // lead accidentally fronting the whole shortfall by reflex-tapping
+  // "Pay" after navigating from the dashboard "Pay $X (cover shortfall)"
+  // button.
+  const hasShortfall =
+    kind === 'lead' &&
+    (group.funding?.remaining_to_collect || 0) > 0.01 &&
+    (group.funding?.total_contributed || 0) > 0.01;
+  const requiresShortfallChoice = hasShortfall && shortfallMode === null;
+  const blockedNoMode = requiresShortfallChoice;
+
   const sendOtp = async () => {
     const cleaned = phone.trim();
     if (cleaned.length < 7) {
@@ -400,6 +420,16 @@ export default function PayScreen() {
     }
     if (blockedNoAmount) {
       Alert.alert('Nothing to pay', 'Amount is zero.');
+      return;
+    }
+    // June 2025 — Hard guard: lead must pick a shortfall mode before
+    // paying when there's a real shortfall. UI also disables the
+    // button, but this prevents bypass via edge cases.
+    if (blockedNoMode) {
+      Alert.alert(
+        'Pick how to settle',
+        'Choose a shortfall settlement option (cover it / ask a member / split equally) before paying.',
+      );
       return;
     }
     setLoading(true);
@@ -743,6 +773,18 @@ export default function PayScreen() {
             </View>
           )}
 
+          {/* June 2025 — Pay button is disabled when the lead must
+              still pick a shortfall settlement mode. Show an inline
+              prompt above the picker so the user knows what to do. */}
+          {requiresShortfallChoice && (
+            <View style={styles.warnCard} testID="pay-pick-mode-banner">
+              <AlertCircle size={18} color={COLORS.warning} />
+              <Text style={styles.warnText}>
+                Pick how you want to settle this shortfall below before paying.
+              </Text>
+            </View>
+          )}
+
           {/* Shortfall settlement chooser (lead pay only) */}
           {kind === 'lead' && (group.funding?.remaining_to_collect || 0) > 0.01 && (
             <View style={styles.settlementCard} testID="pay-settlement-card">
@@ -931,12 +973,12 @@ export default function PayScreen() {
           ) : (
             <>
               <GradientButton
-                title={`Pay $${amount.toFixed(2)}`}
+                title={blockedNoMode ? 'Choose a settlement option above' : `Pay $${amount.toFixed(2)}`}
                 loading={loading}
                 onPress={doPay}
                 testID="pay-submit-btn"
                 icon={<CreditCard size={18} color="#fff" />}
-                disabled={!isVerified || blockedNoAmount}
+                disabled={!isVerified || blockedNoAmount || blockedNoMode}
               />
               {/* June 2025 — Single Pay button policy.
                   All payments flow through Stripe Checkout via the primary
@@ -1162,6 +1204,27 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderWidth: 1,
     borderColor: COLORS.border,
+  },
+  // June 2025 — Used by the "Pick how to settle this shortfall" banner
+  // when the lead lands on the pay screen via the dashboard's
+  // "Pay $X (cover shortfall)" CTA. Matches the same warnCard style
+  // used on dashboard.tsx / summary.tsx for visual consistency.
+  warnCard: {
+    marginTop: SPACING.md,
+    padding: SPACING.md,
+    borderRadius: RADIUS.md,
+    backgroundColor: '#FFF7ED',
+    borderWidth: 1,
+    borderColor: '#FED7AA',
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: SPACING.sm,
+  },
+  warnText: {
+    flex: 1,
+    fontSize: FONT.sizes.sm,
+    color: '#9A3412',
+    lineHeight: 18,
   },
   settlementHeader: {
     fontSize: FONT.sizes.xs,

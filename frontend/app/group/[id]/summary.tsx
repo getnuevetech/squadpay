@@ -420,7 +420,7 @@ export default function SummaryScreen() {
           <View style={styles.infoCard}>
             <AlertCircle size={18} color={COLORS.primary} />
             <Text style={styles.infoText}>
-              You'll cover the remaining ${remaining.toFixed(2)} when you pay the merchant — choose how on the next screen.
+              You'll cover the remaining ${(funding.remaining_to_collect || 0).toFixed(2)} when you pay the merchant — choose how on the next screen.
             </Text>
           </View>
         )}

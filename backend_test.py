@@ -1,16 +1,17 @@
-"""SquadPay backend test harness — June 2025 Item 6/7/8 batch.
+"""SquadPay backend regression test — Shortfall math fix (Dec 2025).
 
 Focus areas (per current review request):
-  1. Item 8 — Contribution math in itemized mode: members with no items
-     should show $0 contribution (no fees either).
-  2. Items 6/7 — Public GET /api/runtime/wallet-config endpoint + admin
-     PUT round-trip via /api/admin/wallet-config.
-  3. Regression smoke — /api/, POST /groups, repay 404, public wallet config.
+  A) GET /api/groups/{id} — verify funding.remaining_to_collect /
+     funding.merchant_remaining math.
+  B) POST /api/groups/{id}/pay shortfall_mode=lead is_loan=true — verify
+     shortfall covers FULL outstanding (incl fees), not merchant-only.
+  C) POST /api/groups/{id}/pay shortfall_mode=member / split_equal —
+     obligations carry full amount including fees.
+  D) Smoke: check-session, /users/{id}/groups, /groups create,
+     /runtime/landing-page (Cache-Control: no-store).
 
 Bypasses /auth/send-otp 5/min IP rate limit by registering users via
 /auth/register then flipping `verified=true` directly in MongoDB.
-Recurring routes are intentionally NOT exercised — that feature was
-deleted in this session.
 
 Run:  python /app/backend_test.py
 """
@@ -82,11 +83,15 @@ def admin_login() -> Optional[str]:
     return None
 
 
-# ---------- User factory (rate-limit safe via direct DB verify) ----------
+# ---------- User factory ----------
+_UCOUNTER = [0]
 async def make_user(name_prefix: str) -> dict:
+    _UCOUNTER[0] += 1
     ts = int(time.time() * 1000)
-    phone = f"+1832{ts % 10000000:07d}"
-    name = f"{name_prefix}{ts % 100000}"
+    # ensure unique phone even when called rapidly
+    suffix = (ts + _UCOUNTER[0]) % 10_000_000
+    phone = f"+1832{suffix:07d}"
+    name = f"{name_prefix}{ts % 100000}{_UCOUNTER[0]}"
     r = http("POST", "/auth/register", json={"name": name})
     if r.status_code != 200:
         raise RuntimeError(f"register failed: {r.status_code} {r.text[:200]}")
@@ -94,279 +99,383 @@ async def make_user(name_prefix: str) -> dict:
     await _mark_verified(user["id"], phone)
     user["phone"] = phone
     user["verified"] = True
-    time.sleep(0.02)
     return user
 
 
-# ============================================================
-# 1) Item 8 — Itemized contribution math
-# ============================================================
-async def test_item8_itemized_contribution_math():
-    section("1. Item 8 — Itemized mode: no-items members must see $0 total/fees")
+async def grant_credit(token: str, user_id: str, amount: float, note: str = "test") -> bool:
+    r = http("POST", f"/admin/users/{user_id}/credits/grant",
+             headers={"Authorization": f"Bearer {token}"},
+             json={"amount": amount, "note": note})
+    return r.status_code == 200
 
-    lead = await make_user("LeadIM")
-    alice = await make_user("AliceIM")
-    bob = await make_user("BobIM")
+
+def contribute_credit_only(group_id: str, user_id: str, amount: float):
+    """Use the /contribute endpoint expecting credit_only path (amount fully covered)."""
+    return http("POST", f"/groups/{group_id}/contribute",
+                json={"user_id": user_id, "amount": amount})
+
+
+# ============================================================
+# A) GET /api/groups/{id} — funding math
+# ============================================================
+async def test_funding_math(admin_token: str):
+    section("A. GET /groups/{id} — funding.remaining_to_collect vs merchant_remaining")
+
+    lead = await make_user("LeadA")
+    m1 = await make_user("M1A")
+    m2 = await make_user("M2A")
 
     body = {
         "lead_id": lead["id"],
-        "title": "Itemized Math Test",
-        "total_amount": 30.0,
-        "split_mode": "itemized",
+        "title": "Funding Math A",
+        "total_amount": 60.0,
+        "split_mode": "fast",
         "tax": 0.0,
         "tip": 0.0,
-        "items": [
-            {"name": "Burger", "price": 12.0, "quantity": 1},
-            {"name": "Fries",  "price": 6.0,  "quantity": 1},
-            {"name": "Drink",  "price": 12.0, "quantity": 1},
-        ],
+        "items": [],
     }
     r = http("POST", "/groups", json=body)
-    record(r.status_code == 200, "create itemized squad",
+    record(r.status_code == 200, "create fast-split $60 squad",
            f"{r.status_code}: {r.text[:200]}")
     if r.status_code != 200:
         return None
-    g = r.json()
-    gid = g["id"]
-    items = g["items"]
+    gid = r.json()["id"]
 
-    for u, via in [(alice, "code"), (bob, "qr")]:
+    for u in (m1, m2):
         rj = http("POST", f"/groups/{gid}/join",
-                  json={"user_id": u["id"], "joined_via": via})
-        record(rj.status_code == 200,
-               f"{u['name']} joins squad",
+                  json={"user_id": u["id"], "joined_via": "code"})
+        record(rj.status_code == 200, f"{u['name']} joins",
                f"{rj.status_code}: {rj.text[:120]}")
 
+    # Initial state — no contributions yet
     rg = http("GET", f"/groups/{gid}")
-    record(rg.status_code == 200, "GET /groups/{gid} (initial)",
+    record(rg.status_code == 200, "GET /groups/{gid} initial → 200",
            f"{rg.status_code}: {rg.text[:200]}")
     eg = rg.json()
-    per_user = {p["user_id"]: p for p in eg.get("per_user", [])}
+    funding = eg.get("funding", {})
+    per_user = eg.get("per_user", [])
+    sum_outstanding = round(sum(p.get("outstanding", 0.0) for p in per_user), 2)
 
-    for uid, label in [(lead["id"], "lead"), (alice["id"], "alice"), (bob["id"], "bob")]:
-        p = per_user.get(uid)
-        if not p:
-            record(False, f"per_user has {label}", "missing")
-            continue
-        ok = (
-            abs(p.get("food", 0)) < 0.001
-            and abs(p.get("total", 0)) < 0.001
-            and abs(p.get("transaction_fee", 0)) < 0.001
-            and abs(p.get("platform_fee", 0)) < 0.001
-            and abs(p.get("extra_fees_total", 0)) < 0.001
-        )
-        record(ok,
-               f"{label} (no items) → total=0, all fees=0 in itemized",
-               f"food={p.get('food')} total={p.get('total')} "
-               f"tx_fee={p.get('transaction_fee')} pf={p.get('platform_fee')} "
-               f"extras={p.get('extra_fees_total')}")
+    print(f"     funding={funding}")
+    print(f"     sum_outstanding={sum_outstanding}  per_user.total={[p['total'] for p in per_user]}")
 
-    # Assign Burger ($12) → Alice
-    burger_id = items[0]["id"]
-    ra = http("POST", f"/groups/{gid}/assign",
-              json={"user_id": alice["id"], "item_id": burger_id, "quantity": 1})
-    record(ra.status_code == 200, "assign Burger → Alice",
-           f"{ra.status_code}: {ra.text[:200]}")
-
-    rg2 = http("GET", f"/groups/{gid}")
-    eg2 = rg2.json()
-    pu2 = {p["user_id"]: p for p in eg2.get("per_user", [])}
-
-    p_alice = pu2[alice["id"]]
-    record(p_alice["food"] > 0 and p_alice["total"] > 0,
-           "after assign — alice.total > 0",
-           f"food={p_alice['food']} total={p_alice['total']}")
-    record(p_alice["transaction_fee"] >= 0 and p_alice["total"] > p_alice["food"] - 0.001,
-           "after assign — alice has fee math applied",
-           f"food={p_alice['food']} tx_fee={p_alice['transaction_fee']} "
-           f"pf={p_alice['platform_fee']} total={p_alice['total']}")
-
-    for uid, label in [(lead["id"], "lead"), (bob["id"], "bob")]:
-        p = pu2[uid]
-        ok = (
-            abs(p.get("food", 0)) < 0.001
-            and abs(p.get("total", 0)) < 0.001
-            and abs(p.get("transaction_fee", 0)) < 0.001
-            and abs(p.get("platform_fee", 0)) < 0.001
-            and abs(p.get("extra_fees_total", 0)) < 0.001
-        )
-        record(ok,
-               f"after assign — {label} (still no items) still $0",
-               f"food={p.get('food')} total={p.get('total')} "
-               f"fees={p.get('transaction_fee')}/{p.get('platform_fee')}/{p.get('extra_fees_total')}")
-
-    # Remove the assignment (qty=0)
-    ra2 = http("POST", f"/groups/{gid}/assign",
-               json={"user_id": alice["id"], "item_id": burger_id, "quantity": 0})
-    record(ra2.status_code == 200, "remove Alice's Burger assignment (qty=0)",
-           f"{ra2.status_code}: {ra2.text[:200]}")
-
-    rg3 = http("GET", f"/groups/{gid}")
-    eg3 = rg3.json()
-    pu3 = {p["user_id"]: p for p in eg3.get("per_user", [])}
-    p_alice3 = pu3[alice["id"]]
-    ok = (
-        abs(p_alice3.get("food", 0)) < 0.001
-        and abs(p_alice3.get("total", 0)) < 0.001
-        and abs(p_alice3.get("transaction_fee", 0)) < 0.001
-        and abs(p_alice3.get("platform_fee", 0)) < 0.001
-        and abs(p_alice3.get("extra_fees_total", 0)) < 0.001
+    record(
+        funding.get("remaining_to_collect") is not None,
+        "funding.remaining_to_collect field present"
     )
-    record(ok,
-           "after un-assign — alice reverts to $0",
-           f"food={p_alice3.get('food')} total={p_alice3.get('total')} "
-           f"fees={p_alice3.get('transaction_fee')}/{p_alice3.get('platform_fee')}/{p_alice3.get('extra_fees_total')}")
+    record(
+        funding.get("merchant_remaining") is not None,
+        "funding.merchant_remaining field present (NEW)"
+    )
+    record(
+        abs(funding.get("remaining_to_collect", -1) - sum_outstanding) < 0.02,
+        "remaining_to_collect == sum(per_user.outstanding)",
+        f"got {funding.get('remaining_to_collect')} vs sum {sum_outstanding}"
+    )
+    record(
+        funding.get("remaining_to_collect", 0) >= funding.get("merchant_remaining", 0) - 0.01,
+        "remaining_to_collect >= merchant_remaining (initial, no contributions)",
+        f"r2c={funding.get('remaining_to_collect')} merch={funding.get('merchant_remaining')}"
+    )
+
+    # Lead contributes own share via credit_only — grant enough credit
+    lead_per = next(p for p in per_user if p["user_id"] == lead["id"])
+    lead_share = float(lead_per["total"])
+    ok = await grant_credit(admin_token, lead["id"], lead_share + 1.0, "test funding A — lead")
+    record(ok, f"admin grants lead ${lead_share + 1.0:.2f} credit")
+
+    rc = contribute_credit_only(gid, lead["id"], lead_share)
+    record(rc.status_code == 200 and rc.json().get("credit_only") is True,
+           f"lead contributes ${lead_share:.2f} via credit_only",
+           f"{rc.status_code}: {rc.text[:200]}")
+
+    # State: only lead contributed → partial
+    rg = http("GET", f"/groups/{gid}")
+    eg = rg.json()
+    funding = eg.get("funding", {})
+    per_user = eg.get("per_user", [])
+    sum_outstanding = round(sum(p.get("outstanding", 0.0) for p in per_user), 2)
+    fees_uncollected = round(sum(
+        (p.get("transaction_fee", 0) + p.get("platform_fee", 0) + p.get("extra_fees_total", 0))
+        for p in per_user
+        if p.get("user_id") != lead["id"]
+    ), 2)
+
+    print(f"     After lead contributes: funding={funding}")
+    print(f"     sum_outstanding={sum_outstanding}  fees_uncollected={fees_uncollected}")
+
+    record(
+        abs(funding.get("remaining_to_collect", -1) - sum_outstanding) < 0.02,
+        "partial-funded: remaining_to_collect == sum(per_user.outstanding)",
+        f"got {funding.get('remaining_to_collect')} vs sum {sum_outstanding}"
+    )
+    record(
+        funding.get("remaining_to_collect", 0) > funding.get("merchant_remaining", 0) - 0.01,
+        "partial-funded: remaining_to_collect >= merchant_remaining",
+        f"r2c={funding.get('remaining_to_collect')} merch={funding.get('merchant_remaining')}"
+    )
+    delta = round(funding.get("remaining_to_collect", 0) - funding.get("merchant_remaining", 0), 2)
+    record(
+        abs(delta - fees_uncollected) < 0.05,
+        "partial-funded: delta(r2c - merch) ≈ uncollected fees for non-contributors",
+        f"delta={delta} fees_uncollected={fees_uncollected}"
+    )
+
+    return {"gid": gid, "lead": lead, "m1": m1, "m2": m2, "lead_share": lead_share}
 
 
-async def test_item8_fast_mode_unaffected():
-    section("1b. Item 8 — FAST/equal mode: behavior MUST NOT apply")
+# ============================================================
+# B) POST /pay shortfall_mode=lead is_loan=true
+# ============================================================
+async def test_pay_lead_loan(admin_token: str):
+    section("B. POST /pay shortfall_mode=lead is_loan=true — full amount cover")
 
-    lead = await make_user("LeadFM")
-    alice = await make_user("AliceFM")
-    bob = await make_user("BobFM")
+    lead = await make_user("LeadB")
+    m1 = await make_user("M1B")
+    m2 = await make_user("M2B")
+
     body = {
         "lead_id": lead["id"],
-        "title": "Fast Mode Test",
-        "total_amount": 30.0,
+        "title": "Lead Loan Cover B",
+        "total_amount": 60.0,
         "split_mode": "fast",
         "tax": 0.0,
         "tip": 0.0,
         "items": [],
     }
     r = http("POST", "/groups", json=body)
-    record(r.status_code == 200, "create fast-mode squad",
-           f"{r.status_code}: {r.text[:200]}")
     if r.status_code != 200:
+        record(False, "create fast-split squad B", f"{r.status_code}: {r.text[:200]}")
         return
+    record(True, "create fast-split squad B")
     gid = r.json()["id"]
-    for u in [alice, bob]:
+
+    for u in (m1, m2):
         rj = http("POST", f"/groups/{gid}/join",
                   json={"user_id": u["id"], "joined_via": "code"})
-        record(rj.status_code == 200, f"{u['name']} joins fast squad",
-               f"{rj.status_code}: {rj.text[:120]}")
+        if rj.status_code != 200:
+            record(False, f"{u['name']} joins B", f"{rj.status_code}: {rj.text[:120]}")
+            return
+    record(True, "members join squad B")
 
+    # Get per_user; lead pays own share via credit
     rg = http("GET", f"/groups/{gid}")
-    eg = rg.json()
-    pu = {p["user_id"]: p for p in eg.get("per_user", [])}
-    for uid, label in [(lead["id"], "lead"), (alice["id"], "alice"), (bob["id"], "bob")]:
-        p = pu.get(uid)
-        record(
-            p and p["food"] > 0 and p["total"] > 0,
-            f"fast mode — {label} food>0 AND total>0 (NOT zero'd)",
-            f"got food={p.get('food') if p else 'N/A'} total={p.get('total') if p else 'N/A'}",
+    per_user = rg.json()["per_user"]
+    pm = {p["user_id"]: p for p in per_user}
+    lead_share = float(pm[lead["id"]]["total"])
+    m1_share = float(pm[m1["id"]]["total"])
+    m2_share = float(pm[m2["id"]]["total"])
+
+    print(f"     shares: lead=${lead_share:.2f} m1=${m1_share:.2f} m2=${m2_share:.2f}")
+
+    # Grant lead enough credit, lead contributes
+    await grant_credit(admin_token, lead["id"], lead_share + 1.0, "B — lead")
+    rc = contribute_credit_only(gid, lead["id"], lead_share)
+    record(rc.status_code == 200, "lead contributes own share via credit",
+           f"{rc.status_code}: {rc.text[:200]}")
+
+    # Snapshot before pay
+    rg = http("GET", f"/groups/{gid}")
+    eg_before = rg.json()
+    funding_before = eg_before["funding"]
+    pm_before = {p["user_id"]: p for p in eg_before["per_user"]}
+    print(f"     BEFORE pay: funding={funding_before}")
+    print(f"     BEFORE pay: m1.outstanding={pm_before[m1['id']]['outstanding']}  m2.outstanding={pm_before[m2['id']]['outstanding']}")
+
+    expected_shortfall = round(
+        pm_before[m1["id"]]["outstanding"] + pm_before[m2["id"]]["outstanding"], 2
+    )
+    expected_merchant_remaining = funding_before["merchant_remaining"]
+    print(f"     expected_shortfall (sum non-lead outstanding) = ${expected_shortfall:.2f}")
+    print(f"     merchant_remaining (BEFORE) = ${expected_merchant_remaining:.2f}")
+
+    # CRITICAL: m1+m2 share sum INCLUDES fees, so expected > merchant_remaining
+    record(
+        expected_shortfall > expected_merchant_remaining - 0.01,
+        "expected_shortfall (incl fees) > merchant_remaining (sanity)",
+        f"shortfall={expected_shortfall} merch={expected_merchant_remaining}"
+    )
+
+    # Lead pays with shortfall_mode=lead, is_loan=true
+    rp = http("POST", f"/groups/{gid}/pay",
+              json={"user_id": lead["id"], "shortfall_mode": "lead", "is_loan": True})
+    record(rp.status_code == 200, "POST /pay shortfall_mode=lead is_loan=true → 200",
+           f"{rp.status_code}: {rp.text[:200]}")
+    if rp.status_code != 200:
+        return
+
+    eg_after = rp.json()
+    funding_after = eg_after["funding"]
+    contribs = eg_after.get("contributions", [])
+    shortfall_contribs = [c for c in contribs if c.get("is_shortfall")]
+    print(f"     AFTER pay: funding={funding_after}")
+    print(f"     shortfall_contribs={shortfall_contribs}")
+
+    record(len(shortfall_contribs) == 1, "exactly one is_shortfall contribution recorded",
+           f"got {len(shortfall_contribs)}")
+    if shortfall_contribs:
+        sc = shortfall_contribs[0]
+        record(sc.get("user_id") == lead["id"], "shortfall contribution.user_id == lead",
+               f"got {sc.get('user_id')}")
+        record(abs(float(sc.get("amount", 0)) - expected_shortfall) < 0.02,
+               f"shortfall contribution.amount == sum(non-lead outstanding) = ${expected_shortfall:.2f}",
+               f"got {sc.get('amount')} expected {expected_shortfall}")
+        record(sc.get("is_loan") is True, "is_loan=true preserved")
+        # CRITICAL: must NOT equal merchant_remaining (old buggy value)
+        record(abs(float(sc.get("amount", 0)) - expected_merchant_remaining) > 0.05,
+               "shortfall amount != merchant_remaining (old buggy value)",
+               f"shortfall={sc.get('amount')} merchant_remaining={expected_merchant_remaining}")
+
+    # total_contributed after = before + expected_shortfall
+    delta_contributed = round(
+        funding_after["total_contributed"] - funding_before["total_contributed"], 2
+    )
+    record(abs(delta_contributed - expected_shortfall) < 0.02,
+           f"funding.total_contributed delta == ${expected_shortfall:.2f}",
+           f"delta={delta_contributed}")
+
+    # Bill state
+    record(eg_after.get("status") == "paid",
+           "raw status == 'paid' after lead-loan cover",
+           f"got status={eg_after.get('status')}")
+    record(eg_after.get("funding_mode") in ("shortfall", "lead"),
+           "funding_mode set ('shortfall' or 'lead')",
+           f"got {eg_after.get('funding_mode')}")
+
+    # merchant_remaining after ≈ 0 (merchant fully paid)
+    record(funding_after.get("merchant_remaining", 99) < 0.05,
+           "after cover: merchant_remaining ≈ 0",
+           f"got {funding_after.get('merchant_remaining')}")
+
+    # For LOAN mode the beneficiaries still owe the lead (their `outstanding` stays).
+    # `remaining_to_collect` (sum of all outstanding) will still be > 0 because
+    # member1/member2 owe the lead. This is the LOAN repayment flow — distinct
+    # from merchant settlement. Document the observation.
+    print(f"     NOTE (loan): remaining_to_collect={funding_after.get('remaining_to_collect')} "
+          f"— members still owe lead via repay flow (correct loan semantics).")
+
+
+# ============================================================
+# C) POST /pay shortfall_mode=member / split_equal — obligations
+# ============================================================
+async def test_pay_member_and_split(admin_token: str):
+    section("C. POST /pay shortfall_mode=member / split_equal — obligations carry full amount")
+
+    for mode in ("member", "split_equal"):
+        section(f"  C.{mode}")
+        lead = await make_user(f"LeadC{mode[:1].upper()}")
+        m1 = await make_user(f"M1C{mode[:1].upper()}")
+        m2 = await make_user(f"M2C{mode[:1].upper()}")
+
+        r = http("POST", "/groups",
+                 json={"lead_id": lead["id"], "title": f"C-{mode}", "total_amount": 60.0,
+                       "split_mode": "fast", "tax": 0, "tip": 0, "items": []})
+        if r.status_code != 200:
+            record(False, f"create squad C-{mode}", f"{r.status_code}")
+            continue
+        gid = r.json()["id"]
+        for u in (m1, m2):
+            http("POST", f"/groups/{gid}/join", json={"user_id": u["id"]})
+
+        rg = http("GET", f"/groups/{gid}")
+        pm = {p["user_id"]: p for p in rg.json()["per_user"]}
+        lead_share = float(pm[lead["id"]]["total"])
+        await grant_credit(admin_token, lead["id"], lead_share + 1.0, f"C-{mode}")
+        contribute_credit_only(gid, lead["id"], lead_share)
+
+        rg = http("GET", f"/groups/{gid}")
+        eg = rg.json()
+        pm_b = {p["user_id"]: p for p in eg["per_user"]}
+        expected_shortfall = round(
+            pm_b[m1["id"]]["outstanding"] + pm_b[m2["id"]]["outstanding"], 2
         )
-        if p:
-            record(abs(p["food"] - 10.0) < 0.01,
-                   f"fast mode — {label} food == $10.00 (30/3 equal)",
-                   f"got {p.get('food')}")
+
+        payload = {"user_id": lead["id"], "shortfall_mode": mode, "is_loan": True}
+        if mode == "member":
+            payload["funder_member_id"] = m1["id"]
+        rp = http("POST", f"/groups/{gid}/pay", json=payload)
+        record(rp.status_code == 200, f"POST /pay shortfall_mode={mode} → 200",
+               f"{rp.status_code}: {rp.text[:200]}")
+        if rp.status_code != 200:
+            continue
+
+        eg_after = rp.json()
+        obligations = eg_after.get("shortfall_obligations", [])
+        target_kind = "shortfall_member" if mode == "member" else "shortfall_split"
+        relevant = [o for o in obligations if o.get("kind") == target_kind]
+
+        if mode == "member":
+            record(len(relevant) == 1, "exactly 1 shortfall_member obligation",
+                   f"got {len(relevant)}: {relevant}")
+            if relevant:
+                o = relevant[0]
+                record(o.get("user_id") == m1["id"],
+                       "obligation.user_id == funder_member_id (m1)",
+                       f"got {o.get('user_id')}")
+                record(abs(float(o.get("amount", 0)) - expected_shortfall) < 0.02,
+                       f"obligation.amount == ${expected_shortfall:.2f} (FULL incl fees)",
+                       f"got {o.get('amount')} expected {expected_shortfall}")
+        else:  # split_equal
+            record(len(relevant) >= 2, "≥2 shortfall_split obligations",
+                   f"got {len(relevant)}")
+            total_obligation = round(sum(float(o.get("amount", 0)) for o in relevant), 2)
+            record(abs(total_obligation - expected_shortfall) < 0.05,
+                   f"sum(obligations) == ${expected_shortfall:.2f} (FULL incl fees)",
+                   f"got total={total_obligation} expected {expected_shortfall}")
+
+        # Status should remain 'open' since obligations are deferred
+        record(eg_after.get("status") == "open",
+               f"mode={mode}: raw status stays 'open' (deferred)",
+               f"got status={eg_after.get('status')}")
 
 
 # ============================================================
-# 2) Items 6/7 — Public wallet-config endpoint
+# D) Smoke — auth/check-session, /users/{id}/groups, /groups create,
+#    /runtime/landing-page Cache-Control: no-store
 # ============================================================
-async def test_wallet_config_public(admin_token: str):
-    section("2. Items 6/7 — Public /runtime/wallet-config + admin PUT round-trip")
+async def test_smoke_endpoints():
+    section("D. Smoke — unrelated endpoints")
 
-    r = http("GET", "/runtime/wallet-config")
-    record(r.status_code == 200, "GET /runtime/wallet-config (no auth) → 200",
+    # 1) POST /api/auth/check-session — needs a valid user. Use a fresh one.
+    smoke_user = await make_user("Smoke")
+    r = http("POST", "/auth/check-session",
+             json={"user_id": smoke_user["id"], "session_id": "bogus"})
+    record(r.status_code == 200,
+           "POST /auth/check-session → 200 (no 500)",
            f"{r.status_code}: {r.text[:200]}")
     if r.status_code == 200:
         body = r.json()
-        for k in ("apple_pay_enabled", "google_pay_enabled", "issuing_enabled"):
-            record(k in body and isinstance(body[k], bool),
-                   f"public wallet-config has bool field {k}",
-                   f"body={body}")
-        record(body.get("apple_pay_enabled") is False,
-               "public — apple_pay_enabled == False (initial)",
-               f"got {body.get('apple_pay_enabled')}")
-        record(body.get("google_pay_enabled") is False,
-               "public — google_pay_enabled == False (initial)",
-               f"got {body.get('google_pay_enabled')}")
-        record(body.get("issuing_enabled") is True,
-               "public — issuing_enabled == True (initial)",
-               f"got {body.get('issuing_enabled')}")
+        record("valid" in body, "check-session response has 'valid' key",
+               f"body={body}")
 
-    headers = {"Authorization": f"Bearer {admin_token}"}
-    r2 = http("PUT", "/admin/wallet-config",
-              headers=headers,
-              json={"apple_pay_enabled": False,
-                    "google_pay_enabled": False,
-                    "issuing_enabled": False})
+    # 2) GET /api/users/{id}/groups
+    r2 = http("GET", f"/users/{smoke_user['id']}/groups")
     record(r2.status_code == 200,
-           "admin PUT /admin/wallet-config (issuing=False) → 200",
+           "GET /users/{id}/groups → 200",
            f"{r2.status_code}: {r2.text[:200]}")
     if r2.status_code == 200:
-        record(r2.json().get("issuing_enabled") is False,
-               "PUT response echoes issuing_enabled=False",
-               f"got {r2.json()}")
+        record(isinstance(r2.json(), list),
+               "/users/{id}/groups returns list", f"got {type(r2.json())}")
 
-    r3 = http("GET", "/runtime/wallet-config")
-    if r3.status_code == 200:
-        record(r3.json().get("issuing_enabled") is False,
-               "public reflects issuing_enabled=False after admin PUT",
-               f"got {r3.json()}")
-
-    r4 = http("PUT", "/admin/wallet-config",
-              headers=headers,
-              json={"apple_pay_enabled": False,
-                    "google_pay_enabled": False,
-                    "issuing_enabled": True})
-    record(r4.status_code == 200,
-           "admin PUT restore issuing_enabled=True → 200",
-           f"{r4.status_code}: {r4.text[:200]}")
-    r5 = http("GET", "/runtime/wallet-config")
-    if r5.status_code == 200:
-        record(r5.json().get("issuing_enabled") is True,
-               "public reflects issuing_enabled=True after restore",
-               f"got {r5.json()}")
-
-
-# ============================================================
-# 3) Regression smoke
-# ============================================================
-async def test_regression_smoke():
-    section("3. Regression smoke")
-
-    r = http("GET", "/")
-    if r.status_code == 200:
-        record("SquadPay" in r.text, "GET /api/ → 200 with 'SquadPay API'",
-               f"got body={r.text[:160]}")
-    else:
-        record(False, "GET /api/ → 200", f"{r.status_code}: {r.text[:200]}")
-
-    lead = await make_user("SmokeLead")
-    body = {
-        "lead_id": lead["id"],
-        "title": "Smoke Squad",
-        "total_amount": 25.0,
-        "split_mode": "fast",
-        "tax": 0.0,
-        "tip": 0.0,
-        "items": [],
-    }
-    r2 = http("POST", "/groups", json=body)
-    record(r2.status_code == 200,
-           "POST /groups (sample body) → 200 (fresh squad)",
-           f"{r2.status_code}: {r2.text[:200]}")
-
-    r3 = http("POST", "/groups/g_DOES_NOT_EXIST_xyz/repay",
-              json={"user_id": "u_nobody", "amount": 1.0})
-    record(r3.status_code == 404,
-           "POST /groups/{nonexistent}/repay → 404 (not 405)",
+    # 3) POST /api/groups (create)
+    r3 = http("POST", "/groups",
+              json={"lead_id": smoke_user["id"], "title": "Smoke Squad",
+                    "total_amount": 25.0, "split_mode": "fast",
+                    "tax": 0, "tip": 0, "items": []})
+    record(r3.status_code == 200,
+           "POST /groups (smoke) → 200",
            f"{r3.status_code}: {r3.text[:200]}")
-    if r3.status_code == 404:
-        try:
-            d = r3.json().get("detail", "")
-        except Exception:
-            d = ""
-        record("squad" in str(d).lower() or "not found" in str(d).lower(),
-               "repay 404 detail mentions 'Squad not found'",
-               f"detail={d!r}")
 
-    r4 = http("GET", "/runtime/wallet-config")
+    # 4) GET /api/runtime/landing-page Cache-Control: no-store
+    r4 = http("GET", "/runtime/landing-page")
     record(r4.status_code == 200,
-           "GET /runtime/wallet-config (no auth) → 200 (smoke)",
+           "GET /runtime/landing-page → 200",
            f"{r4.status_code}: {r4.text[:200]}")
+    if r4.status_code == 200:
+        cc = r4.headers.get("Cache-Control", "")
+        record("no-store" in cc.lower(),
+               "Cache-Control header contains 'no-store'",
+               f"got Cache-Control={cc!r}")
 
 
 # ============================================================
@@ -380,10 +489,25 @@ async def main():
         print("Cannot continue without admin token.")
         return
 
-    await test_item8_itemized_contribution_math()
-    await test_item8_fast_mode_unaffected()
-    await test_wallet_config_public(tok)
-    await test_regression_smoke()
+    try:
+        await test_funding_math(tok)
+    except Exception as e:
+        record(False, "test_funding_math crashed", repr(e))
+
+    try:
+        await test_pay_lead_loan(tok)
+    except Exception as e:
+        record(False, "test_pay_lead_loan crashed", repr(e))
+
+    try:
+        await test_pay_member_and_split(tok)
+    except Exception as e:
+        record(False, "test_pay_member_and_split crashed", repr(e))
+
+    try:
+        await test_smoke_endpoints()
+    except Exception as e:
+        record(False, "test_smoke_endpoints crashed", repr(e))
 
     section("SUMMARY")
     print(f"PASS  {len(passes)}")

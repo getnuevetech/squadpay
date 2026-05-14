@@ -104,9 +104,24 @@ def attach_pay_routes(router: APIRouter, db):
             n for n in (group.get("notifications") or [])
             if n.get("kind") not in ("shortfall_assigned", "shortfall_lead_covered")
         ]
-        total_contributed = sum(float(c["amount"]) for c in contributions)
-        total = float(group.get("total_amount") or 0.0)
-        shortfall = round(max(0.0, total - total_contributed), 2)
+        total_contributed = sum(float(c["amount"]) for c in contributions)  # noqa: F841 — kept for backwards-compatible accounting hooks
+        total = float(group.get("total_amount") or 0.0)  # noqa: F841 — kept for backwards-compatible accounting hooks
+        # CRITICAL (June 2025 bug fix): The shortfall the lead is covering
+        # must be the FULL outstanding amount (merchant share + fees), not
+        # just the merchant gap. Using `total - total_contributed` left
+        # platform/transaction fees uncollected after the lead covered,
+        # leaving the bill "stuck" — never transitioning to bill_settled.
+        # `enriched["per_user"]` carries each member's true `outstanding`
+        # which already includes their fees, so summing those gives the
+        # exact amount the lead must cover for the bill to be complete.
+        shortfall = round(
+            sum(
+                float(p.get("outstanding", 0.0) or 0.0)
+                for p in enriched.get("per_user", [])
+                if p.get("user_id") != body.user_id
+            ),
+            2,
+        )
 
         settlement: Optional[dict] = None
         awaiting_obligations = False

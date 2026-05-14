@@ -643,7 +643,22 @@ async def _recompute_group(group: dict) -> dict:
             "total_contributed": total_contributed,
             "total_repaid": total_repaid,
             "lead_shortfall": round(lead_shortfall, 2),
-            "remaining_to_collect": round(max(0.0, total_amount - total_contributed), 2),
+            # CRITICAL (June 2025 bug fix): `remaining_to_collect` must
+            # equal the sum of all per_user outstanding amounts — which
+            # already includes each member's transaction_fee +
+            # platform_fee + extra_fees. Previously this returned
+            # `total_amount - total_contributed` (merchant-only), which
+            # was LOWER than what the frontend `useBillMath.remaining`
+            # showed (grandTotal - contributed, fees included). When the
+            # lead opened the Pay screen to cover a shortfall, the
+            # amount dropped, and paying that lower value left fees
+            # uncollected — the bill would never close.
+            "remaining_to_collect": round(
+                sum(p.get("outstanding", 0.0) for p in per_user), 2
+            ),
+            # Merchant-only shortfall is still exposed for any caller
+            # that needs the raw merchant gap (e.g. accounting).
+            "merchant_remaining": round(max(0.0, total_amount - total_contributed), 2),
             "fees_total": round(sum(p["transaction_fee"] + p["platform_fee"] for p in per_user), 2),
         },
     }

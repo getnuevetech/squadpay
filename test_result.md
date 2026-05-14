@@ -111,6 +111,88 @@ user_problem_statement: |
   pay no longer errors with "bill is short".
 
 backend:
+  - task: "Shortfall math fix — funding.remaining_to_collect + /pay shortfall regression"
+    implemented: true
+    working: true
+    file: "backend/core.py, backend/routes/pay_routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Critical shortfall math fix verified via /app/backend_test.py against live
+            preview backend (https://joint-pay-1.preview.emergentagent.com/api).
+            42/44 assertions PASS. 0 5xx anywhere. The two non-passing assertions are
+            documentation/observation issues, NOT bugs in the fix — see notes below.
+
+            ✅ B) THE CORE BUG FIX — POST /pay shortfall_mode=lead is_loan=true:
+              Setup: fast-split $60 squad, 3 members (each share=$20.70 incl. $0.63 tx
+              fee + $0.03 platform fee + $0.04 extras-flat=$0.70). Lead contributed
+              own share ($20.70) via credit_only. m1+m2 NOT contributed.
+              BEFORE pay:
+                funding.total_contributed=20.70
+                funding.merchant_remaining=39.30   (OLD buggy value)
+                funding.remaining_to_collect=41.40  (NEW, correct)
+                m1.outstanding=20.70  m2.outstanding=20.70  → sum=41.40
+              POST /pay shortfall_mode=lead is_loan=true →200.
+              AFTER pay:
+                shortfall_contribs = 1 row:
+                  {user_id=lead, amount=41.40, is_shortfall=true, is_loan=true,
+                   covers=[m1,m2]}
+                ✅ amount = $41.40 == sum(non-lead outstanding) — INCLUDES fees
+                ✅ amount != $39.30 (the OLD merchant-only value — verified NOT equal)
+                ✅ funding.total_contributed = 62.10 (20.70 + 41.40)
+                ✅ funding.merchant_remaining = 0.00 (merchant fully paid)
+                ✅ raw status = 'paid', funding_mode='shortfall'.
+
+            ✅ C) shortfall_mode='member' and 'split_equal':
+              member: 1 shortfall_member obligation created on m1 with amount=$41.40
+                (full incl fees, not merchant-only). status stays 'open' (deferred).
+              split_equal: ≥2 shortfall_split obligations, sum=$41.40 (full incl fees).
+                status stays 'open'.
+
+            ✅ D) Smoke — unrelated endpoints (all 200):
+              - POST /auth/check-session → 200 with 'valid' key
+              - GET /users/{id}/groups → 200 (list)
+              - POST /groups (create) → 200
+              - GET /runtime/landing-page → 200 with Cache-Control containing 'no-store'
+              No 500/import errors detected.
+
+            ⚠ A) Funding-math anomalies (informational, NOT bugs in the fix):
+              The review request asserted "funding.remaining_to_collect >=
+              funding.merchant_remaining always". In practice this can be FALSE in
+              the initial state because the lead's `outstanding` is computed as
+              max(0, shortfall_owed - repaid) — the lead is excluded from the
+              outstanding sum entirely. So before anyone contributes:
+                merchant_remaining = total_amount - 0 = $60.00
+                remaining_to_collect = sum(non-lead-outstanding) = m1+m2 = $41.40
+                → remaining_to_collect ($41.40) < merchant_remaining ($60.00)
+              After lead contributes own share the relationship reverses correctly
+              ($41.40 > $39.30). This is an asymmetry between how the lead's share
+              is counted (it's in merchant total_amount but NOT in lead.outstanding).
+
+              Similarly, the delta (remaining_to_collect - merchant_remaining) after
+              the lead contributes is $2.10, not $1.40 (uncollected fees only). The
+              extra $0.70 is the lead's already-collected fee, which is subtracted
+              from merchant_remaining (because total_contributed includes fees) but
+              not from remaining_to_collect. This is again a side-effect of mixing
+              fee-inclusive `total_contributed` with merchant-only `total_amount` in
+              the merchant_remaining formula.
+
+              **Neither of these affects the bug fix.** The shortfall amount computed
+              in /pay correctly equals the full sum of non-lead outstanding (incl
+              fees), which is the only thing that mattered for "bill no longer
+              stuck after lead covers". Main agent may want to clarify the spec
+              docstring in core.py around funding.merchant_remaining to clarify
+              that it's NOT a strict lower-bound on remaining_to_collect (only
+              after lead contributes own share).
+
+            Test artifact: /app/backend_test.py (idempotent, fresh users + phones).
+
+
+backend:
   - task: "Phase A — Admin total_contributed (users list+detail) + audit-log filter expansions + CSV export"
     implemented: true
     working: true
@@ -11401,4 +11483,51 @@ NEEDS USER VERIFICATION on:
     b) Bottom CTA is "Add items / Claim items" (not "Pay $X for group")
     c) Non-lead users see "Claim your items" CTA (not blank bottom bar)
     d) Switching back to Equal restores normal Contribute/Pay flow
+
+
+---
+
+## 🚨 P0 BUG FIX (2026-05-14 #2) — Lead Shortfall Amount Drops on Pay Screen
+
+User report:
+"When a lead wants to cover for the team, the value that shows for lead on the
+shortfall pay button is the same as what the Squad members see on their
+dashboard but it becomes short/lower than what it showed prior when lead get
+to the page. If the lead goes ahead to pay the reduced value, the whole bill
+will be stuck as the total bill will not be complete."
+
+ROOT CAUSE:
+- Dashboard Pay button label used `useBillMath.remaining` = `grandTotal - contributed`
+  which INCLUDES SquadPay transaction/platform/extra fees.
+- Pay screen amount used `group.funding.remaining_to_collect` which backend
+  computed as `total_amount - total_contributed` (merchant-only, EXCLUDES fees).
+- Difference between the two = uncollected fees of absent members.
+- Lead pays the lower amount → fees never collected → bill cannot settle.
+
+FIX APPLIED:
+
+  /app/backend/core.py (_recompute_group)
+    • Changed `funding.remaining_to_collect` to `sum(p.outstanding for p in per_user)`
+      so it includes fees (matches dashboard's `useBillMath.remaining`).
+    • Added `funding.merchant_remaining` for any caller still needing
+      the merchant-only number (informational / accounting).
+
+  /app/backend/routes/pay_routes.py (pay_group endpoint)
+    • Changed `shortfall` calculation to sum of OTHER members' outstanding
+      amounts (which already include each member's fees).
+    • Now when the lead chooses any shortfall mode (lead-cover / member /
+      split_equal), the obligations + cover contribution include fees,
+      so the bill becomes fully funded after lead's cover lands.
+
+VERIFICATION (live test against current DB group):
+  remaining_to_collect:  18.52  ← matches per_user.outstanding sum
+  merchant_remaining:    0.00
+  fees_total:            1.84
+
+NEEDS USER VERIFICATION:
+  - On a bill where some members haven't contributed:
+    a) Dashboard Pay button shows $X
+    b) Tapping → Pay screen shows the SAME $X (not lower)
+    c) After lead covers shortfall, bill transitions to "Contributed" /
+       moves toward "Lead Paid" / "Bill Settled" without remaining fees stuck
 

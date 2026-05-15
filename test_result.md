@@ -12775,3 +12775,81 @@ agent_communication:
 
         No backend action required. Main agent can summarise and finish.
 
+
+================================================================================
+[Jun 2025] BUGFIXES — Admin labels not reflecting + Shortfall CTA disappearing
+================================================================================
+
+USER REPORT
+   1. "Changed field name in admin — does not reflect on frontend/web."
+      (Also reported for Platform Fee.)
+   2. "Lead sees 2 CTA after creating bill. After member joins, both still
+      visible. But once a member pays their share, Shortfall CTA disappears
+      for Lead. The only CTA that should hide is Contribute Share AFTER
+      lead pays their share. Shortfall CTA must remain until ALL
+      contributions are complete."
+
+ALSO REQUESTED
+   - Document receipt audit items #1 (storeReceipt on re-scan) and
+     #2 (viewer UI) as backlog.
+
+═══ FIX 1: Hook caches were too sticky (`useFeeLabels.ts`, `useBrand.ts`)
+   ROOT CAUSE
+   Module-level cache was populated once per session and never refetched.
+   When admin edited a label on one device, customer sessions on OTHER
+   devices/tabs never saw the change — they kept reading their stale
+   cached value forever (or until full app reload).
+   FIX
+   Both hooks now BUST the module cache on every useEffect mount before
+   fetching. Cached value is still used as the initial state (no UI
+   flicker), but a fresh fetch hits the backend immediately. Trade-off:
+   one extra GET request per mount of any consuming screen. Endpoint is
+   small + has Cache-Control: no-store so the cost is negligible.
+
+═══ FIX 2: extra_fees[].cap silently reset on load (`admin_app_config.py`)
+   ROOT CAUSE
+   `load_app_config()` rebuilt extras from defaults + DB merge but the
+   `cap` field was OMITTED from the rebuilt dict. Pydantic ExtraFee
+   defaulted it to 0. So every admin Save followed by a Reload silently
+   zeroed any non-zero caps the admin had set.
+   FIX
+   One-line addition: `"cap": float(merged.get("cap") or 0)` in the
+   extras list construction. Cap now survives round-trip.
+   BACKEND TEST: 19/19 PASS including round-trip with cap=50.0 surviving
+   reload, plus the regression check on all 3 fee labels reflecting on
+   the public endpoint.
+
+═══ FIX 3: Lead CTA visibility model (`dashboard.tsx`)
+   ROOT CAUSE
+   Old condition: `showDualCtas = !leadShareCovered && othersUnpaid > 0 &&
+   myUnpaid > 0`. When the last unpaid OTHER member paid, `othersUnpaid`
+   hit zero and the dual layout collapsed to a single "Contribute Share"
+   CTA — even though the lead still hadn't paid their own share.
+   The user's complaint was the Shortfall CTA disappearing in that case.
+   NEW VISIBILITY MODEL (visibility per CTA, not coupled):
+     • Contribute Share  → visible iff lead's personal share unpaid
+                            (myUnpaid > 0.01)
+     • Decide Shortfall  → visible iff ANY part of bill unpaid
+                            (remaining_to_collect > 0.01)
+   LAYOUT
+     both visible        → side-by-side dual (existing dualCtaRow style)
+     shortfall only      → single "Pay $X (cover shortfall) / for group"
+                            / "Settle bill — fully funded"
+     contribute only     → defensive fallback (math should make this
+                            unreachable; preserved for safety)
+   EDGE CASES NOW COVERED AUTOMATICALLY
+     ✓ Lead adds new item after members contribute → backend re-derives
+       per-user shares + remaining_to_collect → CTAs reappear correctly
+     ✓ Lead removes item → shares shrink → CTAs may dismiss if everything
+       now settled
+     ✓ Tax/tip edited → same recalc chain
+     ✓ Member contribution lands → only their personal unpaid drops, CTAs
+       only disappear if the corresponding total amount hit zero
+
+═══ BACKLOG ADDED (receipt audit items)
+   • P2 — Wire api.storeReceipt() into items.tsx re-scan + multi-receipt
+     batch flow. Currently only the create-bill initial scan persists
+     the receipt; subsequent scans add items but lose the image.
+   • P2 — Build receipt viewer UI: api.listGroupReceipts() exists but is
+     never called. Customer dashboard / summary / admin group inspector
+     should display a thumbnails strip with view-fullscreen.

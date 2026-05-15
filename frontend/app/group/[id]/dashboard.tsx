@@ -214,6 +214,24 @@ export default function DashboardScreen() {
   // "share covered" and hide the contribute CTA. Guard with share > 0.01.
   const leadShareCovered = myShare > 0.01 && myContributed >= myShare - 0.01;
 
+  // June 2025 — Dual-CTA detection. When the lead hasn't paid their own
+  // share AND there's a real shortfall from OTHER unpaid members, we
+  // surface BOTH actions side-by-side:
+  //   1. "Contribute Share" → pays only the lead's share into the pool.
+  //   2. "Cover Shortfall"  → routes to the lead-pay flow which fronts
+  //      the FULL remaining amount (their share + everyone else's gap)
+  //      to the restaurant via Stripe / Squad Card.
+  // Without both CTAs the lead used to be deadlocked: the only button
+  // was "Contribute Share", and the shortfall option only appeared
+  // AFTER they'd paid their own share — forcing a 2-tap workflow that
+  // failed when the lead actually wanted to settle everything in one go.
+  const myUnpaid = Math.max(0, myShare - myContributed);
+  const othersUnpaid = Math.max(
+    0,
+    (group.funding?.remaining_to_collect || 0) - myUnpaid,
+  );
+  const showDualCtas = !leadShareCovered && othersUnpaid > 0.01 && myUnpaid > 0.01;
+
   // Detect the "itemized but nothing claimed" state. In this state we MUST
   // NOT show the Pay button or "Contributed" badges — the lead must first
   // add items and have members claim them so each share is computed.
@@ -654,8 +672,28 @@ export default function DashboardScreen() {
             onPress={() => router.push(`/group/${group.id}/items`)}
           />
         )}
-        {/* Lead must contribute their own share BEFORE paying the merchant */}
-        {group.status === 'open' && !needsMoreMembers && !itemizedNeedsSetup && !leadShareCovered && (
+        {/* Lead must contribute their own share BEFORE paying the merchant.
+            When other members also haven't paid (`showDualCtas` true), surface
+            BOTH actions side-by-side so the lead isn't stuck behind their
+            own share before being allowed to settle the bill. */}
+        {group.status === 'open' && !needsMoreMembers && !itemizedNeedsSetup && !leadShareCovered && showDualCtas && (
+          <View style={styles.dualCtaRow}>
+            <Button
+              title={`Contribute Share\n$${myUnpaid.toFixed(2)}`}
+              testID="dashboard-contribute-btn"
+              onPress={handleContribute}
+              style={styles.dualCtaButton}
+            />
+            <Button
+              title={`Cover Shortfall\n$${(funding.remaining_to_collect || 0).toFixed(2)}`}
+              testID="dashboard-cover-shortfall-btn"
+              onPress={handleLeadPay}
+              variant="outline"
+              style={styles.dualCtaButton}
+            />
+          </View>
+        )}
+        {group.status === 'open' && !needsMoreMembers && !itemizedNeedsSetup && !leadShareCovered && !showDualCtas && (
           <Button
             title={`Contribute Your Share\n$${Math.max(0, myShare - myContributed).toFixed(2)}`}
             testID="dashboard-contribute-btn"
@@ -956,6 +994,13 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
   },
+  // June 2025 — dual-CTA layout for the deadlock scenario where the lead
+  // has both an unpaid personal share AND a shortfall from other members.
+  // Side-by-side (NOT stacked) so neither action is hidden below the fold
+  // on smaller phones, and the user reads them as PARALLEL options
+  // rather than as a primary+supplementary pair.
+  dualCtaRow: { flexDirection: 'row', gap: SPACING.sm },
+  dualCtaButton: { flex: 1, height: 56, paddingHorizontal: 12 },
   // Swipe-revealed "Remove" panel behind a removable member row.
   swipeDeleteBtn: {
     backgroundColor: COLORS.danger,

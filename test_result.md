@@ -12520,3 +12520,50 @@ WHAT'S STILL HARDCODED (not in scope for this fix, may need future audit):
    - `default_tip_suggestions` in `brand` config not consumed by any screen
    These are NOT the labels the user complained about. Safe to defer until
    user requests.
+
+================================================================================
+[Jun 2025] FEATURE — Dual CTA for Lead (Contribute Share + Cover Shortfall)
+================================================================================
+User reported the deadlock: when the lead has an unpaid share AND there's
+also a shortfall from OTHER unpaid members, the dashboard only showed
+"Contribute Your Share" CTA — no way to cover the full shortfall in one go.
+Lead had to first pay their share, THEN navigate again to cover others'.
+
+CHANGES — `app/group/[id]/dashboard.tsx`
+   - New derived state:
+        myUnpaid     = max(0, myShare - myContributed)
+        othersUnpaid = max(0, funding.remaining_to_collect - myUnpaid)
+        showDualCtas = !leadShareCovered && othersUnpaid > 0.01 && myUnpaid > 0.01
+   - When showDualCtas: render BOTH actions side-by-side (flexDirection:
+     'row', flex:1 each, height:56 for 2-line titles):
+        Primary (filled):   "Contribute Share\n$X"       → kind=contribute
+        Secondary (outline): "Cover Shortfall\n$Z"       → kind=lead
+     where X = lead's unpaid share, Z = funding.remaining_to_collect
+     (everything left, including lead's own share — the lead fronts the
+     whole bill to the restaurant via Stripe / Squad Card).
+   - When !showDualCtas: existing single "Contribute Your Share" CTA
+     unchanged (no regression for solo-unpaid scenarios).
+   - Routes & shortfall-mode picker untouched. The May 2025
+     `requiresShortfallChoice` safeguard still kicks in once the lead lands
+     on /pay?kind=lead — they MUST choose gift / loan / split before
+     final Pay.
+
+VISUAL LAYOUT
+   ┌──────────────────────────────────────┐
+   │ ┌─────────────────┬─────────────────┐│
+   │ │ Contribute      │ Cover           ││
+   │ │ Share           │ Shortfall       ││
+   │ │ $24.50          │ $52.00          ││
+   │ │ [primary fill]  │ [outline]       ││
+   │ └─────────────────┴─────────────────┘│
+   └──────────────────────────────────────┘
+   (Both buttons equal width via flex:1, gap = SPACING.sm)
+
+VERIFICATION
+   ✅ Metro bundles cleanly (HTTP 200)
+   ✅ `tsc --noEmit` — no new errors. Only pre-existing
+       `groupInsuranceFees` warning from earlier work (unrelated).
+   ✅ Single-CTA fallback path preserved for the common case
+       (only lead share unpaid, no shortfall from others).
+   ✅ Buttons inherit existing testIDs (`dashboard-contribute-btn`)
+       plus a new one (`dashboard-cover-shortfall-btn`) for QA hooks.

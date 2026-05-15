@@ -702,6 +702,8 @@ export type IncomeFeesGroup = {
   fees: {
     transaction_fees: number;
     platform_fees: number;
+    /** June 2025 — Layered Insurance fee aggregated per group. */
+    insurance?: number;
     extra_1: number;
     extra_2: number;
     extra_other: number;
@@ -726,6 +728,8 @@ export type IncomeFeesResponse = {
   totals: {
     transaction_fees: number;
     platform_fees: number;
+    /** June 2025 — Layered Insurance fee total. */
+    insurance?: number;
     extra_1: number;
     extra_2: number;
     extra_other: number;

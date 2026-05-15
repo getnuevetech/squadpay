@@ -34,10 +34,16 @@ def _safe_iso(v: Any) -> Optional[str]:
 
 
 def _fee_breakdown_for_group(group: Dict[str, Any]) -> Dict[str, float]:
-    """Return per-group totals for each fee category (whole-bill)."""
+    """Return per-group totals for each fee category (whole-bill).
+
+    June 2025 — Insurance is now a layered fee per the locked pricing
+    model. It's summed and exposed separately so the admin ledger can
+    track it as its own revenue line.
+    """
     per_user = group.get("per_user") or []
     transaction = sum(float(p.get("transaction_fee") or 0) for p in per_user)
     platform = sum(float(p.get("platform_fee") or 0) for p in per_user)
+    insurance = sum(float(p.get("insurance") or 0) for p in per_user)
     extra_1 = 0.0
     extra_2 = 0.0
     extra_other = 0.0
@@ -51,10 +57,11 @@ def _fee_breakdown_for_group(group: Dict[str, Any]) -> Dict[str, float]:
                 extra_2 += amt
             else:
                 extra_other += amt
-    total = transaction + platform + extra_1 + extra_2 + extra_other
+    total = transaction + platform + insurance + extra_1 + extra_2 + extra_other
     return {
         "transaction_fees": round(transaction, 2),
         "platform_fees": round(platform, 2),
+        "insurance": round(insurance, 2),
         "extra_1": round(extra_1, 2),
         "extra_2": round(extra_2, 2),
         "extra_other": round(extra_other, 2),
@@ -149,6 +156,7 @@ def attach_income_fees_routes(api_router: APIRouter, db, require_admin):
         agg = {
             "transaction_fees": 0.0,
             "platform_fees": 0.0,
+            "insurance": 0.0,
             "extra_1": 0.0,
             "extra_2": 0.0,
             "extra_other": 0.0,
@@ -163,7 +171,7 @@ def attach_income_fees_routes(api_router: APIRouter, db, require_admin):
             contributed = float((g.get("funding") or {}).get("total_contributed") or 0)
             agg["gross_contributed"] += contributed
             agg["contributions_counted"] += len(rows)
-            for k in ("transaction_fees", "platform_fees", "extra_1", "extra_2", "extra_other", "total_retained"):
+            for k in ("transaction_fees", "platform_fees", "insurance", "extra_1", "extra_2", "extra_other", "total_retained"):
                 agg[k] += fees[k]
             agg["groups_counted"] += 1
             groups.append({
@@ -186,7 +194,7 @@ def attach_income_fees_routes(api_router: APIRouter, db, require_admin):
                 "virtual_card_last4": ((g.get("virtual_card") or {}).get("last4")),
             })
 
-        for k in ("transaction_fees", "platform_fees", "extra_1", "extra_2", "extra_other", "total_retained", "gross_contributed"):
+        for k in ("transaction_fees", "platform_fees", "insurance", "extra_1", "extra_2", "extra_other", "total_retained", "gross_contributed"):
             agg[k] = round(agg[k], 2)
 
         # Cheap time-window aggregates (last 7 / 30 days) for the page header.

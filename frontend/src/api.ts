@@ -78,6 +78,12 @@ export type PerUser = {
   merchant_share: number;
   transaction_fee: number;
   platform_fee: number;
+  /** June 2025 — Layered Insurance fee (always %, per user spec). */
+  insurance?: number;
+  /** June 2025 — Per-member breakdown of admin-configured extra fees. */
+  extra_fees?: Array<{ id: string; name: string; type?: string; amount: number }>;
+  /** June 2025 — Sum of `extra_fees[].amount` for this member. */
+  extra_fees_total?: number;
   total: number;
   contributed: number;
   repaid: number;

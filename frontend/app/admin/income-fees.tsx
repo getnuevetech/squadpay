@@ -112,6 +112,12 @@ export default function AdminIncomeFees() {
         <Text style={styles.sectionTitle}>By fee category</Text>
         <BdRow label="Transaction fees" amount={t.transaction_fees} />
         <BdRow label="Platform fees" amount={t.platform_fees} />
+        {/* June 2025 — Layered Insurance fee. The backend totals endpoint
+            should expose `insurance` when ready; renders only when > 0
+            so older data with no insurance field is unaffected. */}
+        {((t as any).insurance || 0) > 0 ? (
+          <BdRow label="Insurance" amount={(t as any).insurance} />
+        ) : null}
         <BdRow label="Extra fee 1" amount={t.extra_1} />
         <BdRow label="Extra fee 2" amount={t.extra_2} />
         {t.extra_other > 0 ? <BdRow label="Other extras" amount={t.extra_other} /> : null}

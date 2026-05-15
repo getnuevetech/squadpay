@@ -111,6 +111,71 @@ user_problem_statement: |
   pay no longer errors with "bill is short".
 
 backend:
+  - task: "Public fee labels endpoint — GET /api/runtime/fee-labels"
+    implemented: true
+    working: true
+    file: "backend/routes/admin_phase_bc.py, backend/routes/admin_app_config.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            NEW PUBLIC ENDPOINT VERIFIED end-to-end via /app/backend_test.py against
+            live preview backend (https://joint-pay-1.preview.emergentagent.com/api).
+            33/33 assertions PASS. No 5xx.
+
+            STEP 1 — GET /api/runtime/fee-labels (no auth):
+              ✅ HTTP 200
+              ✅ Response body contains all required keys:
+                 transaction_fee_label, platform_fee_label, insurance_label, extra_fees
+              ✅ Label fields are strings, extra_fees is a list
+              ✅ Each extra_fees[i] is a dict with `id` and `name` keys
+                 (2 entries returned: extra_1, extra_2)
+              ✅ Cache-Control header present and contains both no-store and no-cache:
+                 "no-store, no-cache, must-revalidate"
+
+            STEP 2 — Admin login + GET /admin/app-config:
+              ✅ POST /admin/auth/login with admin@squadpay.us / production password
+                 → 200 with bearer token
+              ✅ GET /admin/app-config → 200; captured current
+                 platform_fee_label="Platform Fee", transaction_fee_label="Transaction Fee",
+                 insurance_label="Insurance", extra_fees[0]={id:extra_1, name:"Extra Fee 1",
+                 type:flat, value:0.0, enabled:false, cap:0.0}
+
+            STEP 2b — Three sequential PUTs to /admin/app-config (each 200):
+              ✅ PUT 1: core_fees.platform_fee_label = "Service Fee"
+              ✅ PUT 2: core_fees.transaction_fee_label = "Processing Fee"
+              ✅ PUT 3: extra_fees[0].name = "Concierge Fee"
+
+            STEP 3 — Re-fetch GET /api/runtime/fee-labels (no auth) shows updated values:
+              ✅ platform_fee_label == "Service Fee"
+              ✅ transaction_fee_label == "Processing Fee"
+              ✅ extra_fees[0].name == "Concierge Fee"
+              ✅ Cache-Control still "no-store, no-cache, must-revalidate"
+              Confirms _refresh_caches() in admin_app_config.py propagates changes
+              immediately to the public endpoint (no manual cache bust needed).
+
+            STEP 4 — Restore originals via single PUT /admin/app-config → 200.
+
+            STEP 5 — Re-fetch GET /api/runtime/fee-labels confirms defaults restored:
+              ✅ platform_fee_label == "Platform Fee"
+              ✅ transaction_fee_label == "Transaction Fee"
+              ✅ insurance_label == "Insurance"
+              ✅ extra_fees[0].name == "Extra Fee 1"
+
+            Endpoint implementation reviewed: /app/backend/routes/admin_phase_bc.py
+            lines 569–597. Returns JSONResponse with the four required keys plus
+            explicit Cache-Control/CDN-Cache-Control/Vercel-CDN-Cache-Control/Pragma/
+            Expires/Vary headers — all set to no-store / no-cache equivalents.
+            Frontend code can rely on every fetch being fresh.
+
+            Test artifact: /app/backend_test.py (focused on this review request).
+            No backend action required.
+
+
+backend:
   - task: "Layered fee model refactor — _compute_layered_member_fees() + admin app-config schema (platform_fee_type, platform_fee_value, insurance_pct)"
     implemented: true
     working: true

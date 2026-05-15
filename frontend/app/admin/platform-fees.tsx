@@ -79,6 +79,13 @@ export default function AdminAppConfig() {
     try {
       const updated = await adminApi.updateAppConfig(cfg);
       setCfg(updated);
+      // Bust the in-app fee-labels cache so customer-facing screens
+      // (BillBreakdown, summary, etc.) pull the new label strings on
+      // their very next render — no app restart needed.
+      try {
+        const { invalidateFeeLabelsCache } = await import('../../src/hooks/useFeeLabels');
+        invalidateFeeLabelsCache();
+      } catch {}
       toast.success('App config saved');
     } catch (e: any) {
       Alert.alert('Save failed', e?.message || 'Could not save app config');

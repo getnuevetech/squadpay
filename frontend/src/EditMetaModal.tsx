@@ -31,12 +31,17 @@ export function EditMetaModal({ visible, onClose, onSaved, group, userId, field 
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    // IMPORTANT: only reset values on the closed→open transition of the modal.
+    // Depending on `group` here would re-sync mid-edit whenever the parent
+    // dashboard re-renders (polling, websocket, etc.), wiping the user's
+    // typed value and producing the "reverts as you type" bug.
     if (visible) {
       setTitle(group.title);
       setTax(String(group.tax || ''));
       setTip(String(group.tip || ''));
     }
-  }, [visible, group]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
 
   const save = async () => {
     setSaving(true);

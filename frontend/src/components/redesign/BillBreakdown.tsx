@@ -13,6 +13,7 @@ import { ChevronDown } from 'lucide-react-native';
 import { COLORS, FONT, RADIUS, SPACING } from '../../theme';
 import type { Group } from '../../api';
 import type { ExtraFeeAgg } from '../../hooks/useBillMath';
+import { useFeeLabels } from '../../hooks/useFeeLabels';
 
 interface BillBreakdownProps {
   group: Group;
@@ -42,6 +43,13 @@ export function BillBreakdown({
   testIDPrefix,
 }: BillBreakdownProps) {
   const [open, setOpen] = useState(false);
+  const labels = useFeeLabels();
+  // Map each admin-configured extra-fee slot id → its admin-set display name.
+  // The per-user breakdown rows below render via `extraFeesAgg.name`, but
+  // those names are baked into the bill record at creation time. If the
+  // admin later renames the slot, the live label here wins.
+  const extraNameById: Record<string, string> = {};
+  for (const e of labels.extra_fees) extraNameById[e.id] = e.name;
 
   return (
     <View style={styles.yourCard}>
@@ -71,24 +79,24 @@ export function BillBreakdown({
             <Text style={styles.breakdownVal}>${Number(group.tip || 0).toFixed(2)}</Text>
           </View>
           <View style={styles.breakdownRow}>
-            <Text style={styles.breakdownKey}>Platform fees</Text>
+            <Text style={styles.breakdownKey}>{labels.platform_fee_label}</Text>
             <Text style={styles.breakdownVal}>${groupPlatformFees.toFixed(2)}</Text>
           </View>
           {extraFeesAgg.map((ef) => (
             <View key={ef.id} style={styles.breakdownRow}>
-              <Text style={styles.breakdownKey}>{ef.name}</Text>
+              <Text style={styles.breakdownKey}>{extraNameById[ef.id] || ef.name}</Text>
               <Text style={styles.breakdownVal}>${ef.amount.toFixed(2)}</Text>
             </View>
           ))}
           {/* June 2025 — Insurance layer (after Extras, before Tx Fee) */}
           {groupInsuranceFees > 0 && (
             <View style={styles.breakdownRow}>
-              <Text style={styles.breakdownKey}>Insurance</Text>
+              <Text style={styles.breakdownKey}>{labels.insurance_label}</Text>
               <Text style={styles.breakdownVal}>${groupInsuranceFees.toFixed(2)}</Text>
             </View>
           )}
           <View style={styles.breakdownRow}>
-            <Text style={styles.breakdownKey}>Transaction fees</Text>
+            <Text style={styles.breakdownKey}>{labels.transaction_fee_label}</Text>
             <Text style={styles.breakdownVal}>${groupTransactionFees.toFixed(2)}</Text>
           </View>
           <View

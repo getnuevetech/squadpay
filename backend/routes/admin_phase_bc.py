@@ -561,6 +561,42 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
         from kyc_incentive import get_kyc_incentive
         return await get_kyc_incentive(db)
 
+    # Public fee labels (June 2025 — Phase D config hygiene). The customer-facing
+    # bill breakdown needs the admin-editable display names for Transaction Fee /
+    # Platform Fee / Insurance + the names assigned to the two configurable
+    # `extra_fees` slots. Returning ONLY label strings + extra-fee names — no
+    # rates, caps, or toggle states (those live behind admin auth).
+    @public_r.get("/runtime/fee-labels")
+    async def public_fee_labels():
+        from routes.admin_app_config import load_app_config
+        cfg = await load_app_config(db)
+        core = cfg.get("core_fees") or {}
+        extras = cfg.get("extra_fees") or []
+        return JSONResponse(
+            content={
+                "transaction_fee_label": core.get("transaction_fee_label") or "Transaction Fee",
+                "platform_fee_label": core.get("platform_fee_label") or "Platform Fee",
+                "insurance_label": core.get("insurance_label") or "Insurance",
+                # Pair extra-slot id → admin-set display name. Frontend can map
+                # these onto the per-user `extra_fees` slice it already gets
+                # from `/api/groups/{id}`.
+                "extra_fees": [
+                    {"id": e.get("id"), "name": e.get("name") or e.get("id")}
+                    for e in extras
+                    if isinstance(e, dict) and e.get("id")
+                ],
+            },
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0, private",
+                "CDN-Cache-Control": "no-store",
+                "Vercel-CDN-Cache-Control": "no-store",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                "Vary": "*",
+            },
+        )
+
+
     @r.get("/admin/cms/pages")
     async def cms_admin_list(admin=Depends(get_current_admin)):
         cursor = db.cms_pages.find({}, {"_id": 0}).sort("updated_at", -1)

@@ -5,7 +5,7 @@
  * consumed by the master `adminApi.getIncomeFees()` method (which still
  * lives in `_legacy.ts` and imports the types from here).
  */
-import { BACKEND_URL, _downloadFile } from './_core';
+import { BACKEND_URL, _downloadFile, request } from './_core';
 
 export type IncomeFeesGroup = {
   id: string;
@@ -64,6 +64,7 @@ export type IncomeFeesResponse = {
 };
 
 export const incomeFeesApi = {
+  get: () => request<IncomeFeesResponse>('/income-fees'),
   downloadCsv: async (params: { status?: string; since?: string; until?: string }) => {
     const q = new URLSearchParams();
     if (params.status) q.set('status', params.status);

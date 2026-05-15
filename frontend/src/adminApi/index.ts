@@ -1,43 +1,32 @@
 /**
- * adminApi/index.ts — Backwards-compat re-export shim.
+ * adminApi/index.ts — Public barrel for the admin API layer.
  *
- * June 2025 refactor (Phase 2): the original `/app/frontend/src/adminApi.ts`
- * (~1,400 LOC) was renamed to `./_legacy.ts`. Self-contained domain APIs
- * (ocrApi, cmsApi, ticketsApi, etc.) have been migrated OUT of `_legacy.ts`
- * into focused domain modules. This barrel re-exports EVERYTHING so existing
- * import paths continue to work unchanged:
+ * Phase C (June 2025) refactor COMPLETE: the original ~1,400 line
+ * `src/adminApi.ts` has been fully decomposed. Every API method now lives
+ * in its own domain module. The legacy `adminApi` object (and historical
+ * type exports) live in `_legacy.ts` as a backwards-compat shim that simply
+ * composes the domain modules.
  *
- *   // ✅ Old import — still works, resolves to this barrel:
- *   import { adminApi, ocrApi, AdminProfile } from '../../src/adminApi';
+ *   // ✅ Both import styles work today:
+ *   import { adminApi, AdminProfile } from '../../src/adminApi';            // legacy
+ *   import { usersApi, integrationsApi } from '../../src/adminApi';         // recommended
+ *   import { usersApi } from '../../src/adminApi/users';                    // domain-scoped
  *
- *   // ✅ New import — domain-scoped (recommended for new code):
- *   import { ocrApi } from '../../src/adminApi/ocr';
- *
- * MIGRATION PROGRESS:
- *   1. ✅ DONE — Moved original file into this folder + barrel shim.
- *   2. ✅ DONE — Created domain-scoped modules (ocr, cms, support, etc.).
- *   3. ✅ DONE (Phase 2) — Migrated the 10 self-contained standalone APIs
- *         out of `_legacy.ts` into their domain modules with full source
- *         code (not just re-exports). Shared infrastructure (auth headers,
- *         token caching, file download helper) extracted to `./_core.ts`.
- *   4. 🔜 FUTURE — Decompose the master `adminApi` object (~50 methods) into
- *         per-domain clients (usersApi, groupsApi, integrationsApi, etc.).
- *         Will require touching every admin screen import — defer until the
- *         object grows again or domain boundaries firm up.
- *   5. 🔜 FUTURE — When `_legacy.ts` is empty, delete it.
- *
- * Why this structure:
- *   - Zero behaviour change today — every previous import path still works.
- *   - Domain modules already source-of-truth for their APIs (no re-export
- *     indirection through `_legacy.ts`).
- *   - Future moves are isolated to one domain at a time (low blast radius).
- *   - Consumers get clean, focused import paths immediately for new code.
+ * Migration history:
+ *   • Phase A — Folder scaffolding + barrel.
+ *   • Phase B — Moved 10 self-contained standalone APIs (ocrApi, cmsApi,
+ *               ticketsApi, etc.) out of `_legacy.ts`.
+ *   • Phase C — Decomposed the master adminApi (~50 methods) into domain
+ *               modules. `_legacy.ts` is now ~230 LOC (down from 1,400+).
+ *   • Phase D — Future: when consumers migrate to domain-scoped clients
+ *               (`usersApi.list()` instead of `adminApi.listUsers()`), the
+ *               `_legacy.ts` composition shim can be deleted entirely.
  */
 
-// Master adminApi client + its method-signature types (still in _legacy.ts):
+// Master backwards-compat shim (composes domain APIs into legacy `adminApi`):
 export * from './_legacy';
 
-// Migrated standalone domain APIs (source-of-truth in their own modules):
+// Phase B — Standalone domain APIs (source-of-truth):
 export * from './ocr';
 export * from './support';
 export * from './cms';
@@ -48,3 +37,26 @@ export * from './notifications';
 export * from './landingPage';
 export * from './kyc';
 export * from './incomeFees';
+
+// Phase C — Domain APIs decomposed from the old master `adminApi` object:
+export * from './auth';
+export * from './audit';
+export * from './admins';
+export * from './broadcasts';
+export * from './creditRules';
+export * from './access';
+export * from './gateways';
+export * from './contactMessages';
+export * from './users';
+export * from './groups';
+export * from './integrations';
+export * from './reconciliation';
+export * from './security';
+export * from './analytics';
+export * from './legal';
+export * from './features';
+export * from './referrals';
+export * from './appConfig';
+export * from './masterCard';
+export * from './rewards';
+export * from './admin';

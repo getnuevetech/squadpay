@@ -12635,3 +12635,50 @@ VERIFICATION
        (only lead share unpaid, no shortfall from others).
    ✅ Buttons inherit existing testIDs (`dashboard-contribute-btn`)
        plus a new one (`dashboard-cover-shortfall-btn`) for QA hooks.
+
+================================================================================
+[Jun 2025] FEATURE — "Decide Shortfall" + brand.support_email propagation
+================================================================================
+
+PART 1 — CTA copy tweak (`app/group/[id]/dashboard.tsx`)
+   User feedback: "Cover Shortfall" → "Decide Shortfall". Single-line edit
+   to better describe the action (the screen lets the lead choose
+   gift / loan / split-equal, not just "cover").
+
+PART 2 — Frontend testing agent (dual-CTA verification)
+   Code review: PASS (15/15 structural checks).
+   E2E: NOT executed — multi-session flow (≥4 phones) exceeds the test
+   agent's browser-session cap. Implementation matches spec exactly on
+   inspection; runtime PII values not yet verified live.
+   ACTION: Recommend manual smoke test or split into single-session
+   sub-tests. No code changes needed.
+
+PART 3 — `brand.support_email` propagation
+   The customer-facing Settings → Delete Account modal had three hardcoded
+   `help@squadpay.us` strings even though admin has `brand.support_email`
+   editable via /admin/platform-fees. Admin edits never reflected in the
+   modal copy.
+
+   FIX (3 parts, same pattern as fee-labels):
+   1. Backend — Added `GET /api/runtime/brand` (no auth) in
+      `routes/admin_phase_bc.py`. Returns `{support_email,
+      default_tip_suggestions, currency}` with Cache-Control: no-store.
+   2. Frontend hook — `src/hooks/useBrand.ts`. Module-level cache,
+      DEFAULTS fallback (`help@squadpay.us`, `[15,18,20]`, `USD`),
+      `invalidateBrandCache()` export.
+   3. Wire — `app/settings.tsx` now reads `brand.support_email` from
+      the hook (3 occurrences). `app/admin/platform-fees.tsx`
+      invalidates BOTH fee-labels AND brand caches on Save so changes
+      propagate immediately to all open screens.
+
+   BACKEND TESTING — 14/14 assertions PASS:
+   ✅ Public endpoint shape + headers correct
+   ✅ Admin PUT propagates instantly to public endpoint
+   ✅ Round-trip with `support_email="customers@example.com"` works
+   ✅ Round-trip with `default_tip_suggestions=[10,15,20,25]` works
+   ✅ Defaults restore cleanly
+
+   NOT-FIXED (deferred):
+   - `default_tip_suggestions` not consumed by any screen yet — create.tsx
+     uses a freeform TextInput for tip amount, no preset chips. Hook is
+     ready when the UI gets tip-suggestion chips.

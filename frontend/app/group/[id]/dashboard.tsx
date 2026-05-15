@@ -685,7 +685,7 @@ export default function DashboardScreen() {
               style={styles.dualCtaButton}
             />
             <Button
-              title={`Cover Shortfall\n$${(funding.remaining_to_collect || 0).toFixed(2)}`}
+              title={`Decide Shortfall\n$${(funding.remaining_to_collect || 0).toFixed(2)}`}
               testID="dashboard-cover-shortfall-btn"
               onPress={handleLeadPay}
               variant="outline"

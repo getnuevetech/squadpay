@@ -109,6 +109,17 @@ try:
 except Exception as _e:
     print("[startup] account deletion routes attach failed:", _e)
 
+# ---------- Real-Time Ledger Reconciliation Phase 1: Drift Detection ----------
+# Pure-observation drift scanner + admin endpoints. Detects denormalisation
+# rot in our own DB and settlement imbalances on finalized groups. Future
+# phases will graduate to webhook-driven real-time updates (Phase 2) and a
+# full double-entry ledger (Phase 3).
+try:
+    from admin_reconciliation_drift import attach_drift_routes
+    attach_drift_routes(api_router, db)
+except Exception as _e:
+    print("[startup] reconciliation drift routes attach failed:", _e)
+
 
 # ---------- Module Registry + RBAC (Batch June 2025) ----------
 # Same pre-include placement reasoning — /admin/access/* and /admin/me/modules
@@ -389,6 +400,17 @@ async def _on_startup():
         await ensure_reconciliation_settings(db)
     except Exception as e:
         print("[startup] reconciliation settings failed:", e)
+
+    # June 2025: Phase 1 of Real-Time Ledger Reconciliation — kick off the
+    # drift-detection background scanner. Pure observation, never mutates
+    # groups or Stripe. Default interval 15 min; disable with
+    # RECON_DRIFT_ENABLED=0.
+    try:
+        import asyncio as _asyncio
+        from admin_reconciliation_drift import start_drift_background_loop
+        _asyncio.create_task(start_drift_background_loop(db))
+    except Exception as e:
+        print("[startup] reconciliation drift cron failed:", e)
 
     # June 2025: seed RBAC roles + warm the in-memory roles cache.
     try:

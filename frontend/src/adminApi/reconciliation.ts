@@ -53,6 +53,68 @@ export type MasterAccountEntry = {
 };
 
 export const reconciliationApi = {
+  // ────── Drift Detection (Real-Time Ledger Reconciliation, Phase 1) ──────
+  // Detects DB denormalization rot + settlement imbalances. Pure observation.
+  driftList: (params?: { resolved?: boolean; kind?: string; limit?: number; skip?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.resolved !== undefined) q.set('resolved', String(params.resolved));
+    if (params?.kind) q.set('kind', params.kind);
+    if (params?.limit) q.set('limit', String(params.limit));
+    if (params?.skip) q.set('skip', String(params.skip));
+    const qs = q.toString();
+    return request<{
+      items: Array<{
+        id: string;
+        group_id: string;
+        group_title: string;
+        group_status: string;
+        kind: 'db_internal' | 'settlement_imbalance' | string;
+        expected: number;
+        observed: number;
+        delta: number;
+        detected_at: string;
+        resolved: boolean;
+        resolved_at?: string;
+        resolved_by?: string;
+        resolution_note?: string;
+        notes?: string;
+      }>;
+      total: number;
+      skip: number;
+      limit: number;
+    }>(`/reconciliation/drift${qs ? `?${qs}` : ''}`);
+  },
+  driftRuns: () =>
+    request<{
+      items: Array<{
+        id: string;
+        ran_at: string;
+        elapsed_ms: number;
+        kinds_scanned: string[];
+        drifts_found: number;
+        rows_inserted: number;
+        rows_refreshed: number;
+      }>;
+    }>('/reconciliation/drift/runs'),
+  driftScanNow: (kinds?: string[]) => {
+    const q = kinds && kinds.length ? `?kinds=${encodeURIComponent(kinds.join(','))}` : '';
+    return request<{
+      ran_at: string;
+      elapsed_ms: number;
+      kinds_scanned: string[];
+      drifts_found: number;
+      rows_inserted: number;
+      rows_refreshed: number;
+    }>(`/reconciliation/drift/scan${q}`, { method: 'POST' });
+  },
+  driftResolve: (drift_id: string, note?: string) => {
+    const q = note ? `?note=${encodeURIComponent(note)}` : '';
+    return request<{ ok: boolean; id: string; resolved: boolean }>(
+      `/reconciliation/drift/${drift_id}/resolve${q}`,
+      { method: 'POST' },
+    );
+  },
+  // ────── Existing reconciliation routes ──────
   getSettings: () => request<ReconciliationSettings>(`/reconciliation-settings`),
   setSettings: (body: { credit_contributors_enabled?: boolean; auto_disable_card?: boolean }) =>
     request<ReconciliationSettings>(`/reconciliation-settings`, {

@@ -13005,3 +13005,83 @@ USER ASK — Close the receipts-storage backlog:
      reachable from the regular group dashboard, so admins debugging a
      squad can use the same route. Will add dedicated admin tiles when
      prioritised.
+
+================================================================================
+[Jun 2025] BACKLOG — P1 EAS preflight + P2 Real-Time Ledger Reconciliation Ph1
+================================================================================
+
+═══ P1 (EAS Build) — DOC ONLY (build itself blocked on user's Mac)
+   Created `/app/docs/EAS_BUILD_PREFLIGHT.md` (~120 LOC) with:
+   • Step-by-step `eas init / build / submit` commands
+   • Identified preflight blocker: `app.json` has `expo.extra.eas.projectId = ""`
+     → user must run `eas init` to populate (only EAS auth can do this)
+   • TestFlight + Play push-notification verification checklist
+   • Common-gotchas troubleshooting table
+   Action item for user: pull latest, run `eas init`, then
+   `eas build --platform all --profile preview`.
+
+═══ P2 (Real-Time Ledger Reconciliation) — PHASE 1 SHIPPED: DRIFT DETECTION
+
+   STRATEGY — Phased rollout (Phase 1 = pure observation):
+     Phase 1 (THIS DELIVERY) — Drift Detection (visibility only)
+     Phase 2 (FUTURE)         — Webhook-driven real-time ledger updates
+     Phase 3 (FUTURE)         — Full double-entry ledger + auto-recovery
+     Phase 4 (FUTURE)         — Alerting + threshold-based escalation
+
+   WHAT SHIPPED — Phase 1: Drift Detection
+
+   Backend (`admin_reconciliation_drift.py`, ~320 LOC):
+     • Scanner with two drift kinds:
+         db_internal           — sum(contributions.amount) vs
+                                  funding.total_contributed (denorm rot)
+         settlement_imbalance  — terminal-state groups where contributors
+                                  paid less than the merchant total
+     • Persists drift rows to `reconciliation_drift` collection;
+       idempotent at the (group_id, kind) level — refreshes existing
+       unresolved rows instead of duplicating.
+     • Background scanner loop @ 15-minute interval (configurable via
+       RECON_DRIFT_ENABLED env to disable in tests).
+     • Admin endpoints (require admin auth):
+         POST /api/admin/reconciliation/drift/scan       — run now
+         GET  /api/admin/reconciliation/drift            — list
+         GET  /api/admin/reconciliation/drift/runs       — last 20 scans
+         POST /api/admin/reconciliation/drift/{id}/resolve — ack/close
+     • Audit log entries for every scan + resolve (via `write_audit`).
+
+   Frontend (`app/admin/reconciliation-drift.tsx`, ~330 LOC):
+     • New admin screen at /admin/reconciliation-drift.
+     • Header: KPI tiles (Unresolved / DB Denorm / Imbalance counts).
+     • Last-scan status card (timestamp, elapsed, found-count).
+     • Toggle: unresolved-only vs all.
+     • Drift row cards: kind pill, group link, expected/observed/delta
+       columns, notes, resolve button (with confirmation alert).
+     • Scan history footer (last 20 runs).
+     • Tap row → routes to /admin/groups/{group_id} for drill-down.
+   API client (`src/adminApi/reconciliation.ts`):
+     • driftList / driftRuns / driftScanNow / driftResolve added to
+       `reconciliationApi`.
+
+   Module registry (`admin_modules.py`):
+     • New module entry: key="reconciliation_drift", label="Ledger Drift",
+       group="Finance", path="/admin/reconciliation-drift",
+       default_roles=[super_admin, manager], sensitive=true.
+     → Will appear automatically in admin sidebar/drawer.
+
+   VERIFICATION
+   ✅ Background cron started successfully on backend boot.
+   ✅ First scan ran in 76ms — found 128 drift rows in existing test data
+       (all `db_internal` denorm cases on test/seed groups where
+       contributions were inserted but funding aggregate wasn't refreshed).
+   ✅ Admin endpoints return correct data:
+        GET /reconciliation/drift/runs → 200, lists scan history
+        GET /reconciliation/drift?limit=3 → 200, returns drift rows
+   ✅ Admin module registry updated; sidebar will surface "Ledger Drift".
+
+   WHAT'S NOT IN PHASE 1 (deferred to Phases 2-4)
+   • Stripe webhook listener for real-time payment events
+   • PaymentIntent reconciliation (compare our contributions vs Stripe's
+     authoritative succeeded amounts)
+   • Issuing transaction reconciliation (per-group card spent matches
+     Stripe Issuing balance)
+   • Drift auto-recovery (fix the denorm by recomputing funding aggregate)
+   • SMS/email alerts for high-delta drift

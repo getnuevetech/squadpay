@@ -78,6 +78,12 @@ MODULES: List[Dict] = [
      "default_roles": ["super_admin"], "sensitive": True},
     {"key": "reconciliations", "label": "Reconciliations",    "group": "Finance",    "path": "/admin/reconciliations",
      "default_roles": ["super_admin", "manager"]},
+    # June 2025 — Phase 1 of Real-Time Ledger Reconciliation. Pure observation
+    # screen that surfaces ledger drift (DB denormalization, settlement
+    # imbalances). Future phases add webhook-driven real-time updates +
+    # auto-recovery.
+    {"key": "reconciliation_drift", "label": "Ledger Drift",   "group": "Finance",    "path": "/admin/reconciliation-drift",
+     "default_roles": ["super_admin", "manager"], "sensitive": True},
 
     # ----- System (super_admin)
     {"key": "integrations",    "label": "Integrations",       "group": "System",     "path": "/admin/integrations",

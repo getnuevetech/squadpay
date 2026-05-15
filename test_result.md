@@ -12130,3 +12130,45 @@ User-locked formula refactor across 5 phases:
 - Test group g_4a39452c2e: lead.total == member.total == $21.12 (no asymmetry)
 - Insurance correctly shows on breakdown when > 0
 - Symmetric remaining_to_collect: $42.66 (sum of all unpaid, lead included)
+
+---
+
+## 🎯 MILESTONE — Per-Fee Enable Toggle + Max-$ Cap (2026-05-15)
+
+Every fee in the admin pricing model now has TWO additional controls:
+   1. Enable / disable toggle  (master switch — when OFF, the fee is COMPLETELY skipped, including from downstream layer bases)
+   2. Max-$ cap                (when >0, min()-clamps the computed fee per member)
+
+Applied uniformly to:
+   • Transaction Fee  → transaction_fee_enabled + transaction_fee_cap
+   • Platform Fee     → platform_fee_enabled    + platform_fee_cap
+   • Insurance        → insurance_enabled       + insurance_cap
+   • Each Extra Fee   → existing `enabled` + NEW `cap` per row
+
+### Code touched
+   /app/backend/routes/admin_app_config.py
+     • CoreFees schema:  +6 fields (3 enabled bools, 3 caps)
+     • ExtraFee schema:  +cap field
+     • _refresh_caches() forwards new fields to set_core_fees_cache()
+   /app/backend/core.py
+     • set_core_fees_cache(): +6 kwargs (enable + cap)
+     • _CORE_FEES_CACHE persists them
+     • _compute_layered_member_fees(): honors enable + cap at each layer
+   /app/frontend/app/admin/platform-fees.tsx
+     • Switch for each of: Tx Fee, Platform Fee, Insurance
+     • Cap input ($) for each, including each Extra Fee row
+     • New styles: switchRow, switchLabel, extraCapRow, extraCapLabel, extraCapInput
+   /app/frontend/src/adminApi.ts
+     • AppConfig.core_fees: +enabled bools + caps
+     • AdminPlatformFee type: +cap
+
+### Behavior verified end-to-end
+   ✅ Baseline (all on, no caps): $21.12 per member
+   ✅ Tx disabled       → total $20.71
+   ✅ Platform disabled → total $20.60 (downstream insurance + tx adjusted)
+   ✅ Insurance disabled→ total $20.91
+   ✅ Tx capped to $0.10 → total $20.81
+   ✅ Platform capped to $0.20 → capped value feeds Insurance base correctly
+   ✅ Combined: Platform disabled + tx_cap=$0.05 → $20.25
+   ✅ All restores back to baseline cleanly
+

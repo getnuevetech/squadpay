@@ -12219,3 +12219,85 @@ VERIFIED
    ✅ All 30+ admin screens compile against unchanged import paths
    ✅ No lint errors introduced
 
+
+================================================================================
+[Jun 2025] adminApi PHASE B MIGRATION — _legacy.ts code physically moved out
+================================================================================
+Continuation of the Phase A folder-restructure work. Phase A scaffolded the
+domain modules as thin re-exports from `_legacy.ts`. Phase B now MOVES the
+self-contained API objects + their tightly-coupled types OUT of `_legacy.ts`
+and into their domain modules as the source of truth.
+
+WHAT MOVED (10 standalone domain APIs + their types)
+   ocr.ts                  — ocrApi + OcrProviderEntry, OcrAttempt, OcrConfig
+   support.ts              — ticketsApi + TicketReply
+   cms.ts                  — cmsApi, publicCmsApi + CmsPage
+   activity.ts             — adminActivityApi + AdminActivityRow
+   edits.ts                — adminEditApi
+   settlement.ts           — settlementDelayApi + SettlementDelay
+   notifications.ts        — notificationConfigApi + NotifChannel/EventConfig/NotificationConfig
+   landingPage.ts          — landingPageConfigApi + LandingPageConfig
+   kyc.ts                  — kycIncentiveApi + KycIncentiveConfig
+   incomeFees.ts           — incomeFeesApi + IncomeFeesGroup, IncomeFeesResponse
+
+NEW SHARED INFRASTRUCTURE FILE
+   _core.ts (150 LOC) — centralised:
+      BACKEND_URL, API constants
+      getToken / setSession / getProfile / clearSession
+      request<T>()        (auth-redirect-aware /api/admin/* JSON helper)
+      _aRequest<T>()      (flexible /api/* helper used by domain APIs)
+      _downloadFile()     (authenticated blob download for CSV/PDF exports)
+
+WHAT STAYED IN _legacy.ts
+   - The master `adminApi` object (~50 methods spanning auth, audit, users,
+     groups, integrations, KMS, analytics, etc.). Decomposing the object
+     requires touching every admin screen import — deferred to Phase C.
+   - The types those methods reference (AppConfig, IntegrationsView,
+     AnalyticsPayload, ReconciliationRow, ReferrerDetail, etc.).
+   - Now imports shared infra from `./_core` instead of duplicating it.
+   - Re-exports getProfile() with a TYPED return (Promise<AdminProfile|null>)
+     wrapping the generic `_core.getProfile<T>()` to preserve consumer
+     signatures (e.g., setProfile(await getProfile()) keeps type-checking).
+
+FILE SIZE IMPACT
+   _legacy.ts:  1,434 LOC  →  1,061 LOC   (−373 LOC, −26%)
+   _core.ts:      0 LOC    →    150 LOC   (NEW)
+   10 domain files: thin shims (5-10 LOC each)  →  16-83 LOC each
+                    (now contain real source code)
+
+INDEX BARREL (`adminApi/index.ts`) UPDATED
+   Now explicitly re-exports from each migrated domain module:
+      export * from './_legacy';          // master adminApi + remaining types
+      export * from './ocr';              // ocrApi + ocr types
+      export * from './support';          // ticketsApi + TicketReply
+      export * from './cms';              // cmsApi + publicCmsApi + CmsPage
+      export * from './activity';         // adminActivityApi + AdminActivityRow
+      export * from './edits';            // adminEditApi
+      export * from './settlement';       // settlementDelayApi + SettlementDelay
+      export * from './notifications';    // notificationConfigApi + notif types
+      export * from './landingPage';      // landingPageConfigApi + config type
+      export * from './kyc';              // kycIncentiveApi + config type
+      export * from './incomeFees';       // incomeFeesApi + IncomeFees types
+
+ZERO BEHAVIOUR CHANGE
+   All consumer imports still work unchanged:
+      import { adminApi, ocrApi, ticketsApi, KycIncentiveConfig,
+               getProfile, clearSession, _aRequest } from '../../src/adminApi';
+
+NO REGRESSIONS
+   ✅ Metro re-bundled cleanly
+   ✅ `tsc --noEmit` shows zero NEW type errors (all pre-existing errors
+       in cash-out.tsx, kyc-incentives.tsx, etc. are unrelated)
+   ✅ Admin screens fire correct HTTP requests:
+         GET /api/admin/landing-page         (landingPageConfigApi)
+         GET /api/admin/notification-config  (notificationConfigApi)
+         GET /api/admin/settlement-delay     (settlementDelayApi)
+         GET /api/admin/kyc-incentive        (kycIncentiveApi.getLead)
+         GET /api/admin/kyc-incentive-member (kycIncentiveApi.getMember)
+   ✅ Login page + auth-guarded redirects working
+
+WHAT'S LEFT FOR PHASE C (FUTURE)
+   - Decompose the master `adminApi` object (~50 methods) into per-domain
+     clients (usersApi, groupsApi, integrationsApi, paymentsApi, etc.) and
+     migrate consumer imports incrementally.
+   - When `_legacy.ts` is empty, delete it.

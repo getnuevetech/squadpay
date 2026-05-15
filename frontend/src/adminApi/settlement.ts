@@ -1,6 +1,16 @@
 /**
- * adminApi/settlement.ts — Settlement-delay admin (the configurable
- * grace window between Contributed → Lead Paid).
+ * adminApi/settlement.ts — Settlement-delay admin (the configurable grace
+ * window between Contributed → Lead Paid).
  */
-export { settlementDelayApi } from './_legacy';
-export type { SettlementDelay } from './_legacy';
+import { _aRequest } from './_core';
+
+export type SettlementDelay = { minutes: number };
+
+export const settlementDelayApi = {
+  get: () => _aRequest<SettlementDelay>('/admin/settlement-delay'),
+  set: (minutes: number) =>
+    _aRequest<{ ok: boolean; minutes: number }>('/admin/settlement-delay', {
+      method: 'PUT',
+      body: JSON.stringify({ minutes }),
+    }),
+};

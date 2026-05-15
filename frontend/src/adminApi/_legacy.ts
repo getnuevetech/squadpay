@@ -1,15 +1,50 @@
 /**
- * Admin API client (Phase A).
- * Token persisted in AsyncStorage so the dashboard survives reloads.
+ * adminApi/_legacy.ts \u2014 The master `adminApi` client.
+ *
+ * June 2025 refactor: this used to be a single ~1,400 line file at
+ * `src/adminApi.ts`. The standalone domain APIs (ocrApi, ticketsApi, cmsApi,
+ * adminActivityApi, adminEditApi, settlementDelayApi, notificationConfigApi,
+ * landingPageConfigApi, kycIncentiveApi, incomeFeesApi) have been moved into
+ * their own modules under `./ocr.ts`, `./support.ts`, etc.
+ *
+ * What still lives HERE:
+ *   - The master `adminApi` object (\u224850 methods spanning auth, metrics,
+ *     audit, users, groups, integrations, reconciliation, KMS, analytics,
+ *     etc.). Splitting it is a future refactor; consumers still import it
+ *     as a single client.
+ *   - Type definitions for adminApi method signatures (AppConfig,
+ *     IntegrationsView, AnalyticsPayload, etc.).
+ *
+ * Shared infrastructure (getToken, setSession, request helpers, file-download
+ * helper) was extracted to `./_core.ts`.
  */
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  API,
+  clearSession,
+  getToken,
+  request,
+  setSession,
+} from './_core';
+// IncomeFees types now live in their own module; re-imported here only so the
+// master adminApi.getIncomeFees() signature continues to type-check.
+import type { IncomeFeesResponse } from './incomeFees';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
-const API = `${BACKEND_URL}/api/admin`;
-const TOKEN_KEY = 'gp.admin.token';
-const PROFILE_KEY = 'gp.admin.profile';
+// Re-export the session helpers from this module so existing `import {
+// getToken, getProfile, clearSession } from '../../src/adminApi'` paths keep
+// working without changing consumer code.
+export { getToken, clearSession, setSession, _aRequest, BACKEND_URL } from './_core';
+import { getProfile as _getProfileRaw } from './_core';
 
-// Role slug — was a tight Literal ('super_admin' | 'manager' | 'support').
+/**
+ * Cached admin profile read. Wrapper around `_core.getProfile<T>()` that
+ * narrows the return type to `AdminProfile | null` for the master admin
+ * client (preserves the historical signature consumers expect).
+ */
+export function getProfile(): Promise<AdminProfile | null> {
+  return _getProfileRaw<AdminProfile>();
+}
+
+// Role slug \u2014 was a tight Literal ('super_admin' | 'manager' | 'support').
 // As of RBAC v2 (June 2025) custom roles can be defined in Access Role
 // Management, so the type is now a free-form string. The 3 system slugs are
 // still always present.
@@ -23,7 +58,7 @@ export type AdminProfile = {
   is_active: boolean;
   last_login_at: string | null;
   created_at: string;
-  // P2 — soft nudge for super-admins still on the env-default password.
+  // P2 \u2014 soft nudge for super-admins still on the env-default password.
   must_change_default_password?: boolean;
 };
 
@@ -50,73 +85,6 @@ export type AuditEntry = {
   destructive: boolean;
   at: string;
 };
-
-let _cachedToken: string | null = null;
-
-export async function getToken(): Promise<string | null> {
-  if (_cachedToken) return _cachedToken;
-  _cachedToken = await AsyncStorage.getItem(TOKEN_KEY);
-  return _cachedToken;
-}
-
-async function setSession(token: string, profile: AdminProfile) {
-  _cachedToken = token;
-  await AsyncStorage.setItem(TOKEN_KEY, token);
-  await AsyncStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
-}
-
-export async function getProfile(): Promise<AdminProfile | null> {
-  const raw = await AsyncStorage.getItem(PROFILE_KEY);
-  return raw ? JSON.parse(raw) : null;
-}
-
-export async function clearSession() {
-  _cachedToken = null;
-  await AsyncStorage.multiRemove([TOKEN_KEY, PROFILE_KEY]);
-}
-
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = await getToken();
-  const headers: any = { 'Content-Type': 'application/json', ...(init.headers || {}) };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`${API}${path}`, { ...init, headers });
-  const text = await res.text();
-  let body: any = null;
-  try { body = text ? JSON.parse(text) : null; } catch { body = text; }
-  if (!res.ok) {
-    // Auto-handle expired/missing admin token: clear session + redirect to login.
-    // BUT skip the redirect on the login page itself — otherwise the page reload
-    // wipes the inline error message before the user can see it.
-    if (res.status === 401) {
-      try {
-        const onLogin =
-          typeof window !== 'undefined' &&
-          (window as any).location?.pathname?.startsWith('/admin/login');
-        if (!onLogin) {
-          await clearSession();
-          if (typeof window !== 'undefined' && (window as any).location) {
-            (window as any).location.replace('/admin/login');
-          }
-        }
-      } catch {}
-    }
-    const detail = body?.detail;
-    // Surface the structured object (with code / attempts_left / retry_after_seconds)
-    // when the backend returns one, so the caller can branch on it.
-    if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
-      const err = new Error(detail.message || `HTTP ${res.status}`) as Error & { code?: string; data?: any };
-      err.code = detail.code;
-      err.data = detail;
-      (err as any).status = res.status;
-      throw err;
-    }
-    const msg = (body && (body.detail?.[0]?.msg || body.detail || body.message)) || `HTTP ${res.status}`;
-    const err = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg)) as Error & { status?: number };
-    err.status = res.status;
-    throw err;
-  }
-  return body as T;
-}
 
 export const adminApi = {
   login: async (email: string, password: string) => {
@@ -215,7 +183,7 @@ export const adminApi = {
     const text = await res.text();
     const filename = `audit_log_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
     if (typeof window !== 'undefined' && typeof document !== 'undefined') {
-      // Web — anchor download
+      // Web \u2014 anchor download
       const blob = new Blob([text], { type: 'text/csv' });
       const href = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -228,7 +196,7 @@ export const adminApi = {
   },
 
   listAdmins: () => request<AdminProfile[]>('/admins'),
-  // June 2025 — Notification Center
+  // June 2025 \u2014 Notification Center
   broadcastNotification: (body: {
     message: string;
     image_url?: string | null;
@@ -262,7 +230,7 @@ export const adminApi = {
       total: number;
       has_more: boolean;
     }>(`/notifications/broadcasts?page=${page}&page_size=${page_size}`),
-  // June 2025 — Bulk SMS broadcaster (separate from Notification Center).
+  // June 2025 \u2014 Bulk SMS broadcaster (separate from Notification Center).
   sendBulkSms: (body: {
     message: string;
     audience: 'all_users' | 'leads' | 'members' | 'groups' | 'numbers';
@@ -292,7 +260,7 @@ export const adminApi = {
       total: number;
       has_more: boolean;
     }>(`/bulk-sms/history?page=${page}&page_size=${page_size}`),
-  // June 2025 — Credit Rules engine.
+  // June 2025 \u2014 Credit Rules engine.
   listCreditRules: () =>
     request<{
       items: Array<{
@@ -316,7 +284,7 @@ export const adminApi = {
     request<any>(`/credit-rules/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteCreditRule: (id: string) =>
     request<any>(`/credit-rules/${id}`, { method: 'DELETE' }),
-  // June 2025 — full-content search bar.
+  // June 2025 \u2014 full-content search bar.
   search: (q: string) =>
     request<{
       items: Array<{
@@ -328,7 +296,7 @@ export const adminApi = {
       }>;
     }>(`/search?q=${encodeURIComponent(q)}`),
 
-  // ─────────────── Module Registry + Access Control (June 2025) ───────────────
+  // \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 Module Registry + Access Control (June 2025) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   // Backend mounts these at /api/admin/me/modules + /api/admin/access/...
   // The request helper already prepends /api/admin, so we pass the suffix only.
   myModules: () =>
@@ -354,7 +322,7 @@ export const adminApi = {
       }>;
     }>('/access/registry'),
 
-  // ─────────────── Role CRUD (RBAC v2) ───────────────
+  // \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 Role CRUD (RBAC v2) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   listRoles: () =>
     request<{
       count: number;
@@ -391,7 +359,7 @@ export const adminApi = {
       method: 'DELETE',
     }),
 
-  // ─────────────── Capability Registry (feature on/off, June 2025) ───────────────
+  // \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 Capability Registry (feature on/off, June 2025) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   listCapabilities: () =>
     request<{
       group_order: string[];
@@ -414,7 +382,7 @@ export const adminApi = {
       body: JSON.stringify({ enabled }),
     }),
 
-  // ─────────────── Payment Gateway Configuration (June 2025 Phase 2) ───────────────
+  // \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 Payment Gateway Configuration (June 2025 Phase 2) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   gatewayCatalog: () =>
     request<{
       charge_providers: any[];
@@ -552,7 +520,7 @@ export const adminApi = {
     request<{ sent_real: boolean; info: string }>(`/integrations/signalwire/test`, { method: 'POST', body: JSON.stringify({ to_number, body }) }),
   setSmsRouting: (r: { primary: 'twilio' | 'signalwire'; fallback?: 'twilio' | 'signalwire' | null }) =>
     request<IntegrationsView>('/integrations/sms-routing', { method: 'POST', body: JSON.stringify(r) }),
-  // Phase H6 — global mock/live toggle
+  // Phase H6 \u2014 global mock/live toggle
   setSmsMode: (mode: 'mock' | 'live') =>
     request<IntegrationsView>('/integrations/sms-mode', { method: 'POST', body: JSON.stringify({ mode }) }),
   testTwilio: (to_number: string, body?: string) =>
@@ -615,14 +583,14 @@ export const adminApi = {
       body: JSON.stringify(body),
     }),
   uploadLegalMedia: async (file: { uri?: string; blob?: Blob; name: string; mime: string }) => {
-    // Multipart upload — must NOT set Content-Type manually (browser/RN sets boundary).
+    // Multipart upload \u2014 must NOT set Content-Type manually (browser/RN sets boundary).
     const token = await getToken();
     const fd = new FormData();
     if (file.blob) {
       fd.append('file', file.blob, file.name);
     } else if (file.uri) {
       // React Native form-data: pass {uri, name, type}
-      // @ts-ignore — RN-only shape
+      // @ts-ignore \u2014 RN-only shape
       fd.append('file', { uri: file.uri, name: file.name, type: file.mime });
     }
     const res = await fetch(`${API}/legal/upload`, {
@@ -678,7 +646,7 @@ export const adminApi = {
   // -------- Income & Fees ledger (Batch B) --------
   getIncomeFees: () => request<IncomeFeesResponse>('/income-fees'),
 
-  // -------- Master Virtual Card (Batch C — new; existing /master-account ledger lives at adminApi.getMasterAccount above) --------
+  // -------- Master Virtual Card (Batch C \u2014 new; existing /master-account ledger lives at adminApi.getMasterAccount above) --------
   getMasterCard: () => request<{ card: MasterCard | null }>('/master-card'),
   issueMasterCard: () =>
     request<{ ok: boolean; card: MasterCard; created: boolean }>('/master-card/issue', {
@@ -686,61 +654,15 @@ export const adminApi = {
     }),
 };
 
-export type IncomeFeesGroup = {
-  id: string;
-  title: string;
-  status: string;
-  created_at: string | null;
-  settled_at: string | null;
-  lead_id: string;
-  members_count: number;
-  gross_contributed: number;
-  // Phase: per-group tabular ledger — surface tax/tips/item count
-  tax: number;
-  tips: number;
-  total_items: number;
-  fees: {
-    transaction_fees: number;
-    platform_fees: number;
-    /** June 2025 — Layered Insurance fee aggregated per group. */
-    insurance?: number;
-    extra_1: number;
-    extra_2: number;
-    extra_other: number;
-    total_retained: number;
-  };
-  contributions: Array<{
-    user_id: string;
-    user_name: string;
-    amount: number;
-    stripe_pi: string | null;
-    ts: string | null;
-    transaction_fee: number;
-    platform_fee: number;
-    extra_1: number;
-    extra_2: number;
-    fee_slice_total: number;
-  }>;
-  virtual_card_last4: string | null;
-};
-
-export type IncomeFeesResponse = {
-  totals: {
-    transaction_fees: number;
-    platform_fees: number;
-    /** June 2025 — Layered Insurance fee total. */
-    insurance?: number;
-    extra_1: number;
-    extra_2: number;
-    extra_other: number;
-    total_retained: number;
-    groups_counted: number;
-    contributions_counted: number;
-    gross_contributed: number;
-  };
-  window_totals: { week: number; month: number };
-  groups: IncomeFeesGroup[];
-};
+// ============================================================================
+// Types referenced by adminApi method signatures.
+// ============================================================================
+//
+// NOTE: types tightly coupled to standalone domain APIs have been moved into
+// their respective domain modules (`./ocr.ts`, `./incomeFees.ts`,
+// `./notifications.ts`, etc.). What remains here is exclusively used by the
+// master `adminApi` object above; moving these out requires also moving the
+// corresponding `adminApi.*` methods, which is a future refactor.
 
 export type MasterCard = {
   stripe_card_id: string | null;
@@ -753,17 +675,17 @@ export type MasterCard = {
 export type AppConfig = {
   core_fees: {
     transaction_fee_pct: number;
-    // June 2025 — Platform fee migrated to {type, value}. Both legacy
+    // June 2025 \u2014 Platform fee migrated to {type, value}. Both legacy
     // `platform_fee_flat` and the new `platform_fee_type`/`platform_fee_value`
     // are present for backwards-compat; the new fields are the source of
     // truth.
     platform_fee_flat: number;  // legacy mirror of platform_fee_value when type=fixed
     platform_fee_type?: 'fixed' | 'percent';
     platform_fee_value?: number;
-    // June 2025 — Insurance: always %, layered between Extras and Tx Fee.
+    // June 2025 \u2014 Insurance: always %, layered between Extras and Tx Fee.
     insurance_pct?: number;
     insurance_label?: string;
-    // June 2025 — Per-fee enable/disable toggles + max-$ caps.
+    // June 2025 \u2014 Per-fee enable/disable toggles + max-$ caps.
     transaction_fee_enabled?: boolean;
     platform_fee_enabled?: boolean;
     insurance_enabled?: boolean;
@@ -801,7 +723,7 @@ export type AdminPlatformFee = {
   type: 'percent' | 'flat';
   value: number;
   enabled: boolean;
-  /** June 2025 — Optional per-extra max-$ cap. 0 means no cap. */
+  /** June 2025 \u2014 Optional per-extra max-$ cap. 0 means no cap. */
   cap?: number;
 };
 
@@ -1039,8 +961,6 @@ export type RemindersIn = {
   send_via_sms: boolean;
 };
 
-// ---- Phase G1: Reconciliation ----
-
 // ---- Phase G5: Analytics ----
 
 export type AnalyticsPayload = {
@@ -1088,7 +1008,7 @@ export type KmsRotateResult = {
   elapsed_ms: number;
   primary_fingerprint: string;
   key_source: string;
-  // June 2025 — extended walker now reports per-collection counts.
+  // June 2025 \u2014 extended walker now reports per-collection counts.
   per_collection?: Record<string, { rotated: number; skipped: number; failed: number }>;
 };
 
@@ -1138,297 +1058,4 @@ export type MasterAccountEntry = {
   note?: string;
   created_at: string;
   created_by?: string;
-};
-
-
-// ============================================================================
-// Phase B + Phase C helpers (June 2025)
-// ============================================================================
-
-export type OcrProviderEntry = { provider: string; model: string };
-export type OcrAttempt = {
-  provider: string;
-  model: string;
-  ok: boolean;
-  error?: string;
-  latency_ms?: number;
-};
-export type OcrConfig = {
-  providers: OcrProviderEntry[];
-  recent_attempts: Array<{
-    id: string;
-    at: string;
-    chain: OcrProviderEntry[];
-    attempts: OcrAttempt[];
-    succeeded: boolean;
-    provider_used?: string | null;
-  }>;
-  updated_at?: string | null;
-};
-
-export type CmsPage = {
-  id: string;
-  slug: string;
-  title: string;
-  body: string;
-  body_format: 'markdown' | 'plain';
-  published: boolean;
-  visibility: 'web' | 'mobile' | 'both';
-  meta_description?: string | null;
-  created_at: string;
-  updated_at: string;
-  created_by?: string | null;
-};
-
-export type AdminActivityRow = {
-  id: string;
-  at: string;
-  admin_email: string;
-  admin_id?: string;
-  action: string;
-  target_type?: string;
-  target_id?: string;
-  payload?: any;
-  ip?: string;
-  user_agent?: string;
-};
-
-export type TicketReply = {
-  id: string;
-  ticket_id: string;
-  direction: 'outgoing' | 'incoming';
-  from_email?: string;
-  message: string;
-  created_at: string;
-  email_dispatch?: { sent: boolean; error?: string | null };
-};
-
-// Shared request helper — re-uses the same authenticated fetch pattern as the
-// rest of adminApi. We bind to the module-level `request` via a wrapper.
-// Exported so other admin pages can build new endpoints without re-implementing
-// auth/header plumbing.
-export async function _aRequest<T>(path: string, init?: RequestInit & { skipAuth?: boolean }): Promise<T> {
-  const token = await getToken();
-  const isAbsolute = path.startsWith('http');
-  const isAdmin = path.startsWith('/admin');
-  const url = isAbsolute ? path : `${BACKEND_URL}/api${isAdmin ? '' : ''}${path}`;
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (token && !init?.skipAuth) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(url, { ...init, headers: { ...headers, ...(init?.headers as any) } });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(text || `HTTP ${res.status}`);
-  }
-  // 204 / empty
-  const ct = res.headers.get('content-type') || '';
-  if (ct.includes('json')) return res.json();
-  return (await res.text()) as any;
-}
-
-// ----- OCR config -----
-export const ocrApi = {
-  get: () => _aRequest<OcrConfig>('/admin/ocr-config'),
-  set: (providers: OcrProviderEntry[]) =>
-    _aRequest<{ ok: boolean; providers: OcrProviderEntry[] }>('/admin/ocr-config', {
-      method: 'PUT',
-      body: JSON.stringify({ providers }),
-    }),
-};
-
-// ----- Income & Fees exports -----
-export const incomeFeesApi = {
-  downloadCsv: async (params: { status?: string; since?: string; until?: string }) => {
-    const q = new URLSearchParams();
-    if (params.status) q.set('status', params.status);
-    if (params.since) q.set('since', params.since);
-    if (params.until) q.set('until', params.until);
-    const url = `${BACKEND_URL}/api/admin/income-fees/export.csv${q.toString() ? `?${q.toString()}` : ''}`;
-    return _downloadFile(url, 'text/csv', 'income_fees.csv');
-  },
-  downloadPdf: async (params: { status?: string; since?: string; until?: string }) => {
-    const q = new URLSearchParams();
-    if (params.status) q.set('status', params.status);
-    if (params.since) q.set('since', params.since);
-    if (params.until) q.set('until', params.until);
-    const url = `${BACKEND_URL}/api/admin/income-fees/export.pdf${q.toString() ? `?${q.toString()}` : ''}`;
-    return _downloadFile(url, 'application/pdf', 'income_fees.pdf');
-  },
-};
-
-// Shared download helper — fetches with auth and triggers a browser-anchor
-// download on web. On native, returns the body for the caller to share.
-async function _downloadFile(url: string, mime: string, fallbackName: string) {
-  const token = await getToken();
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(text || `HTTP ${res.status}`);
-  }
-  const blob = mime === 'application/pdf' ? await res.blob() : new Blob([await res.text()], { type: mime });
-  const cd = res.headers.get('content-disposition') || '';
-  const m = /filename="?([^"]+)"?/.exec(cd);
-  const filename = m?.[1] || fallbackName;
-  if (typeof window !== 'undefined' && typeof document !== 'undefined') {
-    const href = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = href;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(href);
-  }
-  return { filename, size: blob.size };
-}
-
-// ----- Customer-service replies + user tickets -----
-export const ticketsApi = {
-  reply: (ticketId: string, message: string, alsoSendEmail = true) =>
-    _aRequest<any>(`/admin/contact-messages/${ticketId}/reply`, {
-      method: 'POST',
-      body: JSON.stringify({ message, also_send_email: alsoSendEmail }),
-    }),
-  forUser: (userId: string) =>
-    _aRequest<{ items: any[]; total: number }>(`/admin/users/${userId}/tickets`),
-};
-
-// ----- CMS pages -----
-export const cmsApi = {
-  list: () => _aRequest<{ items: CmsPage[]; total: number }>('/admin/cms/pages'),
-  get: (id: string) => _aRequest<CmsPage>(`/admin/cms/pages/${id}`),
-  create: (body: Partial<CmsPage>) =>
-    _aRequest<CmsPage>('/admin/cms/pages', { method: 'POST', body: JSON.stringify(body) }),
-  update: (id: string, body: Partial<CmsPage>) =>
-    _aRequest<CmsPage>(`/admin/cms/pages/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
-  remove: (id: string) =>
-    _aRequest<{ ok: boolean }>(`/admin/cms/pages/${id}`, { method: 'DELETE' }),
-};
-
-// Public CMS fetch (no admin token required). Used by the public route.
-export const publicCmsApi = {
-  list: async () => {
-    const res = await fetch(`${BACKEND_URL}/api/cms/pages`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return (await res.json()) as { items: CmsPage[] };
-  },
-  get: async (slug: string) => {
-    const res = await fetch(`${BACKEND_URL}/api/cms/pages/${encodeURIComponent(slug)}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return (await res.json()) as CmsPage;
-  },
-};
-
-// ----- Admin activity -----
-export const adminActivityApi = {
-  record: (
-    action: string,
-    payload?: Record<string, any>,
-    targetType?: string,
-    targetId?: string,
-  ) =>
-    _aRequest<{ ok: boolean; id: string }>('/admin/activity', {
-      method: 'POST',
-      body: JSON.stringify({
-        action,
-        target_type: targetType,
-        target_id: targetId,
-        payload: payload || {},
-      }),
-    }).catch(() => ({ ok: false, id: '' })), // best-effort: never break the UI
-  forAdmin: (adminIdOrEmail: string, params?: { limit?: number; skip?: number }) => {
-    const q = new URLSearchParams();
-    if (params?.limit) q.set('limit', String(params.limit));
-    if (params?.skip) q.set('skip', String(params.skip));
-    const qs = q.toString();
-    return _aRequest<{ items: AdminActivityRow[]; total: number; skip: number; limit: number }>(
-      `/admin/admins/${encodeURIComponent(adminIdOrEmail)}/activity${qs ? `?${qs}` : ''}`,
-    );
-  },
-};
-
-// ----- Edit admin (super_admin only) -----
-export const adminEditApi = {
-  update: (
-    adminId: string,
-    patch: { name?: string; role?: string; is_active?: boolean; notes?: string },
-  ) =>
-    _aRequest<any>(`/admin/admins/${adminId}`, {
-      method: 'PUT',
-      body: JSON.stringify(patch),
-    }),
-};
-
-
-// ----- Squad Lifecycle: Settlement-delay (Lead Paid → Bill Settled) -----
-export type SettlementDelay = { minutes: number };
-export const settlementDelayApi = {
-  get: () => _aRequest<SettlementDelay>('/admin/settlement-delay'),
-  set: (minutes: number) =>
-    _aRequest<{ ok: boolean; minutes: number }>('/admin/settlement-delay', {
-      method: 'PUT',
-      body: JSON.stringify({ minutes }),
-    }),
-};
-
-// ----- Notification Config (event-channel matrix) -----
-export type NotifChannel = 'off' | 'sms' | 'push' | 'both';
-export type NotifEventConfig = { channel: NotifChannel; description: string };
-export type NotificationConfig = {
-  events: Record<string, NotifEventConfig>;
-  push_enabled: boolean;
-  push_status?: 'coming_soon' | 'live';
-  updated_at?: string;
-  updated_by?: string;
-};
-export const notificationConfigApi = {
-  get: () => _aRequest<NotificationConfig>('/admin/notification-config'),
-  set: (events: Record<string, NotifChannel>, push_enabled: boolean) =>
-    _aRequest<NotificationConfig & { ok: boolean }>('/admin/notification-config', {
-      method: 'PUT',
-      body: JSON.stringify({ events, push_enabled }),
-    }),
-};
-
-// ----- Landing Page dynamic visuals -----
-export type LandingPageConfig = {
-  phone_frame_colors: string[];
-  bg_purple_shades: string[];
-  hashtags: string[];
-  avatars: {
-    slot_left: string[];
-    slot_right_man: string[];
-    slot_right_woman: string[];
-  };
-  updated_at?: string;
-  updated_by?: string;
-};
-export const landingPageConfigApi = {
-  get: () => _aRequest<LandingPageConfig>('/admin/landing-page'),
-  set: (cfg: Partial<Omit<LandingPageConfig, 'updated_at' | 'updated_by'>>) =>
-    _aRequest<{ ok: boolean } & LandingPageConfig>('/admin/landing-page', {
-      method: 'PUT',
-      body: JSON.stringify(cfg),
-    }),
-};
-export type KycIncentiveConfig = {
-  role: 'lead' | 'member';
-  enabled: boolean;
-  reward_mode: 'credit_off_next_bill' | 'waive_platform_fees_next_bill';
-  credit_amount: number;
-  messages: string[];
-};
-export const kycIncentiveApi = {
-  getLead: () => _aRequest<KycIncentiveConfig>('/admin/kyc-incentive'),
-  setLead: (cfg: Omit<KycIncentiveConfig, 'role'>) =>
-    _aRequest<{ ok: boolean } & KycIncentiveConfig>('/admin/kyc-incentive', {
-      method: 'PUT',
-      body: JSON.stringify(cfg),
-    }),
-  getMember: () => _aRequest<KycIncentiveConfig>('/admin/kyc-incentive-member'),
-  setMember: (cfg: Omit<KycIncentiveConfig, 'role'>) =>
-    _aRequest<{ ok: boolean } & KycIncentiveConfig>('/admin/kyc-incentive-member', {
-      method: 'PUT',
-      body: JSON.stringify(cfg),
-    }),
 };

@@ -1,237 +1,169 @@
-"""
-Backend regression test for two targeted fixes:
+"""Receipt storage + retrieval end-to-end test.
 
-FIX A — extra_fees[].cap preserved on reload (BUG in load_app_config)
-FIX B — Public fee-labels endpoint reflects admin label edits (regression)
+Targets the live preview backend.
 """
-
-import json
+import os
+import io
 import sys
+import time
+import base64
+import json
 import requests
+from pathlib import Path
 
-BASE = "https://joint-pay-1.preview.emergentagent.com/api"
-ADMIN_EMAIL = "admin@squadpay.us"
-ADMIN_PWD = "Letmein@2007#ForReal"
+# Read BACKEND URL from frontend .env (EXPO_PUBLIC_BACKEND_URL)
+FRONTEND_ENV = Path("/app/frontend/.env")
+BACKEND = None
+for line in FRONTEND_ENV.read_text().splitlines():
+    if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
+        BACKEND = line.split("=", 1)[1].strip().strip('"')
+        break
+assert BACKEND, "EXPO_PUBLIC_BACKEND_URL not found in frontend/.env"
 
-results = []  # (step, status, detail)
+BASE = BACKEND.rstrip("/") + "/api"
+print(f"BACKEND: {BASE}")
 
-
-def log(step, ok, detail=""):
-    tag = "PASS" if ok else "FAIL"
-    print(f"[{tag}] {step}  {detail}")
-    results.append((step, ok, detail))
-
-
-def admin_login():
-    r = requests.post(f"{BASE}/admin/auth/login",
-                      json={"email": ADMIN_EMAIL, "password": ADMIN_PWD},
-                      timeout=30)
-    r.raise_for_status()
-    return r.json()["token"]
-
-
-def get_cfg(token):
-    r = requests.get(f"{BASE}/admin/app-config",
-                     headers={"Authorization": f"Bearer {token}"}, timeout=30)
-    r.raise_for_status()
-    return r.json()
+results = []
+def check(label, cond, info=""):
+    status = "PASS" if cond else "FAIL"
+    results.append((status, label, info))
+    print(f"[{status}] {label}  {info}")
+    return cond
 
 
-def put_cfg(token, body):
-    r = requests.put(f"{BASE}/admin/app-config",
-                     headers={"Authorization": f"Bearer {token}"},
-                     json=body, timeout=30)
-    return r
+# ---------- Helper: build a tiny JPEG ----------
+try:
+    from PIL import Image
+except Exception:
+    print("Pillow missing; trying pip install...")
+    os.system(f"{sys.executable} -m pip install pillow -q")
+    from PIL import Image
+
+img = Image.new("RGB", (50, 50), (200, 50, 50))
+buf = io.BytesIO()
+img.save(buf, format="JPEG", quality=80)
+jpeg_bytes = buf.getvalue()
+JPEG_B64 = base64.b64encode(jpeg_bytes).decode("ascii")
+print(f"Test JPEG: {len(jpeg_bytes)} bytes, {len(JPEG_B64)} b64 chars")
 
 
-def get_fee_labels():
-    r = requests.get(f"{BASE}/runtime/fee-labels", timeout=30)
-    return r
+# ---------- STEP 0: Create a fresh user + group ----------
+ts = int(time.time())
+reg_payload = {"name": f"ReceiptTester_{ts}"}
+r = requests.post(f"{BASE}/auth/register", json=reg_payload, timeout=20)
+print("register:", r.status_code)
+assert r.status_code == 200, r.text
+user_id = r.json()["id"]
+print("user_id =", user_id)
+
+grp_payload = {
+    "lead_id": user_id,
+    "title": f"Receipt Test Bill {ts}",
+    "total_amount": 25.00,
+    "split_mode": "fast",
+    "tax": 0.0,
+    "tip": 0.0,
+    "items": [],
+}
+r = requests.post(f"{BASE}/groups", json=grp_payload, timeout=20)
+print("create group:", r.status_code)
+assert r.status_code == 200, r.text
+group_id = r.json()["id"]
+print("group_id =", group_id)
 
 
-# ---------- FIX A ----------
-def fix_a():
-    print("\n=== FIX A: extra_fees[].cap preservation ===")
-    token = admin_login()
-    log("A1 admin login", True)
-
-    cfg = get_cfg(token)
-    extra_fees = cfg.get("extra_fees") or []
-    if not extra_fees:
-        log("A2 GET app-config has extra_fees[0]", False, f"extra_fees={extra_fees}")
-        return
-    original = dict(extra_fees[0])
-    log("A2 GET app-config", True,
-        f"current extra_fees[0]={original}")
-
-    # Build the PUT body — preserve all existing fields, override extra_fees[0]
-    new_extras = list(extra_fees)
-    new_extras[0] = {
-        "id": "extra_1",
-        "name": "Concierge Fee",
-        "type": "flat",
-        "value": 5.0,
-        "enabled": True,
-        "cap": 50.0,
-    }
-    put_body = {
-        "core_fees": cfg.get("core_fees"),
-        "extra_fees": new_extras,
-        "card": cfg.get("card"),
-        "sms": cfg.get("sms"),
-        "brand": cfg.get("brand"),
-        "feature_flags": cfg.get("feature_flags"),
-    }
-    # Drop None
-    put_body = {k: v for k, v in put_body.items() if v is not None}
-
-    r = put_cfg(token, put_body)
-    log("A3 PUT app-config with cap=50.0", r.status_code == 200,
-        f"status={r.status_code} body={r.text[:200]}")
-    if r.status_code != 200:
-        return
-
-    cfg2 = get_cfg(token)
-    ef0 = (cfg2.get("extra_fees") or [{}])[0]
-    log("A4 GET app-config extra_fees[0].cap == 50.0",
-        abs(float(ef0.get("cap") or 0) - 50.0) < 1e-6,
-        f"actual cap={ef0.get('cap')}, full row={ef0}")
-
-    log("A5 extra_fees[0].name == 'Concierge Fee'",
-        ef0.get("name") == "Concierge Fee",
-        f"actual name={ef0.get('name')}")
-
-    # Public endpoint
-    rf = get_fee_labels()
-    rf_json = rf.json() if rf.status_code == 200 else {}
-    public_ef0 = (rf_json.get("extra_fees") or [{}])[0]
-    log("A6 /runtime/fee-labels extra_fees[0].name == 'Concierge Fee'",
-        rf.status_code == 200 and public_ef0.get("name") == "Concierge Fee",
-        f"status={rf.status_code} extra_fees[0]={public_ef0}")
-
-    # Restore
-    restore_extras = list(cfg2.get("extra_fees") or [])
-    restore_extras[0] = original
-    restore_body = {
-        "core_fees": cfg2.get("core_fees"),
-        "extra_fees": restore_extras,
-        "card": cfg2.get("card"),
-        "sms": cfg2.get("sms"),
-        "brand": cfg2.get("brand"),
-        "feature_flags": cfg2.get("feature_flags"),
-    }
-    restore_body = {k: v for k, v in restore_body.items() if v is not None}
-    rr = put_cfg(token, restore_body)
-    log("A7 restore extra_fees[0] to original",
-        rr.status_code == 200,
-        f"status={rr.status_code}")
+# ---------- STEP 1: POST /api/receipts/store (valid JPEG) ----------
+print("\n=== STEP 1: POST /api/receipts/store (valid) ===")
+body = {"group_id": group_id, "image_base64": JPEG_B64, "mime": "image/jpeg"}
+r = requests.post(f"{BASE}/receipts/store", json=body, timeout=30)
+print("status:", r.status_code, "body:", r.text[:300])
+ok1 = check("Step1: HTTP 200 on /receipts/store", r.status_code == 200, f"status={r.status_code}")
+j1 = r.json() if ok1 else {}
+receipt_id_1 = j1.get("receipt_id")
+check("Step1: response has 'receipt_id'", bool(receipt_id_1), f"receipt_id={receipt_id_1}")
 
 
-# ---------- FIX B ----------
-def fix_b():
-    print("\n=== FIX B: public fee-labels reflects admin edits ===")
-    token = admin_login()
-    log("B1 admin login", True)
-
-    cfg = get_cfg(token)
-    cf = cfg.get("core_fees") or {}
-    orig_platform = cf.get("platform_fee_label")
-    orig_tx = cf.get("transaction_fee_label")
-    orig_ins = cf.get("insurance_label")
-    log("B2 capture originals", True,
-        f"platform={orig_platform!r} tx={orig_tx!r} ins={orig_ins!r}")
-
-    def edit_label(field, value):
-        c = get_cfg(token)
-        new_cf = dict(c.get("core_fees") or {})
-        new_cf[field] = value
-        body = {
-            "core_fees": new_cf,
-            "extra_fees": c.get("extra_fees"),
-            "card": c.get("card"),
-            "sms": c.get("sms"),
-            "brand": c.get("brand"),
-            "feature_flags": c.get("feature_flags"),
-        }
-        body = {k: v for k, v in body.items() if v is not None}
-        r = put_cfg(token, body)
-        return r
-
-    # platform_fee_label = "Service Charge"
-    r = edit_label("platform_fee_label", "Service Charge")
-    log("B3 PUT platform_fee_label='Service Charge'",
-        r.status_code == 200, f"status={r.status_code}")
-    rf = get_fee_labels()
-    rfj = rf.json() if rf.status_code == 200 else {}
-    log("B4 /runtime/fee-labels platform_fee_label == 'Service Charge'",
-        rfj.get("platform_fee_label") == "Service Charge",
-        f"actual={rfj.get('platform_fee_label')!r}")
-
-    # transaction_fee_label = "Processing Fee"
-    r = edit_label("transaction_fee_label", "Processing Fee")
-    log("B5 PUT transaction_fee_label='Processing Fee'",
-        r.status_code == 200, f"status={r.status_code}")
-    rf = get_fee_labels()
-    rfj = rf.json() if rf.status_code == 200 else {}
-    log("B6 /runtime/fee-labels transaction_fee_label == 'Processing Fee'",
-        rfj.get("transaction_fee_label") == "Processing Fee",
-        f"actual={rfj.get('transaction_fee_label')!r}")
-
-    # insurance_label = "Protection"
-    r = edit_label("insurance_label", "Protection")
-    log("B7 PUT insurance_label='Protection'",
-        r.status_code == 200, f"status={r.status_code}")
-    rf = get_fee_labels()
-    rfj = rf.json() if rf.status_code == 200 else {}
-    log("B8 /runtime/fee-labels insurance_label == 'Protection'",
-        rfj.get("insurance_label") == "Protection",
-        f"actual={rfj.get('insurance_label')!r}")
-
-    # Restore all
-    c = get_cfg(token)
-    new_cf = dict(c.get("core_fees") or {})
-    new_cf["platform_fee_label"] = orig_platform
-    new_cf["transaction_fee_label"] = orig_tx
-    new_cf["insurance_label"] = orig_ins
-    body = {
-        "core_fees": new_cf,
-        "extra_fees": c.get("extra_fees"),
-        "card": c.get("card"),
-        "sms": c.get("sms"),
-        "brand": c.get("brand"),
-        "feature_flags": c.get("feature_flags"),
-    }
-    body = {k: v for k, v in body.items() if v is not None}
-    r = put_cfg(token, body)
-    log("B9 restore all 3 labels", r.status_code == 200,
-        f"status={r.status_code}")
-
-    rf = get_fee_labels()
-    rfj = rf.json() if rf.status_code == 200 else {}
-    log("B10 post-restore platform_fee_label",
-        rfj.get("platform_fee_label") == orig_platform,
-        f"actual={rfj.get('platform_fee_label')!r} expected={orig_platform!r}")
-    log("B11 post-restore transaction_fee_label",
-        rfj.get("transaction_fee_label") == orig_tx,
-        f"actual={rfj.get('transaction_fee_label')!r} expected={orig_tx!r}")
-    log("B12 post-restore insurance_label",
-        rfj.get("insurance_label") == orig_ins,
-        f"actual={rfj.get('insurance_label')!r} expected={orig_ins!r}")
-
-
-if __name__ == "__main__":
+# ---------- STEP 2: GET /api/receipts/{receipt_id} ----------
+print("\n=== STEP 2: GET /api/receipts/{receipt_id} ===")
+r = requests.get(f"{BASE}/receipts/{receipt_id_1}", timeout=20)
+print("status:", r.status_code, "body keys:", list(r.json().keys()) if r.status_code == 200 else r.text[:200])
+ok2 = check("Step2: HTTP 200 on /receipts/{id}", r.status_code == 200, f"status={r.status_code}")
+if ok2:
+    j2 = r.json()
+    check("Step2: response has 'image_base64'", bool(j2.get("image_base64")))
+    check("Step2: response has 'mime'", bool(j2.get("mime")), f"mime={j2.get('mime')}")
+    # base64 may differ if backend recompressed; verify it at least decodes as a valid JPEG
     try:
-        fix_a()
-        fix_b()
-    except Exception as exc:
-        log("EXC unexpected exception", False, repr(exc))
-        raise
-    finally:
-        print("\n=== SUMMARY ===")
-        passed = sum(1 for _, ok, _ in results if ok)
-        total = len(results)
-        for step, ok, detail in results:
-            tag = "PASS" if ok else "FAIL"
-            print(f"[{tag}] {step}")
-        print(f"\nTotal: {passed}/{total} passed")
-        sys.exit(0 if passed == total else 1)
+        decoded = base64.b64decode(j2.get("image_base64") or "")
+        im_check = Image.open(io.BytesIO(decoded))
+        im_check.verify()
+        check("Step2: stored image_base64 decodes to valid image (possibly recompressed)",
+              True, f"decoded={len(decoded)} bytes, format={im_check.format}")
+    except Exception as e:
+        check("Step2: stored image_base64 decodes to valid image", False, f"err={e}")
+
+
+# ---------- STEP 3: GET /api/groups/{group_id}/receipts ----------
+print("\n=== STEP 3: GET /api/groups/{group_id}/receipts (1 receipt) ===")
+r = requests.get(f"{BASE}/groups/{group_id}/receipts", timeout=20)
+print("status:", r.status_code, "body:", r.text[:400])
+ok3 = check("Step3: HTTP 200 on /groups/{id}/receipts", r.status_code == 200)
+if ok3:
+    j3 = r.json()
+    items = j3.get("items") or []
+    check("Step3: 'items' is a list with >=1 entry", isinstance(items, list) and len(items) >= 1,
+          f"len(items)={len(items)}")
+    has_new = any((it.get("receipt_id") == receipt_id_1) for it in items)
+    check("Step3: items contains the new receipt_id", has_new)
+    check("Step3: last_receipt_id matches the new receipt", j3.get("last_receipt_id") == receipt_id_1,
+          f"last_receipt_id={j3.get('last_receipt_id')}")
+
+
+# ---------- STEP 4: Store a SECOND receipt and re-list ----------
+print("\n=== STEP 4: Store second receipt, expect items=2 ===")
+img2 = Image.new("RGB", (60, 60), (50, 200, 50))
+buf2 = io.BytesIO()
+img2.save(buf2, format="JPEG", quality=80)
+JPEG_B64_2 = base64.b64encode(buf2.getvalue()).decode("ascii")
+
+body2 = {"group_id": group_id, "image_base64": JPEG_B64_2, "mime": "image/jpeg"}
+r = requests.post(f"{BASE}/receipts/store", json=body2, timeout=30)
+print("store2 status:", r.status_code, r.text[:200])
+ok4a = check("Step4a: second /receipts/store returns 200", r.status_code == 200)
+receipt_id_2 = r.json().get("receipt_id") if ok4a else None
+
+r = requests.get(f"{BASE}/groups/{group_id}/receipts", timeout=20)
+ok4b = check("Step4b: GET /groups/{id}/receipts returns 200", r.status_code == 200)
+if ok4b:
+    j4 = r.json()
+    items = j4.get("items") or []
+    check("Step4c: items length == 2", len(items) == 2, f"len={len(items)}")
+    check("Step4d: last_receipt_id == second receipt", j4.get("last_receipt_id") == receipt_id_2,
+          f"last={j4.get('last_receipt_id')}, expected={receipt_id_2}")
+
+
+# ---------- STEP 5: Invalid base64 → 400 ----------
+print("\n=== STEP 5: Invalid base64 → 400 ===")
+bad = {"group_id": group_id, "image_base64": "not-base64-at-all!!!@@@###", "mime": "image/jpeg"}
+r = requests.post(f"{BASE}/receipts/store", json=bad, timeout=20)
+print("status:", r.status_code, "body:", r.text[:300])
+check("Step5: invalid base64 returns HTTP 400", r.status_code == 400, f"status={r.status_code}")
+
+
+# ---------- STEP 6: Unknown receipt id → 404 ----------
+print("\n=== STEP 6: Unknown receipt id → 404 ===")
+r = requests.get(f"{BASE}/receipts/unknown_id_xyz", timeout=20)
+print("status:", r.status_code, "body:", r.text[:200])
+check("Step6: unknown receipt id returns HTTP 404", r.status_code == 404, f"status={r.status_code}")
+
+
+# ---------- SUMMARY ----------
+print("\n" + "=" * 60)
+print("SUMMARY")
+print("=" * 60)
+passes = sum(1 for s, _, _ in results if s == "PASS")
+fails = sum(1 for s, _, _ in results if s == "FAIL")
+print(f"PASS: {passes}  FAIL: {fails}")
+for s, l, i in results:
+    print(f"  [{s}] {l}  {i}")
+sys.exit(0 if fails == 0 else 1)

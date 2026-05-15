@@ -540,6 +540,19 @@ export const api = {
     ),
   listGroupReceipts: (group_id: string) =>
     request<{ items: any[]; last_receipt_id?: string | null }>(`/groups/${group_id}/receipts`),
+  /** Fetch the base64 JPEG bytes for a single receipt — used by the
+   *  in-app Receipts viewer to lazy-load tiles only when they enter the
+   *  viewport. Backend serves the same field stored in /receipts/store.
+   */
+  getReceiptImage: (receipt_id: string) =>
+    request<{
+      id: string;
+      group_id: string;
+      mime: string;
+      image_base64: string;
+      created_at: string;
+      expires_at: string;
+    }>(`/receipts/${receipt_id}`),
 
   // ───────── Phase 5b — Lead Cash-Out (Stripe Connect Express + Instant Payouts) ─────────
   payoutEligibility: (user_id: string, session_id: string, group_id: string) =>

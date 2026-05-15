@@ -12853,3 +12853,91 @@ ALSO REQUESTED
    • P2 — Build receipt viewer UI: api.listGroupReceipts() exists but is
      never called. Customer dashboard / summary / admin group inspector
      should display a thumbnails strip with view-fullscreen.
+
+═══════════════════════════════════════════════════════════════════════════════
+backend:
+  - task: "Receipt storage + retrieval flow — POST /api/receipts/store, GET /api/receipts/{id}, GET /api/groups/{group_id}/receipts"
+    implemented: true
+    working: true
+    file: "backend/routes/admin_phase_bc.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Receipt endpoints verified end-to-end via /app/backend_test.py against
+            live preview backend (https://joint-pay-1.preview.emergentagent.com/api).
+            16/16 assertions PASS. No 5xx anywhere.
+
+            SETUP (no admin auth needed — all endpoints are customer-facing):
+              - Registered fresh user `ReceiptTester_<ts>` via POST /api/auth/register → 200.
+              - Created fresh fast-split squad ($25, no items) via POST /api/groups
+                {lead_id, title, total_amount, split_mode:"fast"} → 200 (group_id captured).
+              - Built tiny 50x50 red JPEG via Pillow (693 bytes raw, 924 b64 chars).
+
+            ✅ STEP 1 — POST /api/receipts/store with valid JPEG base64:
+              body = {group_id, image_base64:<924-char b64>, mime:"image/jpeg"}
+              → HTTP 200
+              → response has receipt_id = "rcpt_70edd504d5"
+              → backend recompresses (Pillow → JPEG q=72): original_bytes=693,
+                stored_bytes=416. mime returned as "image/jpeg".
+
+            ✅ STEP 2 — GET /api/receipts/{receipt_id}:
+              → HTTP 200
+              → response keys: {id, group_id, mime, image_base64, created_at, expires_at}
+              → image_base64 present, mime="image/jpeg"
+              → base64 decodes to a VALID JPEG image (311 bytes, recompressed by
+                backend — verified via Pillow Image.verify()). Spec allows
+                recompressed version, confirmed working.
+
+            ✅ STEP 3 — GET /api/groups/{group_id}/receipts (after 1 store):
+              → HTTP 200
+              → items is a list with len=1
+              → items[0].receipt_id == "rcpt_70edd504d5" (matches step 1)
+              → last_receipt_id == "rcpt_70edd504d5"
+
+            ✅ STEP 4 — Store second receipt (60x60 green JPEG), re-list:
+              → POST /api/receipts/store → 200, receipt_id = "rcpt_6410bf67ba"
+              → GET /api/groups/{group_id}/receipts → 200
+              → items length == 2 (both receipt refs present)
+              → last_receipt_id == "rcpt_6410bf67ba" (the newer receipt)
+
+            ✅ STEP 5 — POST /api/receipts/store with invalid base64:
+              body = {group_id, image_base64:"not-base64-at-all!!!@@@###", mime:"image/jpeg"}
+              → HTTP 400, detail = "image_base64 is not valid base64"
+
+            ✅ STEP 6 — GET /api/receipts/unknown_id_xyz:
+              → HTTP 404, detail = "Receipt not found (or it has expired)"
+
+            Implementation reviewed: /app/backend/routes/admin_phase_bc.py lines
+            1100–1245 (StoreReceiptIn model + attach_phase_d_routes). All three
+            endpoints are public (no auth dependency on the @r.post / @r.get
+            decorators). Backend correctly:
+              ✓ Strips optional "data:image/jpeg;base64," prefix
+              ✓ Decodes b64, returns 400 on decode failure
+              ✓ Compresses via Pillow (1600px max-side, JPEG q=72)
+              ✓ Inserts into db.receipts with TTL on expires_at (90 days)
+              ✓ Pushes lightweight ref onto group.receipt_images + sets
+                group.last_receipt_id atomically
+              ✓ create_index("expires_at", expireAfterSeconds=0) for auto-purge
+
+            Test artifact: /app/backend_test.py (rewritten for this review request).
+            No backend action required.
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        Receipt storage + retrieval flow tested end-to-end — ALL 6 STEPS PASS.
+        Customer-facing flow (no admin auth) works correctly:
+          1) POST /api/receipts/store with valid JPEG → 200 + receipt_id ✓
+          2) GET /api/receipts/{id} → 200 with image_base64 + mime ✓
+          3) GET /api/groups/{group_id}/receipts → 200 with items + last_receipt_id ✓
+          4) Second receipt → items count grows to 2, last_receipt_id updates ✓
+          5) Invalid base64 → 400 ✓
+          6) Unknown receipt_id → 404 ✓
+        Backend recompresses uploaded images (Pillow JPEG q=72, 1600px max-side),
+        which is acceptable per the review spec. 16/16 assertions PASS in
+        /app/backend_test.py. No backend changes required.
+

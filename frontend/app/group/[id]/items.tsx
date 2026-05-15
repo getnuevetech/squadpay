@@ -209,6 +209,11 @@ export default function ItemsScreen() {
       }
       const g = await api.appendItems(group.id, userId, newItems);
       setGroup(g);
+      // Phase D follow-up (June 2025) — persist the receipt image so the
+      // dashboard's Receipts viewer can pull it up alongside the original
+      // (create-bill) receipt. Fire-and-forget: storage failure must not
+      // tank the user's "items added" success state.
+      api.storeReceipt(group.id, base64).catch(() => {});
       toast.success(`Added ${newItems.length} item${newItems.length === 1 ? '' : 's'}`);
     } catch (e: any) {
       toast.error(friendlyError(e, "We couldn't read that receipt. Try a clearer photo or add items manually."));
@@ -231,6 +236,7 @@ export default function ItemsScreen() {
     setScanProgress({ done: 0, total: base64s.length });
     const merged: { name: string; price: number; quantity: number }[] = [];
     const failures: number[] = [];
+    const successfulBase64s: string[] = [];
     try {
       for (let i = 0; i < base64s.length; i += 1) {
         setScanProgress({ done: i, total: base64s.length });
@@ -245,6 +251,7 @@ export default function ItemsScreen() {
               });
             }
           });
+          successfulBase64s.push(base64s[i]);
         } catch {
           failures.push(i + 1);
         }
@@ -260,6 +267,13 @@ export default function ItemsScreen() {
       }
       const g = await api.appendItems(group.id, userId, merged);
       setGroup(g);
+      // Phase D follow-up (June 2025) — persist every successfully-OCR'd
+      // receipt image so the Receipts viewer surfaces them all. Skip the
+      // failures (no point storing an image we couldn't even parse).
+      // Fire-and-forget so storage I/O doesn't block the success toast.
+      for (const b64 of successfulBase64s) {
+        api.storeReceipt(group.id, b64).catch(() => {});
+      }
       const successCount = base64s.length - failures.length;
       toast.success(
         `Added ${merged.length} item${merged.length === 1 ? '' : 's'} from ${successCount} receipt${successCount === 1 ? '' : 's'}` +

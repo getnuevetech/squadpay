@@ -20,12 +20,13 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Swipeable } from 'react-native-gesture-handler';
-import { Receipt, CheckCircle2, Clock, Wallet, AlertCircle, Plus, Pencil, ChevronDown, UserPlus, Trash2, Split } from 'lucide-react-native';
+import { Receipt, CheckCircle2, Clock, Wallet, AlertCircle, Plus, Pencil, ChevronDown, UserPlus, Trash2, Split, ScanLine } from 'lucide-react-native';
 import { Button } from '../../../src/Button';
 import { api, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 import { EditMetaModal } from '../../../src/EditMetaModal';
+import { ReceiptsModal } from '../../../src/components/redesign/ReceiptsModal';
 import { ConfirmModal } from '../../../src/ConfirmModal';
 import { toast } from '../../../src/components/Toast';
 import { Skeleton, SkeletonGroupRow } from '../../../src/components/Skeleton';
@@ -40,6 +41,10 @@ export default function DashboardScreen() {
   const [userId, setUserId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [editTaxTipVisible, setEditTaxTipVisible] = useState(false);
+  // Receipts viewer — opens an in-app lightbox listing every stored
+  // receipt for the squad. Lazy-fetches per-tile so opening this for
+  // a squad with several receipts doesn't block on a giant payload.
+  const [receiptsVisible, setReceiptsVisible] = useState(false);
   const [memberItemsOpen, setMemberItemsOpen] = useState<Record<string, boolean>>({});
   // Pending removal target — drives the cross-platform ConfirmModal.
   // We use a custom modal instead of Alert.alert because RN-Web silently
@@ -321,6 +326,19 @@ export default function DashboardScreen() {
                 </TouchableOpacity>
               );
             })()}
+            {/* Receipts viewer pill — visible to every squad member (not just
+                lead) so anyone with audit-curiosity can see what was scanned.
+                Hidden if status === 'settled' is irrelevant; we keep it on
+                so settled squads can still audit their attached receipts. */}
+            <TouchableOpacity
+              testID="dashboard-receipts-pill"
+              style={styles.metaPill}
+              onPress={() => setReceiptsVisible(true)}
+              activeOpacity={0.7}
+            >
+              <ScanLine size={14} color={COLORS.primary} />
+              <Text style={styles.metaPillText}>Receipts</Text>
+            </TouchableOpacity>
           </View>
         )}
 
@@ -745,6 +763,12 @@ export default function DashboardScreen() {
           field="tax_tip"
         />
       )}
+
+      <ReceiptsModal
+        visible={receiptsVisible}
+        groupId={group.id}
+        onClose={() => setReceiptsVisible(false)}
+      />
 
       {/* Cross-platform remove-member confirmation. Driven by `removeTarget`
           so the same code path fires on iOS, Android, and Web. */}

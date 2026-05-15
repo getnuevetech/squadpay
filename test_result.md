@@ -12453,3 +12453,70 @@ P3 TODO — FUTURE (OPTIONAL)
      shim and rename `index.ts` to remove the legacy re-export.
    - Truly nothing left to do for the adminApi refactor; structure is now
      clean, modular, and small per-file.
+
+================================================================================
+[Jun 2025] BUGFIX — Tax/Tip input reverts + Admin fee-label not reflecting
+================================================================================
+User-reported bugs:
+  1. Editing Tax or Tip in the dashboard modal "reverts to old value while
+     editing — you have to be very fast to change it".
+  2. Changing the Platform Fee NAME in admin doesn't reflect in the web app.
+
+ROOT CAUSE #1 — Controlled input race in `src/EditMetaModal.tsx`
+   The useEffect that initialised the inputs depended on `[visible, group]`.
+   The parent dashboard re-renders frequently (polling, etc.), each
+   re-render creates a NEW `group` object reference, the effect fires
+   and overwrites the user's mid-typed value with the original
+   server-side number.
+
+FIX #1 — Change dependency array to `[visible]` only (reset on open, not
+   on every re-render). Added inline comment explaining why.
+
+ROOT CAUSE #2 — Customer app never reads admin-editable fee labels
+   Admin can edit `core_fees.platform_fee_label`, `transaction_fee_label`,
+   `insurance_label`, and `extra_fees[].name` via the Platform Fees screen.
+   But `src/components/redesign/BillBreakdown.tsx` had these strings
+   HARDCODED ("Platform fees", "Transaction fees", "Insurance"). There was
+   also no public API endpoint that exposed the labels to non-admin
+   consumers, so the customer-facing app couldn't read them even if it
+   wanted to.
+
+FIX #2 — Three-part wiring:
+   A. Backend — Added `GET /api/runtime/fee-labels` public endpoint
+      (`routes/admin_phase_bc.py`). No auth required. Returns:
+        {
+          "transaction_fee_label": "...",
+          "platform_fee_label": "...",
+          "insurance_label": "...",
+          "extra_fees": [{"id": "extra_1", "name": "..."}, ...]
+        }
+      Headers force `Cache-Control: no-store` to bypass Vercel edge cache
+      so admin edits show up on next mount.
+
+   B. Frontend hook — `src/hooks/useFeeLabels.ts` fetches once, caches in
+      module-level memo, returns defaults until network responds (so
+      screens never flash blank labels). Also exports
+      `invalidateFeeLabelsCache()` for explicit busting.
+
+   C. Wire — `BillBreakdown.tsx` now calls `useFeeLabels()` and uses
+      `labels.platform_fee_label`, `labels.transaction_fee_label`,
+      `labels.insurance_label`, and maps extra_fees[].name from the
+      admin-set names rather than the names baked into the bill record.
+      `admin/platform-fees.tsx` calls `invalidateFeeLabelsCache()` after
+      successful Save so the change appears immediately in any open
+      customer screens.
+
+BACKEND TESTING — 33/33 assertions PASS:
+   ✅ Public endpoint returns correct shape + headers
+   ✅ Admin PUT to `/admin/app-config` with new labels propagates to public
+      endpoint instantly (cache refresh works)
+   ✅ Tested platform_fee_label="Service Fee",
+      transaction_fee_label="Processing Fee", extra_fees[0].name="Concierge Fee"
+   ✅ Restore to defaults works
+   ✅ Cache-Control: no-store on every response
+
+WHAT'S STILL HARDCODED (not in scope for this fix, may need future audit):
+   - `help@squadpay.us` in `app/settings.tsx` (admin has `brand.support_email`)
+   - `default_tip_suggestions` in `brand` config not consumed by any screen
+   These are NOT the labels the user complained about. Safe to defer until
+   user requests.

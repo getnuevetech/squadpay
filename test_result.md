@@ -12172,3 +12172,50 @@ Applied uniformly to:
    ✅ Combined: Platform disabled + tx_cap=$0.05 → $20.25
    ✅ All restores back to baseline cleanly
 
+
+---
+
+## 🎯 MILESTONE — `adminApi.ts` Refactored into Domain Modules (2026-05-15)
+
+WHAT CHANGED
+   • /app/frontend/src/adminApi.ts (1,434 LOC)
+        → MOVED to /app/frontend/src/adminApi/_legacy.ts
+   • NEW: /app/frontend/src/adminApi/index.ts (barrel re-export)
+   • NEW: 16 domain-scoped re-export modules:
+        admin.ts            — master client + user/group types
+        appConfig.ts        — AppConfig, AdminPlatformFee, LegalPage
+        incomeFees.ts       — incomeFeesApi + types
+        notifications.ts    — notificationConfigApi + types
+        landingPage.ts      — landingPageConfigApi + types
+        kyc.ts              — kycIncentiveApi + types
+        cms.ts              — cmsApi, publicCmsApi
+        ocr.ts              — ocrApi + types
+        support.ts          — ticketsApi
+        activity.ts         — adminActivityApi
+        settlement.ts       — settlementDelayApi
+        edits.ts            — adminEditApi
+        integrations.ts     — Stripe/Twilio/SignalWire/Reminders/KMS types
+        referrals.ts        — Referral program types
+        rewards.ts          — Group discounts, lead discounts, credits types
+        reconciliation.ts   — PSP reconciliation types (placeholder)
+
+ZERO BEHAVIOUR CHANGE
+   ALL existing imports keep working:
+      import { adminApi }       from '../../src/adminApi';   ✅ unchanged
+      import { incomeFeesApi }  from '../../src/adminApi';   ✅ unchanged
+   Plus NEW domain-scoped imports are now available:
+      import { incomeFeesApi }  from '../../src/adminApi/incomeFees';
+
+INCREMENTAL MIGRATION PATH (future sessions, low risk)
+   Phase A (DONE): Folder structure + barrel + domain re-exports
+   Phase B (FUTURE): Progressively MOVE source code from _legacy.ts
+        into the matching domain module, one domain at a time.
+        Barrel keeps every import path stable throughout.
+   Phase C (FUTURE): When _legacy.ts is empty → delete it.
+
+VERIFIED
+   ✅ Metro re-bundled without errors
+   ✅ Landing page renders cleanly
+   ✅ All 30+ admin screens compile against unchanged import paths
+   ✅ No lint errors introduced
+

@@ -1,172 +1,237 @@
 """
-Focused regression test for the new public endpoint:
-    GET /api/runtime/brand
+Backend regression test for two targeted fixes:
 
-Plus end-to-end check that admin PUT /api/admin/app-config (changing
-`brand.support_email` and `brand.default_tip_suggestions`) is reflected
-on the public endpoint, then restored.
+FIX A — extra_fees[].cap preserved on reload (BUG in load_app_config)
+FIX B — Public fee-labels endpoint reflects admin label edits (regression)
 """
 
-import sys
 import json
+import sys
 import requests
 
 BASE = "https://joint-pay-1.preview.emergentagent.com/api"
 ADMIN_EMAIL = "admin@squadpay.us"
-ADMIN_PASSWORD = "Letmein@2007#ForReal"
+ADMIN_PWD = "Letmein@2007#ForReal"
 
-results = []
+results = []  # (step, status, detail)
 
 
-def check(label, ok, info=""):
-    results.append((label, ok, info))
-    icon = "PASS" if ok else "FAIL"
-    print(f"[{icon}] {label}{' — ' + info if info else ''}")
-    return ok
+def log(step, ok, detail=""):
+    tag = "PASS" if ok else "FAIL"
+    print(f"[{tag}] {step}  {detail}")
+    results.append((step, ok, detail))
 
 
 def admin_login():
-    r = requests.post(
-        f"{BASE}/admin/auth/login",
-        json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
-        timeout=20,
-    )
-    assert r.status_code == 200, f"admin login failed: {r.status_code} {r.text[:300]}"
+    r = requests.post(f"{BASE}/admin/auth/login",
+                      json={"email": ADMIN_EMAIL, "password": ADMIN_PWD},
+                      timeout=30)
+    r.raise_for_status()
     return r.json()["token"]
 
 
-def get_app_config(token):
-    r = requests.get(
-        f"{BASE}/admin/app-config",
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=20,
-    )
-    assert r.status_code == 200, f"get app-config failed: {r.status_code} {r.text[:300]}"
+def get_cfg(token):
+    r = requests.get(f"{BASE}/admin/app-config",
+                     headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    r.raise_for_status()
     return r.json()
 
 
-def put_app_config(token, cfg):
-    r = requests.put(
-        f"{BASE}/admin/app-config",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        data=json.dumps(cfg),
-        timeout=20,
-    )
-    assert r.status_code == 200, f"put app-config failed: {r.status_code} {r.text[:300]}"
-    return r.json()
-
-
-def get_public_brand():
-    r = requests.get(f"{BASE}/runtime/brand", timeout=20)
+def put_cfg(token, body):
+    r = requests.put(f"{BASE}/admin/app-config",
+                     headers={"Authorization": f"Bearer {token}"},
+                     json=body, timeout=30)
     return r
 
 
-# ─── STEP 1 ──────────────────────────────────────────────────────────────
-print("\n── STEP 1: GET /api/runtime/brand (no auth)")
-r = get_public_brand()
-check("step1.http_200", r.status_code == 200, f"got {r.status_code}")
-body = {}
-try:
-    body = r.json()
-except Exception as e:
-    check("step1.json_body", False, str(e))
+def get_fee_labels():
+    r = requests.get(f"{BASE}/runtime/fee-labels", timeout=30)
+    return r
 
-for key in ("support_email", "default_tip_suggestions", "currency"):
-    check(f"step1.has_key.{key}", key in body, f"body keys={list(body.keys())}")
 
-tips = body.get("default_tip_suggestions")
-check("step1.tips_is_list", isinstance(tips, list), f"type={type(tips).__name__}")
-check(
-    "step1.tips_all_numbers",
-    isinstance(tips, list)
-    and all(isinstance(t, (int, float)) and not isinstance(t, bool) for t in tips),
-    f"tips={tips}",
-)
+# ---------- FIX A ----------
+def fix_a():
+    print("\n=== FIX A: extra_fees[].cap preservation ===")
+    token = admin_login()
+    log("A1 admin login", True)
 
-cc = r.headers.get("Cache-Control", "")
-check("step1.cache_control_no_store", "no-store" in cc.lower(), f"Cache-Control={cc!r}")
+    cfg = get_cfg(token)
+    extra_fees = cfg.get("extra_fees") or []
+    if not extra_fees:
+        log("A2 GET app-config has extra_fees[0]", False, f"extra_fees={extra_fees}")
+        return
+    original = dict(extra_fees[0])
+    log("A2 GET app-config", True,
+        f"current extra_fees[0]={original}")
 
-original_email = body.get("support_email")
-original_tips = list(tips) if isinstance(tips, list) else None
-print(f"   → original support_email = {original_email!r}")
-print(f"   → original default_tip_suggestions = {original_tips!r}")
+    # Build the PUT body — preserve all existing fields, override extra_fees[0]
+    new_extras = list(extra_fees)
+    new_extras[0] = {
+        "id": "extra_1",
+        "name": "Concierge Fee",
+        "type": "flat",
+        "value": 5.0,
+        "enabled": True,
+        "cap": 50.0,
+    }
+    put_body = {
+        "core_fees": cfg.get("core_fees"),
+        "extra_fees": new_extras,
+        "card": cfg.get("card"),
+        "sms": cfg.get("sms"),
+        "brand": cfg.get("brand"),
+        "feature_flags": cfg.get("feature_flags"),
+    }
+    # Drop None
+    put_body = {k: v for k, v in put_body.items() if v is not None}
 
-# ─── STEP 2 ──────────────────────────────────────────────────────────────
-print("\n── STEP 2: admin login + PUT /api/admin/app-config (change support_email)")
-token = admin_login()
-check("step2.admin_login_ok", bool(token), "got bearer token")
+    r = put_cfg(token, put_body)
+    log("A3 PUT app-config with cap=50.0", r.status_code == 200,
+        f"status={r.status_code} body={r.text[:200]}")
+    if r.status_code != 200:
+        return
 
-cfg_before = get_app_config(token)
-saved_brand = dict(cfg_before.get("brand") or {})
-print(f"   → cfg.brand keys = {list(saved_brand.keys())}")
+    cfg2 = get_cfg(token)
+    ef0 = (cfg2.get("extra_fees") or [{}])[0]
+    log("A4 GET app-config extra_fees[0].cap == 50.0",
+        abs(float(ef0.get("cap") or 0) - 50.0) < 1e-6,
+        f"actual cap={ef0.get('cap')}, full row={ef0}")
 
-cfg_mut = json.loads(json.dumps(cfg_before))
-cfg_mut["brand"]["support_email"] = "customers@example.com"
-put_app_config(token, cfg_mut)
-check("step2.put_email_change_ok", True, "PUT 200")
+    log("A5 extra_fees[0].name == 'Concierge Fee'",
+        ef0.get("name") == "Concierge Fee",
+        f"actual name={ef0.get('name')}")
 
-# ─── STEP 3 ──────────────────────────────────────────────────────────────
-print("\n── STEP 3: GET /api/runtime/brand (verify email change)")
-r3 = get_public_brand()
-check("step3.http_200", r3.status_code == 200, f"got {r3.status_code}")
-b2 = r3.json()
-check(
-    "step3.support_email_updated",
-    b2.get("support_email") == "customers@example.com",
-    f"actual={b2.get('support_email')!r}",
-)
+    # Public endpoint
+    rf = get_fee_labels()
+    rf_json = rf.json() if rf.status_code == 200 else {}
+    public_ef0 = (rf_json.get("extra_fees") or [{}])[0]
+    log("A6 /runtime/fee-labels extra_fees[0].name == 'Concierge Fee'",
+        rf.status_code == 200 and public_ef0.get("name") == "Concierge Fee",
+        f"status={rf.status_code} extra_fees[0]={public_ef0}")
 
-# ─── STEP 4 ──────────────────────────────────────────────────────────────
-print("\n── STEP 4: restore support_email and verify")
-cfg_restore = json.loads(json.dumps(cfg_before))
-cfg_restore["brand"]["support_email"] = saved_brand.get("support_email", original_email)
-put_app_config(token, cfg_restore)
-r4 = get_public_brand()
-b3 = r4.json()
-check(
-    "step4.support_email_restored",
-    b3.get("support_email") == original_email,
-    f"actual={b3.get('support_email')!r}, original={original_email!r}",
-)
+    # Restore
+    restore_extras = list(cfg2.get("extra_fees") or [])
+    restore_extras[0] = original
+    restore_body = {
+        "core_fees": cfg2.get("core_fees"),
+        "extra_fees": restore_extras,
+        "card": cfg2.get("card"),
+        "sms": cfg2.get("sms"),
+        "brand": cfg2.get("brand"),
+        "feature_flags": cfg2.get("feature_flags"),
+    }
+    restore_body = {k: v for k, v in restore_body.items() if v is not None}
+    rr = put_cfg(token, restore_body)
+    log("A7 restore extra_fees[0] to original",
+        rr.status_code == 200,
+        f"status={rr.status_code}")
 
-# ─── STEP 5 ──────────────────────────────────────────────────────────────
-print("\n── STEP 5: change default_tip_suggestions to [10,15,20,25], verify, restore")
-cfg_mut2 = json.loads(json.dumps(cfg_before))
-cfg_mut2["brand"]["default_tip_suggestions"] = [10, 15, 20, 25]
-put_app_config(token, cfg_mut2)
-r5 = get_public_brand()
-b4 = r5.json()
-returned_tips = b4.get("default_tip_suggestions")
-check(
-    "step5.tips_updated",
-    isinstance(returned_tips, list)
-    and len(returned_tips) == 4
-    and [float(x) for x in returned_tips] == [10.0, 15.0, 20.0, 25.0],
-    f"actual={returned_tips!r}",
-)
 
-cfg_restore2 = json.loads(json.dumps(cfg_before))
-cfg_restore2["brand"]["default_tip_suggestions"] = saved_brand.get("default_tip_suggestions", original_tips)
-put_app_config(token, cfg_restore2)
-r6 = get_public_brand()
-b5 = r6.json()
-got_back = b5.get("default_tip_suggestions")
-check(
-    "step5.tips_restored",
-    isinstance(got_back, list)
-    and [float(x) for x in got_back] == [float(x) for x in (original_tips or [])],
-    f"actual={got_back!r}, original={original_tips!r}",
-)
+# ---------- FIX B ----------
+def fix_b():
+    print("\n=== FIX B: public fee-labels reflects admin edits ===")
+    token = admin_login()
+    log("B1 admin login", True)
 
-# ─── Summary ─────────────────────────────────────────────────────────────
-print("\n══════════════════ SUMMARY ══════════════════")
-n_pass = sum(1 for _, ok, _ in results if ok)
-n_fail = len(results) - n_pass
-for label, ok, info in results:
-    icon = "✅" if ok else "❌"
-    print(f"  {icon} {label}{(' — ' + info) if (info and not ok) else ''}")
-print(f"\nTOTAL: {n_pass}/{len(results)} PASS, {n_fail} FAIL")
-sys.exit(0 if n_fail == 0 else 1)
+    cfg = get_cfg(token)
+    cf = cfg.get("core_fees") or {}
+    orig_platform = cf.get("platform_fee_label")
+    orig_tx = cf.get("transaction_fee_label")
+    orig_ins = cf.get("insurance_label")
+    log("B2 capture originals", True,
+        f"platform={orig_platform!r} tx={orig_tx!r} ins={orig_ins!r}")
+
+    def edit_label(field, value):
+        c = get_cfg(token)
+        new_cf = dict(c.get("core_fees") or {})
+        new_cf[field] = value
+        body = {
+            "core_fees": new_cf,
+            "extra_fees": c.get("extra_fees"),
+            "card": c.get("card"),
+            "sms": c.get("sms"),
+            "brand": c.get("brand"),
+            "feature_flags": c.get("feature_flags"),
+        }
+        body = {k: v for k, v in body.items() if v is not None}
+        r = put_cfg(token, body)
+        return r
+
+    # platform_fee_label = "Service Charge"
+    r = edit_label("platform_fee_label", "Service Charge")
+    log("B3 PUT platform_fee_label='Service Charge'",
+        r.status_code == 200, f"status={r.status_code}")
+    rf = get_fee_labels()
+    rfj = rf.json() if rf.status_code == 200 else {}
+    log("B4 /runtime/fee-labels platform_fee_label == 'Service Charge'",
+        rfj.get("platform_fee_label") == "Service Charge",
+        f"actual={rfj.get('platform_fee_label')!r}")
+
+    # transaction_fee_label = "Processing Fee"
+    r = edit_label("transaction_fee_label", "Processing Fee")
+    log("B5 PUT transaction_fee_label='Processing Fee'",
+        r.status_code == 200, f"status={r.status_code}")
+    rf = get_fee_labels()
+    rfj = rf.json() if rf.status_code == 200 else {}
+    log("B6 /runtime/fee-labels transaction_fee_label == 'Processing Fee'",
+        rfj.get("transaction_fee_label") == "Processing Fee",
+        f"actual={rfj.get('transaction_fee_label')!r}")
+
+    # insurance_label = "Protection"
+    r = edit_label("insurance_label", "Protection")
+    log("B7 PUT insurance_label='Protection'",
+        r.status_code == 200, f"status={r.status_code}")
+    rf = get_fee_labels()
+    rfj = rf.json() if rf.status_code == 200 else {}
+    log("B8 /runtime/fee-labels insurance_label == 'Protection'",
+        rfj.get("insurance_label") == "Protection",
+        f"actual={rfj.get('insurance_label')!r}")
+
+    # Restore all
+    c = get_cfg(token)
+    new_cf = dict(c.get("core_fees") or {})
+    new_cf["platform_fee_label"] = orig_platform
+    new_cf["transaction_fee_label"] = orig_tx
+    new_cf["insurance_label"] = orig_ins
+    body = {
+        "core_fees": new_cf,
+        "extra_fees": c.get("extra_fees"),
+        "card": c.get("card"),
+        "sms": c.get("sms"),
+        "brand": c.get("brand"),
+        "feature_flags": c.get("feature_flags"),
+    }
+    body = {k: v for k, v in body.items() if v is not None}
+    r = put_cfg(token, body)
+    log("B9 restore all 3 labels", r.status_code == 200,
+        f"status={r.status_code}")
+
+    rf = get_fee_labels()
+    rfj = rf.json() if rf.status_code == 200 else {}
+    log("B10 post-restore platform_fee_label",
+        rfj.get("platform_fee_label") == orig_platform,
+        f"actual={rfj.get('platform_fee_label')!r} expected={orig_platform!r}")
+    log("B11 post-restore transaction_fee_label",
+        rfj.get("transaction_fee_label") == orig_tx,
+        f"actual={rfj.get('transaction_fee_label')!r} expected={orig_tx!r}")
+    log("B12 post-restore insurance_label",
+        rfj.get("insurance_label") == orig_ins,
+        f"actual={rfj.get('insurance_label')!r} expected={orig_ins!r}")
+
+
+if __name__ == "__main__":
+    try:
+        fix_a()
+        fix_b()
+    except Exception as exc:
+        log("EXC unexpected exception", False, repr(exc))
+        raise
+    finally:
+        print("\n=== SUMMARY ===")
+        passed = sum(1 for _, ok, _ in results if ok)
+        total = len(results)
+        for step, ok, detail in results:
+            tag = "PASS" if ok else "FAIL"
+            print(f"[{tag}] {step}")
+        print(f"\nTotal: {passed}/{total} passed")
+        sys.exit(0 if passed == total else 1)

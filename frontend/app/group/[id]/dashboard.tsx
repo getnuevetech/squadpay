@@ -214,23 +214,32 @@ export default function DashboardScreen() {
   // "share covered" and hide the contribute CTA. Guard with share > 0.01.
   const leadShareCovered = myShare > 0.01 && myContributed >= myShare - 0.01;
 
-  // June 2025 — Dual-CTA detection. When the lead hasn't paid their own
-  // share AND there's a real shortfall from OTHER unpaid members, we
-  // surface BOTH actions side-by-side:
-  //   1. "Contribute Share" → pays only the lead's share into the pool.
-  //   2. "Cover Shortfall"  → routes to the lead-pay flow which fronts
-  //      the FULL remaining amount (their share + everyone else's gap)
-  //      to the restaurant via Stripe / Squad Card.
-  // Without both CTAs the lead used to be deadlocked: the only button
-  // was "Contribute Share", and the shortfall option only appeared
-  // AFTER they'd paid their own share — forcing a 2-tap workflow that
-  // failed when the lead actually wanted to settle everything in one go.
+  // ── CTA visibility model (June 2025, post user feedback) ───────────
+  //   • "Contribute Share"  visible iff the LEAD's personal share is
+  //                          still unpaid (myUnpaid > 0).
+  //   • "Decide Shortfall"  visible iff ANYTHING is still owed on the
+  //                          bill (remaining_to_collect > 0). This stays
+  //                          on screen until ALL contributions are
+  //                          complete — even after every other member
+  //                          has paid, so the lead can settle the rest.
+  //
+  // Both visible → render side-by-side (the dual-CTA layout).
+  // Only Shortfall visible (lead paid own share, others still owe) →
+  //   render a single full-width "Pay $X for group" / "(cover shortfall)"
+  //   button (the legacy leadShareCovered branch handles this).
+  // Both invisible → "Settle bill — fully funded" CTA.
+  //
+  // Edge cases automatically handled by deriving from server values:
+  //   • Lead edits bill (adds/removes items, changes tax/tip) after
+  //     members contribute → backend recomputes funding.remaining_to_collect
+  //     and per-user shares → both CTAs reappear if a new shortfall opens.
+  //   • Member contribution arrives → only `remaining_to_collect` and
+  //     `myUnpaid` change; neither CTA disappears unless the corresponding
+  //     unpaid amount actually hits zero.
   const myUnpaid = Math.max(0, myShare - myContributed);
-  const othersUnpaid = Math.max(
-    0,
-    (group.funding?.remaining_to_collect || 0) - myUnpaid,
-  );
-  const showDualCtas = !leadShareCovered && othersUnpaid > 0.01 && myUnpaid > 0.01;
+  const showContributeCta = myUnpaid > 0.01;
+  const showShortfallCta = remaining > 0.01;
+  const showDualCtas = showContributeCta && showShortfallCta;
 
   // Detect the "itemized but nothing claimed" state. In this state we MUST
   // NOT show the Pay button or "Contributed" badges — the lead must first
@@ -672,11 +681,19 @@ export default function DashboardScreen() {
             onPress={() => router.push(`/group/${group.id}/items`)}
           />
         )}
-        {/* Lead must contribute their own share BEFORE paying the merchant.
-            When other members also haven't paid (`showDualCtas` true), surface
-            BOTH actions side-by-side so the lead isn't stuck behind their
-            own share before being allowed to settle the bill. */}
-        {group.status === 'open' && !needsMoreMembers && !itemizedNeedsSetup && !leadShareCovered && showDualCtas && (
+        {/* ─────── CTA rendering ──────────────────────────────────────────
+            Visibility model:
+              • Contribute Share  → only when LEAD has unpaid personal share
+              • Decide Shortfall  → as long as ANY part of the bill is unpaid
+                                    (stays until full settlement, even after
+                                    every other member has paid)
+
+            Layout decision:
+              both visible   → side-by-side dual layout
+              shortfall only → single full-width "Pay …" CTA
+              neither        → "Settle bill — fully funded"
+        */}
+        {group.status === 'open' && !needsMoreMembers && !itemizedNeedsSetup && showDualCtas && (
           <View style={styles.dualCtaRow}>
             <Button
               title={`Contribute Share\n$${myUnpaid.toFixed(2)}`}
@@ -685,7 +702,7 @@ export default function DashboardScreen() {
               style={styles.dualCtaButton}
             />
             <Button
-              title={`Decide Shortfall\n$${(funding.remaining_to_collect || 0).toFixed(2)}`}
+              title={`Decide Shortfall\n$${remaining.toFixed(2)}`}
               testID="dashboard-cover-shortfall-btn"
               onPress={handleLeadPay}
               variant="outline"
@@ -693,24 +710,27 @@ export default function DashboardScreen() {
             />
           </View>
         )}
-        {group.status === 'open' && !needsMoreMembers && !itemizedNeedsSetup && !leadShareCovered && !showDualCtas && (
-          <Button
-            title={`Contribute Your Share\n$${Math.max(0, myShare - myContributed).toFixed(2)}`}
-            testID="dashboard-contribute-btn"
-            onPress={handleContribute}
-          />
-        )}
-        {group.status === 'open' && !needsMoreMembers && !itemizedNeedsSetup && leadShareCovered && (
+        {group.status === 'open' && !needsMoreMembers && !itemizedNeedsSetup && !showDualCtas && !showContributeCta && (
           <Button
             title={
-              (funding.remaining_to_collect || 0) <= 0.01
+              !showShortfallCta
                 ? `Settle bill — fully funded`
                 : funding.total_contributed > 0
-                ? `Pay $${(funding.remaining_to_collect || 0).toFixed(2)} (cover shortfall)`
-                : `Pay $${(funding.remaining_to_collect || group.total || 0).toFixed(2)} for group`
+                ? `Pay $${remaining.toFixed(2)} (cover shortfall)`
+                : `Pay $${(remaining || group.total || 0).toFixed(2)} for group`
             }
             testID="dashboard-pay-btn"
             onPress={handleLeadPay}
+          />
+        )}
+        {/* Defensive: should never fire because if showContributeCta is true
+            then remaining ≥ myUnpaid > 0 so showShortfallCta is also true.
+            Kept as a safety net for any future backend math drift. */}
+        {group.status === 'open' && !needsMoreMembers && !itemizedNeedsSetup && !showDualCtas && showContributeCta && (
+          <Button
+            title={`Contribute Your Share\n$${myUnpaid.toFixed(2)}`}
+            testID="dashboard-contribute-btn"
+            onPress={handleContribute}
           />
         )}
       </View>

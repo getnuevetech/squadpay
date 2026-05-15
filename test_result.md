@@ -12682,3 +12682,96 @@ PART 3 — `brand.support_email` propagation
    - `default_tip_suggestions` not consumed by any screen yet — create.tsx
      uses a freeform TextInput for tip amount, no preset chips. Hook is
      ready when the UI gets tip-suggestion chips.
+
+
+#=====================================================================
+# Targeted Fix Verification (May 2026) — extra_fees[].cap + fee-labels regression
+#=====================================================================
+
+backend:
+  - task: "FIX A — extra_fees[].cap preserved on reload (load_app_config bug fix)"
+    implemented: true
+    working: true
+    file: "backend/routes/admin_app_config.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Verified via /app/backend_test.py against live preview backend
+            (https://joint-pay-1.preview.emergentagent.com/api). 7/7 assertions PASS.
+
+            Reviewed fix in /app/backend/routes/admin_app_config.py:load_app_config
+            (lines 183-202). The merged dict now explicitly preserves "cap" via
+            float(merged.get("cap") or 0) — previously the cap was silently
+            reset to 0 on every reload because it wasn't carried through the
+            normalization step.
+
+            Test sequence (extra_fees[0]):
+              ✅ A1 admin login (admin@squadpay.us)
+              ✅ A2 GET /api/admin/app-config →
+                 original={id:extra_1, name:"Extra Fee 1", type:flat, value:0.0,
+                           enabled:false, cap:0.0}
+              ✅ A3 PUT /api/admin/app-config with extra_fees[0]={id:"extra_1",
+                 name:"Concierge Fee", type:"flat", value:5.0, enabled:true,
+                 cap:50.0} → 200
+              ✅ A4 GET /api/admin/app-config → extra_fees[0].cap == 50.0 ✓
+                 (BUG FIX CONFIRMED — previously this would have returned 0.0)
+              ✅ A5 GET /api/admin/app-config → extra_fees[0].name == "Concierge Fee"
+              ✅ A6 GET /api/runtime/fee-labels (no auth) →
+                 extra_fees[0]={id:"extra_1", name:"Concierge Fee"} ✓
+                 (admin edit propagates to public endpoint via _refresh_caches)
+              ✅ A7 PUT restoring extra_fees[0] to original → 200
+
+  - task: "FIX B — Public fee-labels endpoint reflects admin label edits (regression)"
+    implemented: true
+    working: true
+    file: "backend/routes/admin_phase_bc.py, backend/routes/admin_app_config.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Verified via /app/backend_test.py. 12/12 assertions PASS. No 5xx.
+
+            ✅ B1 admin login
+            ✅ B2 captured originals: platform="Platform Fee",
+               transaction="Transaction Fee", insurance="Insurance"
+            ✅ B3 PUT core_fees.platform_fee_label="Service Charge" → 200
+            ✅ B4 GET /api/runtime/fee-labels (NO auth, no cache) →
+               platform_fee_label == "Service Charge" ✓
+            ✅ B5 PUT core_fees.transaction_fee_label="Processing Fee" → 200
+            ✅ B6 GET /api/runtime/fee-labels → transaction_fee_label ==
+               "Processing Fee" ✓
+            ✅ B7 PUT core_fees.insurance_label="Protection" → 200
+            ✅ B8 GET /api/runtime/fee-labels → insurance_label == "Protection" ✓
+            ✅ B9-B12 Restore all 3 labels → /runtime/fee-labels returns
+               defaults again.
+
+            _refresh_caches() in admin_app_config.py is correctly invoked on
+            PUT and the public /runtime/fee-labels endpoint reads from the
+            updated cache immediately. Public endpoint remains uncached
+            (Cache-Control: no-store, no-cache, must-revalidate).
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        Both targeted fixes VERIFIED. 19/19 assertions PASS via
+        /app/backend_test.py (rewritten for this review).
+
+        FIX A — extra_fees[].cap preservation: BUG FIXED. The cap field
+        round-trips correctly through PUT → GET (50.0 preserved). Public
+        /runtime/fee-labels also reflects the name change ("Concierge Fee").
+        State was restored to original after the test.
+
+        FIX B — Public fee-labels reflects admin edits: WORKING. All three
+        core_fees label edits (platform_fee_label, transaction_fee_label,
+        insurance_label) propagate immediately to the unauthenticated
+        /runtime/fee-labels endpoint. All restored to defaults.
+
+        No backend action required. Main agent can summarise and finish.
+

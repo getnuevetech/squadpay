@@ -74,13 +74,16 @@ export function invalidateBrandCache() {
 }
 
 /**
- * Read the admin-configured brand strings. Returns DEFAULTS immediately and
- * upgrades to the server values once they arrive.
+ * Read the admin-configured brand strings. Returns DEFAULTS / cached value
+ * immediately to avoid UI flicker, then refetches in the background on
+ * every mount — so admin edits on one device/tab propagate to customer
+ * sessions without requiring a hard reload.
  */
 export function useBrand(): BrandConfig {
   const [brand, setBrand] = useState<BrandConfig>(_cached || DEFAULTS);
   useEffect(() => {
     let alive = true;
+    _cached = null; // refetch every mount; see comment in useFeeLabels.ts
     _fetchBrand().then((next) => {
       if (alive) setBrand(next);
     });

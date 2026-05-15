@@ -82,13 +82,24 @@ export function invalidateFeeLabelsCache() {
 }
 
 /**
- * Read the admin-configured fee labels. Returns DEFAULTS immediately and
- * upgrades to the server values once they arrive.
+ * Read the admin-configured fee labels. Returns DEFAULTS or the previous
+ * cached value immediately (so the UI never flickers), then refetches in
+ * the background on every mount.
+ *
+ * IMPORTANT: refetch-on-every-mount (not just once per app session) is the
+ * difference between "label changes show up after a full app reload" and
+ * "label changes show up on the next screen navigation". Admin edits on
+ * one device must propagate to customer sessions on other devices without
+ * forcing a hard refresh.
  */
 export function useFeeLabels(): FeeLabels {
   const [labels, setLabels] = useState<FeeLabels>(_cached || DEFAULTS);
   useEffect(() => {
     let alive = true;
+    // Bust the module cache before refetching so admins editing labels in
+    // another browser/tab/device see the change without waiting for the
+    // session to expire.
+    _cached = null;
     _fetchLabels().then((next) => {
       if (alive) setLabels(next);
     });

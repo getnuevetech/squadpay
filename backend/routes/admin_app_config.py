@@ -191,6 +191,10 @@ async def load_app_config(db) -> dict:
             "type": "percent" if merged.get("type") == "percent" else "flat",
             "value": float(merged.get("value") or 0),
             "enabled": bool(merged.get("enabled")),
+            # June 2025 — preserve the admin-set cap on reload. Without this
+            # the cap was silently reset to 0 every time the config was
+            # loaded, even though the admin had saved a non-zero value.
+            "cap": float(merged.get("cap") or 0),
         })
 
     merged_payload = AppConfigPayload(

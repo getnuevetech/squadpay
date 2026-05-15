@@ -19,6 +19,7 @@ interface BillBreakdownProps {
   groupItemsTotal: number;
   groupTransactionFees: number;
   groupPlatformFees: number;
+  groupInsuranceFees?: number;  // June 2025 — new layered Insurance line
   extraFeesAgg: ExtraFeeAgg[];
   grandTotal: number;
   groupContributedTotal: number;
@@ -32,6 +33,7 @@ export function BillBreakdown({
   groupItemsTotal,
   groupTransactionFees,
   groupPlatformFees,
+  groupInsuranceFees = 0,
   extraFeesAgg,
   grandTotal,
   groupContributedTotal,
@@ -69,10 +71,6 @@ export function BillBreakdown({
             <Text style={styles.breakdownVal}>${Number(group.tip || 0).toFixed(2)}</Text>
           </View>
           <View style={styles.breakdownRow}>
-            <Text style={styles.breakdownKey}>Transaction fees (3%)</Text>
-            <Text style={styles.breakdownVal}>${groupTransactionFees.toFixed(2)}</Text>
-          </View>
-          <View style={styles.breakdownRow}>
             <Text style={styles.breakdownKey}>Platform fees</Text>
             <Text style={styles.breakdownVal}>${groupPlatformFees.toFixed(2)}</Text>
           </View>
@@ -82,6 +80,17 @@ export function BillBreakdown({
               <Text style={styles.breakdownVal}>${ef.amount.toFixed(2)}</Text>
             </View>
           ))}
+          {/* June 2025 — Insurance layer (after Extras, before Tx Fee) */}
+          {groupInsuranceFees > 0 && (
+            <View style={styles.breakdownRow}>
+              <Text style={styles.breakdownKey}>Insurance</Text>
+              <Text style={styles.breakdownVal}>${groupInsuranceFees.toFixed(2)}</Text>
+            </View>
+          )}
+          <View style={styles.breakdownRow}>
+            <Text style={styles.breakdownKey}>Transaction fees</Text>
+            <Text style={styles.breakdownVal}>${groupTransactionFees.toFixed(2)}</Text>
+          </View>
           <View
             style={[
               styles.breakdownRow,

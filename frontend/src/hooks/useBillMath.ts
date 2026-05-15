@@ -55,6 +55,7 @@ export function useBillMath(group: Group | null, userId: string | null): BillMat
         groupItemsTotal: 0,
         groupTransactionFees: 0,
         groupPlatformFees: 0,
+        groupInsuranceFees: 0,
         extraFeesAgg: [],
         groupExtraFeesTotal: 0,
         groupContributedTotal: 0,
@@ -83,6 +84,13 @@ export function useBillMath(group: Group | null, userId: string | null): BillMat
       (s: number, p: any) => s + Number(p.platform_fee || 0),
       0,
     );
+    // June 2025 — Insurance is now a layered fee per the user-locked
+    // pricing model. Each member's per_user.insurance has been computed
+    // by `_compute_layered_member_fees` on the backend.
+    const groupInsuranceFees = (group.per_user || []).reduce(
+      (s: number, p: any) => s + Number(p.insurance || 0),
+      0,
+    );
     const groupContributedTotal = group.funding?.total_contributed || 0;
     const groupRepaidTotal = group.funding?.total_repaid || 0;
 
@@ -104,6 +112,7 @@ export function useBillMath(group: Group | null, userId: string | null): BillMat
       Number(group.tip || 0) +
       groupTransactionFees +
       groupPlatformFees +
+      groupInsuranceFees +  // June 2025 — Insurance layer
       groupExtraFeesTotal;
 
     const groupOutstandingTotal = Math.max(0, grandTotal - groupContributedTotal);
@@ -128,6 +137,7 @@ export function useBillMath(group: Group | null, userId: string | null): BillMat
       groupItemsTotal,
       groupTransactionFees,
       groupPlatformFees,
+      groupInsuranceFees,
       extraFeesAgg,
       groupExtraFeesTotal,
       groupContributedTotal,

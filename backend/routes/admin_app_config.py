@@ -34,12 +34,21 @@ CONFIG_ID = "platform_fees_config"
 # ───────────────────── Section schemas ─────────────────────
 
 class CoreFees(BaseModel):
-    transaction_fee_pct: float = Field(3.0, ge=0, le=20, description="Percent applied to merchant_share per member")
-    platform_fee_flat: float = Field(0.03, ge=0, le=10, description="Flat dollars charged per member")
+    transaction_fee_pct: float = Field(3.0, ge=0, le=20, description="Percent applied to (Share + Platform + Extras + Insurance) per member — always %, never fixed")
+    # June 2025 — Platform fee migrated from a single flat to {type, value}:
+    #   type=fixed   → each member pays full $value (NOT divided by N)
+    #   type=percent → each member pays value% of (Share or Total/N)
+    platform_fee_type: Literal["fixed", "percent"] = Field("fixed", description="Whether platform_fee_value is dollars or percent")
+    platform_fee_value: float = Field(0.50, ge=0, le=100, description="Amount or percent depending on platform_fee_type")
+    # Insurance — always percent, never fixed. Layered between Extras and Tx Fee.
+    insurance_pct: float = Field(1.0, ge=0, le=20, description="Insurance percent applied to (Share + Platform + Extras)")
+    # ── Legacy field kept for backwards-compat with older callers/UI ──
+    platform_fee_flat: float = Field(0.50, ge=0, le=100, description="DEPRECATED: use platform_fee_type+value. Auto-mirrored from platform_fee_value when type=fixed.")
     # Admin-editable display labels — surfaced everywhere we render these fees
     # (Bill Breakdown card, Income & Fees ledger, receipts, etc.).
     transaction_fee_label: str = Field("Transaction Fee", min_length=1, max_length=40)
     platform_fee_label: str = Field("Platform Fee", min_length=1, max_length=40)
+    insurance_label: str = Field("Insurance", min_length=1, max_length=40)
 
 
 class ExtraFee(BaseModel):
@@ -195,9 +204,20 @@ def attach_app_config_routes(api_router: APIRouter, db, require_admin):
         cfg = await load_app_config(db)
         set_app_config_cache(cfg)
         set_extra_fees_cache(cfg["extra_fees"])
+        # June 2025 — pass new fields (platform fee type/value + insurance).
+        # Auto-derive legacy `platform_fee_flat` from `platform_fee_value`
+        # when the type is fixed so older callers keep working.
+        core_fees = cfg["core_fees"]
+        p_type = core_fees.get("platform_fee_type", "fixed")
+        p_value = core_fees.get(
+            "platform_fee_value",
+            core_fees.get("platform_fee_flat", 0.50),
+        )
         set_core_fees_cache(
-            cfg["core_fees"]["transaction_fee_pct"] / 100.0,
-            cfg["core_fees"]["platform_fee_flat"],
+            core_fees["transaction_fee_pct"] / 100.0,
+            platform_fee_type=p_type,
+            platform_fee_value=p_value,
+            insurance_rate=core_fees.get("insurance_pct", 1.0) / 100.0,
         )
 
     @api_router.get("/admin/app-config")

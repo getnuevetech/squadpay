@@ -119,6 +119,7 @@ export default function DashboardScreen() {
     groupItemsTotal,
     groupTransactionFees,
     groupPlatformFees,
+    groupInsuranceFees,
     extraFeesAgg,
     groupContributedTotal,
     groupRepaidTotal,
@@ -391,6 +392,7 @@ export default function DashboardScreen() {
           groupItemsTotal={groupItemsTotal}
           groupTransactionFees={groupTransactionFees}
           groupPlatformFees={groupPlatformFees}
+          groupInsuranceFees={groupInsuranceFees}
           extraFeesAgg={extraFeesAgg}
           grandTotal={grandTotal}
           groupContributedTotal={groupContributedTotal}
@@ -582,7 +584,7 @@ export default function DashboardScreen() {
           <View style={styles.warnCard} testID="dashboard-lead-share-banner">
             <AlertCircle size={18} color={COLORS.warning} />
             <Text style={styles.warnText}>
-              Contribute your remaining ${Math.max(0, myShare - myContributed).toFixed(2)} share into the Squad
+              Contribute your ${myShare.toFixed(2)} share into the Squad
             </Text>
           </View>
         )}

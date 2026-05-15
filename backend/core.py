@@ -26,30 +26,84 @@ logger = logging.getLogger(__name__)
 # These are the *defaults* used until the admin saves an override on the
 # Platform Fees page. The live values are kept in `_CORE_FEES_CACHE` and
 # read by `_recompute_group` via the helpers below.
-DEFAULT_TRANSACTION_FEE_RATE = 0.03  # 3% per-member surcharge
-DEFAULT_PLATFORM_FEE = 0.03          # 3 cents flat per member
+#
+# June 2025 — Pricing model finalized per user spec:
+#   • Platform Fee: {type: "fixed"|"percent", value: N}  — default $0.50 fixed
+#   • Extra Fees:   list of {type, value, name, enabled} — admin-managed (unlimited)
+#   • Insurance:    always %, layered on top of (Share + Platform + Extras) — default 1%
+#   • Transaction:  always %, layered on top of EVERYTHING below — default 3%
+#
+# Layering order (per user spec):
+#   1. Share_or_Value
+#   2. + Platform Fee
+#   3. + Extra Fees (each)
+#   4. + Insurance (% of layers 1-3)
+#   5. + Transaction Fee (% of layers 1-4)
+DEFAULT_TRANSACTION_FEE_RATE = 0.03  # 3%
+DEFAULT_PLATFORM_FEE_TYPE = "fixed"  # "fixed" | "percent"
+DEFAULT_PLATFORM_FEE_VALUE = 0.50    # $0.50 fixed per member (user-specified default)
+DEFAULT_INSURANCE_RATE = 0.01        # 1% (user-specified default)
 
 # Backwards-compat aliases — other modules historically imported these.
 TRANSACTION_FEE_RATE = DEFAULT_TRANSACTION_FEE_RATE
-PLATFORM_FEE = DEFAULT_PLATFORM_FEE
+PLATFORM_FEE = DEFAULT_PLATFORM_FEE_VALUE  # kept as float for older importers
 
 # Live overrides set by admin via /api/admin/app-config (or fallback to defaults).
-_CORE_FEES_CACHE: Dict[str, float] = {
+_CORE_FEES_CACHE: Dict[str, Any] = {
     "transaction_fee_rate": DEFAULT_TRANSACTION_FEE_RATE,
-    "platform_fee": DEFAULT_PLATFORM_FEE,
+    # Platform fee is now an object {type, value} so admin can pick fixed $ or %.
+    "platform_fee_type": DEFAULT_PLATFORM_FEE_TYPE,
+    "platform_fee_value": DEFAULT_PLATFORM_FEE_VALUE,
+    # Insurance: always percent, never fixed.
+    "insurance_rate": DEFAULT_INSURANCE_RATE,
+    # Legacy single float (sum-fee semantics) — kept for backwards-compat with
+    # older callers that imported `platform_fee` directly. Resolved to the
+    # *fixed-dollar value* when type is "fixed", else 0.0.
+    "platform_fee": (
+        DEFAULT_PLATFORM_FEE_VALUE if DEFAULT_PLATFORM_FEE_TYPE == "fixed" else 0.0
+    ),
 }
 
 
-def set_core_fees_cache(transaction_fee_rate: float, platform_fee: float) -> None:
-    """Called by the admin route on save + at startup to refresh values."""
+def set_core_fees_cache(
+    transaction_fee_rate: float,
+    platform_fee: float = None,
+    *,
+    platform_fee_type: str = None,
+    platform_fee_value: float = None,
+    insurance_rate: float = None,
+) -> None:
+    """Called by the admin route on save + at startup to refresh values.
+
+    Backwards-compatible signature: old callers pass `(tx_rate, platform_fee)`
+    where `platform_fee` is interpreted as a fixed-dollar amount. New callers
+    can pass the keyword args to set type/value explicitly and an insurance
+    rate. All new fields fall back to current cache values or module defaults.
+    """
     global _CORE_FEES_CACHE
+    # Resolve platform fee — prefer explicit type/value over the legacy float.
+    if platform_fee_type is not None or platform_fee_value is not None:
+        ptype = platform_fee_type if platform_fee_type in ("fixed", "percent") else DEFAULT_PLATFORM_FEE_TYPE
+        pvalue = float(platform_fee_value) if platform_fee_value is not None else _CORE_FEES_CACHE.get("platform_fee_value", DEFAULT_PLATFORM_FEE_VALUE)
+    elif platform_fee is not None:
+        # Legacy call site — assume fixed dollar amount.
+        ptype = "fixed"
+        pvalue = float(platform_fee)
+    else:
+        ptype = _CORE_FEES_CACHE.get("platform_fee_type", DEFAULT_PLATFORM_FEE_TYPE)
+        pvalue = _CORE_FEES_CACHE.get("platform_fee_value", DEFAULT_PLATFORM_FEE_VALUE)
+    ins_rate = float(insurance_rate) if insurance_rate is not None else _CORE_FEES_CACHE.get("insurance_rate", DEFAULT_INSURANCE_RATE)
     _CORE_FEES_CACHE = {
         "transaction_fee_rate": float(transaction_fee_rate) if transaction_fee_rate is not None else DEFAULT_TRANSACTION_FEE_RATE,
-        "platform_fee": float(platform_fee) if platform_fee is not None else DEFAULT_PLATFORM_FEE,
+        "platform_fee_type": ptype,
+        "platform_fee_value": pvalue,
+        "insurance_rate": ins_rate,
+        # Legacy float — only meaningful when type is fixed.
+        "platform_fee": pvalue if ptype == "fixed" else 0.0,
     }
 
 
-def get_core_fees_cache() -> Dict[str, float]:
+def get_core_fees_cache() -> Dict[str, Any]:
     return dict(_CORE_FEES_CACHE)
 
 
@@ -71,12 +125,12 @@ def get_extra_fees_cache() -> List[Dict[str, Any]]:
 
 
 def _compute_extra_fees_per_member(merchant_subtotal: float, member_count: int) -> List[Dict[str, Any]]:
-    """Return a list of {id,name,amount} per-member for each enabled extra
-    fee, computed from the cache. `merchant_subtotal` is the items+tax+tip
-    pre-fee amount; `member_count` is used to split flat fees evenly.
+    """[LEGACY — kept for backwards compatibility]
 
-    • type=percent: amount = (value/100) * merchant_subtotal / member_count
-    • type=flat:    amount = value / member_count (split equally)
+    Older callers may still use this helper. Per the June 2025 pricing
+    spec, fixed extra fees are NOT divided by member count (each member
+    pays the full $ amount), so this helper is no longer suitable for
+    new code paths. Use `_compute_layered_member_fees()` instead.
     """
     out: List[Dict[str, Any]] = []
     if member_count <= 0:
@@ -97,6 +151,83 @@ def _compute_extra_fees_per_member(merchant_subtotal: float, member_count: int) 
             "amount": round(amt, 2),
         })
     return out
+
+
+def _compute_layered_member_fees(
+    *,
+    member_share: float,
+    pct_base: float,
+) -> Dict[str, Any]:
+    """Compute the layered fee stack for a single member (June 2025 spec).
+
+    Layering order (per user-locked formula):
+        1. Member's Share or Value (already includes their tax/tip slice)
+        2. + Platform Fee     ($F fixed → each pays full; F% → percent of pct_base)
+        3. + Each Extra Fee   (same fixed/percent rules as Platform)
+        4. + Insurance        (H% × (Share + Platform + Extras)) — never fixed
+        5. + Transaction Fee  (B% × (Share + Platform + Extras + Insurance))
+
+    Args:
+        member_share: This member's Share (Equal) or Value (Itemized).
+                      Already includes their tax+tip portion.
+        pct_base:     Base used when Platform/Extras are PERCENTAGE.
+                      Equal mode  → same as `member_share` (= Total/N).
+                      Itemized    → Total Bill / N (uniform across all members).
+
+    Returns:
+        Dict with keys: platform_fee, extra_fees (list of {id,name,type,amount}),
+        extra_fees_total, insurance, transaction_fee, fees_total, total.
+        `total` is the member's grand-total bill obligation (incl. all fees).
+    """
+    cache = _CORE_FEES_CACHE
+    # ─── Layer 2: Platform fee ──────────────────────────────────────
+    p_type = cache.get("platform_fee_type", DEFAULT_PLATFORM_FEE_TYPE)
+    p_val = float(cache.get("platform_fee_value", DEFAULT_PLATFORM_FEE_VALUE) or 0)
+    if p_type == "percent":
+        platform_fee = round((p_val / 100.0) * pct_base, 2)
+    else:
+        platform_fee = round(p_val, 2)
+    # ─── Layer 3: Extra fees (each one fixed-$ or %) ───────────────
+    extra_fees: List[Dict[str, Any]] = []
+    for f in _EXTRA_FEES_CACHE:
+        if not f.get("enabled"):
+            continue
+        val = float(f.get("value") or 0)
+        if val <= 0:
+            continue
+        f_type = "percent" if f.get("type") == "percent" else "flat"
+        if f_type == "percent":
+            amt = round((val / 100.0) * pct_base, 2)
+        else:
+            # Per user spec: fixed = each member pays full $ (NOT divided).
+            amt = round(val, 2)
+        extra_fees.append({
+            "id": str(f.get("id") or ""),
+            "name": str(f.get("name") or "Extra fee"),
+            "type": f_type,
+            "amount": amt,
+        })
+    extras_total = round(sum(ef["amount"] for ef in extra_fees), 2)
+    # ─── Layer 4: Insurance (always %, layered) ────────────────────
+    ins_rate = float(cache.get("insurance_rate", DEFAULT_INSURANCE_RATE) or 0)
+    insurance_base = member_share + platform_fee + extras_total
+    insurance = round(ins_rate * insurance_base, 2)
+    # ─── Layer 5: Transaction fee (always %, on top of EVERYTHING) ──
+    tx_rate = float(cache.get("transaction_fee_rate", DEFAULT_TRANSACTION_FEE_RATE) or 0)
+    tx_base = insurance_base + insurance
+    transaction_fee = round(tx_rate * tx_base, 2)
+
+    fees_total = round(platform_fee + extras_total + insurance + transaction_fee, 2)
+    total = round(member_share + fees_total, 2)
+    return {
+        "platform_fee": platform_fee,
+        "extra_fees": extra_fees,
+        "extra_fees_total": extras_total,
+        "insurance": insurance,
+        "transaction_fee": transaction_fee,
+        "fees_total": fees_total,
+        "total": total,
+    }
 
 # C1: referral code helpers — 6-char uppercase, drop confusing chars (0/O/1/I)
 _REFERRAL_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -404,23 +535,42 @@ async def _recompute_group(group: dict) -> dict:
             # until an item is claimed for them.
             p["transaction_fee"] = 0.0
             p["platform_fee"] = 0.0
+            p["insurance"] = 0.0
             p["extra_fees"] = []
             p["extra_fees_total"] = 0.0
             p["total"] = 0.0
             continue
-        p["transaction_fee"] = round(merchant_share * _CORE_FEES_CACHE["transaction_fee_rate"], 2)
-        p["platform_fee"] = round(_CORE_FEES_CACHE["platform_fee"], 2)
-        # Admin-configurable extra fees (split equally across members WITH
-        # items claimed — empty-handed members are excluded from the divisor).
-        active_count = max(1, len(per_user) - len(no_food_users))
-        extra_fees = _compute_extra_fees_per_member(merchant_share, active_count)
-        p["extra_fees"] = extra_fees
-        extras_sum = round(sum(ef["amount"] for ef in extra_fees), 2)
-        p["extra_fees_total"] = extras_sum
-        p["total"] = round(
-            merchant_share + p["transaction_fee"] + p["platform_fee"] + extras_sum,
-            2,
+        # ─────────────────────────────────────────────────────────────
+        # June 2025 — Layered Fee Model (per user spec)
+        #
+        # Per-user breakdown is computed by `_compute_layered_member_fees()`
+        # which applies all five layers in the exact order the user
+        # specified:
+        #     Share/Value → +Platform → +Extras → +Insurance → +Tx Fee
+        #
+        # Percent-fee base differs by split mode:
+        #     • Equal mode    → each member's share == Total/N == pct_base
+        #     • Itemized mode → pct_base is Total Bill / N (uniform across
+        #                        all members), while their `merchant_share`
+        #                        (= Value) varies by item claims.
+        # ─────────────────────────────────────────────────────────────
+        if split_mode == "fast":
+            pct_base = merchant_share
+        else:
+            # Itemized: percentage Platform/Extras use the uniform per-bill
+            # base so every member sees the same Platform $ regardless of
+            # how many items they claimed.
+            pct_base = (total / max(1, len(members))) if total else 0.0
+        layered = _compute_layered_member_fees(
+            member_share=merchant_share,
+            pct_base=pct_base,
         )
+        p["transaction_fee"] = layered["transaction_fee"]
+        p["platform_fee"] = layered["platform_fee"]
+        p["insurance"] = layered["insurance"]
+        p["extra_fees"] = layered["extra_fees"]
+        p["extra_fees_total"] = layered["extra_fees_total"]
+        p["total"] = layered["total"]
 
     # Generalized reward application (June 2025) — `group.lead_rewards`
     # is an ARRAY of pending rewards (KYC, marketing, referral, etc.)
@@ -643,32 +793,23 @@ async def _recompute_group(group: dict) -> dict:
             "total_contributed": total_contributed,
             "total_repaid": total_repaid,
             "lead_shortfall": round(lead_shortfall, 2),
-            # CRITICAL (June 2025 bug fix v3) — USER MENTAL MODEL:
-            # `remaining_to_collect` = exact sum of the unpaying NON-LEAD
-            # members' personal gaps. The lead's own share is handled by
-            # the separate "Contribute Your Share" flow before this
-            # value is ever surfaced — so we MUST exclude the lead row
-            # from this sum.
+            # SYMMETRIC FORMULA (June 2025 — final, per user spec):
+            # `remaining_to_collect` = sum of EVERY member's own bill gap
+            # (`total − contributed − repaid`), INCLUDING the lead.
             #
-            # Why excluding the lead matters:
-            # If a bill is edited (tax/tip changed, items added, fees
-            # recalculated) after the lead already contributed, the
-            # lead's own per_user.total can grow slightly above what
-            # they originally contributed, leaving a residual own_gap
-            # of a few dollars. Summing the lead's own_gap into
-            # `remaining_to_collect` (v2 behaviour) inflated the
-            # "cover shortfall" amount by that residual — confusing
-            # the user because the unpaying member's row clearly
-            # showed only $43.65 while the lead button showed $48.48.
+            # Per the user's clear mental model:
+            #   "If lead is part of the unpaid Squad, then we add lead's
+            #    total share to the pool of shortfall."
             #
-            # New invariant:
-            #   member sees:  per_user.total (their personal share)
-            #   lead covers:  sum of all OTHER members' (total − contributed − repaid)
+            # Lead is treated identically to every other Squad member —
+            # no special exclusion. The frontend exposes two CTAs:
+            #   1. "Contribute Your Share"  — pays only lead's own gap
+            #   2. "Cover Shortfall"        — pays this whole sum
             #
-            # When there is exactly 1 unpaying member, those two
-            # numbers are identical. When there are N unpaying
-            # members, lead covers the SUM of their N personal
-            # shares — which is exactly what the lead expects.
+            # NOTE: With the per-bill fee divider (above) and the
+            # equal-split formula, every member's `total` is identical
+            # in fast/equal mode. No "residual gap" can arise from
+            # asymmetric fee calculation any more.
             "remaining_to_collect": round(
                 sum(
                     max(
@@ -678,7 +819,6 @@ async def _recompute_group(group: dict) -> dict:
                         - float(p.get("repaid", 0.0)),
                     )
                     for p in per_user
-                    if p.get("user_id") != group.get("lead_id")
                 ),
                 2,
             ),
@@ -694,7 +834,7 @@ async def _recompute_group(group: dict) -> dict:
             # reverses and `remaining_to_collect ≥ merchant_remaining`
             # by the amount of uncollected non-lead fees.
             "merchant_remaining": round(max(0.0, total_amount - total_contributed), 2),
-            "fees_total": round(sum(p["transaction_fee"] + p["platform_fee"] for p in per_user), 2),
+            "fees_total": round(sum(p["transaction_fee"] + p["platform_fee"] + p.get("insurance", 0) + p.get("extra_fees_total", 0) for p in per_user), 2),
         },
     }
 

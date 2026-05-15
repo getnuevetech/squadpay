@@ -749,7 +749,16 @@ export type MasterCard = {
 export type AppConfig = {
   core_fees: {
     transaction_fee_pct: number;
-    platform_fee_flat: number;
+    // June 2025 — Platform fee migrated to {type, value}. Both legacy
+    // `platform_fee_flat` and the new `platform_fee_type`/`platform_fee_value`
+    // are present for backwards-compat; the new fields are the source of
+    // truth.
+    platform_fee_flat: number;  // legacy mirror of platform_fee_value when type=fixed
+    platform_fee_type?: 'fixed' | 'percent';
+    platform_fee_value?: number;
+    // June 2025 — Insurance: always %, layered between Extras and Tx Fee.
+    insurance_pct?: number;
+    insurance_label?: string;
     // Admin-editable display labels (Item 2 of May 2026 batch).
     transaction_fee_label: string;
     platform_fee_label: string;

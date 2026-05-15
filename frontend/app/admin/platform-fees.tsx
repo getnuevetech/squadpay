@@ -153,16 +153,73 @@ export default function AdminAppConfig() {
           }
           testID="config-platform-fee-label"
         />
+        {/* June 2025 — Platform fee can be FIXED $ or PERCENT. */}
+        <View style={styles.toggleRow}>
+          <Text style={styles.toggleLabel}>Platform Fee Type</Text>
+          <View style={styles.toggleGroup}>
+            <TouchableOpacity
+              style={[styles.toggleBtn, (cfg.core_fees.platform_fee_type || 'fixed') === 'fixed' && styles.toggleBtnActive]}
+              onPress={() => patch('core_fees', { ...cfg.core_fees, platform_fee_type: 'fixed' })}
+              testID="config-platform-fee-type-fixed"
+            >
+              <Text style={[styles.toggleBtnText, (cfg.core_fees.platform_fee_type || 'fixed') === 'fixed' && styles.toggleBtnTextActive]}>$ Fixed</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.toggleBtn, cfg.core_fees.platform_fee_type === 'percent' && styles.toggleBtnActive]}
+              onPress={() => patch('core_fees', { ...cfg.core_fees, platform_fee_type: 'percent' })}
+              testID="config-platform-fee-type-percent"
+            >
+              <Text style={[styles.toggleBtnText, cfg.core_fees.platform_fee_type === 'percent' && styles.toggleBtnTextActive]}>% Percent</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
         <Field
-          label="Platform Fee ($)"
-          help="Flat dollars charged per member. Default $0.03."
-          value={String(cfg.core_fees.platform_fee_flat)}
+          label={
+            (cfg.core_fees.platform_fee_type || 'fixed') === 'percent'
+              ? 'Platform Fee (%)'
+              : 'Platform Fee ($)'
+          }
+          help={
+            (cfg.core_fees.platform_fee_type || 'fixed') === 'percent'
+              ? 'Percent of Share per Squad (Equal) or Total Bill / N (Itemized). Each member pays their own — not divided.'
+              : 'Flat dollars charged per member (each pays full, NOT divided). Default $0.50.'
+          }
+          value={String(cfg.core_fees.platform_fee_value ?? cfg.core_fees.platform_fee_flat ?? 0.5)}
           keyboardType="decimal-pad"
           onChangeText={(t) =>
-            patch('core_fees', { ...cfg.core_fees, platform_fee_flat: parseFloat(t) || 0 })
+            patch('core_fees', {
+              ...cfg.core_fees,
+              platform_fee_value: parseFloat(t) || 0,
+              // Keep legacy field mirrored for old consumers when fixed.
+              platform_fee_flat: (cfg.core_fees.platform_fee_type || 'fixed') === 'fixed' ? (parseFloat(t) || 0) : (cfg.core_fees.platform_fee_flat || 0),
+            })
           }
-          prefix="$"
+          prefix={(cfg.core_fees.platform_fee_type || 'fixed') === 'fixed' ? '$' : undefined}
+          suffix={(cfg.core_fees.platform_fee_type || 'fixed') === 'percent' ? '%' : undefined}
           testID="config-platform-fee"
+        />
+
+        {/* June 2025 — Insurance: always percent, layered on top of
+            (Share + Platform + Extras), before Transaction Fee. */}
+        <Field
+          label="Insurance — Display Label"
+          help="Shown as the row name in every Bill Breakdown card."
+          value={cfg.core_fees.insurance_label || 'Insurance'}
+          onChangeText={(t) =>
+            patch('core_fees', { ...cfg.core_fees, insurance_label: t.slice(0, 40) })
+          }
+          testID="config-insurance-label"
+        />
+        <Field
+          label="Insurance (%)"
+          help="Always percent — applied to (Share + Platform + Extras). Default 1.0%. Each member pays their own."
+          value={String(cfg.core_fees.insurance_pct ?? 1.0)}
+          keyboardType="decimal-pad"
+          onChangeText={(t) =>
+            patch('core_fees', { ...cfg.core_fees, insurance_pct: parseFloat(t) || 0 })
+          }
+          suffix="%"
+          testID="config-insurance-pct"
         />
       </Section>
 
@@ -558,6 +615,14 @@ const styles = StyleSheet.create({
   toggleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   toggleLabel: { color: COLORS.text, fontSize: FONT.sizes.sm, flex: 1, paddingRight: SPACING.md },
   feeCard: { borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS.md, padding: SPACING.sm, gap: SPACING.sm },
+  // June 2025 — Platform Fee type toggle ($ Fixed vs % Percent)
+  toggleRow: { gap: SPACING.xs, marginBottom: SPACING.sm },
+  toggleLabel: { fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold, color: COLORS.text },
+  toggleGroup: { flexDirection: 'row', gap: SPACING.xs, marginTop: SPACING.xs },
+  toggleBtn: { flex: 1, paddingVertical: SPACING.sm, paddingHorizontal: SPACING.md, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, alignItems: 'center', backgroundColor: COLORS.surface },
+  toggleBtnActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  toggleBtnText: { fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold, color: COLORS.text },
+  toggleBtnTextActive: { color: '#fff' },
   feeHeader: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
   feeName: { flex: 1, fontWeight: FONT.weights.bold, color: COLORS.text, paddingVertical: 6, fontSize: FONT.sizes.sm },
   feeBody: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },

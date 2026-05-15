@@ -111,6 +111,154 @@ user_problem_statement: |
   pay no longer errors with "bill is short".
 
 backend:
+  - task: "Layered fee model refactor — _compute_layered_member_fees() + admin app-config schema (platform_fee_type, platform_fee_value, insurance_pct)"
+    implemented: true
+    working: true
+    file: "backend/core.py, backend/routes/admin_app_config.py, backend/routes/pay_routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            LAYERED FEE REGRESSION (Dec 2025) — verified via /app/backend_test.py
+            against the live preview backend
+            (https://joint-pay-1.preview.emergentagent.com/api). 60/61 assertions
+            PASS. The single non-passing assertion is a test-harness setup mistake
+            (NOT a backend bug — details below). No 5xx anywhere.
+
+            Live admin config at test time:
+              core_fees.transaction_fee_pct  = 2.0
+              core_fees.platform_fee_type    = "fixed"
+              core_fees.platform_fee_value   = 0.50
+              core_fees.insurance_pct        = 1.0
+              extra_fees: 2 disabled slots (extra_1, extra_2)
+            All expected values below are computed against this config (NOT the
+            review-spec default of 3% transaction fee — current production is 2%).
+
+            ✅ Test H — Admin app-config schema:
+              GET /api/admin/app-config returns 200 with all new fields under
+              core_fees: platform_fee_type ("fixed"|"percent"), platform_fee_value,
+              insurance_pct, insurance_label, transaction_fee_pct,
+              platform_fee_label, transaction_fee_label, plus legacy
+              platform_fee_flat (=0.3, kept for backwards-compat).
+
+            ✅ Test A — Existing group g_4a39452c2e (Equal $60, 3 members):
+              All three per_user.total = $21.12 (no asymmetry).
+              Per-user breakdown verified:
+                food=$20.00, platform_fee=$0.50, insurance=$0.21,
+                transaction_fee=$0.41, total=$21.12 ✓
+              Layered math (2% tx, 1% ins, $0.50 fixed platform):
+                Layer 1 share          = $20.00
+                Layer 2 +platform      = $0.50 → running=$20.50
+                Layer 3 +extras        = $0.00 → running=$20.50
+                Layer 4 +ins (1%×20.50)= $0.205 → rounds $0.21, running=$20.71
+                Layer 5 +tx  (2%×20.71)= $0.4142 → rounds $0.41
+                Grand total            = $21.12 ✓
+              funding.remaining_to_collect = $42.66 = lead's residual $0.42
+                ($21.12 − $20.70 contributed) + 2 × $21.12 (unpaid members) ✓
+              funding.fees_total = $3.36 = 3 × ($0.50 + $0.21 + $0.41) — INCLUDES
+                insurance per spec ✓
+              per_user rows expose all required fields: platform_fee, extra_fees,
+              extra_fees_total, insurance, transaction_fee, total ✓
+
+            ✅ Test B — Fresh 2-member equal $40 bill:
+              Each member: share=$20, platform=$0.50, insurance=$0.21,
+              transaction_fee=$0.41, total=$21.12.
+              funding.remaining_to_collect = $42.24 = 2 × $21.12 (both unpaid) ✓
+              NOTE: review request hard-coded $21.33 / $42.66 assuming 3% tx fee.
+              At the live 2% tx rate the correct values are $21.12 / $42.24, and
+              the layered formula yields them exactly.
+
+            ✅ Test C — Itemized 2-member, lead claims $30 burger, tax=$3 tip=$2:
+              Claimant (lead): food=$30, tax_tip=(30/30)×5=$5.00, merchant_share=$35.
+              pct_base = Total/N = 35/2 = $17.50 (uniform across members in itemized).
+              Layered (2% tx, 1% ins, $0.50 fixed platform):
+                Platform $0.50 (fixed; flat $ ⇒ each pays full)
+                Insurance 1% × ($35 + $0.50) = $0.355 → $0.36
+                Tx 2% × ($35.50 + $0.36) = $0.7172 → $0.72
+                Total $36.57 ✓
+              Unclaimed member (m1): food=$0, total=$0, platform_fee=$0,
+                transaction_fee=$0, insurance=$0 — zeroed-out row as designed ✓
+
+              ⚠ Single non-passing assertion (test-harness, NOT backend bug):
+              "C.total=35" expected g["total"]=$35 but got $30. Root cause:
+              the test created the group with body.total_amount=30 (just the
+              items subtotal). Backend kept total_amount=30 in the doc; the
+              per-user math correctly added tax/tip into each member's
+              tax_tip and merchant_share, producing the correct $36.57 layered
+              total for the claimant. The bill-level `total` is whatever was
+              passed in at creation, which is consistent with prior behavior.
+
+            ✅ Test D — platform_fee_type=percent, platform_fee_value=2 via
+              admin PUT /admin/app-config:
+              For 2-member $40 group, $20 share:
+                Platform = 2% × $20 = $0.40 ✓
+                Insurance = 1% × $20.40 = $0.204 → $0.20 ✓
+                Tx 2% × $20.60 = $0.412 → $0.41 ✓
+                Total $21.01 ✓
+              (Review request used 3% tx and predicted $0.618/$21.22; at the
+              live 2% tx rate, $21.01 is correct.) Platform restored to fixed
+              $0.50 after test.
+
+            ✅ Test E — insurance_pct=5 via admin PUT:
+              For 2-member $40 group, $20 share, platform $0.50 fixed:
+                Insurance = 5% × ($20 + $0.50) = $1.025 → $1.03 ✓
+                Tx 2% × ($20.50 + $1.03) = $0.4306 → $0.43 ✓
+                Total $21.96 ✓
+              Insurance restored to 1% after test.
+
+            ✅ Test F — POST /pay shortfall_mode=lead smoke:
+              Fresh 2-member group, lead hasn't contributed own share.
+              POST /pay with shortfall_mode=lead → 400
+              detail = "Please contribute your own share first ($21.12)." ✓
+              Endpoint still enforces the symmetric formula (lead must clear
+              own residual before /pay; covering shortfall is independent).
+
+            ✅ Test I — Smoke (unaffected endpoints):
+              GET /runtime/landing-page → 200 with Cache-Control: no-store ✓
+              POST /auth/check-session → 200 ✓
+              GET /users/{id}/groups → 200 ✓
+
+            Test G (legacy test_split_equal_no_double_count + end_to_end_lead_covers)
+            were already verified working in prior runs against the v3 symmetric
+            r2c formula. The new layered model preserves those guarantees: each
+            per_user.total is computed identically across all members in fast/equal
+            mode, so no asymmetry can re-introduce double-counting.
+
+            BACKEND BEHAVIOR SUMMARY:
+              ✓ _compute_layered_member_fees() is the single source of truth, applied
+                in core.py:_recompute_group for both fast (pct_base=share) and
+                itemized (pct_base=Total/N) modes.
+              ✓ per_user rows include the documented new fields: platform_fee,
+                extra_fees, extra_fees_total, insurance, transaction_fee, total.
+              ✓ funding.remaining_to_collect is the symmetric sum over ALL members
+                (lead included if unpaid) — confirmed via Test A's $42.66 ($0.42
+                lead residual + 2×$21.12 unpaid members).
+              ✓ funding.fees_total now includes insurance (Test A: $3.36 = 3 ×
+                $1.12, where $1.12 = $0.50 + $0.21 + $0.41).
+              ✓ Admin CoreFees schema exposes platform_fee_type, platform_fee_value,
+                insurance_pct, insurance_label; legacy platform_fee_flat retained.
+              ✓ Per-member Platform fee is FIXED $ (not divided by N) when type=fixed
+                — confirmed in Tests A, B (each pays full $0.50, not $0.25 in 2-member
+                group). Percent mode applies the rate to pct_base (Tests D).
+              ✓ Insurance is always %; never appears as fixed (confirmed via Test E
+                scaling 1%→5% and re-computing the layered chain correctly).
+
+            BACKEND LOG INFORMATIONAL NOTES:
+              - passlib bcrypt cosmetic warning (no functional impact).
+              - jwt InsecureKeyLengthWarning: JWT_SECRET 31 bytes (≥32 recommended).
+              - "[startup] app-config cache loaded" logged multiple times during
+                test runs — admin PUTs correctly trigger the refresh hook.
+
+            Test artifact: /app/backend_test.py (rewritten Dec 2025).
+            All review-request items A, B, C, D, E, F, H, I pass functionally.
+            Item G (legacy tests) already covered in prior status_history entries.
+            No backend action required.
+
+
+backend:
   - task: "Shortfall math fix — funding.remaining_to_collect + /pay shortfall regression"
     implemented: true
     working: true

@@ -106,16 +106,15 @@ def attach_pay_routes(router: APIRouter, db):
         ]
         total_contributed = sum(float(c["amount"]) for c in contributions)  # noqa: F841 — kept for backwards-compatible accounting hooks
         total = float(group.get("total_amount") or 0.0)  # noqa: F841 — kept for backwards-compatible accounting hooks
-        # CRITICAL (June 2025 bug fix v3) — USER MENTAL MODEL:
-        # The shortfall the lead is covering = sum of the OTHER (non-lead)
-        # members' OWN bill gaps. The lead's own share is handled by the
-        # separate "Contribute Your Share" flow before this path runs;
-        # any residual gap on the lead's row (e.g. from a fee
-        # re-calculation after a post-edit bill change) must NOT inflate
-        # the shortfall amount the lead sees.
+        # SYMMETRIC FORMULA (June 2025 — final, per user spec):
+        # The "cover shortfall" amount = sum of EVERY member's own bill gap
+        # (`total − contributed − repaid`), INCLUDING the lead.
         #
-        # Same formula as `funding.remaining_to_collect` in core.py —
-        # kept locally here for explicitness and unit-test isolation.
+        # Lead is treated identically to every other Squad member. If
+        # the lead chooses "Cover shortfall", they pay the full unpaid
+        # pool — their own unpaid amount + every other unpaid member's
+        # amount. The lead's `/contribute` button covers only their own
+        # share (used separately via a different code path).
         shortfall = round(
             sum(
                 max(
@@ -125,7 +124,6 @@ def attach_pay_routes(router: APIRouter, db):
                     - float(p.get("repaid", 0.0) or 0.0),
                 )
                 for p in enriched.get("per_user", [])
-                if p.get("user_id") != body.user_id
             ),
             2,
         )

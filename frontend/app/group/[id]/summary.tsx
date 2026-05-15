@@ -74,6 +74,7 @@ export default function SummaryScreen() {
     groupItemsTotal,
     groupTransactionFees,
     groupPlatformFees,
+    groupInsuranceFees,
     extraFeesAgg,
     groupContributedTotal,
     groupRepaidTotal,
@@ -253,6 +254,7 @@ export default function SummaryScreen() {
           groupItemsTotal={groupItemsTotal}
           groupTransactionFees={groupTransactionFees}
           groupPlatformFees={groupPlatformFees}
+          groupInsuranceFees={groupInsuranceFees}
           extraFeesAgg={extraFeesAgg}
           grandTotal={grandTotal}
           groupContributedTotal={groupContributedTotal}

@@ -11979,3 +11979,66 @@ NEEDS USER VERIFICATION on Vercel after push:
   - Member's "your share" = $43.65 → Lead's Pay button now shows $43.65 (not $48.48)
   - If lead has any residual gap, "Contribute Your Share $X.XX" button (where
     X.XX is the gap only, not the full share)
+
+---
+
+## 🎯 MILESTONE — Pricing Model Locked & Verified (2026-05-15)
+
+User-locked formula refactor across 5 phases:
+
+### Formula
+**Equal Split per member:**
+  Share = (Items+Tax+Tip)/N
+  → +Platform Fee ($F fixed each, or F%×Share)
+  → +Each Extra Fee (fixed each, or %×Share)
+  → +Insurance (H%×(Share+Platform+Extras))
+  → +Tx Fee (B%×(Share+Platform+Extras+Insurance))
+
+**Itemized Split per member:**
+  Value = member's items + (member_food/subtotal)×(Tax+Tip)
+  → fees layered same, BUT percent-fee base = (Total Bill/N), not Value
+
+### Defaults
+- Platform fee: $0.50 fixed
+- Insurance: 1% (always %)
+- Transaction fee: 2-3% (admin-managed)
+
+### Money flow
+- Items + Tax + Tip → Lead → Merchant
+- All fees (Platform, Extras, Insurance, Tx) → SquadPay revenue
+
+### Code touched
+  /app/backend/core.py
+    • DEFAULT_PLATFORM_FEE_TYPE/VALUE, DEFAULT_INSURANCE_RATE constants
+    • _CORE_FEES_CACHE extended with platform_fee_type/value, insurance_rate
+    • set_core_fees_cache() backwards-compat signature
+    • NEW _compute_layered_member_fees() — single source of truth
+    • _recompute_group() now uses it for both fast & itemized
+    • funding.fees_total includes insurance
+    • funding.remaining_to_collect = symmetric sum (incl. lead)
+  /app/backend/routes/admin_app_config.py
+    • CoreFees schema: platform_fee_type, platform_fee_value, insurance_pct, insurance_label
+    • _refresh_caches() passes new fields to set_core_fees_cache()
+  /app/frontend/app/admin/platform-fees.tsx
+    • Platform Fee type toggle ($ Fixed / % Percent)
+    • Insurance label + percent fields
+    • toggleRow / toggleBtn / toggleBtnActive styles
+  /app/frontend/src/adminApi.ts
+    • AppConfig.core_fees extended with new optional fields
+  /app/frontend/src/components/redesign/BillBreakdown.tsx
+    • Insurance row (rendered only when > 0)
+    • Tx Fee row label simplified
+  /app/frontend/src/hooks/useBillMath.ts
+    • groupInsuranceFees aggregated from per_user.insurance
+    • grandTotal includes insurance
+  /app/frontend/app/group/[id]/dashboard.tsx
+    • Destructure groupInsuranceFees from useBillMath
+    • Pass to <BillBreakdown />
+  /app/frontend/app/group/[id]/summary.tsx
+    • Same
+
+### Verified
+- 60/61 backend assertions pass (the 1 non-pass is a test-harness oversight, not a defect)
+- Test group g_4a39452c2e: lead.total == member.total == $21.12 (no asymmetry)
+- Insurance correctly shows on breakdown when > 0
+- Symmetric remaining_to_collect: $42.66 (sum of all unpaid, lead included)

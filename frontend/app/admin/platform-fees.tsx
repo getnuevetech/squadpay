@@ -14,7 +14,7 @@
  *   • Brand           — sms sender, support email, tip suggestions
  *   • Ops             — maintenance mode
  */
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -333,22 +333,20 @@ export default function AdminAppConfig() {
                   </TouchableOpacity>
                 ))}
               </View>
-              <TextInput
+              <DecimalInput
                 value={String(fee.value)}
                 onChangeText={(t) => updateExtraFee(fee.id, { value: parseFloat(t) || 0 })}
                 style={styles.feeValue}
-                keyboardType="decimal-pad"
                 placeholder="0"
                 placeholderTextColor={COLORS.subtext}
               />
               {/* June 2025 — Optional per-extra cap (max $ per member). */}
               <View style={styles.extraCapRow}>
                 <Text style={styles.extraCapLabel}>Cap ($)</Text>
-                <TextInput
+                <DecimalInput
                   value={String((fee as any).cap ?? 0)}
                   onChangeText={(t) => updateExtraFee(fee.id, { cap: parseFloat(t) || 0 } as any)}
                   style={styles.extraCapInput}
-                  keyboardType="decimal-pad"
                   placeholder="0 = no cap"
                   placeholderTextColor={COLORS.subtext}
                   testID={`config-extra-${fee.id}-cap`}
@@ -609,17 +607,65 @@ function Field({
   multiline?: boolean;
   testID?: string;
 }) {
+  // ── Decimal-friendly editing buffer ──────────────────────────────────────
+  // When the keyboard is `decimal-pad`/`numeric`, the parent stores a parsed
+  // number and re-renders `value` as `String(parseFloat(x) || 0)`. That
+  // truncates trailing decimal points (e.g. user types "0." → parent stores
+  // 0 → re-renders "0", so the dot disappears mid-typing). To fix this we
+  // keep a local string buffer while the field is focused, forward the
+  // raw text to the parent (it can still parseFloat without losing data),
+  // and only re-sync from the parent when the parsed number actually
+  // changes (e.g. data reload after save).
+  const isDecimal = keyboardType === 'decimal-pad' || keyboardType === 'numeric';
+  const [buf, setBuf] = React.useState<string>(value);
+  const [focused, setFocused] = React.useState<boolean>(false);
+  React.useEffect(() => {
+    if (!isDecimal) {
+      setBuf(value);
+      return;
+    }
+    // Only overwrite the buffer when the *meaning* of the value changes
+    // (parsed number differs) and the user isn't currently typing.
+    if (focused) return;
+    const a = parseFloat(buf);
+    const b = parseFloat(value);
+    const aOk = !isNaN(a);
+    const bOk = !isNaN(b);
+    if (aOk && bOk && a === b) return; // identical numerically — keep buffer
+    if (!aOk && !bOk) return; // both empty/garbage — leave buffer
+    setBuf(value);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, isDecimal, focused]);
+
+  const handleChange = (t: string) => {
+    if (!isDecimal) {
+      onChangeText(t);
+      return;
+    }
+    // Accept partial decimals during editing: optional digits, optional
+    // single dot, optional fractional digits. Reject letters/anything else.
+    let cleaned = t.replace(/[^0-9.]/g, '');
+    const firstDot = cleaned.indexOf('.');
+    if (firstDot !== -1) {
+      cleaned = cleaned.slice(0, firstDot + 1) + cleaned.slice(firstDot + 1).replace(/\./g, '');
+    }
+    setBuf(cleaned);
+    onChangeText(cleaned);
+  };
+
   return (
     <View style={{ gap: 4 }}>
       <Text style={styles.fieldLabel}>{label}</Text>
       <View style={styles.fieldRow}>
         {prefix ? <Text style={styles.fieldAffix}>{prefix}</Text> : null}
         <TextInput
-          value={value}
-          onChangeText={onChangeText}
+          value={isDecimal ? buf : value}
+          onChangeText={handleChange}
           keyboardType={keyboardType}
           autoCapitalize={autoCapitalize}
           multiline={multiline}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
           style={[styles.fieldInput, multiline && { minHeight: 60 }]}
           placeholderTextColor={COLORS.subtext}
           testID={testID}
@@ -628,6 +674,61 @@ function Field({
       </View>
       {help ? <Text style={styles.fieldHelp}>{help}</Text> : null}
     </View>
+  );
+}
+
+/**
+ * Decimal-safe TextInput. Same buffering logic as the `Field` component but
+ * usable as a drop-in replacement for inline TextInputs (e.g. inside the
+ * Extra-Fees cards) that don't need the full Field label/affix chrome.
+ */
+function DecimalInput({
+  value,
+  onChangeText,
+  style,
+  placeholder,
+  placeholderTextColor,
+  testID,
+}: {
+  value: string;
+  onChangeText: (t: string) => void;
+  style?: any;
+  placeholder?: string;
+  placeholderTextColor?: string;
+  testID?: string;
+}) {
+  const [buf, setBuf] = React.useState<string>(value);
+  const [focused, setFocused] = React.useState<boolean>(false);
+  React.useEffect(() => {
+    if (focused) return;
+    const a = parseFloat(buf);
+    const b = parseFloat(value);
+    if (!isNaN(a) && !isNaN(b) && a === b) return;
+    if (isNaN(a) && isNaN(b)) return;
+    setBuf(value);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, focused]);
+
+  const handle = (t: string) => {
+    let cleaned = t.replace(/[^0-9.]/g, '');
+    const i = cleaned.indexOf('.');
+    if (i !== -1) cleaned = cleaned.slice(0, i + 1) + cleaned.slice(i + 1).replace(/\./g, '');
+    setBuf(cleaned);
+    onChangeText(cleaned);
+  };
+
+  return (
+    <TextInput
+      value={buf}
+      onChangeText={handle}
+      keyboardType="decimal-pad"
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      style={style}
+      placeholder={placeholder}
+      placeholderTextColor={placeholderTextColor}
+      testID={testID}
+    />
   );
 }
 

@@ -13085,3 +13085,62 @@ USER ASK — Close the receipts-storage backlog:
      Stripe Issuing balance)
    • Drift auto-recovery (fix the denorm by recomputing funding aggregate)
    • SMS/email alerts for high-delta drift
+
+---
+## 2026-05-15 — App Logo Refresh + Cap-field Decimal Fix
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Replaced all app icon assets with the new SquadPay logo (3 purple
+        silhouettes + dollar mark + wordmark) sourced from
+        https://github.com/getnuevetech/squadpay/blob/main/frontend/assets/images/SquadPay.png
+
+        Generated programmatically with Pillow from the master 1024×1024
+        transparent PNG:
+          - assets/images/icon.png              1024×1024  purple bg, full logo
+          - assets/images/adaptive-icon.png     1024×1024  transparent fg, icon-only, safe-zone padding for Android circular mask
+          - assets/images/favicon.png            256×256   icon-only on purple
+          - assets/images/splash-icon.png       1024×1024  transparent fg
+          - assets/images/splash-image.png       336×729   purple bg, logo centred
+          - assets/images/app-image.png          336×729   purple bg, logo centred
+          - assets/images/squadpay-mark.png      256×256   icon-only mark used inline by <SquadPayMark />
+          - assets/images/squadpay-logo.png     1024×1024  raw master (kept for reference)
+        Backed up the prior versions under assets/images/_backup_20260515/.
+
+        Updated src/components/redesign/SquadPayMark.tsx to render the new
+        icon-only PNG inside the existing purple rounded tile so the brand
+        in the landing hero and all in-app headers now matches the real
+        logo. No app.json paths needed changing — all the file references
+        in expo config point to the same filenames we replaced.
+
+        Cap-field decimal bug: the four `Cap ($)` inputs and the per-extra
+        fee value input in /admin/platform-fees were dropping mid-typing
+        decimal points (typing "1." would re-render "1", swallowing the
+        dot). Root cause: parent state stored a parsed number and the
+        `value` prop was `String(parseFloat() || 0)`, so the trailing dot
+        round-tripped to nothing.
+
+        Fix: added decimal-friendly buffering to the in-file `Field`
+        component, plus a new `DecimalInput` wrapper for the inline
+        TextInputs in the Extra-Fees cards. The buffer holds the raw
+        string while focused, only re-syncs from the parent when the
+        parsed number actually differs and the user is not typing.
+        This pattern was already proven in src/EditMetaModal.tsx for
+        tax/tip and now applies to:
+          - Transaction Fee Cap ($)
+          - Platform Fee Cap ($)
+          - Insurance Cap ($)
+          - Extra-fee value + per-extra Cap ($)
+        Plus every other decimal-pad field in the page (Transaction Fee %,
+        Insurance %, etc) inherits the same protection via the shared
+        Field component.
+
+        Files touched:
+          - /app/frontend/app/admin/platform-fees.tsx
+          - /app/frontend/src/components/redesign/SquadPayMark.tsx
+          - /app/frontend/assets/images/* (icon set regenerated)
+
+        Verified: web preview renders the new logo on the landing page
+        brand row (screenshot taken). Bundler hot-reloaded successfully
+        after a restart.

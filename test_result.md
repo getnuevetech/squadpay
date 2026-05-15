@@ -12941,3 +12941,67 @@ agent_communication:
         which is acceptable per the review spec. 16/16 assertions PASS in
         /app/backend_test.py. No backend changes required.
 
+
+================================================================================
+[Jun 2025] FEATURE — Receipts wired into all scan flows + In-app viewer UI
+================================================================================
+
+USER ASK — Close the receipts-storage backlog:
+   #1 — Wire api.storeReceipt() into the items.tsx re-scan + multi-receipt
+        batch flow so subsequent scans persist alongside the initial one.
+   #2 — Build a viewer so customers and admins can actually SEE the
+        stored receipts (previously write-only, invisible UI).
+
+═══ #1 STORAGE WIRED EVERYWHERE
+   `app/group/[id]/items.tsx` (lead-only screen for items + scans):
+   • `handleParsedReceipt` (single re-scan) — fire-and-forget storeReceipt
+     after successful OCR + appendItems.
+   • `handleParsedReceipts` (multi-receipt batch) — tracks `successfulBase64s`
+     during the loop, fires storeReceipt for each one after the batch
+     append lands. Skips images that OCR couldn't parse (no point storing
+     unreadable inputs).
+   Failures are swallowed (`.catch(() => {})`) so storage I/O can never
+   block or roll back the "items added" success state — receipt
+   persistence is best-effort, not transactional with the bill edit.
+
+═══ #2 RECEIPTS VIEWER (`src/components/redesign/ReceiptsModal.tsx`)
+   New ~280 LOC component (with comments). Self-contained — no theme
+   dependencies beyond the existing `COLORS / FONT / RADIUS / SPACING`
+   primitives.
+   FEATURES:
+   • Two-screen modal: tile grid → fullscreen lightbox
+   • LAZY-LOADS each tile's image via `api.getReceiptImage(id)` on first
+     mount (so a squad with 5 receipts doesn't fetch 5×300KB upfront)
+   • Newest-first ordering (reverses the backend's append-order list)
+   • Per-tile creation-date label (locale-formatted)
+   • Empty-state with ScanLine icon + helpful copy ("kept for 90 days")
+   • Per-tile error fallback ("Unavailable") if a fetch fails
+   • Tap-anywhere lightbox dismiss (mobile-standard UX)
+   • testIDs: `receipts-modal-close`, `receipt-tile-{id}`,
+     `receipts-lightbox-backdrop`
+   API SURFACE ADDED:
+   • `api.getReceiptImage(receipt_id)` in `src/api.ts` — fetches the JPEG
+     bytes for one stored receipt (calls existing public
+     `GET /api/receipts/{id}` endpoint)
+
+═══ DASHBOARD INTEGRATION (`app/group/[id]/dashboard.tsx`)
+   • New ScanLine import + ReceiptsModal import
+   • New `receiptsVisible` state
+   • New pill inside the existing `metaPillRow` (right of Edit Tax/Tip
+     and Split-Mode pills) labelled "Receipts" with ScanLine icon,
+     testID=`dashboard-receipts-pill`
+   • Modal mounted next to the EditMetaModal mount
+
+═══ BACKEND TESTING — 16/16 ASSERTIONS PASS
+   ✅ POST /api/receipts/store (valid JPEG b64) → 200, receipt_id returned
+   ✅ GET /api/receipts/{id} → 200, image_base64 + mime present
+   ✅ GET /api/groups/{id}/receipts → items + last_receipt_id
+   ✅ Multiple receipts persisted; list grows; last_receipt_id updates
+   ✅ Invalid base64 → 400 with friendly error
+   ✅ Unknown receipt_id → 404
+
+═══ NOT IN THIS BATCH (further backlog)
+   • Admin group inspector receipt thumbnails. Customer-facing viewer is
+     reachable from the regular group dashboard, so admins debugging a
+     squad can use the same route. Will add dedicated admin tiles when
+     prioritised.

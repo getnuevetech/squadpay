@@ -1,232 +1,172 @@
-"""Backend test for new GET /api/runtime/fee-labels public endpoint.
-
-Validates:
-  1. Public unauthenticated GET returns 200 with correct shape + Cache-Control: no-store
-  2. Admin login + GET /api/admin/app-config
-  3. Admin PUTs core_fees.platform_fee_label, transaction_fee_label, extra_fees[0].name
-  4. Public GET reflects changes
-  5. Restore originals
-  6. Public GET reflects defaults
 """
-import copy
-import sys
-import time
+Focused regression test for the new public endpoint:
+    GET /api/runtime/brand
 
+Plus end-to-end check that admin PUT /api/admin/app-config (changing
+`brand.support_email` and `brand.default_tip_suggestions`) is reflected
+on the public endpoint, then restored.
+"""
+
+import sys
+import json
 import requests
 
 BASE = "https://joint-pay-1.preview.emergentagent.com/api"
 ADMIN_EMAIL = "admin@squadpay.us"
-ADMIN_PW = "Letmein@2007#ForReal"
+ADMIN_PASSWORD = "Letmein@2007#ForReal"
 
-PASS = 0
-FAIL = 0
-FAILURES: list = []
+results = []
 
 
-def _ok(label, cond, extra=""):
-    global PASS, FAIL
-    if cond:
-        PASS += 1
-        print(f"  PASS: {label}{(' - ' + extra) if extra else ''}")
-    else:
-        FAIL += 1
-        msg = f"{label}{(' - ' + extra) if extra else ''}"
-        FAILURES.append(msg)
-        print(f"  FAIL: {msg}")
+def check(label, ok, info=""):
+    results.append((label, ok, info))
+    icon = "PASS" if ok else "FAIL"
+    print(f"[{icon}] {label}{' — ' + info if info else ''}")
+    return ok
 
 
-def step(n, title):
-    print(f"\n=== STEP {n}: {title} ===")
-
-
-def main():
-    sess = requests.Session()
-    sess.headers.update({"Accept": "application/json"})
-
-    # Step 1: public GET /runtime/fee-labels (no auth)
-    step(1, "GET /api/runtime/fee-labels (public, no auth)")
-    r = sess.get(f"{BASE}/runtime/fee-labels", timeout=15)
-    _ok("HTTP 200", r.status_code == 200, f"got {r.status_code} body={r.text[:200]}")
-    if r.status_code != 200:
-        print(f"\nFATAL: cannot continue. body={r.text}")
-        sys.exit(1)
-    body = r.json()
-    print(f"  body: {body}")
-    required_keys = {"transaction_fee_label", "platform_fee_label", "insurance_label", "extra_fees"}
-    missing = required_keys - set(body.keys())
-    _ok("required keys present", not missing, f"missing={missing}")
-    _ok("transaction_fee_label is str", isinstance(body.get("transaction_fee_label"), str))
-    _ok("platform_fee_label is str", isinstance(body.get("platform_fee_label"), str))
-    _ok("insurance_label is str", isinstance(body.get("insurance_label"), str))
-    _ok("extra_fees is list", isinstance(body.get("extra_fees"), list))
-    extras = body.get("extra_fees") or []
-    for i, e in enumerate(extras):
-        _ok(f"extra_fees[{i}] is dict", isinstance(e, dict))
-        _ok(f"extra_fees[{i}].id present", isinstance(e, dict) and bool(e.get("id")))
-        _ok(f"extra_fees[{i}].name present", isinstance(e, dict) and "name" in e)
-    cc = r.headers.get("Cache-Control") or ""
-    _ok(
-        "Cache-Control has no-store/no-cache",
-        ("no-store" in cc.lower()) or ("no-cache" in cc.lower()),
-        f"got '{cc}'",
-    )
-
-    default_tx = body.get("transaction_fee_label")
-    default_platform = body.get("platform_fee_label")
-    default_ins = body.get("insurance_label")
-    default_extras = copy.deepcopy(extras)
-    print(f"  initial public values: tx='{default_tx}' platform='{default_platform}' ins='{default_ins}'")
-    print(f"  initial public extras: {default_extras}")
-
-    # Step 2: admin login + GET app-config
-    step(2, "Admin login + GET /admin/app-config + PUTs")
-    r = sess.post(
+def admin_login():
+    r = requests.post(
         f"{BASE}/admin/auth/login",
-        json={"email": ADMIN_EMAIL, "password": ADMIN_PW},
-        timeout=15,
+        json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+        timeout=20,
     )
-    _ok("admin login 200", r.status_code == 200, f"got {r.status_code} body={r.text[:200]}")
-    if r.status_code != 200:
-        print(f"\nFATAL: admin login failed. body={r.text}")
-        sys.exit(1)
-    token = r.json().get("token")
-    _ok("admin token present", bool(token))
-    auth = {"Authorization": f"Bearer {token}"}
+    assert r.status_code == 200, f"admin login failed: {r.status_code} {r.text[:300]}"
+    return r.json()["token"]
 
-    r = sess.get(f"{BASE}/admin/app-config", headers=auth, timeout=15)
-    _ok("GET /admin/app-config 200", r.status_code == 200, f"got {r.status_code}")
-    if r.status_code != 200:
-        print(f"\nFATAL: get app-config failed. body={r.text}")
-        sys.exit(1)
-    cfg = r.json()
-    core_fees = cfg.get("core_fees") or {}
-    orig_platform_label = core_fees.get("platform_fee_label")
-    orig_tx_label = core_fees.get("transaction_fee_label")
-    orig_ins_label = core_fees.get("insurance_label")
-    orig_extras = copy.deepcopy(cfg.get("extra_fees") or [])
-    print(f"  current platform_fee_label='{orig_platform_label}'")
-    print(f"  current transaction_fee_label='{orig_tx_label}'")
-    print(f"  current extras[0]={orig_extras[0] if orig_extras else None}")
-    _ok("orig platform_fee_label present", bool(orig_platform_label))
-    _ok("orig extras has at least one entry", len(orig_extras) >= 1)
 
-    def _put(payload, label):
-        rr = sess.put(
-            f"{BASE}/admin/app-config",
-            json=payload,
-            headers=auth,
-            timeout=20,
-        )
-        _ok(f"PUT app-config ({label}) 200", rr.status_code == 200,
-            f"got {rr.status_code} body={rr.text[:300]}")
-        return rr
-
-    # PUT 1: change platform_fee_label
-    p1 = copy.deepcopy(cfg)
-    p1["core_fees"]["platform_fee_label"] = "Service Fee"
-    _put(p1, "platform_fee_label=Service Fee")
-
-    # PUT 2: change transaction_fee_label
-    p2 = copy.deepcopy(p1)
-    p2["core_fees"]["transaction_fee_label"] = "Processing Fee"
-    _put(p2, "transaction_fee_label=Processing Fee")
-
-    # PUT 3: change extra_fees[0].name
-    p3 = copy.deepcopy(p2)
-    if not p3.get("extra_fees"):
-        p3["extra_fees"] = [{"id": "extra_1", "name": "Extra Fee 1", "type": "flat", "value": 0, "enabled": False}]
-    p3["extra_fees"][0]["name"] = "Concierge Fee"
-    _put(p3, "extra_fees[0].name=Concierge Fee")
-
-    time.sleep(0.5)
-
-    # Step 3: re-fetch public /runtime/fee-labels
-    step(3, "GET /api/runtime/fee-labels - verify updated values")
-    r = sess.get(f"{BASE}/runtime/fee-labels", timeout=15)
-    _ok("HTTP 200", r.status_code == 200, f"got {r.status_code}")
-    body2 = r.json()
-    print(f"  body: {body2}")
-    _ok(
-        "platform_fee_label == 'Service Fee'",
-        body2.get("platform_fee_label") == "Service Fee",
-        f"got '{body2.get('platform_fee_label')}'",
+def get_app_config(token):
+    r = requests.get(
+        f"{BASE}/admin/app-config",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=20,
     )
-    _ok(
-        "transaction_fee_label == 'Processing Fee'",
-        body2.get("transaction_fee_label") == "Processing Fee",
-        f"got '{body2.get('transaction_fee_label')}'",
+    assert r.status_code == 200, f"get app-config failed: {r.status_code} {r.text[:300]}"
+    return r.json()
+
+
+def put_app_config(token, cfg):
+    r = requests.put(
+        f"{BASE}/admin/app-config",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        data=json.dumps(cfg),
+        timeout=20,
     )
-    extras2 = body2.get("extra_fees") or []
-    _ok("extras[0] present", len(extras2) >= 1)
-    if extras2:
-        _ok(
-            "extras[0].name == 'Concierge Fee'",
-            extras2[0].get("name") == "Concierge Fee",
-            f"got '{extras2[0].get('name')}'",
-        )
-
-    cc2 = r.headers.get("Cache-Control") or ""
-    _ok(
-        "Cache-Control still no-store/no-cache after update",
-        ("no-store" in cc2.lower()) or ("no-cache" in cc2.lower()),
-        f"got '{cc2}'",
-    )
-
-    # Step 4: restore originals via another PUT
-    step(4, "Restore originals via PUT /admin/app-config")
-    restore = copy.deepcopy(p3)
-    restore["core_fees"]["platform_fee_label"] = orig_platform_label
-    restore["core_fees"]["transaction_fee_label"] = orig_tx_label
-    if orig_ins_label is not None:
-        restore["core_fees"]["insurance_label"] = orig_ins_label
-    if orig_extras:
-        by_id = {e.get("id"): e for e in orig_extras if isinstance(e, dict) and e.get("id")}
-        for i, slot in enumerate(restore.get("extra_fees") or []):
-            sid = slot.get("id")
-            if sid in by_id:
-                restore["extra_fees"][i] = copy.deepcopy(by_id[sid])
-    _put(restore, "restore")
-    time.sleep(0.5)
-
-    # Step 5: confirm defaults are back
-    step(5, "GET /api/runtime/fee-labels - confirm defaults restored")
-    r = sess.get(f"{BASE}/runtime/fee-labels", timeout=15)
-    _ok("HTTP 200", r.status_code == 200, f"got {r.status_code}")
-    body3 = r.json()
-    print(f"  body: {body3}")
-    _ok(
-        f"platform_fee_label restored to '{orig_platform_label}'",
-        body3.get("platform_fee_label") == orig_platform_label,
-        f"got '{body3.get('platform_fee_label')}'",
-    )
-    _ok(
-        f"transaction_fee_label restored to '{orig_tx_label}'",
-        body3.get("transaction_fee_label") == orig_tx_label,
-        f"got '{body3.get('transaction_fee_label')}'",
-    )
-    if orig_ins_label is not None:
-        _ok(
-            f"insurance_label restored to '{orig_ins_label}'",
-            body3.get("insurance_label") == orig_ins_label,
-            f"got '{body3.get('insurance_label')}'",
-        )
-    extras3 = body3.get("extra_fees") or []
-    if orig_extras:
-        _ok(
-            f"extras[0].name restored to '{orig_extras[0].get('name')}'",
-            len(extras3) >= 1 and extras3[0].get("name") == orig_extras[0].get("name"),
-            f"got '{extras3[0].get('name') if extras3 else None}'",
-        )
-
-    print(f"\n{'=' * 60}")
-    print(f"PASS: {PASS}   FAIL: {FAIL}")
-    if FAILURES:
-        print("Failures:")
-        for f in FAILURES:
-            print(f"  - {f}")
-    print(f"{'=' * 60}")
-    sys.exit(0 if FAIL == 0 else 1)
+    assert r.status_code == 200, f"put app-config failed: {r.status_code} {r.text[:300]}"
+    return r.json()
 
 
-if __name__ == "__main__":
-    main()
+def get_public_brand():
+    r = requests.get(f"{BASE}/runtime/brand", timeout=20)
+    return r
+
+
+# ─── STEP 1 ──────────────────────────────────────────────────────────────
+print("\n── STEP 1: GET /api/runtime/brand (no auth)")
+r = get_public_brand()
+check("step1.http_200", r.status_code == 200, f"got {r.status_code}")
+body = {}
+try:
+    body = r.json()
+except Exception as e:
+    check("step1.json_body", False, str(e))
+
+for key in ("support_email", "default_tip_suggestions", "currency"):
+    check(f"step1.has_key.{key}", key in body, f"body keys={list(body.keys())}")
+
+tips = body.get("default_tip_suggestions")
+check("step1.tips_is_list", isinstance(tips, list), f"type={type(tips).__name__}")
+check(
+    "step1.tips_all_numbers",
+    isinstance(tips, list)
+    and all(isinstance(t, (int, float)) and not isinstance(t, bool) for t in tips),
+    f"tips={tips}",
+)
+
+cc = r.headers.get("Cache-Control", "")
+check("step1.cache_control_no_store", "no-store" in cc.lower(), f"Cache-Control={cc!r}")
+
+original_email = body.get("support_email")
+original_tips = list(tips) if isinstance(tips, list) else None
+print(f"   → original support_email = {original_email!r}")
+print(f"   → original default_tip_suggestions = {original_tips!r}")
+
+# ─── STEP 2 ──────────────────────────────────────────────────────────────
+print("\n── STEP 2: admin login + PUT /api/admin/app-config (change support_email)")
+token = admin_login()
+check("step2.admin_login_ok", bool(token), "got bearer token")
+
+cfg_before = get_app_config(token)
+saved_brand = dict(cfg_before.get("brand") or {})
+print(f"   → cfg.brand keys = {list(saved_brand.keys())}")
+
+cfg_mut = json.loads(json.dumps(cfg_before))
+cfg_mut["brand"]["support_email"] = "customers@example.com"
+put_app_config(token, cfg_mut)
+check("step2.put_email_change_ok", True, "PUT 200")
+
+# ─── STEP 3 ──────────────────────────────────────────────────────────────
+print("\n── STEP 3: GET /api/runtime/brand (verify email change)")
+r3 = get_public_brand()
+check("step3.http_200", r3.status_code == 200, f"got {r3.status_code}")
+b2 = r3.json()
+check(
+    "step3.support_email_updated",
+    b2.get("support_email") == "customers@example.com",
+    f"actual={b2.get('support_email')!r}",
+)
+
+# ─── STEP 4 ──────────────────────────────────────────────────────────────
+print("\n── STEP 4: restore support_email and verify")
+cfg_restore = json.loads(json.dumps(cfg_before))
+cfg_restore["brand"]["support_email"] = saved_brand.get("support_email", original_email)
+put_app_config(token, cfg_restore)
+r4 = get_public_brand()
+b3 = r4.json()
+check(
+    "step4.support_email_restored",
+    b3.get("support_email") == original_email,
+    f"actual={b3.get('support_email')!r}, original={original_email!r}",
+)
+
+# ─── STEP 5 ──────────────────────────────────────────────────────────────
+print("\n── STEP 5: change default_tip_suggestions to [10,15,20,25], verify, restore")
+cfg_mut2 = json.loads(json.dumps(cfg_before))
+cfg_mut2["brand"]["default_tip_suggestions"] = [10, 15, 20, 25]
+put_app_config(token, cfg_mut2)
+r5 = get_public_brand()
+b4 = r5.json()
+returned_tips = b4.get("default_tip_suggestions")
+check(
+    "step5.tips_updated",
+    isinstance(returned_tips, list)
+    and len(returned_tips) == 4
+    and [float(x) for x in returned_tips] == [10.0, 15.0, 20.0, 25.0],
+    f"actual={returned_tips!r}",
+)
+
+cfg_restore2 = json.loads(json.dumps(cfg_before))
+cfg_restore2["brand"]["default_tip_suggestions"] = saved_brand.get("default_tip_suggestions", original_tips)
+put_app_config(token, cfg_restore2)
+r6 = get_public_brand()
+b5 = r6.json()
+got_back = b5.get("default_tip_suggestions")
+check(
+    "step5.tips_restored",
+    isinstance(got_back, list)
+    and [float(x) for x in got_back] == [float(x) for x in (original_tips or [])],
+    f"actual={got_back!r}, original={original_tips!r}",
+)
+
+# ─── Summary ─────────────────────────────────────────────────────────────
+print("\n══════════════════ SUMMARY ══════════════════")
+n_pass = sum(1 for _, ok, _ in results if ok)
+n_fail = len(results) - n_pass
+for label, ok, info in results:
+    icon = "✅" if ok else "❌"
+    print(f"  {icon} {label}{(' — ' + info) if (info and not ok) else ''}")
+print(f"\nTOTAL: {n_pass}/{len(results)} PASS, {n_fail} FAIL")
+sys.exit(0 if n_fail == 0 else 1)

@@ -596,6 +596,33 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
             },
         )
 
+    # Brand-level customer-facing config (June 2025). Surfaces `support_email`
+    # (used by Settings → Delete Account modal copy, etc.) and the admin-set
+    # `default_tip_suggestions` array so the create-bill screen can pre-fill
+    # tip suggestion chips. Kept separate from `/runtime/fee-labels` because
+    # the consumers (Settings vs. Bill Breakdown) are different screens and
+    # we want minimal payloads per hook.
+    @public_r.get("/runtime/brand")
+    async def public_brand():
+        from routes.admin_app_config import load_app_config
+        cfg = await load_app_config(db)
+        brand = cfg.get("brand") or {}
+        return JSONResponse(
+            content={
+                "support_email": brand.get("support_email") or "help@squadpay.us",
+                "default_tip_suggestions": brand.get("default_tip_suggestions") or [15, 18, 20],
+                "currency": brand.get("currency") or "USD",
+            },
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0, private",
+                "CDN-Cache-Control": "no-store",
+                "Vercel-CDN-Cache-Control": "no-store",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                "Vary": "*",
+            },
+        )
+
 
     @r.get("/admin/cms/pages")
     async def cms_admin_list(admin=Depends(get_current_admin)):

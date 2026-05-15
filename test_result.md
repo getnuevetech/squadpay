@@ -111,6 +111,74 @@ user_problem_statement: |
   pay no longer errors with "bill is short".
 
 backend:
+  - task: "Public brand endpoint — GET /api/runtime/brand"
+    implemented: true
+    working: true
+    file: "backend/routes/admin_phase_bc.py, backend/routes/admin_app_config.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            NEW PUBLIC ENDPOINT VERIFIED end-to-end via /app/backend_test.py
+            against live preview backend
+            (https://joint-pay-1.preview.emergentagent.com/api).
+            14/14 assertions PASS. No 5xx anywhere.
+
+            STEP 1 — GET /api/runtime/brand (no auth):
+              ✅ HTTP 200
+              ✅ Body contains all required keys:
+                 support_email, default_tip_suggestions, currency
+              ✅ default_tip_suggestions is a list of numbers (floats):
+                 [15.0, 18.0, 20.0]
+              ✅ Cache-Control header contains "no-store"
+                 (full value: "no-store, no-cache, must-revalidate")
+              Captured originals:
+                 support_email = "support@squadpay.us"
+                 default_tip_suggestions = [15.0, 18.0, 20.0]
+
+            STEP 2 — Admin login + PUT /api/admin/app-config:
+              ✅ POST /admin/auth/login with admin@squadpay.us /
+                 Letmein@2007#ForReal → 200 with bearer token
+              ✅ GET /admin/app-config returns full payload including
+                 brand={sms_sender_id, support_email,
+                 default_tip_suggestions, currency}
+              ✅ PUT /admin/app-config with brand.support_email =
+                 "customers@example.com" (other fields preserved) → 200
+
+            STEP 3 — Re-fetch GET /api/runtime/brand (no auth):
+              ✅ support_email == "customers@example.com"
+              Confirms _refresh_caches() in admin_app_config.py propagates
+              the brand update to the public endpoint immediately.
+
+            STEP 4 — Restore original support_email:
+              ✅ PUT /admin/app-config restoring support_email to
+                 "support@squadpay.us" → 200
+              ✅ GET /api/runtime/brand shows support_email back to original
+
+            STEP 5 — default_tip_suggestions round-trip:
+              ✅ PUT /admin/app-config with brand.default_tip_suggestions =
+                 [10, 15, 20, 25] → 200
+              ✅ GET /api/runtime/brand returns [10.0, 15.0, 20.0, 25.0]
+              ✅ Restore via PUT, GET returns original [15.0, 18.0, 20.0]
+
+            Endpoint implementation: /app/backend/routes/admin_phase_bc.py
+            lines 605–624. Returns JSONResponse with the three required
+            keys plus explicit Cache-Control/CDN-Cache-Control/
+            Vercel-CDN-Cache-Control/Pragma/Expires/Vary headers — all
+            set to no-store/no-cache equivalents. No auth required.
+            Falls back to "help@squadpay.us", [15, 18, 20], "USD" when
+            brand section is missing from the config doc.
+
+            Test artifact: /app/backend_test.py (rewritten for this
+            review request — focused exclusively on /runtime/brand).
+            No backend action required.
+
+
+
+backend:
   - task: "Public fee labels endpoint — GET /api/runtime/fee-labels"
     implemented: true
     working: true

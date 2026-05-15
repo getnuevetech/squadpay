@@ -39,6 +39,7 @@ import { formatUid } from '../src/ids';
 import { AvatarRing } from '../src/components/AvatarRing';
 import { BottomTabBar } from '../src/components/redesign/BottomTabBar';
 import { SquadPayMark } from '../src/components/redesign/SquadPayMark';
+import { useBrand } from '../src/hooks/useBrand';
 
 type Row = {
   key: string;
@@ -52,6 +53,7 @@ type Row = {
 
 export default function SettingsScreen() {
   const router = useRouter();
+  const brand = useBrand();
   const [user, setUser] = useState<Awaited<ReturnType<typeof refreshUser>>>(null);
   const [features, setFeatures] = useState<{ credits_enabled: boolean; invite_friends_enabled: boolean }>({ credits_enabled: true, invite_friends_enabled: true });
   // Delete-account modal state
@@ -182,7 +184,7 @@ export default function SettingsScreen() {
     {
       key: 'delete',
       label: 'Delete account',
-      sub: '30‑day grace period. Contact help@squadpay.us to restore.',
+      sub: `30‑day grace period. Contact ${brand.support_email} to restore.`,
       icon: Trash2,
       onPress: onOpenDelete,
       destructive: true,
@@ -273,7 +275,7 @@ export default function SettingsScreen() {
                 <Text style={styles.modalBody}>
                   • Your account will be scheduled for deletion immediately.{"\n"}
                   • You will have a 30-day grace period to restore it by emailing{' '}
-                  <Text style={styles.modalEmail}>help@squadpay.us</Text>.{"\n"}
+                  <Text style={styles.modalEmail}>{brand.support_email}</Text>.{"\n"}
                   • After 30 days, your personal information (name, phone, email) will be
                   permanently removed.{"\n"}
                   • Past squad activity required for compliance & open balances will be
@@ -339,7 +341,7 @@ export default function SettingsScreen() {
                 <Text style={styles.modalBody}>
                   Your account has been scheduled for deletion. You can still restore it
                   within {deleteResult?.grace_days ?? 30} days by emailing{' '}
-                  <Text style={styles.modalEmail}>help@squadpay.us</Text>.{"\n\n"}
+                  <Text style={styles.modalEmail}>{brand.support_email}</Text>.{"\n\n"}
                   Permanent purge scheduled:{' '}
                   <Text style={{ fontWeight: '700' }}>
                     {deleteResult?.scheduled_purge_at

@@ -239,8 +239,8 @@ export default function CreateBillScreen() {
           <View style={styles.modeRow}>
             {(
               [
-                { k: 'fast', title: 'Equal', sub: 'Same for all', icon: <Zap size={18} color={mode === 'fast' ? '#fff' : COLORS.primary} /> },
-                { k: 'itemized', title: 'Itemized', sub: 'Per item', icon: <Target size={18} color={mode === 'itemized' ? '#fff' : COLORS.primary} /> },
+                { k: 'fast', title: 'Equal', sub: 'Everyone pays the same', icon: <Zap size={18} color={mode === 'fast' ? '#fff' : COLORS.primary} /> },
+                { k: 'itemized', title: 'Itemized', sub: 'Pay for what you ordered', icon: <Target size={18} color={mode === 'itemized' ? '#fff' : COLORS.primary} /> },
               ] as const
             ).map((m) => (
               <TouchableOpacity

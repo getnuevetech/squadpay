@@ -763,6 +763,13 @@ export type AppConfig = {
     // June 2025 — Insurance: always %, layered between Extras and Tx Fee.
     insurance_pct?: number;
     insurance_label?: string;
+    // June 2025 — Per-fee enable/disable toggles + max-$ caps.
+    transaction_fee_enabled?: boolean;
+    platform_fee_enabled?: boolean;
+    insurance_enabled?: boolean;
+    transaction_fee_cap?: number;
+    platform_fee_cap?: number;
+    insurance_cap?: number;
     // Admin-editable display labels (Item 2 of May 2026 batch).
     transaction_fee_label: string;
     platform_fee_label: string;
@@ -794,6 +801,8 @@ export type AdminPlatformFee = {
   type: 'percent' | 'flat';
   value: number;
   enabled: boolean;
+  /** June 2025 — Optional per-extra max-$ cap. 0 means no cap. */
+  cap?: number;
 };
 
 export type LegalPage = {

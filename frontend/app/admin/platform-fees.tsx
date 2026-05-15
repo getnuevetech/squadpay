@@ -133,6 +133,15 @@ export default function AdminAppConfig() {
           }
           testID="config-transaction-fee-label"
         />
+        {/* June 2025 — Enable/disable toggle for Transaction Fee. */}
+        <View style={styles.switchRow}>
+          <Text style={styles.switchLabel}>Transaction Fee Enabled</Text>
+          <Switch
+            value={cfg.core_fees.transaction_fee_enabled !== false}
+            onValueChange={(v) => patch('core_fees', { ...cfg.core_fees, transaction_fee_enabled: v })}
+            testID="config-transaction-fee-enabled"
+          />
+        </View>
         <Field
           label="Transaction Fee (%)"
           help="Applied to each member's merchant share. Default 3.0%."
@@ -144,6 +153,18 @@ export default function AdminAppConfig() {
           suffix="%"
           testID="config-transaction-fee"
         />
+        {/* June 2025 — Optional cap (max $) per member. 0 = no cap. */}
+        <Field
+          label="Transaction Fee Cap ($)"
+          help="Optional maximum $ per member. Set 0 for no cap."
+          value={String(cfg.core_fees.transaction_fee_cap ?? 0)}
+          keyboardType="decimal-pad"
+          onChangeText={(t) =>
+            patch('core_fees', { ...cfg.core_fees, transaction_fee_cap: parseFloat(t) || 0 })
+          }
+          prefix="$"
+          testID="config-transaction-fee-cap"
+        />
         <Field
           label="Platform Fee — Display Label"
           help="Shown as the row name in every Bill Breakdown card."
@@ -153,6 +174,15 @@ export default function AdminAppConfig() {
           }
           testID="config-platform-fee-label"
         />
+        {/* June 2025 — Enable/disable toggle for Platform Fee. */}
+        <View style={styles.switchRow}>
+          <Text style={styles.switchLabel}>Platform Fee Enabled</Text>
+          <Switch
+            value={cfg.core_fees.platform_fee_enabled !== false}
+            onValueChange={(v) => patch('core_fees', { ...cfg.core_fees, platform_fee_enabled: v })}
+            testID="config-platform-fee-enabled"
+          />
+        </View>
         {/* June 2025 — Platform fee can be FIXED $ or PERCENT. */}
         <View style={styles.toggleRow}>
           <Text style={styles.toggleLabel}>Platform Fee Type</Text>
@@ -198,6 +228,18 @@ export default function AdminAppConfig() {
           suffix={(cfg.core_fees.platform_fee_type || 'fixed') === 'percent' ? '%' : undefined}
           testID="config-platform-fee"
         />
+        {/* June 2025 — Optional cap (max $) per member. */}
+        <Field
+          label="Platform Fee Cap ($)"
+          help="Optional maximum $ per member (mostly useful when type=Percent). 0 = no cap."
+          value={String(cfg.core_fees.platform_fee_cap ?? 0)}
+          keyboardType="decimal-pad"
+          onChangeText={(t) =>
+            patch('core_fees', { ...cfg.core_fees, platform_fee_cap: parseFloat(t) || 0 })
+          }
+          prefix="$"
+          testID="config-platform-fee-cap"
+        />
 
         {/* June 2025 — Insurance: always percent, layered on top of
             (Share + Platform + Extras), before Transaction Fee. */}
@@ -210,6 +252,15 @@ export default function AdminAppConfig() {
           }
           testID="config-insurance-label"
         />
+        {/* June 2025 — Enable/disable toggle for Insurance. */}
+        <View style={styles.switchRow}>
+          <Text style={styles.switchLabel}>Insurance Enabled</Text>
+          <Switch
+            value={cfg.core_fees.insurance_enabled !== false}
+            onValueChange={(v) => patch('core_fees', { ...cfg.core_fees, insurance_enabled: v })}
+            testID="config-insurance-enabled"
+          />
+        </View>
         <Field
           label="Insurance (%)"
           help="Always percent — applied to (Share + Platform + Extras). Default 1.0%. Each member pays their own."
@@ -220,6 +271,18 @@ export default function AdminAppConfig() {
           }
           suffix="%"
           testID="config-insurance-pct"
+        />
+        {/* June 2025 — Insurance cap (max $) per member. */}
+        <Field
+          label="Insurance Cap ($)"
+          help="Optional maximum $ per member. 0 = no cap."
+          value={String(cfg.core_fees.insurance_cap ?? 0)}
+          keyboardType="decimal-pad"
+          onChangeText={(t) =>
+            patch('core_fees', { ...cfg.core_fees, insurance_cap: parseFloat(t) || 0 })
+          }
+          prefix="$"
+          testID="config-insurance-cap"
         />
       </Section>
 
@@ -267,6 +330,19 @@ export default function AdminAppConfig() {
                 placeholder="0"
                 placeholderTextColor={COLORS.subtext}
               />
+              {/* June 2025 — Optional per-extra cap (max $ per member). */}
+              <View style={styles.extraCapRow}>
+                <Text style={styles.extraCapLabel}>Cap ($)</Text>
+                <TextInput
+                  value={String((fee as any).cap ?? 0)}
+                  onChangeText={(t) => updateExtraFee(fee.id, { cap: parseFloat(t) || 0 } as any)}
+                  style={styles.extraCapInput}
+                  keyboardType="decimal-pad"
+                  placeholder="0 = no cap"
+                  placeholderTextColor={COLORS.subtext}
+                  testID={`config-extra-${fee.id}-cap`}
+                />
+              </View>
             </View>
           </View>
         ))}
@@ -623,6 +699,35 @@ const styles = StyleSheet.create({
   toggleBtnActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
   toggleBtnText: { fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold, color: COLORS.text },
   toggleBtnTextActive: { color: '#fff' },
+  // June 2025 — Enable/disable Switch row used for each fee toggle.
+  switchRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: SPACING.sm,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
+  switchLabel: { fontSize: FONT.sizes.sm, fontWeight: FONT.weights.semibold, color: COLORS.text },
+  // June 2025 — Inline cap input row inside each Extra Fee card.
+  extraCapRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
+    marginTop: SPACING.xs,
+  },
+  extraCapLabel: { fontSize: FONT.sizes.xs, color: COLORS.subtext, fontWeight: FONT.weights.semibold },
+  extraCapInput: {
+    flex: 1,
+    fontSize: FONT.sizes.sm,
+    color: COLORS.text,
+    paddingVertical: SPACING.xs,
+    paddingHorizontal: SPACING.sm,
+    borderRadius: RADIUS.sm,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.bg,
+  },
   feeHeader: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
   feeName: { flex: 1, fontWeight: FONT.weights.bold, color: COLORS.text, paddingVertical: 6, fontSize: FONT.sizes.sm },
   feeBody: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },

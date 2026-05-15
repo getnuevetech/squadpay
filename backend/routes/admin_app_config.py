@@ -34,14 +34,24 @@ CONFIG_ID = "platform_fees_config"
 # ───────────────────── Section schemas ─────────────────────
 
 class CoreFees(BaseModel):
+    # June 2025 — Each top-level fee now has an enable/disable toggle.
+    # When disabled, the fee is COMPLETELY skipped — it does not contribute
+    # to any subsequent fee layer (e.g. disabling Platform Fee means it
+    # doesn't appear in Insurance/Tx Fee bases either).
+    transaction_fee_enabled: bool = Field(True, description="Master switch — when off, no transaction fee is charged on any bill.")
     transaction_fee_pct: float = Field(3.0, ge=0, le=20, description="Percent applied to (Share + Platform + Extras + Insurance) per member — always %, never fixed")
+    transaction_fee_cap: float = Field(0.0, ge=0, le=1000, description="Optional cap (max $) per member. 0 = no cap.")
     # June 2025 — Platform fee migrated from a single flat to {type, value}:
     #   type=fixed   → each member pays full $value (NOT divided by N)
     #   type=percent → each member pays value% of (Share or Total/N)
+    platform_fee_enabled: bool = Field(True, description="Master switch — when off, no platform fee is charged on any bill.")
     platform_fee_type: Literal["fixed", "percent"] = Field("fixed", description="Whether platform_fee_value is dollars or percent")
     platform_fee_value: float = Field(0.50, ge=0, le=100, description="Amount or percent depending on platform_fee_type")
+    platform_fee_cap: float = Field(0.0, ge=0, le=1000, description="Optional cap (max $) per member. 0 = no cap. (Mostly used when type=percent.)")
     # Insurance — always percent, never fixed. Layered between Extras and Tx Fee.
+    insurance_enabled: bool = Field(True, description="Master switch — when off, no insurance is charged on any bill.")
     insurance_pct: float = Field(1.0, ge=0, le=20, description="Insurance percent applied to (Share + Platform + Extras)")
+    insurance_cap: float = Field(0.0, ge=0, le=1000, description="Optional cap (max $) per member. 0 = no cap.")
     # ── Legacy field kept for backwards-compat with older callers/UI ──
     platform_fee_flat: float = Field(0.50, ge=0, le=100, description="DEPRECATED: use platform_fee_type+value. Auto-mirrored from platform_fee_value when type=fixed.")
     # Admin-editable display labels — surfaced everywhere we render these fees
@@ -57,6 +67,9 @@ class ExtraFee(BaseModel):
     type: Literal["percent", "flat"]
     value: float = Field(..., ge=0)
     enabled: bool = False
+    # June 2025 — Optional cap (max $ per member). 0 = no cap. Mostly
+    # useful for percent fees on large bills.
+    cap: float = Field(0.0, ge=0, le=10000, description="Max $ per member. 0 = no cap.")
 
 
 class Wallet(BaseModel):
@@ -204,9 +217,10 @@ def attach_app_config_routes(api_router: APIRouter, db, require_admin):
         cfg = await load_app_config(db)
         set_app_config_cache(cfg)
         set_extra_fees_cache(cfg["extra_fees"])
-        # June 2025 — pass new fields (platform fee type/value + insurance).
-        # Auto-derive legacy `platform_fee_flat` from `platform_fee_value`
-        # when the type is fixed so older callers keep working.
+        # June 2025 — pass new fields (platform fee type/value + insurance +
+        # per-fee enable toggles). Auto-derive legacy `platform_fee_flat`
+        # from `platform_fee_value` when the type is fixed so older callers
+        # keep working.
         core_fees = cfg["core_fees"]
         p_type = core_fees.get("platform_fee_type", "fixed")
         p_value = core_fees.get(
@@ -218,6 +232,12 @@ def attach_app_config_routes(api_router: APIRouter, db, require_admin):
             platform_fee_type=p_type,
             platform_fee_value=p_value,
             insurance_rate=core_fees.get("insurance_pct", 1.0) / 100.0,
+            transaction_fee_enabled=bool(core_fees.get("transaction_fee_enabled", True)),
+            platform_fee_enabled=bool(core_fees.get("platform_fee_enabled", True)),
+            insurance_enabled=bool(core_fees.get("insurance_enabled", True)),
+            transaction_fee_cap=float(core_fees.get("transaction_fee_cap", 0) or 0),
+            platform_fee_cap=float(core_fees.get("platform_fee_cap", 0) or 0),
+            insurance_cap=float(core_fees.get("insurance_cap", 0) or 0),
         )
 
     @api_router.get("/admin/app-config")

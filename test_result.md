@@ -119,6 +119,94 @@ backend:
     priority: "high"
     needs_retesting: false
     status_history:
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            PER-FEE ENABLE/DISABLE + MAX-$ CAPS REGRESSION (May 2026) — verified via
+            /app/backend_test.py against live preview backend
+            (https://joint-pay-1.preview.emergentagent.com/api).
+            16/16 assertions PASS. No 5xx anywhere.
+
+            Live rates at test time: insurance=1%, tx=2%, platform=$0.50 fixed.
+            Test group: g_4a39452c2e (3 members, $60 merchant, Equal split).
+            All assertions use $0.02 tolerance.
+
+            ✅ A) GET /api/admin/app-config returns ALL new fields with correct
+                  defaults:
+                  • core_fees.transaction_fee_enabled = true ✓
+                  • core_fees.platform_fee_enabled    = true ✓
+                  • core_fees.insurance_enabled       = true ✓
+                  • core_fees.transaction_fee_cap     = 0.0  ✓
+                  • core_fees.platform_fee_cap        = 0.0  ✓
+                  • core_fees.insurance_cap           = 0.0  ✓
+                  • each extra_fees[].cap present (n=2 slots, both default 0) ✓
+
+            ✅ Baseline (all enabled, caps 0):
+                  food=$20.00, platform=$0.50, insurance=$0.21, tx=$0.41, total=$21.12 ✓
+
+            ✅ B) transaction_fee_enabled=false:
+                  tx=$0.00, platform=$0.50, insurance=$0.21, total=$20.71 ✓
+                  Re-enable → baseline $21.12 restored ✓
+
+            ✅ C) platform_fee_enabled=false:
+                  platform=$0.00, insurance=1%×$20.00=$0.20,
+                  tx=2%×$20.20=$0.40, total=$20.60 ✓
+                  (Confirms disabled platform does NOT contribute to insurance/tx
+                  bases — proper layer skip.)
+
+            ✅ D) insurance_enabled=false:
+                  insurance=$0.00, tx=2%×$20.50=$0.41, total=$20.91 ✓
+
+            ✅ E) transaction_fee_cap=$0.10:
+                  tx clamped from $0.41 → $0.10, total=$20.81 ✓
+                  cap=0 → uncapped $0.41 restored ✓
+
+            ✅ F) platform_fee_cap=$0.20 (clamping fixed $0.50):
+                  platform=$0.20 (capped), insurance_base=$20.20 →
+                  insurance=$0.20, tx_base=$20.40 → tx=$0.41, total=$20.81 ✓
+                  Confirms the CAPPED value is what feeds the next layer's base
+                  (not the pre-cap raw value).
+
+            ✅ G) Combined: platform_fee_enabled=false + transaction_fee_cap=$0.05:
+                  platform=$0, insurance=$0.20 (on $20),
+                  tx pre-cap=2%×$20.20=$0.404 → capped to $0.05,
+                  total=$20.25 ✓
+                  Restored both → baseline $21.12 ✓
+
+            ✅ H) Smoke — unaffected endpoints still 200:
+                  • POST /auth/check-session → 200 ✓
+                  • GET  /runtime/landing-page → 200 (Cache-Control: no-store) ✓
+                  • POST /auth/register + POST /groups → 200 ✓
+
+            FINAL: all toggles ON + all caps 0 restored. Group g_4a39452c2e baseline
+            re-verified: food=$20.00, platform=$0.50, insurance=$0.21, tx=$0.41,
+            total=$21.12 ✓
+
+            BACKEND BEHAVIOR CONFIRMED:
+              ✓ Disabled fees are COMPLETELY skipped — they do not contribute to
+                any later layer's base (insurance/tx skip the layer when off).
+              ✓ Caps apply AFTER the raw fee is computed and BEFORE the value
+                feeds the next layer's base (Test F is the smoking-gun).
+              ✓ Extra-fee per-row `cap` schema field present and defaults to 0
+                (untouched extras still return cap=0 from GET).
+              ✓ Admin PUT /api/admin/app-config returns 200 in all 12 mutations
+                we performed (including restore). _refresh_caches() correctly
+                propagates all six new kwargs to set_core_fees_cache().
+
+            Backend log informational notes (NOT bugs):
+              - passlib bcrypt cosmetic warning (no functional impact).
+              - jwt InsecureKeyLengthWarning (JWT_SECRET 31 bytes; ≥32 recommended).
+              - Backend log shows one prior reload event with
+                "set_core_fees_cache() got an unexpected keyword argument
+                'transaction_fee_enabled'" — this was from a stale uvicorn worker
+                during the main agent's edit and resolved itself on reload.
+                Subsequent /admin/app-config writes all succeeded.
+
+            Test artifact: /app/backend_test.py (rewritten May 2026 — focused on
+            the per-fee enable+cap regression). All review-request items A-H pass.
+            No backend action required.
+
         - working: true
           agent: "testing"
           comment: |

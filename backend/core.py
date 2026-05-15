@@ -72,13 +72,20 @@ def set_core_fees_cache(
     platform_fee_type: str = None,
     platform_fee_value: float = None,
     insurance_rate: float = None,
+    transaction_fee_enabled: bool = None,
+    platform_fee_enabled: bool = None,
+    insurance_enabled: bool = None,
+    transaction_fee_cap: float = None,
+    platform_fee_cap: float = None,
+    insurance_cap: float = None,
 ) -> None:
     """Called by the admin route on save + at startup to refresh values.
 
     Backwards-compatible signature: old callers pass `(tx_rate, platform_fee)`
     where `platform_fee` is interpreted as a fixed-dollar amount. New callers
-    can pass the keyword args to set type/value explicitly and an insurance
-    rate. All new fields fall back to current cache values or module defaults.
+    can pass the keyword args to set type/value explicitly, an insurance
+    rate, and per-fee enable/disable toggles. All new fields fall back to
+    current cache values or module defaults.
     """
     global _CORE_FEES_CACHE
     # Resolve platform fee — prefer explicit type/value over the legacy float.
@@ -93,11 +100,31 @@ def set_core_fees_cache(
         ptype = _CORE_FEES_CACHE.get("platform_fee_type", DEFAULT_PLATFORM_FEE_TYPE)
         pvalue = _CORE_FEES_CACHE.get("platform_fee_value", DEFAULT_PLATFORM_FEE_VALUE)
     ins_rate = float(insurance_rate) if insurance_rate is not None else _CORE_FEES_CACHE.get("insurance_rate", DEFAULT_INSURANCE_RATE)
+    # Per-fee enable/disable toggles. Default ON when not explicitly set
+    # (preserves behaviour for older callers / fresh installs).
+    tx_enabled = bool(transaction_fee_enabled) if transaction_fee_enabled is not None else _CORE_FEES_CACHE.get("transaction_fee_enabled", True)
+    pf_enabled = bool(platform_fee_enabled) if platform_fee_enabled is not None else _CORE_FEES_CACHE.get("platform_fee_enabled", True)
+    ins_enabled = bool(insurance_enabled) if insurance_enabled is not None else _CORE_FEES_CACHE.get("insurance_enabled", True)
+    # Per-fee caps (max $ per member). 0 = no cap.
+    tx_cap = float(transaction_fee_cap) if transaction_fee_cap is not None else float(_CORE_FEES_CACHE.get("transaction_fee_cap", 0.0) or 0.0)
+    pf_cap = float(platform_fee_cap) if platform_fee_cap is not None else float(_CORE_FEES_CACHE.get("platform_fee_cap", 0.0) or 0.0)
+    ins_cap = float(insurance_cap) if insurance_cap is not None else float(_CORE_FEES_CACHE.get("insurance_cap", 0.0) or 0.0)
     _CORE_FEES_CACHE = {
         "transaction_fee_rate": float(transaction_fee_rate) if transaction_fee_rate is not None else DEFAULT_TRANSACTION_FEE_RATE,
         "platform_fee_type": ptype,
         "platform_fee_value": pvalue,
         "insurance_rate": ins_rate,
+        # Per-fee enable toggles — when False the corresponding fee is
+        # completely skipped (does not contribute to any layered base).
+        "transaction_fee_enabled": tx_enabled,
+        "platform_fee_enabled": pf_enabled,
+        "insurance_enabled": ins_enabled,
+        # Per-fee caps — when >0 the computed fee is min()-clamped to this
+        # value (per member). 0 means no cap. Applied AFTER % computation
+        # and BEFORE the fee feeds the next layer's base.
+        "transaction_fee_cap": tx_cap,
+        "platform_fee_cap": pf_cap,
+        "insurance_cap": ins_cap,
         # Legacy float — only meaningful when type is fixed.
         "platform_fee": pvalue if ptype == "fixed" else 0.0,
     }
@@ -181,12 +208,23 @@ def _compute_layered_member_fees(
     """
     cache = _CORE_FEES_CACHE
     # ─── Layer 2: Platform fee ──────────────────────────────────────
-    p_type = cache.get("platform_fee_type", DEFAULT_PLATFORM_FEE_TYPE)
-    p_val = float(cache.get("platform_fee_value", DEFAULT_PLATFORM_FEE_VALUE) or 0)
-    if p_type == "percent":
-        platform_fee = round((p_val / 100.0) * pct_base, 2)
+    # June 2025 — Honor the per-fee enable toggle and cap (max $).
+    # When disabled, the fee is COMPLETELY skipped (does not contribute
+    # to Insurance/Tx Fee bases either).
+    if cache.get("platform_fee_enabled", True):
+        p_type = cache.get("platform_fee_type", DEFAULT_PLATFORM_FEE_TYPE)
+        p_val = float(cache.get("platform_fee_value", DEFAULT_PLATFORM_FEE_VALUE) or 0)
+        if p_type == "percent":
+            platform_fee = (p_val / 100.0) * pct_base
+        else:
+            platform_fee = p_val
+        # Apply cap (max $) if configured (>0).
+        p_cap = float(cache.get("platform_fee_cap", 0.0) or 0.0)
+        if p_cap > 0 and platform_fee > p_cap:
+            platform_fee = p_cap
+        platform_fee = round(platform_fee, 2)
     else:
-        platform_fee = round(p_val, 2)
+        platform_fee = 0.0
     # ─── Layer 3: Extra fees (each one fixed-$ or %) ───────────────
     extra_fees: List[Dict[str, Any]] = []
     for f in _EXTRA_FEES_CACHE:
@@ -197,10 +235,15 @@ def _compute_layered_member_fees(
             continue
         f_type = "percent" if f.get("type") == "percent" else "flat"
         if f_type == "percent":
-            amt = round((val / 100.0) * pct_base, 2)
+            amt = (val / 100.0) * pct_base
         else:
             # Per user spec: fixed = each member pays full $ (NOT divided).
-            amt = round(val, 2)
+            amt = val
+        # Apply per-extra cap (max $) if configured.
+        f_cap = float(f.get("cap", 0) or 0)
+        if f_cap > 0 and amt > f_cap:
+            amt = f_cap
+        amt = round(amt, 2)
         extra_fees.append({
             "id": str(f.get("id") or ""),
             "name": str(f.get("name") or "Extra fee"),
@@ -209,13 +252,28 @@ def _compute_layered_member_fees(
         })
     extras_total = round(sum(ef["amount"] for ef in extra_fees), 2)
     # ─── Layer 4: Insurance (always %, layered) ────────────────────
-    ins_rate = float(cache.get("insurance_rate", DEFAULT_INSURANCE_RATE) or 0)
-    insurance_base = member_share + platform_fee + extras_total
-    insurance = round(ins_rate * insurance_base, 2)
+    if cache.get("insurance_enabled", True):
+        ins_rate = float(cache.get("insurance_rate", DEFAULT_INSURANCE_RATE) or 0)
+        insurance_base = member_share + platform_fee + extras_total
+        insurance = ins_rate * insurance_base
+        ins_cap = float(cache.get("insurance_cap", 0.0) or 0.0)
+        if ins_cap > 0 and insurance > ins_cap:
+            insurance = ins_cap
+        insurance = round(insurance, 2)
+    else:
+        insurance = 0.0
+        insurance_base = member_share + platform_fee + extras_total
     # ─── Layer 5: Transaction fee (always %, on top of EVERYTHING) ──
-    tx_rate = float(cache.get("transaction_fee_rate", DEFAULT_TRANSACTION_FEE_RATE) or 0)
-    tx_base = insurance_base + insurance
-    transaction_fee = round(tx_rate * tx_base, 2)
+    if cache.get("transaction_fee_enabled", True):
+        tx_rate = float(cache.get("transaction_fee_rate", DEFAULT_TRANSACTION_FEE_RATE) or 0)
+        tx_base = insurance_base + insurance
+        transaction_fee = tx_rate * tx_base
+        tx_cap = float(cache.get("transaction_fee_cap", 0.0) or 0.0)
+        if tx_cap > 0 and transaction_fee > tx_cap:
+            transaction_fee = tx_cap
+        transaction_fee = round(transaction_fee, 2)
+    else:
+        transaction_fee = 0.0
 
     fees_total = round(platform_fee + extras_total + insurance + transaction_fee, 2)
     total = round(member_share + fees_total, 2)

@@ -13181,3 +13181,157 @@ agent_communication:
         Verified visually on web preview — landing brand row shows the
         SquadPay logo on a clean white rounded tile next to the purple
         wordmark.
+
+---
+## 2026-05-16 — Admin Branding & Logos (Plan B / auto-resize)
+
+backend:
+  - task: "Admin logo slot CRUD + public runtime PNG endpoint"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/admin_logos.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         New router with 4 endpoints:
+           GET    /api/admin/logos                  → list all 7 slots + has_override + current_url
+           POST   /api/admin/logos/{slot}           → upload base64 PNG/JPG; auto-resized via Pillow to the slot's required dimensions (transparent padding for non-white slots, white otherwise); stored in Mongo `brand_logos`
+           DELETE /api/admin/logos/{slot}           → drop the override
+           GET    /api/runtime/logo/{slot}          → public; returns the override if present else streams the bundled default PNG from /app/frontend/assets/images directly (no 302 hop)
+         Slot registry: brand_mark, web_favicon, splash_icon, app_icon_ios, app_icon_android, landing_hero, email_header — native slots flagged with `requires_native_build: true`.
+         Auth: super_admin / manager (via the shared `get_current_admin_factory_sync(db)` dep).
+         Validation: rejects payloads >5.5MB base64, unknown slots → 404, invalid base64 → 400.
+         Audit: writes uploaded_by/uploaded_at on every POST.
+      -working: true
+       -agent: "testing"
+       -comment: |
+         Verified end-to-end via /app/backend_test.py against live preview backend
+         (https://joint-pay-1.preview.emergentagent.com/api). 46/46 assertions PASS.
+         No 5xx anywhere. No backend action required.
+
+         ✅ AUTH (3/3):
+           GET    /api/admin/logos          (no auth) → 401 ✓
+           POST   /api/admin/logos/brand_mark (no auth) → 401 ✓
+           DELETE /api/admin/logos/brand_mark (no auth) → 401 ✓
+           Logged in via POST /api/admin/auth/login with admin@squadpay.us /
+           Letmein@2007#ForReal → 200, JWT bearer captured.
+
+         ✅ GET /api/admin/logos (11/11):
+           Returns 200 with {"slots":[...]} containing all 7 expected slots:
+           brand_mark, web_favicon, splash_icon, app_icon_ios, app_icon_android,
+           landing_hero, email_header. Each entry has every required field:
+           label, width, height, background, requires_native_build,
+           has_override, current_url. (Note: prior runs of the test had
+           uploaded brand_mark; harness now resets pre-existing overrides
+           before assertions so the bootstrap path is exercised.)
+
+         ✅ POST /api/admin/logos/unknown_slot → 404 ✓
+            detail = "Unknown logo slot 'unknown_slot'"
+
+         ✅ POST /api/admin/logos/brand_mark with junk base64 "not-base64-***"
+            → 400 ✓ (Pillow rejects the decoded garbage; route returns
+            "Could not decode image: …").
+
+         ✅ POST /api/admin/logos/brand_mark with oversized payload (>5.5M
+            base64 chars) → 413 ✓ "Image too large (max ~4MB base64)".
+
+         ✅ GET /api/runtime/logo/unknown_slot → 404 ✓
+
+         ✅ POST /api/admin/logos/brand_mark with a real 256×256 PNG → 200
+            with ok=true, rendered_size=[256,256], bytes=1243 (>0),
+            current_url present. After upload, GET /api/admin/logos shows
+            brand_mark.has_override == true ✓
+
+         ✅ GET /api/runtime/logo/brand_mark (with override) → 200,
+            Content-Type "image/png", X-Logo-Source header is NOT "bundled"
+            (override path correctly bypasses bundled fallback). PIL-opened
+            the response bytes — valid 256×256 PNG ✓
+
+         ✅ AUTO-RESIZE: uploaded a 50×50 PNG to brand_mark → 200 with
+            rendered_size=[256,256]; runtime fetch returned a 256×256 PNG
+            confirming Pillow's fit-with-padding resize logic.
+
+         ✅ DELETE idempotency:
+            First DELETE  /api/admin/logos/brand_mark → 200 {ok:true, deleted:1} ✓
+            Second DELETE /api/admin/logos/brand_mark → 200 {ok:true, deleted:0} ✓
+
+         ✅ After delete, GET /api/runtime/logo/brand_mark streams the bundled
+            default from /app/frontend/assets/images/squadpay-mark.png:
+            Content-Type image/png, X-Logo-Source: bundled, PIL confirms
+            valid PNG (format=PNG, size 256×256).
+
+         ✅ PERSISTENCE (Mongo storage): uploaded a 100×100 PNG to
+            web_favicon → rendered_size=[256,256]. Two consecutive
+            GET /api/runtime/logo/web_favicon returned IDENTICAL bytes
+            (99462 vs 99462 — byte-equal), proving the override is fetched
+            from the brand_logos Mongo collection and not regenerated per
+            request. Cleaned up after assertions.
+
+         Test artifact: /app/backend_test.py (rewritten May 2026 — focused
+         exclusively on this review request). Marking task working=true and
+         needs_retesting=false.
+
+frontend:
+  - task: "Admin → Branding & Logos page (sidebar entry under System group)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/admin/branding-logos.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false  # user-facing, will be confirmed manually
+    status_history:
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         Lists every slot with: 96×96 thumbnail of the current PNG (or default), label,
+         where-used description, required dimensions, background expectation
+         (Transparent / White / Any), Default/Custom chip, EAS warning for native slots,
+         Upload (expo-image-picker base64) and Reset buttons.
+         Hooks into the new `brandingLogosApi` in /app/frontend/src/adminApi/brandingLogos.ts.
+         Sidebar entry "Branding & Logos" added to BOTH admin_modules.py (backend module
+         registry) and the fallback list in _layout.tsx so the link shows even before the
+         module config refresh.
+
+  - task: "SquadPayMark uses live brand_mark override"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/src/components/redesign/SquadPayMark.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         On mount the component fetches /api/runtime/logo/brand_mark with redirect:manual; if
+         a custom upload exists (200 + image/* content-type) it swaps the source to the
+         remote URL, otherwise it keeps the bundled `assets/images/squadpay-mark.png`
+         require(). Module-level memo avoids re-fetching per instance.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Built the admin branding/logos system (Plan B + auto-resize):
+        - 7 slots: brand_mark, web_favicon, splash_icon, app_icon_ios,
+          app_icon_android, landing_hero, email_header.
+        - Per-slot required dim + background expectation surfaced in the UI;
+          native slots flagged with EAS warning.
+        - Backend auto-resizes any upload to the slot's exact dim, preserving
+          aspect ratio with transparent (or white) padding.
+        - Admin page lives at /admin/branding-logos, sidebar entry added under
+          System group.
+        - SquadPayMark live-reads the brand_mark override.
+
+        Please test the BACKEND endpoints:
+          1. GET  /api/admin/logos              (auth)        → 7 slots, all has_override=false initially
+          2. POST /api/admin/logos/brand_mark   with a small PNG base64 → 200 + rendered_size [256,256]
+          3. GET  /api/runtime/logo/brand_mark              → returns the uploaded PNG bytes (image/png)
+          4. POST /api/admin/logos/unknown_slot             → 404
+          5. POST /api/admin/logos/brand_mark with junk b64 → 400
+          6. DELETE /api/admin/logos/brand_mark             → 200 deleted=1
+          7. GET   /api/runtime/logo/brand_mark             → bundled default served (X-Logo-Source: bundled)
+        Admin creds: admin@squadpay.us / Letmein@2007#ForReal

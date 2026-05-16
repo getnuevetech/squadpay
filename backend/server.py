@@ -255,6 +255,17 @@ except Exception as _e:
     print("[startup] admin search attach failed:", _e)
 
 
+# ---------- Admin: Branding & Logos (May 2026) ----------
+# Lets super_admin/manager upload runtime-overridable logos for every
+# brand surface (in-app mark, web favicon, splash, iOS/Android icons,
+# landing hero, email header). Native icons still need an EAS rebuild.
+try:
+    from routes.admin_logos import attach_admin_logos_routes
+    attach_admin_logos_routes(api_router, db, _adm_factory(db))
+except Exception as _e:
+    print("[startup] admin logos routes attach failed:", _e)
+
+
 # ---------- Account deletion (App Store Guideline 5.1.1(v)) ----------
 try:
     from routes.account_deletion_routes import attach_account_deletion_routes

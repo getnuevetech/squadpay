@@ -4,7 +4,7 @@ import { View, Text, TouchableOpacity, StyleSheet, Platform, ActivityIndicator, 
 import {
   LayoutDashboard, ScrollText, Users, LogOut, Shield, UserCog, Receipt, Gift,
   Plug, Wallet, RefreshCw, Lock, BarChart3, FileText, KeyRound, Percent,
-  Megaphone, MessageSquare, Coins, Inbox, ShieldCheck, ShieldAlert, CircleDollarSign, Layers, Hash, BellRing, Sparkles,
+  Megaphone, MessageSquare, Coins, Inbox, ShieldCheck, ShieldAlert, CircleDollarSign, Layers, Hash, BellRing, Sparkles, Image as ImageIcon,
 } from 'lucide-react-native';
 import { adminApi, AdminProfile, getProfile, getToken, clearSession, adminActivityApi } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
@@ -37,6 +37,7 @@ const ICON_BY_KEY: Record<string, any> = {
   legal_pages: FileText,
   cms_pages: FileText,
   ocr_config: ScrollText,
+  branding_logos: ImageIcon,
   wallets: Wallet,
   join_code: Hash,
   admins: Users,
@@ -82,6 +83,7 @@ const FALLBACK_MODULES: ModuleEntry[] = [
   { key: 'security',          label: 'Security',         group: 'System',     path: '/admin/security',          sensitive: true  },
   { key: 'audit',             label: 'Audit Log',        group: 'System',     path: '/admin/audit',             sensitive: false },
   { key: 'legal_pages',       label: 'Legal Pages',      group: 'System',     path: '/admin/legal-pages',       sensitive: false },
+  { key: 'branding_logos',    label: 'Branding & Logos', group: 'System',     path: '/admin/branding-logos',    sensitive: false },
   { key: 'cms_pages',         label: 'CMS Pages',        group: 'System',     path: '/admin/cms-pages',         sensitive: false },
   { key: 'ocr_config',        label: 'Receipt OCR',      group: 'System',     path: '/admin/ocr-config',        sensitive: false },
   { key: 'wallets',           label: 'Wallets',          group: 'System',     path: '/admin/wallets',           sensitive: false },

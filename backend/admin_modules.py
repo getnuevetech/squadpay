@@ -94,6 +94,12 @@ MODULES: List[Dict] = [
      "default_roles": ["super_admin", "manager"]},
     {"key": "legal_pages",     "label": "Legal Pages",        "group": "System",     "path": "/admin/legal-pages",
      "default_roles": ["super_admin"]},
+    # May 2026 — Branding & Logos. Lets admin replace any logo surface
+    # (in-app brand mark, web favicon, splash, iOS/Android icons,
+    # landing hero, email banner). Native icons still need an EAS
+    # rebuild to apply on installed devices — flagged in the UI.
+    {"key": "branding_logos",  "label": "Branding & Logos",   "group": "System",     "path": "/admin/branding-logos",
+     "default_roles": ["super_admin", "manager"]},
     {"key": "admins",          "label": "Admin Users",        "group": "System",     "path": "/admin/admins",
      "default_roles": ["super_admin"], "sensitive": True},
     {"key": "access",          "label": "Access Role Management", "group": "System", "path": "/admin/access",

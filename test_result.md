@@ -13335,3 +13335,54 @@ agent_communication:
           6. DELETE /api/admin/logos/brand_mark             → 200 deleted=1
           7. GET   /api/runtime/logo/brand_mark             → bundled default served (X-Logo-Source: bundled)
         Admin creds: admin@squadpay.us / Letmein@2007#ForReal
+
+---
+## 2026-05-16 — Landing-page hero avatars not displaying (RESOLVED)
+
+frontend:
+  - task: "Landing-page hero photo avatars / admin pool propagation"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/components/redesign/HeroPhoneFrame.tsx, /app/frontend/app/index.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      -working: false
+       -agent: "user"
+       -comment: "User reported landing-page hero photo avatars not displaying."
+      -working: true
+       -agent: "main"
+       -comment: |
+         Root cause: both HeroPhoneFrame.tsx (line 113) and app/index.tsx
+         UnauthLanding (line 404) fetched `${BACKEND}/runtime/landing-page`
+         WITHOUT the `/api` prefix. The k8s ingress sends anything not
+         under `/api` to the frontend Metro server, which returned the SPA
+         HTML shell with HTTP 200. The component called `res.json()` on
+         HTML → throws → caught silently → `remote` stays null → the
+         random-pool selector silently fell back to the hardcoded Unsplash
+         URL list. Admin-uploaded avatar URLs and the `updated_at`-pinned
+         cache-buster never reached visitors.
+
+         Fix:
+         - Changed both fetch URLs to `${BACKEND}/api/runtime/landing-page`
+         - Added a defensive content-type check: bail out unless the
+           response is `application/json` (so any future ingress quirk
+           that returns HTML doesn't crash the JSON parser).
+         - Inline comment explains the trap for the next person.
+
+         Verified by reloading the landing page after restart: the
+         resulting <img> srcs now carry the admin's `updated_at`
+         cache-buster suffix (`&v=2026-05-13T22%3A54%3A18.920606%2B00%3A`)
+         and the rendered faces include a person that only existed in the
+         admin pool (the 4th `slot_left` URL was never in the FALLBACK
+         list). Previously every visitor saw the same 3 fallback faces.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Landing hero avatars were rendering the hardcoded fallback URLs
+        instead of the admin-uploaded pool because the runtime fetch was
+        missing the `/api` prefix. Patched both call sites + added a
+        content-type guard so a non-JSON response can never silently
+        replace the admin config with hardcoded fallbacks again.

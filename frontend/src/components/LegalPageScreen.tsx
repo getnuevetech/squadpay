@@ -60,7 +60,20 @@ export function LegalPageScreen({ slug }: { slug: Slug }) {
       <Stack.Screen options={{ headerShown: false }} />
       <ScrollView contentContainerStyle={styles.wrap}>
         <View style={styles.headerRow}>
-          <PressableScale onPress={() => router.back()} style={styles.backBtn} scaleTo={0.95}>
+          <PressableScale
+            onPress={() => {
+              // Direct deep-links (signup CTA, shared URLs, SMS) have no
+              // browser/native history, so router.back() is a no-op there
+              // and the button looks broken. Fall back to the home route.
+              if (router.canGoBack && router.canGoBack()) {
+                router.back();
+              } else {
+                router.replace('/');
+              }
+            }}
+            style={styles.backBtn}
+            scaleTo={0.95}
+          >
             <ChevronLeft color={COLORS.text} size={20} />
             <Text style={styles.backText}>Back</Text>
           </PressableScale>

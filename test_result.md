@@ -13554,3 +13554,26 @@ frontend:
          the 3 optional fields). Sub-block divider "Phase 2 — Real-Time
          Ledger Reconciliation webhooks" splits it visually from the
          legacy Stripe block.
+
+---
+## 2026-05-16 — Home hero gradient softened (LOCKED-IN)
+
+frontend:
+  - task: "Home hero gradient tone-down"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/index.tsx"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "main"
+       -comment: |
+         User asked to tone down the heavy purple background on the
+         authenticated home screen so the squad/bill cards in the body
+         become the focal point. Hero panel gradient changed:
+           BEFORE: ['#3F1F8C', '#5B2BC8', '#7C3AED']  (near-black violet)
+           AFTER : ['#7C3AED', '#9B6BF2', '#C4B0F8']  (primary → soft lavender)
+         Cards untouched. User confirmed "Great, lets keep this design and
+         lock it in" — design now considered final, do NOT revert.

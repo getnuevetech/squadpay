@@ -7,6 +7,9 @@ import { API, request, getToken } from './_core';
 export type LegalPage = {
   slug: 'support' | 'privacy' | 'terms';
   title: string;
+  /** Authoritative source format — markdown. May be empty for very old rows. */
+  content_md?: string;
+  /** Derived from content_md server-side; what the public reader uses. */
   content_html: string;
   updated_at: string | null;
   updated_by?: string;
@@ -15,7 +18,15 @@ export type LegalPage = {
 
 export const legalApi = {
   list: () => request<{ pages: LegalPage[] }>(`/legal/pages`),
-  update: (slug: 'support' | 'privacy' | 'terms', body: { title: string; content_html: string }) =>
+  /**
+   * Save a page. New callers should pass `content_md` (markdown). The
+   * legacy `content_html` shape is still accepted server-side for
+   * back-compat but the editor (May 2026 rebuild) only sends markdown.
+   */
+  update: (
+    slug: 'support' | 'privacy' | 'terms',
+    body: { title: string; content_md?: string; content_html?: string },
+  ) =>
     request<LegalPage & { ok: boolean }>(`/legal/pages/${slug}`, {
       method: 'PUT',
       body: JSON.stringify(body),

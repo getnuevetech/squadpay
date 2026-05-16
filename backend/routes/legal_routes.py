@@ -1,27 +1,38 @@
 """SquadPay — Admin-managed legal pages (Support / Privacy / Terms).
 
-Public endpoints:
-  GET  /api/legal/pages/{slug}   → returns { slug, title, content_html, updated_at }
+Storage model (rebuilt May 2026):
+  - `legal_pages` collection: { slug, title, content_md, content_html,
+                                 updated_at, updated_by }
+    • content_md   — the authoritative source admin edits
+    • content_html — derived from content_md at save-time (and on the fly
+                     for legacy docs that only had HTML) so the public
+                     reader doesn't need to know markdown.
+  - `legal_media` collection: { id, mime_type, base64, size, uploaded_at,
+                                uploaded_by }
+    Media is referenced inside content_md as ![](/api/legal/media/{id})
+    and inside content_html as <img src="/api/legal/media/{id}">.
+
+Public endpoints (unauthenticated):
+  GET  /api/legal/pages/{slug}   → { slug, title, content_md, content_html, … }
   GET  /api/legal/media/{id}     → serves uploaded image/video bytes
 
 Admin endpoints (require admin auth):
-  GET    /api/admin/legal/pages              → list all pages
-  PUT    /api/admin/legal/pages/{slug}       → update title + content_html
+  GET    /api/admin/legal/pages              → list all pages (md + html)
+  PUT    /api/admin/legal/pages/{slug}       → update title + content_md
+                                                (content_html re-derived)
   POST   /api/admin/legal/upload             → upload image/video → returns URL
 
-Storage model:
-  - `legal_pages` collection: { slug, title, content_html, updated_at, updated_by }
-  - `legal_media` collection: { id, mime_type, base64, size, uploaded_at, uploaded_by }
-    Media is referenced inside content_html as <img src="/api/legal/media/{id}">.
-
-Seeding:
-  On first GET, if a page doesn't exist, returns a default skeleton (so the
-  user-facing pages never 404). Admins can then save real content over it.
+Migration:
+  - Pages with `content_md` use it as the source of truth.
+  - Pages with only `content_html` (legacy) are auto-converted to markdown
+    on first read via html2text so the admin editor opens cleanly.
 """
 import base64
 import logging
 from typing import Optional
 
+import html2text
+import markdown as md_lib
 from fastapi import APIRouter, HTTPException, UploadFile, File, Body, Depends
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
@@ -35,71 +46,163 @@ VALID_SLUGS = {"support", "privacy", "terms"}
 
 # 10 MB hard limit per media upload (base64 inflates ~33%, so raw <= ~7.5 MB).
 MAX_MEDIA_BYTES = 10 * 1024 * 1024
-
 ALLOWED_MIME_PREFIXES = ("image/", "video/")
 
+# Markdown extensions we want on the public side: GFM-ish basics (fenced
+# blocks, tables, nl2br) but NOT raw HTML pass-through to keep the output
+# clean and predictable.
+MD_EXTENSIONS = ["extra", "nl2br", "sane_lists"]
 
-# Default content used when a slug has not yet been customized by an admin.
-# Mirrors the static text the app shipped with so users see consistent copy.
+
+def _md_to_html(text: str) -> str:
+    """Convert markdown → HTML. Safe to call with empty or None values."""
+    if not text:
+        return ""
+    try:
+        return md_lib.markdown(
+            text,
+            extensions=MD_EXTENSIONS,
+            output_format="html5",
+        )
+    except Exception as e:
+        logger.warning(f"[legal] md→html convert failed: {e}")
+        return text  # fail open — better than a 500 in the admin editor
+
+
+# Reusable converter for the HTML → markdown legacy fallback. Keeping this
+# at module-level avoids re-creating it on every request.
+_html2text = html2text.HTML2Text()
+_html2text.body_width = 0          # never auto-wrap lines
+_html2text.ignore_images = False
+_html2text.ignore_links = False
+_html2text.protect_links = True
+
+
+def _html_to_md(html: str) -> str:
+    if not html:
+        return ""
+    try:
+        return _html2text.handle(html).strip()
+    except Exception as e:
+        logger.warning(f"[legal] html→md convert failed: {e}")
+        return html
+
+
+# Default content shipped with the app. Now authored in markdown so the
+# default editor experience matches what the admin will create from scratch.
 DEFAULT_PAGES = {
     "support": {
         "title": "Support",
-        "content_html": """
-<h2>Need help?</h2>
-<p>Our support team is here for you. Email us at <a href="mailto:support@squadpay.us">support@squadpay.us</a> and we'll respond within 24 hours.</p>
-<h3>Frequently Asked Questions</h3>
-<h4>I didn't receive my OTP code</h4>
-<p>Codes can take up to 60 seconds. Check that your phone has signal and the country code is correct. If it still doesn't arrive, tap "Resend" on the OTP screen or email us.</p>
-<h4>My contribution failed</h4>
-<p>Stripe processes all payments. If a card is declined, double-check the card details, ZIP code, and that there are sufficient funds.</p>
-<h4>How do I leave a group?</h4>
-<p>Open the squad, tap the menu in the top right, and choose "Leave squad."</p>
-<h4>Is my data secure?</h4>
-<p>We never store full card numbers — only Stripe tokens. Phone numbers and personal info are encrypted at rest.</p>
-""".strip(),
+        "content_md": """\
+## Need help?
+
+Our support team is here for you. Email us at <support@squadpay.us> and we'll respond within 24 hours.
+
+### Frequently Asked Questions
+
+#### I didn't receive my OTP code
+
+Codes can take up to 60 seconds. Check that your phone has signal and the country code is correct. If it still doesn't arrive, tap **Resend** on the OTP screen or email us.
+
+#### My contribution failed
+
+Stripe processes all payments. If a card is declined, double-check the card details, ZIP code, and that there are sufficient funds.
+
+#### How do I leave a squad?
+
+Open the squad, tap the menu in the top right, and choose **Leave squad**.
+
+#### Is my data secure?
+
+We never store full card numbers — only Stripe tokens. Phone numbers and personal info are encrypted at rest.
+""",
     },
     "privacy": {
         "title": "Privacy Policy",
-        "content_html": """
-<h2>Privacy Policy</h2>
-<p><em>Last updated: June 2026</em></p>
-<p>SquadPay ("we", "us") respects your privacy. This policy explains what we collect, why, and how we protect it.</p>
-<h3>Information We Collect</h3>
-<ul>
-  <li><strong>Account info:</strong> name, phone number (optional), referral code.</li>
-  <li><strong>Payment info:</strong> handled by Stripe — we never store full card numbers.</li>
-  <li><strong>Usage:</strong> group membership, items claimed, payment status.</li>
-</ul>
-<h3>How We Use It</h3>
-<p>To provide the service: split bills, send OTPs, process payments, send receipts. We do not sell your data.</p>
-<h3>Your Rights</h3>
-<p>You can request export or deletion of your data at any time by emailing <a href="mailto:support@squadpay.us">support@squadpay.us</a>.</p>
-""".strip(),
+        "content_md": """\
+## Privacy Policy
+
+*Last updated: June 2026*
+
+SquadPay ("we", "us") respects your privacy. This policy explains what we collect, why, and how we protect it.
+
+### Information We Collect
+
+- **Account info:** name, phone number (optional), referral code.
+- **Payment info:** handled by Stripe — we never store full card numbers.
+- **Usage:** squad membership, items claimed, payment status.
+
+### How We Use It
+
+To provide the service: split bills, send OTPs, process payments, send receipts. We do not sell your data.
+
+### Your Rights
+
+You can request export or deletion of your data at any time by emailing <support@squadpay.us>.
+""",
     },
     "terms": {
         "title": "Terms & Conditions",
-        "content_html": """
-<h2>Terms & Conditions</h2>
-<p><em>Last updated: June 2026</em></p>
-<p>By using SquadPay, you agree to the following terms. Please read them carefully.</p>
-<h3>Use of Service</h3>
-<p>You must be 18 or older. You agree to provide accurate information and not abuse the service (spam, fraud, etc.).</p>
-<h3>Payments</h3>
-<p>Payments are processed by Stripe. You are responsible for ensuring your card details are valid. Funds contributed to a group are non-refundable except as required by law.</p>
-<h3>Account Termination</h3>
-<p>We may suspend or terminate accounts that violate these terms. You may close your account at any time by contacting support.</p>
-<h3>Liability</h3>
-<p>SquadPay is provided "as is". We are not liable for damages arising from misuse, payment failures, or third-party issues (e.g. Stripe outages).</p>
-<h3>Changes</h3>
-<p>We may update these terms. Material changes will be communicated via email or in-app notification.</p>
-""".strip(),
+        "content_md": """\
+## Terms & Conditions
+
+*Last updated: June 2026*
+
+By using SquadPay, you agree to the following terms. Please read them carefully.
+
+### Use of Service
+
+You must be 18 or older. You agree to provide accurate information and not abuse the service (spam, fraud, etc.).
+
+### Payments
+
+Payments are processed by Stripe. You are responsible for ensuring your card details are valid. Funds contributed to a squad are non-refundable except as required by law.
+
+### Account Termination
+
+We may suspend or terminate accounts that violate these terms. You may close your account at any time by contacting support.
+
+### Liability
+
+SquadPay is provided "as is". We are not liable for damages arising from misuse, payment failures, or third-party issues (e.g. Stripe outages).
+
+### Changes
+
+We may update these terms. Material changes will be communicated via email or in-app notification.
+""",
     },
 }
+
+# Precompute the HTML for the defaults so we never recompute it per request.
+for _slug, _d in DEFAULT_PAGES.items():
+    _d["content_html"] = _md_to_html(_d["content_md"])
 
 
 class UpdatePageIn(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
-    content_html: str = Field(..., min_length=0, max_length=500_000)
+    # New: admin posts markdown. Legacy HTML field still accepted for
+    # back-compat from older clients (auto-converted on save).
+    content_md: Optional[str] = Field(default=None, max_length=500_000)
+    content_html: Optional[str] = Field(default=None, max_length=500_000)
+
+
+def _hydrate(page: dict) -> dict:
+    """Ensure both content_md and content_html are present on a page row.
+    Legacy rows may only have content_html — we generate the markdown
+    so the editor can open them cleanly. Pure rows untouched.
+    """
+    md = page.get("content_md")
+    html = page.get("content_html")
+    if md and html:
+        return page
+    if md and not html:
+        page["content_html"] = _md_to_html(md)
+    elif html and not md:
+        page["content_md"] = _html_to_md(html)
+    else:
+        page["content_md"] = ""
+        page["content_html"] = ""
+    return page
 
 
 def attach_legal_routes(api_router: APIRouter, db, require_admin):
@@ -113,13 +216,14 @@ def attach_legal_routes(api_router: APIRouter, db, require_admin):
             raise HTTPException(404, "Unknown legal page")
         page = await db.legal_pages.find_one({"slug": slug}, {"_id": 0})
         if page:
-            return page
+            return _hydrate(page)
         # Fallback to defaults (read-only). Admins can save edits to override.
-        defaults = DEFAULT_PAGES[slug]
+        d = DEFAULT_PAGES[slug]
         return {
             "slug": slug,
-            "title": defaults["title"],
-            "content_html": defaults["content_html"],
+            "title": d["title"],
+            "content_md": d["content_md"],
+            "content_html": d["content_html"],
             "updated_at": None,
             "is_default": True,
         }
@@ -144,19 +248,18 @@ def attach_legal_routes(api_router: APIRouter, db, require_admin):
     @api_router.get("/admin/legal/pages")
     async def admin_list_pages(_: dict = Depends(require_admin)):
         rows = await db.legal_pages.find({}, {"_id": 0}).to_list(length=20)
-        by_slug = {r["slug"]: r for r in rows}
-        # Always return all 3 slots (with defaults if not yet customized).
+        by_slug = {r["slug"]: _hydrate(r) for r in rows}
         out = []
         for slug in ("support", "privacy", "terms"):
             if slug in by_slug:
-                p = by_slug[slug]
-                out.append({**p, "is_default": False})
+                out.append({**by_slug[slug], "is_default": False})
             else:
                 d = DEFAULT_PAGES[slug]
                 out.append(
                     {
                         "slug": slug,
                         "title": d["title"],
+                        "content_md": d["content_md"],
                         "content_html": d["content_html"],
                         "updated_at": None,
                         "is_default": True,
@@ -172,10 +275,24 @@ def attach_legal_routes(api_router: APIRouter, db, require_admin):
     ):
         if slug not in VALID_SLUGS:
             raise HTTPException(400, "Invalid slug")
+
+        # The admin editor now sends markdown; we re-derive HTML server-side.
+        # If a legacy client sends only HTML, convert it back to markdown
+        # so the stored source-of-truth stays consistent.
+        content_md = body.content_md
+        content_html = body.content_html
+        if content_md is None and content_html is None:
+            raise HTTPException(400, "Either content_md or content_html must be provided")
+        if content_md is None:
+            content_md = _html_to_md(content_html or "")
+        # Always recompute html from md so the two columns stay in sync.
+        content_html = _md_to_html(content_md)
+
         record = {
             "slug": slug,
             "title": body.title,
-            "content_html": body.content_html,
+            "content_md": content_md,
+            "content_html": content_html,
             "updated_at": now_iso(),
             "updated_by": admin.get("id") or admin.get("email") or "admin",
         }

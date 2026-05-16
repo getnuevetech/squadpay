@@ -13635,3 +13635,176 @@ agent_communication:
         android.versionCode 1 → 2; flattened icon.png to RGB; added
         explicit ios.icon + android.icon paths. Documented the recipe in
         EAS_BUILD_PREFLIGHT.md.
+
+---
+## 2026-05-16 — Legal pages: markdown-based editor (rebuild Plan B)
+
+backend:
+  - task: "Legal pages — markdown ⇄ HTML pipeline"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/legal_routes.py, /app/backend/requirements.txt"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "testing"
+       -comment: |
+         Verified end-to-end via /app/backend_test.py against live preview
+         backend (https://joint-pay-1.preview.emergentagent.com/api).
+         59/60 assertions PASS. The single non-passing assertion is a minor
+         response-shape gap (not a functional bug) — details below.
+
+         ✅ 1) Public GET /api/legal/pages/{slug}
+           - support → 200; content_md starts EXACTLY with "## Need help?";
+             content_html starts EXACTLY with "<h2>Need help?</h2>". ✓
+           - privacy → 200; content_md + content_html both non-empty. ✓
+           - terms   → 200; content_md + content_html both non-empty. ✓
+           - All three carry `title`, `slug`, `updated_at`, `content_md`,
+             `content_html`. ✓
+           - unknown → 404 ("Unknown legal page"). ✓
+           Minor: the public-read endpoint omits the `is_default` key when
+           a row exists in db.legal_pages (admin has edited the page). For
+           pristine slugs it does set `is_default: True`; for stored rows
+           the key is absent rather than `False`. Spec said "Also has …
+           is_default keys" — strictly the contract expects this key
+           always. The admin-list endpoint sets `is_default: False`
+           correctly; only the public reader skips it. Frontend code that
+           checks `page.is_default === true` still works because `undefined
+           !== true`; only strict-presence checks would notice.
+
+         ✅ 2) Admin GET /api/admin/legal/pages (auth)
+           - Returns `{ pages: [...] }` with exactly 3 items covering
+             support/privacy/terms. ✓
+           - Each row has non-empty `content_md` + `content_html`. ✓
+
+         ✅ 3) PUT /api/admin/legal/pages/privacy with markdown
+           - body { title:"Privacy Policy", content_md:"# Hello\n\nThis is
+             **bold**." } → 200, response.ok=true. ✓
+           - response.content_html contains `<h1>Hello</h1>` AND
+             `<strong>bold</strong>`. ✓ (markdown-py renders inline emphasis
+             correctly with the extra/nl2br/sane_lists extensions.)
+
+         ✅ 4) Round-trip GET /api/legal/pages/privacy
+           - content_md round-trips byte-for-byte ("# Hello\n\nThis is
+             **bold**."). ✓
+           - content_html on GET matches PUT response exactly. ✓
+
+         ✅ 5) Empty body validation
+           - PUT privacy body { title:"Privacy Policy" } → 400
+             "Either content_md or content_html must be provided". ✓
+
+         ✅ 6) Legacy back-compat
+           - PUT terms body { title:"Terms & Conditions",
+             content_html:"<p>Hello <b>world</b></p>" } → 200.
+           - response.content_md non-empty — html2text fallback derived
+             markdown source-of-truth from the legacy HTML payload. ✓
+
+         ✅ 7) Slug/auth guards
+           - PUT /admin/legal/pages/garbage → 400 "Invalid slug". ✓
+           - PUT /admin/legal/pages/support without bearer → 401. ✓
+
+         ✅ 8) Media upload + readback
+           - POST /admin/legal/upload (multipart `file` field, 67-byte
+             PNG) → 200 with { id:"media_…", url:"/api/legal/media/…",
+             size:67, mime_type:"image/png" }. ✓
+           - GET /api/legal/media/{id} → 200, bytes EXACTLY equal to the
+             uploaded PNG, content-type starts with "image/png". ✓
+
+         ✅ 9) Cleanup
+           - Both privacy and terms restored to DEFAULT_PAGES markdown
+             via PUT (both 200). Imported DEFAULT_PAGES directly from
+             /app/backend/routes/legal_routes.py so values stay in sync
+             with the module.
+
+         Backend log notes (informational):
+           - passlib bcrypt cosmetic warning + jwt InsecureKeyLengthWarning
+             (JWT_SECRET 31 bytes). No functional impact.
+
+         Test artifact: /app/backend_test.py (rewritten for this review
+         request — focused exclusively on the legal-pages pipeline).
+         No backend action required for the core ask.
+
+         Minor follow-up (optional, not blocking):
+         If the frontend's "Reset to default" button or any UI relies on
+         strict presence of `is_default`, add the key to the stored-row
+         path in get_legal_page() in /app/backend/routes/legal_routes.py:
+             return {**_hydrate(page), "is_default": False}
+         Currently it returns `_hydrate(page)` without the boolean.
+
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         Rebuilt /api/(admin/)legal/pages on top of a markdown source-of-truth:
+         - Added `Markdown==3.10.2` + `html2text==2025.4.15` to requirements.txt.
+         - `content_md` is now the authoritative field. `content_html` is
+           derived server-side via `markdown(... extensions=[extra, nl2br,
+           sane_lists])` at SAVE time, so both columns stay in sync.
+         - `PUT /api/admin/legal/pages/{slug}` now accepts EITHER `content_md`
+           (preferred, new editor) OR `content_html` (legacy clients) — at
+           least one must be provided. The handler always recomputes html
+           from md so manual HTML can never drift away from the markdown.
+         - `GET /api/legal/pages/{slug}` and `GET /api/admin/legal/pages` hydrate
+           every row through `_hydrate()`: if a row has only HTML (e.g. data
+           saved by the previous editor), html2text converts it to markdown on
+           the fly so the new editor opens cleanly without a migration script.
+         - DEFAULT_PAGES rewritten as markdown; HTML version precomputed at
+           import.
+         - Verified locally:
+             curl /api/legal/pages/support → returns both content_md
+             (starts with `## Need help?`) and content_html
+             (starts with `<h2>Need help?</h2>…`).
+
+frontend:
+  - task: "Legal pages — markdown editor with toolbar + live preview"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/admin/legal-pages/[slug].tsx, /app/frontend/src/adminApi/legal.ts, package.json (added marked@14)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         Rebuilt /admin/legal-pages/[slug] as a markdown editor:
+         - Toolbar buttons (H2/H3/H4, Bold, Italic, Strikethrough, Inline
+           code, Bulleted list, Numbered list, Quote, Link, Image). Each
+           one wraps/inserts markdown syntax around the current selection
+           — admin never sees an HTML tag.
+         - Live "Preview" toggle parses the markdown via `marked@14`
+           client-side and hands the HTML to the existing `<LegalHtml/>`
+           component (same renderer the public pages use), giving the
+           admin true WYSIWYG parity.
+         - Image upload still POSTs to /api/admin/legal/upload and
+           inserts `![](/api/legal/media/{id})` markdown at the caret.
+         - Save sends `{ title, content_md }` to PUT /admin/legal/pages/{slug}.
+         - Footer shows "Last saved <timestamp>" + character count;
+           default-content pages show a warning chip.
+         - Backwards compat handled by backend html→md fallback; the
+           editor itself just consumes `page.content_md`.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Backend test ask:
+         1. GET  /api/legal/pages/support
+              → response has both `content_md` (starts "## Need help?") and
+                `content_html` (starts "<h2>Need help?</h2>")
+         2. GET  /api/admin/legal/pages   (auth)
+              → 3 rows (support/privacy/terms) each with content_md + html.
+         3. PUT  /api/admin/legal/pages/privacy
+              body: { title: "Privacy Policy", content_md: "# Hello\n\nThis is **bold**." }
+              → 200, response.content_html includes "<h1>Hello</h1>" and "<strong>bold</strong>".
+         4. PUT  /api/admin/legal/pages/privacy
+              body: { title: "Privacy Policy" }
+              → 400 (missing both content_md and content_html).
+         5. PUT legacy shape — body: { title: "...", content_html: "<p>X</p>" }
+              → 200, response.content_md non-empty (html→md fallback worked).
+         6. Idempotency: a fresh GET after step 3 should round-trip the
+            same content_md and content_html.
+         7. Restore privacy + terms to defaults afterwards by sending the
+            original DEFAULT_PAGES['privacy'] markdown (or leave the
+            test markdown — your call).
+        Frontend: do NOT test (user will confirm visually).

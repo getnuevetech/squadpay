@@ -1,16 +1,20 @@
 /**
- * Admin — Legal page editor.
- * URL: /admin/legal-pages/[slug]  (slug = support | privacy | terms)
+ * Admin → Legal page editor (rebuilt May 2026).
  *
- * Approach:
- * - Single textarea-based HTML editor with a small toolbar that wraps the
- *   selected text in common tags (h2/h3/h4/p/strong/em/ul/ol/li/a/br) or
- *   inserts a tag at the cursor.
- * - Live preview rendered with the same <LegalHtml/> component used on the
- *   public legal pages, so admins see exactly what users will see.
- * - Image/video uploads call POST /api/admin/legal/upload (multipart) and the
- *   returned `<img src=…>` tag is inserted at the cursor. Native (Expo Go)
- *   uses expo-image-picker; web uses an <input type="file"> via DOM.
+ * Goals
+ * -----
+ * - Admin never sees raw HTML. Storage is **markdown**.
+ * - Toolbar buttons wrap / insert markdown syntax around the selection so
+ *   the admin gets a Slack/Discord-style "type-or-click" experience.
+ * - Live preview shows exactly what users will see, rendered by `marked`
+ *   on the client into HTML and then by the existing `<LegalHtml/>`
+ *   component (same renderer the public pages use, so WYSIWYG parity).
+ * - Image upload still posts to /api/admin/legal/upload and inserts a
+ *   markdown image tag `![](url)` at the cursor.
+ *
+ * Backwards compat: legacy pages that only had `content_html` get a
+ * server-side html→md conversion (html2text) on first read, so the editor
+ * always opens with valid markdown.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -23,7 +27,6 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  TextInput as RNTextInput,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import {
@@ -31,563 +34,441 @@ import {
   Save,
   Image as ImageIcon,
   Eye,
-  Code as CodeIcon,
+  Pencil,
   Bold,
   Italic,
-  Heading1,
   Heading2,
   Heading3,
-  List,
+  Heading4,
+  List as ListIcon,
   ListOrdered,
   Link as LinkIcon,
   Quote,
-  RotateCcw,
-  AlertTriangle,
+  Strikethrough,
+  Code as CodeIcon,
   CheckCircle2,
+  AlertTriangle,
 } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
-import { adminApi, LegalPage } from '../../../src/adminApi';
+import { marked } from 'marked';
+import { legalApi, LegalPage } from '../../../src/adminApi/legal';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 import { LegalHtml } from '../../../src/components/LegalHtml';
 
 type Slug = 'support' | 'privacy' | 'terms';
 const VALID: Slug[] = ['support', 'privacy', 'terms'];
-
 const SLUG_LABEL: Record<Slug, string> = {
   support: 'Support',
   privacy: 'Privacy Policy',
   terms: 'Terms & Conditions',
 };
 
-export default function AdminLegalPageEditor() {
-  const { slug: rawSlug } = useLocalSearchParams<{ slug: string }>();
+// `marked` v14 — keep GFM-ish, line breaks honored. We don't enable raw
+// HTML in markdown (admin should never need it).
+marked.setOptions({ gfm: true, breaks: true });
+
+/**
+ * Wraps the current selection with a `prefix` and `suffix`, or — when no
+ * text is selected — inserts a sensible placeholder so the toolbar always
+ * does something useful. The caller decides whether to act on line-level
+ * (`linePrefix`) or inline marks.
+ */
+type Selection = { start: number; end: number };
+function applyInlineMark(
+  text: string,
+  sel: Selection,
+  prefix: string,
+  suffix = prefix,
+  placeholder = 'text',
+): { next: string; nextSel: Selection } {
+  const { start, end } = sel;
+  const selected = text.slice(start, end);
+  const body = selected || placeholder;
+  const next = text.slice(0, start) + prefix + body + suffix + text.slice(end);
+  const nextStart = start + prefix.length;
+  const nextEnd = nextStart + body.length;
+  return { next, nextSel: { start: nextStart, end: nextEnd } };
+}
+
+function applyLinePrefix(
+  text: string,
+  sel: Selection,
+  prefix: string,
+): { next: string; nextSel: Selection } {
+  // Find the start of the current line.
+  const lineStart = text.lastIndexOf('\n', sel.start - 1) + 1;
+  // If the line already has the same prefix, toggle it off.
+  const alreadyHas = text.slice(lineStart, lineStart + prefix.length) === prefix;
+  const next = alreadyHas
+    ? text.slice(0, lineStart) + text.slice(lineStart + prefix.length)
+    : text.slice(0, lineStart) + prefix + text.slice(lineStart);
+  const delta = alreadyHas ? -prefix.length : prefix.length;
+  return {
+    next,
+    nextSel: { start: sel.start + delta, end: sel.end + delta },
+  };
+}
+
+function insertAtCursor(
+  text: string,
+  sel: Selection,
+  chunk: string,
+): { next: string; nextSel: Selection } {
+  const next = text.slice(0, sel.start) + chunk + text.slice(sel.end);
+  const pos = sel.start + chunk.length;
+  return { next, nextSel: { start: pos, end: pos } };
+}
+
+export default function LegalPageEditor() {
   const router = useRouter();
-  const slug = (VALID.includes(rawSlug as Slug) ? (rawSlug as Slug) : null);
+  const params = useLocalSearchParams<{ slug?: string }>();
+  const slug = (VALID.includes(params.slug as Slug) ? (params.slug as Slug) : 'support') as Slug;
 
   const [page, setPage] = useState<LegalPage | null>(null);
   const [title, setTitle] = useState('');
-  const [content, setContent] = useState('');
-  const [originalContent, setOriginalContent] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [markdown, setMarkdown] = useState('');
+  const [selection, setSelection] = useState<Selection>({ start: 0, end: 0 });
+  const [mode, setMode] = useState<'edit' | 'preview'>('edit');
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [view, setView] = useState<'edit' | 'preview'>('edit');
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null);
-  const taRef = useRef<RNTextInput | null>(null);
-  // Track selection for tag-wrapping. Falls back to "insert at end" if unknown.
-  const [selection, setSelection] = useState<{ start: number; end: number }>({ start: 0, end: 0 });
+  const [loading, setLoading] = useState(true);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
 
-  const dirty = content !== originalContent || (page && title !== page.title);
+  const inputRef = useRef<TextInput | null>(null);
 
-  const load = useCallback(async () => {
-    if (!slug) return;
-    setLoading(true);
-    try {
-      const res = await adminApi.listLegalPages();
-      const found = res.pages.find((p) => p.slug === slug);
-      if (!found) throw new Error('Page not found');
-      setPage(found);
-      setTitle(found.title);
-      setContent(found.content_html);
-      setOriginalContent(found.content_html);
-    } catch (e: any) {
-      setToast({ kind: 'err', msg: e?.message || 'Failed to load page' });
-    } finally {
-      setLoading(false);
-    }
+  // ── Load existing page ─────────────────────────────────────────────────
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const res = await legalApi.list();
+        if (cancel) return;
+        const found = res.pages.find((p) => p.slug === slug);
+        if (found) {
+          setPage(found);
+          setTitle(found.title);
+          // The new editor is markdown-first. Backend always provides
+          // content_md (auto-derived from legacy HTML if needed).
+          setMarkdown(found.content_md ?? '');
+          setSavedAt(found.updated_at);
+        }
+      } catch (e: any) {
+        Alert.alert('Could not load page', e?.message || 'Unknown error');
+      } finally {
+        if (!cancel) setLoading(false);
+      }
+    })();
+    return () => { cancel = true; };
   }, [slug]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  // ── Derived: HTML preview rendered from markdown via `marked` ──────────
+  const previewHtml = useMemo(() => {
+    try {
+      return marked.parse(markdown || '', { async: false }) as string;
+    } catch {
+      return '';
+    }
+  }, [markdown]);
 
-  // ──────────────── Toolbar helpers ────────────────
-
-  const replaceSelection = useCallback(
-    (mutate: (selected: string) => string) => {
-      const { start, end } = selection;
-      const before = content.slice(0, start);
-      const sel = content.slice(start, end);
-      const after = content.slice(end);
-      const replaced = mutate(sel);
-      setContent(before + replaced + after);
-      // Re-focus textarea so user can keep typing.
-      setTimeout(() => taRef.current?.focus(), 30);
+  // ── Toolbar handlers ──────────────────────────────────────────────────
+  const mutate = useCallback(
+    (fn: (t: string, s: Selection) => { next: string; nextSel: Selection }) => {
+      const { next, nextSel } = fn(markdown, selection);
+      setMarkdown(next);
+      // Re-focus + re-select after the state flush so the caret lands in
+      // the new spot. On native the selection prop is honored when set
+      // synchronously after the text change.
+      requestAnimationFrame(() => {
+        try { inputRef.current?.focus(); } catch {}
+        setSelection(nextSel);
+      });
     },
-    [content, selection],
+    [markdown, selection],
   );
 
-  const wrapTag = (tag: string) =>
-    replaceSelection((sel) => {
-      const inner = sel || `${tag} text`;
-      return `<${tag}>${inner}</${tag}>`;
+  const onBold = () => mutate((t, s) => applyInlineMark(t, s, '**', '**', 'bold text'));
+  const onItalic = () => mutate((t, s) => applyInlineMark(t, s, '*', '*', 'italic text'));
+  const onStrike = () => mutate((t, s) => applyInlineMark(t, s, '~~', '~~', 'strikethrough'));
+  const onCode = () => mutate((t, s) => applyInlineMark(t, s, '`', '`', 'code'));
+  const onH2 = () => mutate((t, s) => applyLinePrefix(t, s, '## '));
+  const onH3 = () => mutate((t, s) => applyLinePrefix(t, s, '### '));
+  const onH4 = () => mutate((t, s) => applyLinePrefix(t, s, '#### '));
+  const onQuote = () => mutate((t, s) => applyLinePrefix(t, s, '> '));
+  const onUL = () => mutate((t, s) => applyLinePrefix(t, s, '- '));
+  const onOL = () => mutate((t, s) => applyLinePrefix(t, s, '1. '));
+
+  const onLink = useCallback(() => {
+    mutate((t, s) => {
+      const selected = t.slice(s.start, s.end) || 'link text';
+      const chunk = `[${selected}](https://)`;
+      const next = t.slice(0, s.start) + chunk + t.slice(s.end);
+      // Land caret inside the URL slot.
+      const urlStart = s.start + selected.length + 3; // `[` + text + `](`
+      return { next, nextSel: { start: urlStart, end: urlStart + 8 } };
     });
+  }, [mutate]);
 
-  const insertBlock = (open: string, close: string, placeholder: string) =>
-    replaceSelection((sel) => `${open}${sel || placeholder}${close}`);
-
-  const insertLink = () => {
-    const promptFn: (msg: string, def?: string) => string | null =
-      typeof window !== 'undefined' && (window as any).prompt
-        ? (m, d) => (window as any).prompt(m, d || '')
-        : (m) => {
-            // Native fallback — prompt unavailable; log a hint instead.
-            console.log(m);
-            return null;
-          };
-    const url = promptFn('Link URL', 'https://');
-    if (!url) return;
-    replaceSelection((sel) => `<a href="${url}">${sel || url}</a>`);
-  };
-
-  const insertList = (ordered: boolean) => {
-    const tag = ordered ? 'ol' : 'ul';
-    replaceSelection((sel) => {
-      const items = (sel || 'First item\nSecond item').split(/\n+/).filter(Boolean);
-      return `<${tag}>\n${items.map((i) => `  <li>${i}</li>`).join('\n')}\n</${tag}>`;
-    });
-  };
-
-  // ──────────────── Image / video upload ────────────────
-
-  const onPickAndUpload = useCallback(async () => {
+  // ── Image upload ──────────────────────────────────────────────────────
+  const onImage = useCallback(async () => {
     try {
-      setUploading(true);
-      let asset: { uri: string; mimeType?: string | null; fileName?: string | null; type?: string | null } | null = null;
-
-      if (Platform.OS === 'web') {
-        // Web: use native <input type="file"> for direct File access.
-        const file: File | null = await new Promise((resolve) => {
-          const input = document.createElement('input');
-          input.type = 'file';
-          input.accept = 'image/*,video/*';
-          input.onchange = () => resolve(input.files && input.files[0] ? input.files[0] : null);
-          input.click();
-        });
-        if (!file) {
-          setUploading(false);
-          return;
-        }
-        const res = await adminApi.uploadLegalMedia({
-          blob: file,
-          name: file.name,
-          mime: file.type || 'application/octet-stream',
-        });
-        const mime = file.type || '';
-        const tag = mime.startsWith('video/')
-          ? `<video src="${res.url}" controls style="max-width:100%"></video>`
-          : `<img src="${res.url}" alt="" style="max-width:100%" />`;
-        replaceSelection(() => `\n${tag}\n`);
-        setToast({ kind: 'ok', msg: 'Uploaded' });
-      } else {
-        // Native: expo-image-picker (images + videos).
+      if (Platform.OS !== 'web') {
         const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
         if (!perm.granted) {
-          Alert.alert('Permission denied', 'Cannot access media library.');
-          setUploading(false);
+          Alert.alert('Permission needed', 'Allow photo library access to insert an image.');
           return;
         }
-        const result = await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ImagePicker.MediaTypeOptions.All,
-          quality: 0.8,
-        });
-        if (result.canceled || !result.assets || result.assets.length === 0) {
-          setUploading(false);
-          return;
-        }
-        asset = result.assets[0] as any;
-        if (!asset) {
-          setUploading(false);
-          return;
-        }
-        const mime = asset.mimeType || (asset.type === 'video' ? 'video/mp4' : 'image/jpeg');
-        const fileName = asset.fileName || `upload.${mime.split('/')[1] || 'bin'}`;
-        const res = await adminApi.uploadLegalMedia({
-          uri: asset.uri,
-          name: fileName,
-          mime,
-        });
-        const tag = mime.startsWith('video/')
-          ? `<video src="${res.url}" controls style="max-width:100%"></video>`
-          : `<img src="${res.url}" alt="" style="max-width:100%" />`;
-        replaceSelection(() => `\n${tag}\n`);
-        setToast({ kind: 'ok', msg: 'Uploaded' });
       }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.9,
+        // On web we need a blob; on native we need a uri. Image-picker
+        // hands us both via `asset.uri`. The backend accepts either via
+        // multipart, and `legalApi.uploadMedia` translates accordingly.
+      });
+      if (result.canceled) return;
+      const asset = result.assets?.[0];
+      if (!asset) return;
+      setUploading(true);
+
+      let blob: Blob | undefined;
+      if (Platform.OS === 'web' && asset.uri?.startsWith('data:')) {
+        const r = await fetch(asset.uri);
+        blob = await r.blob();
+      }
+      const mime = asset.mimeType || 'image/jpeg';
+      const name = (asset.fileName || `legal-${Date.now()}.jpg`).replace(/[^\w.\-]/g, '_');
+      const uploaded = await legalApi.uploadMedia({
+        uri: asset.uri,
+        blob,
+        name,
+        mime,
+      });
+      // Insert the markdown image tag at the caret.
+      mutate((t, s) => insertAtCursor(t, s, `\n![](${uploaded.url})\n`));
     } catch (e: any) {
-      setToast({ kind: 'err', msg: e?.message || 'Upload failed' });
+      Alert.alert('Upload failed', e?.message || 'Could not upload image');
     } finally {
       setUploading(false);
     }
-  }, [replaceSelection]);
+  }, [mutate]);
 
-  // ──────────────── Save ────────────────
-
+  // ── Save ──────────────────────────────────────────────────────────────
   const onSave = useCallback(async () => {
-    if (!slug) return;
     if (!title.trim()) {
-      setToast({ kind: 'err', msg: 'Title cannot be empty' });
+      Alert.alert('Missing title', 'Please give this page a title.');
       return;
     }
     setSaving(true);
     try {
-      const updated = await adminApi.updateLegalPage(slug, {
+      const updated = await legalApi.update(slug, {
         title: title.trim(),
-        content_html: content,
+        content_md: markdown,
       });
-      setPage({
-        slug,
-        title: updated.title,
-        content_html: updated.content_html,
-        updated_at: updated.updated_at,
-        updated_by: updated.updated_by,
-        is_default: false,
-      });
-      setOriginalContent(updated.content_html);
-      setToast({ kind: 'ok', msg: 'Saved' });
+      setSavedAt(updated.updated_at);
+      setPage(updated);
     } catch (e: any) {
-      setToast({ kind: 'err', msg: e?.message || 'Save failed' });
+      Alert.alert('Save failed', e?.message || 'Unknown error');
     } finally {
       setSaving(false);
     }
-  }, [slug, title, content]);
+  }, [slug, title, markdown]);
 
-  const onRevert = useCallback(() => {
-    if (!page) return;
-    setContent(originalContent);
-    setTitle(page.title);
-  }, [page, originalContent]);
-
-  // Auto-clear toast after 2.5s.
-  useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(null), 2500);
-    return () => clearTimeout(t);
-  }, [toast]);
-
-  if (!slug) {
-    return (
-      <View style={styles.center}>
-        <Text style={styles.errorText}>Unknown legal page slug.</Text>
-      </View>
-    );
-  }
-  if (loading) {
-    return (
-      <View style={styles.center} testID="admin-legal-edit-loading">
-        <ActivityIndicator color={COLORS.primary} />
-      </View>
-    );
-  }
-
+  // ── Render ────────────────────────────────────────────────────────────
   return (
-    <ScrollView
-      contentContainerStyle={{ paddingBottom: 80 }}
-      testID={`admin-legal-edit-${slug}`}
-      keyboardShouldPersistTaps="handled"
-    >
-      <TouchableOpacity
-        onPress={() => router.replace('/admin/legal-pages')}
-        style={styles.backBtn}
-        activeOpacity={0.7}
-        testID="admin-legal-back"
-      >
-        <ArrowLeft size={16} color={COLORS.subtext} />
-        <Text style={styles.backText}>All legal pages</Text>
-      </TouchableOpacity>
-
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.md, gap: SPACING.sm, flexWrap: 'wrap' }}>
-        <View>
-          <Text style={styles.heading}>{SLUG_LABEL[slug]}</Text>
-          <Text style={styles.subheading}>
-            URL: /legal/{slug} · {page?.is_default ? 'Showing default copy' : `Last edited ${page?.updated_at ? new Date(page.updated_at).toLocaleString() : '—'}`}
-          </Text>
-        </View>
-        <View style={{ flexDirection: 'row', gap: 6 }}>
-          <TouchableOpacity
-            onPress={() => setView(view === 'edit' ? 'preview' : 'edit')}
-            style={[styles.viewToggle, view === 'preview' && styles.viewToggleActive]}
-            activeOpacity={0.85}
-            testID="admin-legal-view-toggle"
-          >
-            {view === 'edit' ? (
-              <>
-                <Eye size={14} color={COLORS.text} />
-                <Text style={styles.viewToggleText}>Preview</Text>
-              </>
-            ) : (
-              <>
-                <CodeIcon size={14} color="#fff" />
-                <Text style={[styles.viewToggleText, { color: '#fff' }]}>Edit HTML</Text>
-              </>
-            )}
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {/* Title */}
-      <Text style={styles.label}>Page title</Text>
-      <TextInput
-        style={styles.titleInput}
-        value={title}
-        onChangeText={setTitle}
-        placeholder="Privacy Policy"
-        placeholderTextColor={COLORS.disabledText}
-        testID="admin-legal-title"
-      />
-
-      {view === 'edit' ? (
-        <>
-          {/* Toolbar */}
-          <View style={styles.toolbar}>
-            <ToolBtn icon={<Heading1 size={14} color={COLORS.text} />} label="H2" onPress={() => wrapTag('h2')} testID="tb-h2" />
-            <ToolBtn icon={<Heading2 size={14} color={COLORS.text} />} label="H3" onPress={() => wrapTag('h3')} testID="tb-h3" />
-            <ToolBtn icon={<Heading3 size={14} color={COLORS.text} />} label="H4" onPress={() => wrapTag('h4')} testID="tb-h4" />
-            <ToolBtn icon={<Quote size={14} color={COLORS.text} />} label="P" onPress={() => wrapTag('p')} testID="tb-p" />
-            <ToolBtn icon={<Bold size={14} color={COLORS.text} />} label="Bold" onPress={() => wrapTag('strong')} testID="tb-bold" />
-            <ToolBtn icon={<Italic size={14} color={COLORS.text} />} label="Italic" onPress={() => wrapTag('em')} testID="tb-italic" />
-            <ToolBtn icon={<List size={14} color={COLORS.text} />} label="Bullets" onPress={() => insertList(false)} testID="tb-ul" />
-            <ToolBtn icon={<ListOrdered size={14} color={COLORS.text} />} label="Numbers" onPress={() => insertList(true)} testID="tb-ol" />
-            <ToolBtn icon={<LinkIcon size={14} color={COLORS.text} />} label="Link" onPress={insertLink} testID="tb-link" />
-            <ToolBtn
-              icon={uploading ? <ActivityIndicator size="small" color={COLORS.primary} /> : <ImageIcon size={14} color={COLORS.primary} />}
-              label={uploading ? 'Uploading…' : 'Image / Video'}
-              onPress={onPickAndUpload}
-              testID="tb-upload"
-              primary
-              disabled={uploading}
-            />
-          </View>
-
-          {/* Editor textarea */}
-          <TextInput
-            ref={taRef as any}
-            multiline
-            value={content}
-            onChangeText={setContent}
-            onSelectionChange={(e) => setSelection(e.nativeEvent.selection)}
-            placeholder="<h2>Hello</h2>\n<p>Page content here…</p>"
-            placeholderTextColor={COLORS.disabledText}
-            style={styles.editor}
-            scrollEnabled={false}
-            textAlignVertical="top"
-            autoCapitalize="none"
-            autoCorrect={false}
-            spellCheck={false}
-            testID="admin-legal-editor-textarea"
-          />
-          <Text style={styles.helpText}>
-            HTML is allowed (h2/h3/h4, p, ul/ol/li, strong, em, a, img, video, br, hr).
-            Scripts and event handlers are stripped on save.
-          </Text>
-        </>
-      ) : (
-        <View style={styles.previewBox} testID="admin-legal-preview">
-          <LegalHtml html={content} />
-        </View>
-      )}
-
-      {/* Footer actions */}
-      <View style={styles.footerRow}>
-        <TouchableOpacity
-          onPress={onRevert}
-          disabled={!dirty || saving}
-          style={[styles.secondaryBtn, (!dirty || saving) && { opacity: 0.5 }]}
-          activeOpacity={0.85}
-          testID="admin-legal-revert"
-        >
-          <RotateCcw size={14} color={COLORS.subtext} />
-          <Text style={styles.secondaryBtnText}>Revert</Text>
+    <View style={styles.screen}>
+      <View style={styles.topBar}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn}>
+          <ArrowLeft size={20} color={COLORS.text} />
         </TouchableOpacity>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.crumb}>Admin / Legal Pages</Text>
+          <Text style={styles.h1}>{SLUG_LABEL[slug]}</Text>
+        </View>
+        <View style={styles.modeSwitch}>
+          <ModeBtn label="Edit" active={mode === 'edit'} icon={<Pencil size={14} color={mode === 'edit' ? '#fff' : COLORS.subtext} />} onPress={() => setMode('edit')} />
+          <ModeBtn label="Preview" active={mode === 'preview'} icon={<Eye size={14} color={mode === 'preview' ? '#fff' : COLORS.subtext} />} onPress={() => setMode('preview')} />
+        </View>
         <TouchableOpacity
           onPress={onSave}
-          disabled={!dirty || saving}
-          style={[styles.primaryBtn, (!dirty || saving) && { opacity: 0.6 }]}
-          activeOpacity={0.85}
-          testID="admin-legal-save"
+          disabled={saving || loading}
+          style={[styles.saveBtn, (saving || loading) && { opacity: 0.6 }]}
+          testID="legal-save"
         >
-          {saving ? (
-            <ActivityIndicator color="#fff" size="small" />
-          ) : (
-            <>
-              <Save size={14} color="#fff" />
-              <Text style={styles.primaryBtnText}>{dirty ? 'Save changes' : 'Saved'}</Text>
-            </>
-          )}
+          {saving ? <ActivityIndicator color="#fff" size="small" /> : <Save size={16} color="#fff" />}
+          <Text style={styles.saveBtnText}>{saving ? 'Saving…' : 'Save'}</Text>
         </TouchableOpacity>
       </View>
 
-      {toast ? (
-        <View
-          style={[styles.toast, toast.kind === 'ok' ? styles.toastOk : styles.toastErr]}
-          testID={`admin-legal-toast-${toast.kind}`}
-        >
-          {toast.kind === 'ok' ? (
-            <CheckCircle2 size={14} color="#fff" />
-          ) : (
-            <AlertTriangle size={14} color="#fff" />
-          )}
-          <Text style={styles.toastText}>{toast.msg}</Text>
+      {loading ? (
+        <View style={styles.loading}>
+          <ActivityIndicator color={COLORS.primary} />
         </View>
-      ) : null}
-    </ScrollView>
+      ) : (
+        <ScrollView contentContainerStyle={styles.body}>
+          {/* Title */}
+          <Text style={styles.label}>Page title</Text>
+          <TextInput
+            value={title}
+            onChangeText={setTitle}
+            style={styles.titleInput}
+            placeholder="e.g. Privacy Policy"
+            placeholderTextColor={COLORS.subtext}
+            testID="legal-title"
+          />
+
+          {/* Toolbar — only shown when in edit mode */}
+          {mode === 'edit' ? (
+            <View style={styles.toolbar}>
+              <ToolBtn onPress={onH2} title="Heading 2"><Heading2 size={16} color={COLORS.text} /></ToolBtn>
+              <ToolBtn onPress={onH3} title="Heading 3"><Heading3 size={16} color={COLORS.text} /></ToolBtn>
+              <ToolBtn onPress={onH4} title="Heading 4"><Heading4 size={16} color={COLORS.text} /></ToolBtn>
+              <Divider />
+              <ToolBtn onPress={onBold} title="Bold"><Bold size={16} color={COLORS.text} /></ToolBtn>
+              <ToolBtn onPress={onItalic} title="Italic"><Italic size={16} color={COLORS.text} /></ToolBtn>
+              <ToolBtn onPress={onStrike} title="Strikethrough"><Strikethrough size={16} color={COLORS.text} /></ToolBtn>
+              <ToolBtn onPress={onCode} title="Inline code"><CodeIcon size={16} color={COLORS.text} /></ToolBtn>
+              <Divider />
+              <ToolBtn onPress={onUL} title="Bulleted list"><ListIcon size={16} color={COLORS.text} /></ToolBtn>
+              <ToolBtn onPress={onOL} title="Numbered list"><ListOrdered size={16} color={COLORS.text} /></ToolBtn>
+              <ToolBtn onPress={onQuote} title="Quote"><Quote size={16} color={COLORS.text} /></ToolBtn>
+              <Divider />
+              <ToolBtn onPress={onLink} title="Link"><LinkIcon size={16} color={COLORS.text} /></ToolBtn>
+              <ToolBtn onPress={onImage} title="Image" disabled={uploading}>
+                {uploading ? <ActivityIndicator size="small" color={COLORS.primary} /> : <ImageIcon size={16} color={COLORS.text} />}
+              </ToolBtn>
+            </View>
+          ) : null}
+
+          {/* Edit OR Preview pane */}
+          {mode === 'edit' ? (
+            <TextInput
+              ref={inputRef}
+              value={markdown}
+              onChangeText={setMarkdown}
+              onSelectionChange={(e) => setSelection(e.nativeEvent.selection)}
+              selection={selection}
+              multiline
+              textAlignVertical="top"
+              style={styles.editor}
+              placeholder={'Start typing…\n\nUse the toolbar above for formatting. Markdown shortcuts also work (# Heading, **bold**, - list).'}
+              placeholderTextColor={COLORS.subtext}
+              testID="legal-editor"
+            />
+          ) : (
+            <View style={styles.previewWrap}>
+              <Text style={styles.previewBadge}>Preview</Text>
+              <LegalHtml html={previewHtml} />
+            </View>
+          )}
+
+          {/* Footer status */}
+          <View style={styles.footerRow}>
+            {savedAt ? (
+              <View style={styles.savedHint}>
+                <CheckCircle2 size={14} color={COLORS.success} />
+                <Text style={styles.savedHintText}>Last saved {new Date(savedAt).toLocaleString()}</Text>
+              </View>
+            ) : (
+              <View style={styles.savedHint}>
+                <AlertTriangle size={14} color={COLORS.warning} />
+                <Text style={[styles.savedHintText, { color: COLORS.warning }]}>Default content — not yet customized</Text>
+              </View>
+            )}
+            <Text style={styles.charCount}>{markdown.length.toLocaleString()} chars</Text>
+          </View>
+        </ScrollView>
+      )}
+    </View>
   );
 }
 
-function ToolBtn({
-  icon,
-  label,
-  onPress,
-  testID,
-  primary,
-  disabled,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  onPress: () => void;
-  testID?: string;
-  primary?: boolean;
-  disabled?: boolean;
-}) {
+// ── Small subcomponents ──────────────────────────────────────────────────
+function ModeBtn({ label, icon, active, onPress }: { label: string; icon: React.ReactNode; active: boolean; onPress: () => void }) {
   return (
-    <TouchableOpacity
-      onPress={onPress}
-      style={[styles.toolBtn, primary && styles.toolBtnPrimary, disabled && { opacity: 0.6 }]}
-      activeOpacity={0.85}
-      testID={testID}
-      disabled={disabled}
-    >
+    <TouchableOpacity onPress={onPress} style={[styles.modeBtn, active && styles.modeBtnActive]}>
       {icon}
-      <Text style={[styles.toolBtnText, primary && { color: COLORS.primary, fontWeight: FONT.weights.bold }]}>{label}</Text>
+      <Text style={[styles.modeBtnText, active && { color: '#fff' }]}>{label}</Text>
     </TouchableOpacity>
   );
 }
 
+function ToolBtn({ onPress, title, children, disabled }: { onPress: () => void; title: string; children: React.ReactNode; disabled?: boolean }) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      disabled={disabled}
+      // @ts-ignore — web-only tooltip
+      accessibilityLabel={title}
+      style={[styles.toolBtn, disabled && { opacity: 0.5 }]}
+    >
+      {children}
+    </TouchableOpacity>
+  );
+}
+
+function Divider() {
+  return <View style={styles.divider} />;
+}
+
+// ── Styles ───────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: SPACING.lg },
-  backBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: SPACING.md },
-  backText: { color: COLORS.subtext, fontSize: FONT.sizes.sm, fontWeight: FONT.weights.medium },
-  heading: { fontSize: FONT.sizes.xl, fontWeight: FONT.weights.bold, color: COLORS.text },
-  subheading: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 2 },
-  viewToggle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: RADIUS.pill,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    backgroundColor: COLORS.surface,
+  screen: { flex: 1, backgroundColor: COLORS.bg },
+  topBar: {
+    flexDirection: 'row', alignItems: 'center', gap: SPACING.sm,
+    paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm,
+    backgroundColor: COLORS.surface, borderBottomWidth: 1, borderBottomColor: COLORS.border,
   },
-  viewToggleActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
-  viewToggleText: { fontSize: FONT.sizes.xs, fontWeight: FONT.weights.bold, color: COLORS.text },
-  label: {
-    fontSize: FONT.sizes.xs,
-    color: COLORS.subtext,
-    fontWeight: FONT.weights.medium,
-    marginBottom: 4,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  titleInput: {
-    height: 44,
+  iconBtn: { padding: 6, borderRadius: 999, backgroundColor: COLORS.bg },
+  crumb: { color: COLORS.subtext, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 },
+  h1: { color: COLORS.text, fontSize: FONT.sizes.lg, fontWeight: FONT.weights.heavy },
+  modeSwitch: { flexDirection: 'row', backgroundColor: COLORS.bg, borderRadius: 999, padding: 4, gap: 2 },
+  modeBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
+  modeBtnActive: { backgroundColor: COLORS.primary },
+  modeBtnText: { color: COLORS.subtext, fontSize: 12, fontWeight: FONT.weights.semibold },
+  saveBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: COLORS.primary, paddingHorizontal: 14, paddingVertical: 9,
     borderRadius: RADIUS.md,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingHorizontal: SPACING.md,
-    color: COLORS.text,
-    backgroundColor: COLORS.surface,
-    fontSize: FONT.sizes.md,
-    fontWeight: FONT.weights.semibold,
-    marginBottom: SPACING.md,
+  },
+  saveBtnText: { color: '#fff', fontWeight: FONT.weights.bold },
+  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 40 },
+  body: { padding: SPACING.md, paddingBottom: 80, gap: SPACING.sm },
+  label: { fontSize: 11, fontWeight: FONT.weights.bold, color: COLORS.subtext, textTransform: 'uppercase', letterSpacing: 0.5 },
+  titleInput: {
+    backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border,
+    paddingHorizontal: 12, paddingVertical: 10, borderRadius: RADIUS.md,
+    color: COLORS.text, fontSize: FONT.sizes.md, fontWeight: FONT.weights.semibold,
   },
   toolbar: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-    padding: 8,
-    backgroundColor: COLORS.surface,
-    borderRadius: RADIUS.md,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    marginBottom: SPACING.sm,
+    flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 4,
+    backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border,
+    padding: 6, borderRadius: RADIUS.md,
   },
   toolBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    backgroundColor: COLORS.bg,
-    borderRadius: RADIUS.sm,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    minWidth: 32, minHeight: 32, alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: 6, borderRadius: RADIUS.sm,
   },
-  toolBtnPrimary: { backgroundColor: COLORS.primaryLight, borderColor: COLORS.primary },
-  toolBtnText: { fontSize: FONT.sizes.xs, color: COLORS.text, fontWeight: FONT.weights.medium },
+  divider: { width: 1, height: 20, backgroundColor: COLORS.border, marginHorizontal: 4 },
   editor: {
-    minHeight: 360,
-    borderRadius: RADIUS.md,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    padding: SPACING.md,
-    color: COLORS.text,
-    backgroundColor: COLORS.surface,
-    fontSize: 13,
-    lineHeight: 20,
-    fontFamily: Platform.OS === 'web' ? 'monospace' : Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border,
+    borderRadius: RADIUS.md, padding: 12, minHeight: 320,
+    color: COLORS.text, fontSize: FONT.sizes.sm, lineHeight: 22,
+    // Monospaced for the markdown editing pane so syntax aligns visually.
+    fontFamily: Platform.select({ web: 'ui-monospace, Menlo, Consolas, monospace', default: undefined }),
   },
-  helpText: { color: COLORS.subtext, fontSize: FONT.sizes.xs, marginTop: 6 },
-  previewBox: {
-    padding: SPACING.lg,
-    backgroundColor: COLORS.surface,
-    borderRadius: RADIUS.md,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    minHeight: 360,
+  previewWrap: {
+    backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border,
+    borderRadius: RADIUS.md, padding: SPACING.md, minHeight: 320,
   },
-  footerRow: {
-    flexDirection: 'row',
-    gap: SPACING.sm,
-    marginTop: SPACING.lg,
-    justifyContent: 'flex-end',
+  previewBadge: {
+    alignSelf: 'flex-start', backgroundColor: COLORS.primaryLight, color: COLORS.primary,
+    paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999,
+    fontSize: 10, fontWeight: FONT.weights.bold, letterSpacing: 0.5,
+    textTransform: 'uppercase', marginBottom: SPACING.sm,
   },
-  primaryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: COLORS.primary,
-    paddingHorizontal: SPACING.lg,
-    paddingVertical: 10,
-    borderRadius: RADIUS.md,
-  },
-  primaryBtnText: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: FONT.sizes.sm },
-  secondaryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: COLORS.surface,
-    paddingHorizontal: SPACING.md,
-    paddingVertical: 10,
-    borderRadius: RADIUS.md,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  secondaryBtnText: { color: COLORS.subtext, fontWeight: FONT.weights.semibold, fontSize: FONT.sizes.sm },
-  errorText: { color: COLORS.danger, fontSize: FONT.sizes.md },
-  toast: {
-    position: 'absolute',
-    bottom: 24,
-    left: 16,
-    right: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: SPACING.md,
-    paddingVertical: 10,
-    borderRadius: RADIUS.md,
-  },
-  toastOk: { backgroundColor: COLORS.success },
-  toastErr: { backgroundColor: COLORS.danger },
-  toastText: { color: '#fff', fontWeight: FONT.weights.bold, fontSize: FONT.sizes.sm, flex: 1 },
+  footerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: SPACING.sm },
+  savedHint: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  savedHintText: { color: COLORS.subtext, fontSize: 12 },
+  charCount: { color: COLORS.subtext, fontSize: 11 },
 });

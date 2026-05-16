@@ -1,315 +1,251 @@
-"""Backend tests — Stripe Phase-2 inbound webhooks.
+"""Test suite for the rebuilt Legal pages markdown pipeline.
 
-Run against the live preview backend defined in
-/app/frontend/.env (EXPO_PUBLIC_BACKEND_URL). Tests:
-
-  1. Before secrets configured: 3 webhook POSTs → 501.
-  2. Save 3 Phase-2 secrets via admin POST /api/admin/integrations/stripe.
-  3. GET /api/admin/integrations returns the *_set booleans = true (no plaintext).
-  4. Mongo persistence — webhook_secret_*_enc encrypted strings present.
-  5. After secrets set, webhook POSTs (no Stripe-Signature) → 400 (not 501).
-  6. Idempotency — duplicate {id: "evt_test_idemp_1"} inserts into payment_events
-     fail on the second attempt because of the unique index on .id.
-  7. Cleanup — $unset the encrypted secret fields + remove the test event doc.
+Endpoints under test (see /app/backend/routes/legal_routes.py):
+  - GET  /api/legal/pages/{slug}     (public)
+  - GET  /api/admin/legal/pages      (admin)
+  - PUT  /api/admin/legal/pages/{slug} (admin)
+  - POST /api/admin/legal/upload     (admin)
+  - GET  /api/legal/media/{id}       (public)
 """
-from __future__ import annotations
-
-import asyncio
-import json
-import os
+import io
+import struct
 import sys
+import zlib
 
 import requests
-from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo.errors import DuplicateKeyError
 
-
-BACKEND_URL = "https://joint-pay-1.preview.emergentagent.com/api"
+BASE = "https://joint-pay-1.preview.emergentagent.com/api"
 ADMIN_EMAIL = "admin@squadpay.us"
 ADMIN_PASSWORD = "Letmein@2007#ForReal"
-MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
-DB_NAME = os.environ.get("DB_NAME", "test_database")
+
+PASS = []
+FAIL = []
 
 
-passes: list[str] = []
-fails: list[str] = []
-
-
-def check(name: str, cond: bool, detail: str = "") -> None:
+def check(name, cond, detail=""):
     if cond:
-        passes.append(name)
+        PASS.append(name)
         print(f"  ✅ {name}")
     else:
-        fails.append(f"{name} — {detail}")
-        print(f"  ❌ {name} — {detail}")
+        FAIL.append((name, detail))
+        print(f"  ❌ {name}  {detail}")
 
 
-def admin_login() -> str:
+def admin_login():
     r = requests.post(
-        f"{BACKEND_URL}/admin/auth/login",
+        f"{BASE}/admin/auth/login",
         json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
         timeout=15,
     )
-    r.raise_for_status()
-    data = r.json()
-    tok = data.get("access_token") or data.get("token")
-    assert tok, f"no token in admin login response: {data}"
-    return tok
+    assert r.status_code == 200, f"admin login failed: {r.status_code} {r.text}"
+    j = r.json()
+    tok = j.get("access_token") or j.get("token")
+    assert tok, f"no token: {j}"
+    return {"Authorization": f"Bearer {tok}"}
 
 
-async def db_handle():
-    client = AsyncIOMotorClient(MONGO_URL)
-    return client, client[DB_NAME]
+def make_tiny_png():
+    """Build a valid 1x1 PNG without depending on Pillow."""
+    sig = b"\x89PNG\r\n\x1a\n"
 
-
-async def precondition_clear_phase2_secrets():
-    """Make sure the test starts fresh — phase-2 secrets must not be configured."""
-    client, db = await db_handle()
-    try:
-        await db.app_settings.update_one(
-            {"key": "integrations"},
-            {"$unset": {
-                "stripe.webhook_secret_payments_enc": "",
-                "stripe.webhook_secret_refunds_enc": "",
-                "stripe.webhook_secret_issuing_enc": "",
-                "stripe.webhook_secret_payments": "",
-                "stripe.webhook_secret_refunds": "",
-                "stripe.webhook_secret_issuing": "",
-            }},
-        )
-    finally:
-        client.close()
-
-
-def test_pre_state_501():
-    print("\n=== Step 1 — Pre-state: all 3 webhooks return 501 (no secret) ===")
-    for path in ("/webhook/stripe-payments", "/webhook/stripe-refunds", "/webhook/stripe-issuing"):
-        r = requests.post(
-            f"{BACKEND_URL}{path}",
-            data=b"{}",
-            headers={"content-type": "application/json"},
-            timeout=15,
-        )
-        check(
-            f"POST {path} → 501 before secret configured",
-            r.status_code == 501,
-            f"got status={r.status_code}, body={r.text[:200]}",
+    def chunk(typ, data):
+        return (
+            struct.pack(">I", len(data))
+            + typ
+            + data
+            + struct.pack(">I", zlib.crc32(typ + data) & 0xFFFFFFFF)
         )
 
-
-def test_save_phase2_secrets(token: str):
-    print("\n=== Step 2 — Save 3 Phase-2 secrets via admin ===")
-    body = {
-        "enabled": True,
-        "mode": "test",
-        "publishable_key": "pk_test_phase2",
-        "webhook_secret_payments": "whsec_test_p",
-        "webhook_secret_refunds": "whsec_test_r",
-        "webhook_secret_issuing": "whsec_test_i",
-    }
-    r = requests.post(
-        f"{BACKEND_URL}/admin/integrations/stripe",
-        headers={"Authorization": f"Bearer {token}"},
-        json=body,
-        timeout=20,
-    )
-    check(
-        "POST /admin/integrations/stripe with 3 phase-2 secrets → 200",
-        r.status_code == 200,
-        f"status={r.status_code}, body={r.text[:300]}",
-    )
-    try:
-        rj = r.json()
-    except Exception:
-        rj = {}
-    body_str = json.dumps(rj)
-    check(
-        "Response does NOT contain plaintext webhook secret values",
-        "whsec_test_p" not in body_str and "whsec_test_r" not in body_str and "whsec_test_i" not in body_str,
-        "response body contained one of the plaintext secret values",
-    )
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    raw = b"\x00\xff\xff\xff"
+    idat = zlib.compress(raw)
+    return sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
 
 
-def test_admin_integrations_get_flags(token: str):
-    print("\n=== Step 2b — GET /admin/integrations returns the *_set flags ===")
-    r = requests.get(
-        f"{BACKEND_URL}/admin/integrations",
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=15,
-    )
-    check("GET /admin/integrations → 200", r.status_code == 200, f"status={r.status_code}")
-    if r.status_code != 200:
-        return
-    rj = r.json()
-    s = (rj.get("stripe") or {})
-    print(f"  stripe keys: {sorted(s.keys())}")
-    check("stripe.webhook_secret_payments_set == true",
-          s.get("webhook_secret_payments_set") is True,
-          f"got {s.get('webhook_secret_payments_set')!r}")
-    check("stripe.webhook_secret_refunds_set == true",
-          s.get("webhook_secret_refunds_set") is True,
-          f"got {s.get('webhook_secret_refunds_set')!r}")
-    check("stripe.webhook_secret_issuing_set == true",
-          s.get("webhook_secret_issuing_set") is True,
-          f"got {s.get('webhook_secret_issuing_set')!r}")
-    body_str = json.dumps(rj)
-    check("GET /admin/integrations does NOT return plaintext secret values",
-          "whsec_test_p" not in body_str and "whsec_test_r" not in body_str and "whsec_test_i" not in body_str,
-          "plaintext secret leaked back through GET")
-
-
-async def test_mongo_persistence():
-    print("\n=== Step 3 — Mongo persistence of *_enc fields ===")
-    client, db = await db_handle()
-    try:
-        doc = await db.app_settings.find_one({"key": "integrations"}, {"_id": 0, "stripe": 1}) or {}
-        s = doc.get("stripe") or {}
-        for k in ("webhook_secret_payments_enc", "webhook_secret_refunds_enc", "webhook_secret_issuing_enc"):
-            val = s.get(k)
-            check(f"app_settings.stripe.{k} present (string)", isinstance(val, str) and len(val) > 10,
-                  f"got value type={type(val).__name__}, len={(len(val) if isinstance(val, str) else 'n/a')}")
-            check(f"app_settings.stripe.{k} is NOT plaintext",
-                  isinstance(val, str) and not val.startswith("whsec_test_"),
-                  f"value appears to be plaintext: {val!r}")
-        # Also ensure NO plaintext copy stored alongside
-        for k in ("webhook_secret_payments", "webhook_secret_refunds", "webhook_secret_issuing"):
-            check(f"app_settings.stripe.{k} (plaintext) NOT persisted",
-                  k not in s,
-                  f"plaintext key persisted: {s.get(k)!r}")
-    finally:
-        client.close()
-
-
-def test_post_state_400():
-    print("\n=== Step 4 — After secrets configured, webhook POSTs (no signature) → 400, not 501 ===")
-    for path in ("/webhook/stripe-payments", "/webhook/stripe-refunds", "/webhook/stripe-issuing"):
-        r = requests.post(
-            f"{BACKEND_URL}{path}",
-            data=b"not-a-valid-stripe-event",
-            headers={"content-type": "application/json"},
-            timeout=15,
-        )
-        check(
-            f"POST {path} (no signature) → 400 (signature verification path wired)",
-            r.status_code == 400,
-            f"got status={r.status_code}, body={r.text[:200]}",
-        )
-        check(
-            f"POST {path} no longer returns 501 after secret configured",
-            r.status_code != 501,
-            "still returning 501 — secret lookup did not pick up new value",
-        )
-
-
-async def test_idempotency_index():
-    print("\n=== Step 5 — payment_events.id unique index idempotency ===")
-    client, db = await db_handle()
-    try:
-        await db.payment_events.delete_many({"id": "evt_test_idemp_1"})
-
-        idx = await db.payment_events.index_information()
-        has_id_unique = any(
-            spec.get("unique") and spec.get("key") == [("id", 1)]
-            for spec in idx.values()
-        )
-        check("payment_events has UNIQUE index on `id`", has_id_unique,
-              f"index_information={idx}")
-
-        await db.payment_events.insert_one({
-            "id": "evt_test_idemp_1",
-            "type": "test.idempotency",
-            "kind_tag": "payments",
-            "livemode": False,
-            "received_at": "2026-05-16T00:00:00Z",
-        })
-        check("First insert {id: evt_test_idemp_1} succeeded", True)
-
-        duplicate_raised = False
-        try:
-            await db.payment_events.insert_one({
-                "id": "evt_test_idemp_1",
-                "type": "test.idempotency.dup",
-                "kind_tag": "payments",
-            })
-        except DuplicateKeyError:
-            duplicate_raised = True
-        except Exception as e:
-            duplicate_raised = "E11000" in str(e) or "duplicate" in str(e).lower()
-        check("Second insert with same id raises DuplicateKeyError", duplicate_raised,
-              "duplicate not rejected — uniqueness not enforced")
-    finally:
-        client.close()
-
-
-async def cleanup():
-    print("\n=== Cleanup — drop encrypted phase-2 secrets + test event doc ===")
-    client, db = await db_handle()
-    try:
-        await db.app_settings.update_one(
-            {"key": "integrations"},
-            {"$unset": {
-                "stripe.webhook_secret_payments_enc": "",
-                "stripe.webhook_secret_refunds_enc": "",
-                "stripe.webhook_secret_issuing_enc": "",
-                "stripe.webhook_secret_payments": "",
-                "stripe.webhook_secret_refunds": "",
-                "stripe.webhook_secret_issuing": "",
-            }},
-        )
-        await db.payment_events.delete_many({"id": "evt_test_idemp_1"})
-        doc = await db.app_settings.find_one({"key": "integrations"}, {"_id": 0, "stripe": 1}) or {}
-        s = doc.get("stripe") or {}
-        leftover = [k for k in ("webhook_secret_payments_enc", "webhook_secret_refunds_enc", "webhook_secret_issuing_enc") if k in s]
-        check("Cleanup unset phase-2 _enc fields", not leftover, f"still present: {leftover}")
-        ev = await db.payment_events.find_one({"id": "evt_test_idemp_1"})
-        check("Cleanup deleted evt_test_idemp_1", ev is None, f"still present: {ev}")
-        print(f"  post-cleanup stripe keys: {sorted(s.keys())}")
-    finally:
-        client.close()
-
-
-def test_post_cleanup_501():
-    print("\n=== Post-cleanup sanity — webhook POSTs back to 501 ===")
-    for path in ("/webhook/stripe-payments", "/webhook/stripe-refunds", "/webhook/stripe-issuing"):
-        r = requests.post(
-            f"{BACKEND_URL}{path}",
-            data=b"{}",
-            headers={"content-type": "application/json"},
-            timeout=15,
-        )
-        check(
-            f"POST {path} → 501 after cleanup (no secret again)",
-            r.status_code == 501,
-            f"got status={r.status_code}, body={r.text[:200]}",
-        )
+def section(t):
+    print(f"\n=== {t} ===")
 
 
 def main():
-    print(f"Backend URL: {BACKEND_URL}")
-    print(f"Mongo URL  : {MONGO_URL}  DB: {DB_NAME}")
-    asyncio.run(precondition_clear_phase2_secrets())
+    headers = admin_login()
 
-    test_pre_state_501()
+    # ── 1) Public read with both formats present ──
+    section("1) Public GET /api/legal/pages/{slug} — defaults")
+    for slug in ("support", "privacy", "terms"):
+        r = requests.get(f"{BASE}/legal/pages/{slug}", timeout=15)
+        check(f"GET /legal/pages/{slug} -> 200", r.status_code == 200, f"got {r.status_code}")
+        if r.status_code == 200:
+            body = r.json()
+            for k in ("title", "slug", "updated_at", "is_default", "content_md", "content_html"):
+                check(f"  has key '{k}' [{slug}]", k in body)
+            if slug == "support":
+                check(
+                    "  support content_md starts with '## Need help?'",
+                    isinstance(body.get("content_md"), str) and body["content_md"].lstrip().startswith("## Need help?"),
+                    f"got: {body.get('content_md','')[:60]!r}",
+                )
+                check(
+                    "  support content_html starts with '<h2>Need help?</h2>'",
+                    isinstance(body.get("content_html"), str) and body["content_html"].lstrip().startswith("<h2>Need help?</h2>"),
+                    f"got: {body.get('content_html','')[:80]!r}",
+                )
+            else:
+                check(f"  {slug} content_md non-empty", bool(body.get("content_md")))
+                check(f"  {slug} content_html non-empty", bool(body.get("content_html")))
 
-    token = admin_login()
-    print(f"  admin token acquired (len={len(token)})")
+    r = requests.get(f"{BASE}/legal/pages/unknown", timeout=15)
+    check("GET /legal/pages/unknown -> 404", r.status_code == 404, f"got {r.status_code}")
 
-    test_save_phase2_secrets(token)
-    test_admin_integrations_get_flags(token)
-    asyncio.run(test_mongo_persistence())
-    test_post_state_400()
-    asyncio.run(test_idempotency_index())
-    asyncio.run(cleanup())
-    test_post_cleanup_501()
+    # ── 2) Admin list ──
+    section("2) Admin GET /api/admin/legal/pages")
+    r = requests.get(f"{BASE}/admin/legal/pages", headers=headers, timeout=15)
+    check("GET /admin/legal/pages -> 200", r.status_code == 200, f"got {r.status_code} {r.text[:200]}")
+    if r.status_code == 200:
+        body = r.json()
+        pages = body.get("pages") or []
+        check("pages array has 3 items", len(pages) == 3, f"got {len(pages)}")
+        slugs = {p.get("slug") for p in pages}
+        check("pages cover support/privacy/terms", slugs == {"support", "privacy", "terms"}, f"got {slugs}")
+        for p in pages:
+            check(
+                f"  page[{p.get('slug')}] has content_md",
+                isinstance(p.get("content_md"), str) and len(p["content_md"]) > 0,
+            )
+            check(
+                f"  page[{p.get('slug')}] has content_html",
+                isinstance(p.get("content_html"), str) and len(p["content_html"]) > 0,
+            )
 
-    print("\n" + "=" * 70)
-    print(f"PASS: {len(passes)}   FAIL: {len(fails)}")
-    if fails:
-        print("\nFAILURES:")
-        for f in fails:
-            print(f"  - {f}")
+    # ── 3) PUT with markdown ──
+    section("3) PUT /api/admin/legal/pages/privacy with markdown")
+    md_body = "# Hello\n\nThis is **bold**."
+    r = requests.put(
+        f"{BASE}/admin/legal/pages/privacy",
+        headers=headers,
+        json={"title": "Privacy Policy", "content_md": md_body},
+        timeout=15,
+    )
+    check("PUT privacy md -> 200", r.status_code == 200, f"got {r.status_code} {r.text[:200]}")
+    put_html = None
+    if r.status_code == 200:
+        body = r.json()
+        check("PUT response ok=true", body.get("ok") is True)
+        put_html = body.get("content_html") or ""
+        check("PUT content_html includes <h1>Hello</h1>", "<h1>Hello</h1>" in put_html, f"got: {put_html!r}")
+        check("PUT content_html includes <strong>bold</strong>", "<strong>bold</strong>" in put_html, f"got: {put_html!r}")
+
+    # ── 4) Round-trip ──
+    section("4) Round-trip GET /api/legal/pages/privacy")
+    r = requests.get(f"{BASE}/legal/pages/privacy", timeout=15)
+    check("GET privacy -> 200", r.status_code == 200, f"got {r.status_code}")
+    if r.status_code == 200:
+        body = r.json()
+        check(
+            "content_md equals exact submitted markdown",
+            body.get("content_md") == md_body,
+            f"got: {body.get('content_md')!r}",
+        )
+        if put_html is not None:
+            check(
+                "content_html matches PUT response",
+                body.get("content_html") == put_html,
+                f"PUT={put_html!r} GET={body.get('content_html')!r}",
+            )
+
+    # ── 5) Reject empty body ──
+    section("5) PUT with neither content_md nor content_html -> 400")
+    r = requests.put(
+        f"{BASE}/admin/legal/pages/privacy",
+        headers=headers,
+        json={"title": "Privacy Policy"},
+        timeout=15,
+    )
+    check("PUT privacy no content -> 400", r.status_code == 400, f"got {r.status_code} {r.text[:200]}")
+
+    # ── 6) Legacy shape — content_html only ──
+    section("6) PUT /api/admin/legal/pages/terms with content_html (legacy)")
+    legacy_html = "<p>Hello <b>world</b></p>"
+    r = requests.put(
+        f"{BASE}/admin/legal/pages/terms",
+        headers=headers,
+        json={"title": "Terms & Conditions", "content_html": legacy_html},
+        timeout=15,
+    )
+    check("PUT terms html -> 200", r.status_code == 200, f"got {r.status_code} {r.text[:200]}")
+    if r.status_code == 200:
+        body = r.json()
+        check(
+            "PUT terms response content_md non-empty (html->md fallback)",
+            isinstance(body.get("content_md"), str) and len(body["content_md"].strip()) > 0,
+            f"got: {body.get('content_md')!r}",
+        )
+        check("PUT terms response content_html present", bool(body.get("content_html")))
+
+    # ── 7) Slug validation + auth ──
+    section("7) PUT garbage slug -> 400; PUT without auth -> 401")
+    r = requests.put(
+        f"{BASE}/admin/legal/pages/garbage",
+        headers=headers,
+        json={"title": "X", "content_md": "y"},
+        timeout=15,
+    )
+    check("PUT garbage slug -> 400", r.status_code == 400, f"got {r.status_code} {r.text[:200]}")
+
+    r = requests.put(
+        f"{BASE}/admin/legal/pages/support",
+        json={"title": "Support", "content_md": "x"},
+        timeout=15,
+    )
+    check("PUT support without auth -> 401", r.status_code == 401, f"got {r.status_code} {r.text[:200]}")
+
+    # ── 8) Media upload smoke test ──
+    section("8) Upload tiny PNG + read it back")
+    png_bytes = make_tiny_png()
+    files = {"file": ("tiny.png", io.BytesIO(png_bytes), "image/png")}
+    r = requests.post(f"{BASE}/admin/legal/upload", headers=headers, files=files, timeout=20)
+    check("POST /admin/legal/upload -> 200", r.status_code == 200, f"got {r.status_code} {r.text[:200]}")
+    media_id = None
+    if r.status_code == 200:
+        body = r.json()
+        media_id = body.get("id")
+        check("upload returns id", bool(media_id))
+        check(
+            "upload returns url",
+            isinstance(body.get("url"), str) and "/api/legal/media/" in (body.get("url") or ""),
+        )
+        check("upload returns size", body.get("size") == len(png_bytes), f"got {body.get('size')} expected {len(png_bytes)}")
+        check("upload returns mime_type=image/png", body.get("mime_type") == "image/png", f"got {body.get('mime_type')}")
+    if media_id:
+        r = requests.get(f"{BASE}/legal/media/{media_id}", timeout=15)
+        check("GET /legal/media/{id} -> 200", r.status_code == 200, f"got {r.status_code}")
+        check("media bytes round-trip equal", r.content == png_bytes,
+              f"got {len(r.content)} vs {len(png_bytes)}")
+        check("media content-type image/png",
+              r.headers.get("content-type", "").startswith("image/png"),
+              f"got {r.headers.get('content-type')}")
+
+    # ── 9) Cleanup — restore defaults ──
+    section("9) Cleanup — restore privacy & terms to defaults")
+    try:
+        sys.path.insert(0, "/app/backend")
+        from routes.legal_routes import DEFAULT_PAGES  # type: ignore
+        for slug in ("privacy", "terms"):
+            d = DEFAULT_PAGES[slug]
+            rr = requests.put(
+                f"{BASE}/admin/legal/pages/{slug}",
+                headers=headers,
+                json={"title": d["title"], "content_md": d["content_md"]},
+                timeout=15,
+            )
+            check(f"cleanup restore {slug} -> 200", rr.status_code == 200, f"got {rr.status_code}")
+    except Exception as e:
+        print(f"  (cleanup skipped — could not import DEFAULT_PAGES: {e})")
+
+    print(f"\n=== RESULT: {len(PASS)} pass, {len(FAIL)} fail ===")
+    if FAIL:
+        for n, d in FAIL:
+            print(f"  FAIL: {n}  {d}")
         sys.exit(1)
-    print("All Phase-2 webhook checks passed.")
 
 
 if __name__ == "__main__":

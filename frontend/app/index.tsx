@@ -158,9 +158,14 @@ export default function HomeScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />}
         contentContainerStyle={{ paddingBottom: 110 }}
       >
-        {/* ───── Hero panel (violet gradient, adapted-dark) ───── */}
+        {/* ───── Hero panel — softened violet gradient (May 2026) ─────
+            Was a heavy 3F1F8C → 5B2BC8 → 7C3AED that visually swallowed the
+            squad/bill cards underneath. Toned the start/end stops down to a
+            mid-violet → soft-lavender wash so the cards in the body read as
+            the focal point. Keep the brand mark + bell legible by tightening
+            contrast via on-card text colours, not by darkening the panel. */}
         <LinearGradient
-          colors={['#3F1F8C', '#5B2BC8', '#7C3AED']}
+          colors={['#7C3AED', '#9B6BF2', '#C4B0F8']}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={styles.hero}

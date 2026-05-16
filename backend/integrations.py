@@ -120,6 +120,10 @@ def project_integrations_for_admin(rec: dict) -> dict:
             "secret_key_set": bool(s.get("secret_key_enc")),
             "webhook_secret_set": bool(s.get("webhook_secret_enc")),
             "webhook_secret_masked": mask_secret(decrypt_secret(s.get("webhook_secret_enc"))),
+            # Phase 2 — masked status for the 3 per-event secrets.
+            "webhook_secret_payments_set": bool(s.get("webhook_secret_payments_enc")),
+            "webhook_secret_refunds_set":  bool(s.get("webhook_secret_refunds_enc")),
+            "webhook_secret_issuing_set":  bool(s.get("webhook_secret_issuing_enc")),
             "updated_at": s.get("updated_at"),
             "updated_by": s.get("updated_by"),
         },

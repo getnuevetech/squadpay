@@ -64,15 +64,33 @@ async def _get_webhook_secret(db, key: str) -> Optional[str]:
        webhook_secret_refunds      — Phase 2 refunds
        webhook_secret_issuing      — Phase 2 issuing
 
+    Storage layout (set by admin via POST /api/admin/integrations/stripe):
+       db.app_settings { key: "integrations" }.stripe.<key>_enc  (encrypted)
+       db.app_settings { key: "integrations" }.stripe.<key>      (plain, dev/test only)
+
     Falls back to env `STRIPE_WEBHOOK_SECRET_<KIND>` if not in DB, then to
     `STRIPE_WEBHOOK_SECRET` for compatibility with dev setups.
     """
-    integrations = await db.integrations.find_one({"id": "singleton"}, {"_id": 0}) or {}
-    stripe_cfg = (integrations.get("stripe") or {})
-    # Each event-class can have its own secret; otherwise inherit the legacy one.
-    val = stripe_cfg.get(key) or stripe_cfg.get("webhook_secret")
-    if val:
-        return val
+    # The admin layer persists Stripe config under app_settings, NOT a
+    # separate `integrations` collection — see admin_integrations.py.
+    doc = await db.app_settings.find_one({"key": "integrations"}, {"_id": 0}) or {}
+    stripe_cfg = (doc.get("stripe") or {})
+
+    # Prefer the encrypted value if present (admin UI always writes _enc).
+    enc_key = f"{key}_enc"
+    legacy_enc_key = "webhook_secret_enc"
+    plain = stripe_cfg.get(key) or stripe_cfg.get("webhook_secret")  # legacy plain
+    if plain:
+        return plain
+    encoded = stripe_cfg.get(enc_key) or stripe_cfg.get(legacy_enc_key)
+    if encoded:
+        try:
+            from integrations import decrypt_secret
+            decoded = decrypt_secret(encoded)
+            if decoded:
+                return decoded
+        except Exception as e:
+            logger.warning(f"[stripe-webhook] decrypt {enc_key} failed: {e}")
     return (
         os.environ.get(f"STRIPE_WEBHOOK_SECRET_{key.split('_')[-1].upper()}")
         or os.environ.get("STRIPE_WEBHOOK_SECRET")

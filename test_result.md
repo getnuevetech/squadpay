@@ -13386,3 +13386,171 @@ agent_communication:
         missing the `/api` prefix. Patched both call sites + added a
         content-type guard so a non-JSON response can never silently
         replace the admin config with hardcoded fallbacks again.
+
+---
+## 2026-05-16 — Real-Time Ledger Reconciliation Phase 2 (Inbound webhooks)
+
+backend:
+  - task: "Stripe Phase-2 inbound webhooks + drift writer"
+    implemented: true
+    working: true
+    file: "/app/backend/stripe_webhooks.py, /app/backend/server.py, /app/backend/admin_integrations.py, /app/backend/integrations.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "testing"
+       -comment: |
+         Phase 2 inbound Stripe webhooks fully verified via /app/backend_test.py
+         against the live preview backend
+         (https://joint-pay-1.preview.emergentagent.com/api). 33/33 assertions
+         PASS. No 5xx anywhere. Backend log shows clean 501→400→501 transitions
+         for the 3 endpoints as state was mutated.
+
+         ✅ Step 1 — Pre-state (no Phase-2 secret configured):
+           POST /api/webhook/stripe-payments → 501 ✓
+           POST /api/webhook/stripe-refunds  → 501 ✓
+           POST /api/webhook/stripe-issuing  → 501 ✓
+           (Confirms graceful degradation per design — Stripe will retry once
+           the secret is configured.)
+
+         ✅ Step 2 — POST /api/admin/integrations/stripe (super_admin login
+           admin@squadpay.us / production password) with:
+             { enabled: true, mode: 'test', publishable_key: 'pk_test_phase2',
+               webhook_secret_payments: 'whsec_test_p',
+               webhook_secret_refunds:  'whsec_test_r',
+               webhook_secret_issuing:  'whsec_test_i' }
+           → 200, response body does NOT contain the plaintext values. ✓
+
+         ✅ Step 2b — GET /api/admin/integrations after save:
+           stripe.webhook_secret_payments_set == true ✓
+           stripe.webhook_secret_refunds_set  == true ✓
+           stripe.webhook_secret_issuing_set  == true ✓
+           Response contains the *_set booleans (computed by
+           project_integrations_for_admin) plus the existing _set / _masked
+           fields for the legacy webhook_secret. NO plaintext leaked.
+
+         ✅ Step 3 — Mongo persistence verified directly via motor:
+           db.app_settings({key:'integrations'}).stripe.webhook_secret_payments_enc
+             — string, length > 10, does NOT start with 'whsec_' (encrypted) ✓
+           Same for _refunds_enc / _issuing_enc. ✓
+           Plaintext keys (webhook_secret_payments / _refunds / _issuing) are
+           NOT persisted alongside the _enc blobs. ✓
+
+         ✅ Step 4 — After secrets are set, NO 501 anymore:
+           POST /webhook/stripe-payments (malformed body, no Stripe-Signature)
+             → 400 "Missing Stripe-Signature header" ✓
+           POST /webhook/stripe-refunds → 400 ✓
+           POST /webhook/stripe-issuing → 400 ✓
+           Confirms the secret-lookup pathway (db.app_settings → decrypt via
+           integrations.decrypt_secret) is wired correctly through
+           _get_webhook_secret() and _verify_and_dispatch().
+
+         ✅ Step 5 — Idempotency index on payment_events.id:
+           db.payment_events.index_information() includes:
+             {'id_1': {'v': 2, 'key': [('id', 1)], 'unique': True}} ✓
+           Inserted {id: 'evt_test_idemp_1', ...} → success.
+           Second insert with same id → DuplicateKeyError raised by
+           pymongo (E11000 duplicate key error). ✓
+           This protects against Stripe at-least-once re-deliveries.
+
+         ✅ Cleanup — performed exactly as requested:
+           $unset stripe.webhook_secret_payments_enc / _refunds_enc / _issuing_enc
+           on app_settings. Post-cleanup `stripe` keys: [enabled, mode,
+           publishable_key, secret_key_enc, updated_at, updated_by,
+           webhook_secret_enc] — no Phase-2 _enc fields remain.
+           db.payment_events.delete_many({id:'evt_test_idemp_1'}) → 1 row removed. ✓
+
+         ✅ Post-cleanup sanity:
+           All 3 webhook POSTs back to 501 (graceful-degradation path)
+           — confirms cleanup is complete and dev state restored.
+
+         Test artifact: /app/backend_test.py (focused on Phase-2 webhooks).
+         No backend action required.
+
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         Wired the previously-written Phase 2 router into server.py
+         (`attach_stripe_webhooks(api_router, db)` next to the Phase 1
+         drift scanner). Three new endpoints mounted (verified 501 when
+         no secret configured, as designed):
+           POST /api/webhook/stripe-payments  (payment_intent.* / charge.succeeded)
+           POST /api/webhook/stripe-refunds   (charge.refunded / refund.*)
+           POST /api/webhook/stripe-issuing   (issuing_transaction.* / authorization.*)
+         Idempotency via `payment_events.id` unique index; drift rows
+         written to the existing `reconciliation_drift` collection with
+         new `kind` values (stripe_orphan_payment, stripe_orphan_refund,
+         stripe_payment_amount_drift, issuing_orphan_card).
+
+         Fixed three wiring bugs found during the integration:
+         1. `_get_webhook_secret` was reading from `db.integrations`, but
+            admin saves Stripe config to `db.app_settings`. Re-pointed the
+            lookup at `app_settings.find_one({"key": "integrations"})` and
+            added decryption of the `*_enc` fields via `integrations.decrypt_secret`.
+         2. `StripeSettingsIn` didn't accept the 3 new Phase-2 webhook
+            secret fields. Added optional `webhook_secret_payments / _refunds
+            / _issuing` to the pydantic schema; each is encrypted on save
+            via `encrypt_secret`.
+         3. `project_integrations_for_admin` didn't expose
+            `webhook_secret_*_set` flags so the admin UI could show
+            "saved — leave blank to keep". Added them.
+
+         Admin Integrations UI (/admin/integrations) now has a new
+         "Phase 2 — Real-Time Ledger Reconciliation webhooks" sub-block
+         inside the Stripe card with 3 separate secret inputs and a
+         "(saved — leave blank to keep)" indicator. Test IDs:
+         admin-stripe-wh-payments / -refunds / -issuing.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Phase 2 wired in. Backend tests requested:
+
+        1. Webhook endpoints registered:
+           - POST /api/webhook/stripe-payments returns 501 when no secret
+           - POST /api/webhook/stripe-refunds  returns 501 when no secret
+           - POST /api/webhook/stripe-issuing  returns 501 when no secret
+
+        2. Save the 3 Phase-2 secrets via admin (auth: admin@squadpay.us /
+           Letmein@2007#ForReal):
+           POST /api/admin/integrations/stripe with
+             { enabled: true, mode: 'test', webhook_secret_payments: 'whsec_test_p',
+               webhook_secret_refunds: 'whsec_test_r',
+               webhook_secret_issuing: 'whsec_test_i' }
+           Then GET /api/admin/integrations and confirm response has
+             stripe.webhook_secret_payments_set: true (same for refunds/issuing).
+           Confirm Mongo persisted webhook_secret_payments_enc (encrypted).
+
+        3. After secrets are set, the 3 webhook POSTs should NO LONGER
+           return 501 — they'll return 400 (no Stripe-Signature header)
+           which proves the secret-lookup pathway works.
+
+        4. Verify idempotency: directly insert two
+           `payment_events` docs with the same id (best-effort — the
+           unique index should reject the second).
+
+        5. After tests, please clear the encrypted webhook_secret_*_enc
+           fields by setting `{$unset: {"stripe.webhook_secret_payments_enc": ""}}`
+           on app_settings so we're back to a clean state.
+
+        Do NOT test the frontend.
+
+frontend:
+  - task: "Admin → Integrations: 3 Phase-2 webhook secret inputs"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/admin/integrations.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         Added 3 password-masked inputs and saved-state indicator chips,
+         plumbed through the existing setStripe API (which now accepts
+         the 3 optional fields). Sub-block divider "Phase 2 — Real-Time
+         Ledger Reconciliation webhooks" splits it visually from the
+         legacy Stripe block.

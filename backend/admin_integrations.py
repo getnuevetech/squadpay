@@ -24,6 +24,11 @@ class StripeSettingsIn(BaseModel):
     publishable_key: Optional[str] = None
     secret_key: Optional[str] = None  # write-only; only persisted if non-empty
     webhook_secret: Optional[str] = None
+    # Phase 2 (May 2026) — per-event webhook secrets so admins can rotate
+    # one credential without touching the others. All optional / write-only.
+    webhook_secret_payments: Optional[str] = None
+    webhook_secret_refunds: Optional[str] = None
+    webhook_secret_issuing: Optional[str] = None
 
 
 class TwilioSettingsIn(BaseModel):
@@ -110,6 +115,16 @@ def attach_integrations_routes(router: APIRouter, db, attach_admin):
             s["secret_key_enc"] = encrypt_secret(body.secret_key.strip())
         if body.webhook_secret:
             s["webhook_secret_enc"] = encrypt_secret(body.webhook_secret.strip())
+        # Phase 2 — per-event webhook secrets, stored encrypted with the
+        # same mechanism as the legacy one. Setting an empty string would
+        # ALSO clear the saved value, but `Optional[str]=None` + the truthy
+        # check below means leaving the field blank in the UI is a no-op.
+        if body.webhook_secret_payments:
+            s["webhook_secret_payments_enc"] = encrypt_secret(body.webhook_secret_payments.strip())
+        if body.webhook_secret_refunds:
+            s["webhook_secret_refunds_enc"] = encrypt_secret(body.webhook_secret_refunds.strip())
+        if body.webhook_secret_issuing:
+            s["webhook_secret_issuing_enc"] = encrypt_secret(body.webhook_secret_issuing.strip())
         s["updated_at"] = _now()
         s["updated_by"] = admin["email"]
         await db.app_settings.update_one(

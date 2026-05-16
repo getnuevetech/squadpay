@@ -24,6 +24,11 @@ export default function AdminIntegrations() {
   const [stPub, setStPub] = useState('');
   const [stSec, setStSec] = useState('');
   const [stWh, setStWh] = useState('');
+  // Phase 2 (May 2026) — per-event webhook secrets so admins can rotate
+  // one credential without touching the others.
+  const [stWhPayments, setStWhPayments] = useState('');
+  const [stWhRefunds, setStWhRefunds] = useState('');
+  const [stWhIssuing, setStWhIssuing] = useState('');
 
   // Twilio form
   const [twEnabled, setTwEnabled] = useState(false);
@@ -84,6 +89,9 @@ export default function AdminIntegrations() {
       setStPub(v.stripe.publishable_key || '');
       setStSec('');
       setStWh('');
+      setStWhPayments('');
+      setStWhRefunds('');
+      setStWhIssuing('');
       setTwEnabled(v.twilio.enabled);
       setTwSid('');
       setTwTok('');
@@ -135,6 +143,11 @@ export default function AdminIntegrations() {
         publishable_key: stPub,
         secret_key: stSec || undefined,
         webhook_secret: stWh || undefined,
+        // Phase 2 per-event webhook secrets — empty strings mean "leave
+        // the saved value as-is" so admins can rotate one at a time.
+        webhook_secret_payments: stWhPayments || undefined,
+        webhook_secret_refunds: stWhRefunds || undefined,
+        webhook_secret_issuing: stWhIssuing || undefined,
       });
       await load();
       Alert.alert('Saved', `Stripe ${stEnabled ? 'enabled' : 'disabled'} (${stMode})`);
@@ -337,6 +350,47 @@ export default function AdminIntegrations() {
         <TextInput style={styles.input} value={stSec} onChangeText={setStSec} placeholder="sk_test_…" placeholderTextColor={COLORS.disabledText} secureTextEntry testID="admin-stripe-sec" />
         <Text style={styles.label}>Webhook secret {view.stripe.webhook_secret_set ? <Text style={styles.maskedHint}>(saved: {view.stripe.webhook_secret_masked} — leave blank to keep)</Text> : null}</Text>
         <TextInput style={styles.input} value={stWh} onChangeText={setStWh} placeholder="whsec_…" placeholderTextColor={COLORS.disabledText} secureTextEntry testID="admin-stripe-wh" />
+
+        {/* Phase-2 inbound webhooks — payments / refunds / issuing each
+            take their own webhook secret so a rotation on one endpoint
+            doesn't disrupt the others. Stripe Dashboard → Developers →
+            Webhooks → add three endpoints pointing at:
+              /api/webhook/stripe-payments
+              /api/webhook/stripe-refunds
+              /api/webhook/stripe-issuing
+            and paste each `whsec_…` below. Leave blank to inherit the
+            legacy "Webhook secret" above. */}
+        <Text style={styles.sectionDivider}>Phase 2 — Real-Time Ledger Reconciliation webhooks</Text>
+        <Text style={styles.label}>Payments webhook secret {(view.stripe as any).webhook_secret_payments_set ? <Text style={styles.maskedHint}>(saved — leave blank to keep)</Text> : null}</Text>
+        <TextInput
+          style={styles.input}
+          value={stWhPayments}
+          onChangeText={setStWhPayments}
+          placeholder="whsec_…  (POST /api/webhook/stripe-payments)"
+          placeholderTextColor={COLORS.disabledText}
+          secureTextEntry
+          testID="admin-stripe-wh-payments"
+        />
+        <Text style={styles.label}>Refunds webhook secret {(view.stripe as any).webhook_secret_refunds_set ? <Text style={styles.maskedHint}>(saved — leave blank to keep)</Text> : null}</Text>
+        <TextInput
+          style={styles.input}
+          value={stWhRefunds}
+          onChangeText={setStWhRefunds}
+          placeholder="whsec_…  (POST /api/webhook/stripe-refunds)"
+          placeholderTextColor={COLORS.disabledText}
+          secureTextEntry
+          testID="admin-stripe-wh-refunds"
+        />
+        <Text style={styles.label}>Issuing webhook secret {(view.stripe as any).webhook_secret_issuing_set ? <Text style={styles.maskedHint}>(saved — leave blank to keep)</Text> : null}</Text>
+        <TextInput
+          style={styles.input}
+          value={stWhIssuing}
+          onChangeText={setStWhIssuing}
+          placeholder="whsec_…  (POST /api/webhook/stripe-issuing)"
+          placeholderTextColor={COLORS.disabledText}
+          secureTextEntry
+          testID="admin-stripe-wh-issuing"
+        />
 
         <TouchableOpacity onPress={saveStripe} disabled={saving === 'stripe'} style={[styles.saveBtn, { backgroundColor: '#635BFF', opacity: saving === 'stripe' ? 0.6 : 1 }]} activeOpacity={0.85} testID="admin-stripe-save">
           <Save size={14} color="#fff" /><Text style={styles.saveBtnText}>{saving === 'stripe' ? 'Saving…' : 'Save Stripe settings'}</Text>
@@ -785,6 +839,19 @@ const styles = StyleSheet.create({
   label: { fontSize: FONT.sizes.xs, color: COLORS.text, fontWeight: FONT.weights.semibold, marginTop: SPACING.sm },
   helper: { fontSize: FONT.sizes.xs, color: COLORS.subtext, marginTop: 4, fontStyle: 'italic' },
   maskedHint: { color: COLORS.subtext, fontWeight: FONT.weights.regular, fontSize: 11 },
+  // Phase 2 — divider for the inbound-webhook block inside the Stripe card.
+  sectionDivider: {
+    marginTop: 14,
+    marginBottom: 4,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    color: COLORS.subtext,
+    fontSize: 11,
+    fontWeight: FONT.weights.bold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
   input: { height: 40, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, paddingHorizontal: SPACING.md, color: COLORS.text, backgroundColor: COLORS.bg, marginTop: 6, outlineStyle: 'none' as any },
   formRow: { flexDirection: 'row', gap: SPACING.sm, alignItems: 'flex-end', flexWrap: 'wrap' },
   toggle: { paddingHorizontal: SPACING.md, paddingVertical: 8, borderRadius: RADIUS.pill, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.surface },

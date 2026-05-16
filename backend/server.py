@@ -266,6 +266,18 @@ except Exception as _e:
     print("[startup] admin logos routes attach failed:", _e)
 
 
+# ---------- Real-Time Ledger Reconciliation Phase 2 (May 2026) ----------
+# Inbound Stripe webhooks (payments / refunds / issuing) that write
+# reconciliation_drift rows for any orphan / amount mismatch the
+# normal app flow missed. Three independent endpoints with per-event
+# secrets so admins can rotate one without touching the others.
+try:
+    from stripe_webhooks import attach_stripe_webhooks
+    attach_stripe_webhooks(api_router, db)
+except Exception as _e:
+    print("[startup] stripe phase-2 webhooks attach failed:", _e)
+
+
 # ---------- Account deletion (App Store Guideline 5.1.1(v)) ----------
 try:
     from routes.account_deletion_routes import attach_account_deletion_routes

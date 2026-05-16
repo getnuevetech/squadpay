@@ -13941,3 +13941,51 @@ agent_communication:
           3. Hard-refresh once to bust browser cache.
           4. Edit a legal page in admin → Save → reload public page →
              new content visible instantly.
+
+---
+## 2026-05-16 — /legal/terms wasn't fetching admin content (RESOLVED)
+
+frontend:
+  - task: "Public /legal/terms — switch from hardcoded JSX to admin-managed content"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/legal/terms.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      -working: false
+       -agent: "user"
+       -comment: |
+         User reported Terms page on live site never reflected admin
+         edits, while Privacy and Support pages updated normally.
+      -working: true
+       -agent: "main"
+       -comment: |
+         Root cause: `app/legal/terms.tsx` was a fully hardcoded JSX wall
+         (SquadPay Terms of Service, Accounts & Identity, Payments,
+         Credits Program, Disputes & Refunds, Contact). It NEVER called
+         the API, so admin edits were going to the DB and the live
+         backend was returning the new content correctly — the public
+         screen just rendered different text from JSX.
+         (Confirmed via `curl https://www.squadpay.us/api/legal/pages/terms`
+         which returned the latest admin save vs. `curl
+         https://www.squadpay.us/legal/terms` which served the old wall.)
+
+         Rebuilt the file to delegate to `<LegalPageScreen slug="terms" />`,
+         the same component privacy.tsx and support.tsx use. So Terms
+         now goes through the admin-managed `/api/legal/pages/terms`
+         pipeline.
+
+         Preserved legacy deep-link `?section=credits`: after the
+         markdown renders, scan the document for a heading whose text
+         contains "credit" and `scrollIntoView({behavior:'smooth'})`.
+         If the admin removes the credits heading the param degrades
+         to a no-op (page opens at the top).
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Bug fixed. After the user pushes & Vercel redeploys, the live
+        Terms page will finally show whatever the admin saved. No
+        backend change required — the API was always correct.

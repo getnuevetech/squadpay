@@ -47,14 +47,19 @@ export function SquadPayMark({ size = 36, showWordmark = true, variant = 'light'
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   tile: {
-    backgroundColor: COLORS.primary,
+    // Logo is purple — must sit on a light surface to be visible. Using a
+    // white tile with a soft purple ring keeps brand presence without
+    // burying the logo in the same colour.
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: COLORS.primarySoft || 'rgba(124, 58, 237, 0.18)',
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: COLORS.primary,
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.12,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
-    elevation: 4,
+    elevation: 2,
   },
   wordmark: {
     fontWeight: '900',

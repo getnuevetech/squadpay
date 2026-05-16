@@ -13144,3 +13144,40 @@ agent_communication:
         Verified: web preview renders the new logo on the landing page
         brand row (screenshot taken). Bundler hot-reloaded successfully
         after a restart.
+
+---
+## 2026-05-16 — Logo background correction (purple → white/transparent)
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Fixed user-reported issue: the SquadPay logo (already shades of
+        purple) was being placed on a purple background, making it hard
+        to read. Reworked the icon set + brand component:
+
+        Regenerated assets with appropriate backgrounds:
+          - icon.png            → WHITE background (Apple requires opaque)
+          - adaptive-icon.png   → TRANSPARENT foreground (Android system
+                                  paints the OS-supplied background)
+          - favicon.png         → WHITE background
+          - splash-icon.png     → TRANSPARENT (sits on splash bg)
+          - splash-image.png    → WHITE background
+          - app-image.png       → WHITE background
+          - squadpay-mark.png   → TRANSPARENT (for inline <SquadPayMark/>)
+
+        Updated app.json so the OS-supplied backgrounds are now WHITE
+        instead of purple:
+          - android.adaptiveIcon.backgroundColor → "#FFFFFF"
+          - expo-splash-screen.backgroundColor   → "#FFFFFF"
+          (expo-notifications.color stays "#7C3AED" — that's the
+          notification accent tint, not a fill.)
+
+        Updated SquadPayMark.tsx tile style: was solid purple
+        (COLORS.primary) with a heavy purple shadow → now WHITE tile with
+        a soft 1px purple-tinted ring and a much subtler shadow. The
+        logo's own purple silhouettes now read clearly on both light
+        landing surfaces and the dark hero panel.
+
+        Verified visually on web preview — landing brand row shows the
+        SquadPay logo on a clean white rounded tile next to the purple
+        wordmark.

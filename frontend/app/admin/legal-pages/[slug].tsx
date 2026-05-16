@@ -51,6 +51,7 @@ import {
 } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { marked } from 'marked';
+import TurndownService from 'turndown';
 import { legalApi, LegalPage } from '../../../src/adminApi/legal';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 import { LegalHtml } from '../../../src/components/LegalHtml';
@@ -66,6 +67,18 @@ const SLUG_LABEL: Record<Slug, string> = {
 // `marked` v14 — keep GFM-ish, line breaks honored. We don't enable raw
 // HTML in markdown (admin should never need it).
 marked.setOptions({ gfm: true, breaks: true });
+
+// HTML → Markdown converter, used as a defensive fallback when the
+// backend hasn't been redeployed yet and `content_md` is missing from the
+// API response. The admin editor must never open empty if there's content
+// in `content_html` — otherwise the admin saves an empty page and wipes
+// the live content.
+const _turndown = new TurndownService({
+  headingStyle: 'atx',
+  bulletListMarker: '-',
+  codeBlockStyle: 'fenced',
+  emDelimiter: '*',
+});
 
 /**
  * Wraps the current selection with a `prefix` and `suffix`, or — when no
@@ -148,9 +161,18 @@ export default function LegalPageEditor() {
         if (found) {
           setPage(found);
           setTitle(found.title);
-          // The new editor is markdown-first. Backend always provides
-          // content_md (auto-derived from legacy HTML if needed).
-          setMarkdown(found.content_md ?? '');
+          // Source-of-truth is `content_md`. But — to survive the case
+          // where the production backend hasn't been redeployed and still
+          // returns only `content_html` — we fall back to converting the
+          // HTML to markdown client-side via Turndown. The editor must
+          // never open empty when the live page has real content; doing
+          // so would let an admin accidentally save "" and wipe everything.
+          const md = (found.content_md && found.content_md.trim())
+            ? found.content_md
+            : found.content_html
+              ? _turndown.turndown(found.content_html)
+              : '';
+          setMarkdown(md);
           setSavedAt(found.updated_at);
         }
       } catch (e: any) {
@@ -261,9 +283,22 @@ export default function LegalPageEditor() {
     }
     setSaving(true);
     try {
+      // Send BOTH content_md (new backend's source-of-truth) AND
+      // content_html (older backend's only writable field). The new
+      // backend ignores content_html and recomputes it from content_md;
+      // an older backend ignores content_md (unknown field) and persists
+      // content_html. This keeps deployments where the API hasn't been
+      // rolled out yet working transparently.
+      let html = '';
+      try {
+        html = (marked.parse(markdown || '', { async: false }) as string) || '';
+      } catch {
+        html = '';
+      }
       const updated = await legalApi.update(slug, {
         title: title.trim(),
         content_md: markdown,
+        content_html: html,
       });
       setSavedAt(updated.updated_at);
       setPage(updated);

@@ -13808,3 +13808,62 @@ agent_communication:
             original DEFAULT_PAGES['privacy'] markdown (or leave the
             test markdown — your call).
         Frontend: do NOT test (user will confirm visually).
+
+---
+## 2026-05-16 — Legal editor: resilient to stale backend deployments
+
+frontend:
+  - task: "Editor falls back to content_html→md when backend lacks content_md"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/admin/legal-pages/[slug].tsx, package.json (turndown@7)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      -working: false
+       -agent: "user"
+       -comment: |
+         User reported all admin legal pages opening empty ("Start typing…")
+         while the public /legal/* pages render correctly. Screenshot showed
+         "Default content — not yet customized" + 0 chars on T&C editor.
+      -working: true
+       -agent: "main"
+       -comment: |
+         Root cause: production backend bundle predates today's markdown
+         rebuild. Its API response shape is { title, content_html } — no
+         content_md field. The new admin editor reads content_md, finds
+         it undefined → opens empty. Public pages still work because they
+         read content_html (unchanged).
+
+         Fixes shipped:
+
+         1) On load — if `content_md` is missing/empty but `content_html`
+            is present, the editor converts HTML→Markdown client-side via
+            `turndown@7` (added to package.json). The textarea is
+            populated, the admin can edit normally.
+
+         2) On save — the PUT body now sends BOTH `content_md` AND
+            `content_html` (rendered from the markdown via `marked`). A
+            modern backend treats content_md as the source of truth and
+            ignores content_html; an older backend ignores content_md
+            (unknown field) and persists content_html. Either way the
+            save succeeds.
+
+         Verified in dev by Playwright-intercepting the API response,
+         stripping content_md from the payload, and confirming the
+         editor still opens with 875 chars of the T&C content
+         (turndown-converted from content_html).
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Production deployment drift fix. After this change the admin works
+        whether the backend has been redeployed or not:
+         • Old backend (returns content_html only) → editor falls back via
+           Turndown so the page opens with existing content; Save still
+           writes content_html (legacy contract) so the backend accepts it.
+         • New backend (returns both) → editor uses content_md natively;
+           Save writes both fields and the backend uses content_md.
+        User should hard-refresh the admin (Cmd+Shift+R) to pick up the
+        new bundle.

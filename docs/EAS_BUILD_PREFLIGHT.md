@@ -102,3 +102,73 @@ eas submit --platform android --profile production
 | Android `keystore.json` missing | Let EAS auto-generate, or `eas credentials` to upload yours |
 | Build succeeds but app crashes on launch | Almost always a missing `EXPO_PUBLIC_*` env var — recheck `eas.json` |
 | Push tokens not registering on iOS preview | iOS Simulator builds CAN'T receive push. Use a real device. |
+
+---
+
+## 🔄 Icon refresh — why old icons stick after install (May 2026)
+
+If the SquadPay app icon on your phone STILL looks like the old SP-sparkle
+mark after you've run `eas build` and reinstalled, walk through this list:
+
+### 0. Are you looking at Expo Go's icon?
+If you installed the app via **Expo Go** (i.e. you scanned the QR code from
+`expo start`), the icon you see on the home screen is **Expo Go's own
+icon**, not your project's. Custom icons only appear after a real native
+build (`eas build`) installed via TestFlight / Play Internal Testing /
+sideload (.apk / .ipa).
+
+### 1. Confirm the build picked up the new files
+Locally:
+```bash
+cd frontend
+git pull                         # make sure your checkout has the new logos
+git log -- assets/images/icon.png  # the last commit should be the logo refresh
+md5sum assets/images/icon.png    # should match GitHub
+```
+Then in `app.json` confirm:
+- `"icon": "./assets/images/icon.png"`           (top-level)
+- `"ios.icon": "./assets/images/icon.png"`       (added May 2026 — some
+  builds need this explicit override)
+- `"android.icon": "./assets/images/icon.png"`   (added May 2026)
+- `"android.adaptiveIcon.foregroundImage": "./assets/images/adaptive-icon.png"`
+
+### 2. Bump the build versions (already done May 2026)
+- `version: "1.0.1"`
+- `ios.buildNumber: "2"`
+- `android.versionCode: 2`
+Bumping these forces EAS to produce a fresh artifact (it won't reuse a
+cached build with the old icon baked in).
+
+### 3. Run the build with a cleared cache
+```bash
+eas build --platform ios     --clear-cache
+eas build --platform android --clear-cache
+```
+`--clear-cache` is the silver bullet for "icon didn't update".
+
+### 4. Clean install — both OSes cache icons aggressively
+**iOS (TestFlight, ad-hoc, dev profile):**
+1. Long-press the SquadPay app icon → **Remove App** → **Delete App**
+2. Reboot the iPhone (Springboard rebuilds its icon cache on boot)
+3. Reinstall from TestFlight / Xcode
+
+**Android:**
+1. Settings → Apps → SquadPay → Uninstall
+2. Settings → Apps → (your launcher, e.g. Pixel Launcher) → Storage → Clear cache
+3. Reboot
+4. Reinstall the new APK
+
+### 5. Verify the icon is opaque (Apple requirement)
+The `icon.png` is now saved as **RGB (no alpha channel)** so Apple
+processing won't auto-flatten transparent pixels to black. Verify with:
+```bash
+python3 -c "from PIL import Image; im=Image.open('frontend/assets/images/icon.png'); print(im.mode, im.size)"
+# expect: RGB (1024, 1024)
+```
+
+### 6. The Android adaptive foreground MUST stay transparent
+`adaptive-icon.png` is **RGBA** with the logo inside the central safe zone
+(~70% of the 1024² canvas). Android composites it on top of
+`android.adaptiveIcon.backgroundColor` (`#FFFFFF`) and applies a circular
+mask. If you replace it with an opaque PNG, the launcher will show a
+white square instead of the rounded squircle. **Don't make it opaque.**

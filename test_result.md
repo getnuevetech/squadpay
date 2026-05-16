@@ -13577,3 +13577,61 @@ frontend:
            AFTER : ['#7C3AED', '#9B6BF2', '#C4B0F8']  (primary → soft lavender)
          Cards untouched. User confirmed "Great, lets keep this design and
          lock it in" — design now considered final, do NOT revert.
+
+---
+## 2026-05-16 — App icons not refreshing after EAS build/install (defensive fix)
+
+frontend:
+  - task: "Force new app icon to ship on next EAS build"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app.json, /app/frontend/assets/images/icon.png, /app/frontend/assets/images/favicon.png, /app/docs/EAS_BUILD_PREFLIGHT.md"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false   # only verifiable by user after a fresh `eas build` + clean install
+    status_history:
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         User reported iOS and Android app icons still look like the old
+         SP-sparkle after build + install. The PNG files in this workspace
+         and in their GitHub repo are byte-identical to the new SquadPay
+         logo (md5 confirmed), so the cause has to be one of:
+           a) Build artifact / EAS cache reuse
+           b) OS-level launcher icon cache (iOS Springboard, Android launcher)
+           c) Apple's alpha-flatten pipeline turning transparent pixels black
+           d) Looking at Expo Go's icon (not a real native build)
+
+         Defensive changes made so the *next* build cannot reuse stale data:
+         1. Converted icon.png from RGBA → RGB (fully opaque, white-filled)
+            so Apple's icon processing doesn't try to flatten alpha. Same
+            for favicon.png (web). Android adaptive-icon.png stays RGBA on
+            purpose — the OS needs the alpha channel.
+         2. Bumped `version` 1.0.0 → 1.0.1, `ios.buildNumber` "1" → "2",
+            `android.versionCode` 1 → 2. Forces EAS to ship a fresh
+            artifact (no cache reuse).
+         3. Added explicit `ios.icon` and `android.icon` paths next to the
+            top-level `icon` so any code path that only reads platform-
+            scoped overrides also picks up the new file.
+         4. Extended `/app/docs/EAS_BUILD_PREFLIGHT.md` with a section
+            "Icon refresh — why old icons stick after install" covering
+            Expo Go vs native, `--clear-cache`, OS launcher cache resets,
+            and Apple opacity rules.
+
+         Confirmed icon.png is now RGB (1024×1024). Adaptive icon stays
+         RGBA with the new logo inside the safe zone. App.json correctly
+         references all four canonical paths.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Icon files & app.json are correct. Most likely the issue is:
+          1. Old artifact was cached at EAS or OS level → need
+             `eas build --clear-cache` + clean uninstall/reboot/reinstall.
+          2. App was installed via Expo Go → icon is Expo Go's, not ours.
+          3. Build was an EAS Update (OTA) → icons aren't shipped via OTA,
+             only via native builds.
+        Bumped version 1.0.0 → 1.0.1, ios.buildNumber 1 → 2,
+        android.versionCode 1 → 2; flattened icon.png to RGB; added
+        explicit ios.icon + android.icon paths. Documented the recipe in
+        EAS_BUILD_PREFLIGHT.md.

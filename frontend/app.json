@@ -3,7 +3,7 @@
     "name": "SquadPay",
     "slug": "squadpay",
     "owner": "getnuevetech",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "squadpay",
@@ -12,7 +12,8 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.squadpay.app",
-      "buildNumber": "1",
+      "buildNumber": "2",
+      "icon": "./assets/images/icon.png",
       "associatedDomains": [
         "applinks:squadpay.us",
         "applinks:www.squadpay.us"
@@ -118,7 +119,8 @@
     },
     "android": {
       "package": "com.squadpay.app",
-      "versionCode": 1,
+      "versionCode": 2,
+      "icon": "./assets/images/icon.png",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#FFFFFF"

@@ -110,6 +110,87 @@ user_problem_statement: |
   (4) member picker persists in shortfall UI, (5) shortfall settlement payload fix so that lead
   pay no longer errors with "bill is short".
 
+
+backend:
+  - task: "Penny-rounding fix — Lead absorbs residual cents (_recompute_group equal-split + itemized extras)"
+    implemented: true
+    working: true
+    file: "backend/core.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            VERIFIED via /app/backend_test.py against live preview backend
+            (https://joint-pay-1.preview.emergentagent.com/api).
+            34/34 assertions PASS. No 5xx anywhere. No regressions.
+
+            EQUAL-SPLIT PENNY ROUNDING (high priority):
+            ✅ $89.21 / 2 (AB22C-1DC32 repro case):
+               sum(food)=89.21 EXACTLY, lead.food=44.61, non-lead.food=44.60.
+               Bug fixed — no $0.01 orphan cent.
+            ✅ $94.43 / 2: sum=94.43, lead=47.22, non-lead=47.21.
+            ✅ $50.00 / 7: sum=50.00 EXACTLY, lead=7.16 (base 7.14 + 0.02
+               residual), all 6 non-leads=7.14.
+            ✅ $100.02 / 3: sum=100.02, all members=33.34 (no residual case —
+               33.34c × 3 = 100.02c exactly, so lead bonus=0 as expected).
+            ✅ $100.00 / 4: sum=100.00, all members=25.00 (clean divide, no
+               residual).
+
+            LEAD POSITION INDEPENDENCE (critical):
+            ✅ Direct mongo reorder: moved Lead from members[0] → members[2]
+               (last position) in a $100.01/3 group. After reorder:
+               • lead_member_id resolves via role=='lead' to the original
+                 lead (NOT array index 0).
+               • lead.food=33.35 (base 33.33 + 0.02 residual).
+               • Both non-leads.food=33.33.
+               • sum(food)=100.01 EXACTLY.
+               Confirms _recompute_group uses
+               `next((i for i, m in enumerate(members) if (m.get('role') or '').lower() == 'lead'), 0)`
+               and does NOT rely on array index — the lead still absorbs the
+               residual regardless of position in the members array.
+
+            ITEMIZED EXTRAS PRORATION:
+            ✅ Subtotal $50, tax $3, tip $5 (extras=$8), 3 members each
+               claiming one item ($17 burger / $17 pasta / $16 salad):
+               sum(merchant_share) == total_amount ($58) EXACTLY.
+               Lead (burger): food=17.00, tax_tip=2.72 (= 17/50 × 8 cleanly,
+               no residual in this case).
+            ✅ Forced-residual case — items $10/$10/$10 with tax=$1.01:
+               extras per member = 10/30 × $1.01 = $0.33666… → floor 33c each
+               → sum floored = $0.99 → residual = $0.02. Result:
+               • lead.tax_tip = 0.35 (33c + 2c residual)
+               • both non-leads.tax_tip = 0.33
+               • sum(tax_tip) = $1.01 EXACTLY (matches extras)
+               • sum(merchant_share) = $31.01 = total_amount EXACTLY
+               Confirms leftover cents are routed entirely to the Lead (not
+               distributed by fractional remainder, per the new policy).
+
+            PAYMENT INTENT SMOKE:
+            ✅ POST /api/groups/{gid}/contribute-payment-intent for $89.21/2
+               group: PI created successfully for both Lead and non-Lead.
+               • Lead's cash_owed == lead.total (= lead.food + fees).
+               • Non-Lead's cash_owed == non-lead.total.
+               • lead.cash_owed > non-lead.cash_owed by ≥1c — confirms the
+                 amount sent to Stripe correctly reflects the Lead's bonus
+                 cent (not a $44.60 charge for both that would short the
+                 merchant by 1¢).
+
+            REGRESSION SMOKE:
+            ✅ GET /api/runtime/brand → 200.
+            ✅ GET /api/runtime/landing-page → 200.
+            ✅ POST /api/groups, GET /api/groups/{id}, POST /api/groups/{id}/join,
+               POST /api/groups/{id}/assign all succeeded across 9 fresh groups
+               and ~30 fresh users — no 500s observed.
+
+            Test artifact: /app/backend_test.py (rewritten for this review
+            request — focused exclusively on penny-rounding fix + payment
+            intent regression). All review-request scenarios 1-5 pass.
+            No backend action required.
+
+
 backend:
   - task: "Public brand endpoint — GET /api/runtime/brand"
     implemented: true
@@ -14041,3 +14122,104 @@ agent_communication:
         between 2 members will now show $47.22 + $47.21 = $94.43 exactly,
         and `remaining_to_collect` reaches $0.00 cleanly.
         Production deploy needed for it to apply to live squads.
+
+
+---
+## 2026-05-16 — Penny rounding REFINED to "Lead absorbs residual" (June 2025 spec)
+
+backend:
+  - task: "Lead absorbs residual cents on equal + itemized split"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/core.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      -working: false
+       -agent: "user"
+       -comment: |
+         User reported bill AB22C-1DC32: total $89.21 split equally
+         between 2 members still showed $44.60 each (sum $89.20).
+         User requested explicit policy: "Lead absorbs the residual"
+         so non-Lead members all see an identical clean share.
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         The previous largest-remainder fix relied on Lead being at
+         members[0] "by convention" — fragile. If Lead was re-ordered
+         the extra cent went to a non-Lead member, contradicting
+         user spec.
+
+         Fix (June 2025): _recompute_group() now explicitly identifies
+         the Lead via `role == "lead"` and assigns ALL leftover cents
+         (typically 0 or 1, up to N-1 in pathological cases) to that
+         single member, in both branches:
+           1. fast/equal mode: Lead gets `base_cents + extra_cents`,
+              everyone else gets exactly `base_cents`.
+           2. itemized mode: tax+tip leftover cents go to Lead instead
+              of being distributed by fractional remainder.
+
+         Fallback to index 0 if no member has role=="lead" (legacy data).
+
+         Verified locally with 9 inputs incl. user's case:
+           - $89.21 ÷ 2 → Lead $44.61, Member $44.60 ✓
+           - $89.21 ÷ 2 (Lead at index 1) → Lead $44.61, Member $44.60 ✓
+           - $94.43 ÷ 2 → Lead $47.22, Member $47.21 ✓
+           - $100.02 ÷ 3 (multi-cent residual) → Lead $33.34, others $33.34 ✓
+           - $50.00 ÷ 7 → Lead $7.16, others $7.14 ✓
+
+         All sums == bill total exactly. Per_user computed on every
+         read so bill AB22C-1DC32 will reflect on next dashboard fetch.
+
+  - task: "Verify group recompute + payment intent endpoints with new math"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/routes/groups_routes.py, /app/backend/routes/pay_routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         Need to verify end-to-end:
+         1. POST /api/groups/{id}/compute returns per_user where sum(food)
+            == total_amount EXACTLY for equal-split groups.
+         2. Lead member specifically receives the residual cent.
+         3. Payment intent creation (POST /api/pay/intent or similar)
+            uses the correct per-user amount including the Lead bonus
+            cent.
+         4. remaining_to_collect reaches $0.00 cleanly after all members
+            pay their assigned share.
+
+test_plan:
+  current_focus:
+    - "Lead absorbs residual cents on equal + itemized split"
+    - "Verify group recompute + payment intent endpoints with new math"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        REFINED penny-rounding fix per user spec: Lead now absorbs ALL
+        residual cents (was previously by-array-index, fragile). User's
+        bill AB22C-1DC32 ($89.21 ÷ 2) will now show Lead $44.61 and
+        member $44.60 = $89.21 exactly.
+
+        PLEASE TEST:
+        1. Create equal-split group with total that doesn't divide
+           evenly (e.g. $89.21 between 2 members, or $50.00 between 7).
+        2. Verify GET /api/groups/{id} returns per_user where:
+           - sum(food) == total_amount (no orphan cents)
+           - Lead member's food share is HIGHER than non-Lead members'
+             by 1 cent (or more if total_cents % N > 1).
+        3. Verify payment intent creation for each member uses their
+           specific share (Lead pays $44.61, member pays $44.60).
+        4. Test with Lead NOT at members[0] — extra cent should still
+           go to Lead.
+        5. Itemized mode: tax+tip extras should also route to Lead.
+
+        Admin credentials: admin@squadpay.us / Letmein@2007#ForReal

@@ -401,11 +401,16 @@ function UnauthLanding() {
       try {
         const base = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '');
         // Cache-bust so admin edits show up on next page load.
-        const res = await fetch(`${base}/runtime/landing-page?t=${Date.now()}`, {
+        // NOTE: backend routes are all mounted under /api — without that
+        // prefix this hit the SPA shell and returned HTML, breaking the
+        // admin-configurable bg-shade rotation (May 2026 fix).
+        const res = await fetch(`${base}/api/runtime/landing-page?t=${Date.now()}`, {
           cache: 'no-store',
           headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' },
         });
         if (!res.ok) return;
+        const ct = res.headers.get('content-type') || '';
+        if (!ct.includes('json')) return;
         const j = await res.json();
         const shades: string[] = Array.isArray(j?.bg_purple_shades) && j.bg_purple_shades.length > 0
           ? j.bg_purple_shades

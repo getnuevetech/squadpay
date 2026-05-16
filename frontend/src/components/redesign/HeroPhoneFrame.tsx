@@ -108,13 +108,18 @@ export function HeroPhoneFrame({ height = 380 }: Props) {
     (async () => {
       try {
         const base = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '');
-        // Cache-bust with a per-mount timestamp so admin edits show up on
-        // the very next page load (no waiting for browser/CDN TTL expiry).
-        const res = await fetch(`${base}/runtime/landing-page?t=${Date.now()}`, {
+        // NOTE: must include /api prefix — every backend route is mounted
+        // under /api in server.py. Without it the kubernetes ingress would
+        // send this request to the frontend, which serves the SPA shell
+        // (HTML), JSON.parse fails silently, and we end up always using
+        // the hardcoded FALLBACK_* lists. Bug fixed May 2026.
+        const res = await fetch(`${base}/api/runtime/landing-page?t=${Date.now()}`, {
           cache: 'no-store',
           headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' },
         });
         if (!res.ok) return;
+        const ct = res.headers.get('content-type') || '';
+        if (!ct.includes('json')) return;       // defensive guard
         const json = await res.json();
         if (!cancelled) setRemote(json);
       } catch {

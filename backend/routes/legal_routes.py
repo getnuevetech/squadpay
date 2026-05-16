@@ -216,7 +216,10 @@ def attach_legal_routes(api_router: APIRouter, db, require_admin):
             raise HTTPException(404, "Unknown legal page")
         page = await db.legal_pages.find_one({"slug": slug}, {"_id": 0})
         if page:
-            return _hydrate(page)
+            # Stored rows are user-customized; make the flag explicit so
+            # public consumers can rely on its presence (mirrors what the
+            # admin-list endpoint does).
+            return {**_hydrate(page), "is_default": False}
         # Fallback to defaults (read-only). Admins can save edits to override.
         d = DEFAULT_PAGES[slug]
         return {

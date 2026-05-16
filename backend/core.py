@@ -542,11 +542,32 @@ async def _recompute_group(group: dict) -> dict:
 
     if split_mode == "fast":
         if members:
-            equal = total / len(members)
-            per_user = [
-                {"user_id": m["user_id"], "food": round(equal, 2), "tax_tip": 0.0, "total": round(equal, 2)}
-                for m in members
-            ]
+            # Penny-safe equal split (May 2026 fix). Doing `round(total/N, 2)`
+            # per member loses or duplicates a cent whenever total*100 isn't
+            # divisible by N — e.g. $94.43 / 2 = $47.215 → each rounds to
+            # $47.21, total $94.42 (one penny short). That penny then
+            # surfaces as a permanent "remaining $0.01" on the bill so the
+            # squad can never reach 100% funded.
+            #
+            # Largest-remainder distribution in integer cents: the first
+            # `extra_cents` members absorb one penny each so the totals
+            # sum exactly. Lead is first in `members` by convention, so
+            # they naturally take the extra cent — which feels right
+            # because the Lead is also the dispute / shortfall owner.
+            total_cents = int(round(float(total) * 100))
+            n = len(members)
+            base_cents = total_cents // n
+            extra_cents = total_cents - base_cents * n  # 0 ≤ extra < n
+            per_user = []
+            for idx, m in enumerate(members):
+                share_cents = base_cents + (1 if idx < extra_cents else 0)
+                share_amt = share_cents / 100.0
+                per_user.append({
+                    "user_id": m["user_id"],
+                    "food": share_amt,
+                    "tax_tip": 0.0,
+                    "total": share_amt,
+                })
         else:
             per_user = []
     else:
@@ -560,11 +581,44 @@ async def _recompute_group(group: dict) -> dict:
                 if a["item_id"] == item_id and a["user_id"] in per_user_food:
                     per_user_food[a["user_id"]] += a["quantity"] * item["price"]
         extras = tax + tip
+        # Penny-safe extras (tax + tip) proration (May 2026 fix). Doing
+        # `round(share * extras, 2)` per member can drop or duplicate a
+        # cent so the per-member totals don't quite add up to extras.
+        # We compute everyone's float extras, take the integer-cent
+        # floor for each, then distribute the leftover cents to the
+        # members with the largest fractional remainder. Lead acts as
+        # tie-breaker (members[0] absorbs the first leftover cent).
         per_user = []
-        for m in members:
-            food = per_user_food.get(m["user_id"], 0.0)
-            share = (food / subtotal) if subtotal > 0 else 0.0
-            extra = round(share * extras, 2)
+        extras_cents_total = int(round(extras * 100))
+        # Pre-compute (member, float_extra) so we can index back.
+        member_extras_float = []
+        if subtotal > 0:
+            for m in members:
+                food = per_user_food.get(m["user_id"], 0.0)
+                share = food / subtotal
+                member_extras_float.append((m, food, share * extras))
+        else:
+            for m in members:
+                member_extras_float.append((m, per_user_food.get(m["user_id"], 0.0), 0.0))
+
+        # Floor each to cents, track fractional remainders.
+        floored_cents = []
+        for _, _, fe in member_extras_float:
+            cents = int(fe * 100)  # truncate toward zero (positive amounts only)
+            floored_cents.append(cents)
+        leftover_cents = max(0, extras_cents_total - sum(floored_cents))
+        # Sort indices by descending fractional remainder; ties broken by
+        # member order (so Lead-first when remainders tie).
+        remainders = [
+            (idx, (member_extras_float[idx][2] * 100) - floored_cents[idx])
+            for idx in range(len(member_extras_float))
+        ]
+        remainders.sort(key=lambda r: (-r[1], r[0]))
+        for k in range(min(leftover_cents, len(remainders))):
+            floored_cents[remainders[k][0]] += 1
+
+        for i, (m, food, _) in enumerate(member_extras_float):
+            extra = floored_cents[i] / 100.0
             per_user.append({
                 "user_id": m["user_id"],
                 "food": round(food, 2),

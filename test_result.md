@@ -13989,3 +13989,55 @@ agent_communication:
         Bug fixed. After the user pushes & Vercel redeploys, the live
         Terms page will finally show whatever the admin saved. No
         backend change required — the API was always correct.
+
+---
+## 2026-05-16 — Equal-split penny rounding bug (RESOLVED)
+
+backend:
+  - task: "Penny-safe equal split + tax/tip proration"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/core.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      -working: false
+       -agent: "user"
+       -comment: |
+         Bill $94.43 / 2 people in fast (equal) mode showed each member
+         owing $47.21. Total contributed = $94.42 → permanent $0.01
+         "remaining" so the squad never reached 100% funded.
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         Root cause: `_recompute_group()` did `round(total/N, 2)` per
+         member independently. 94.43/2 = 47.215 which Python rounds to
+         47.21 (banker's rounding on the half-cent float). Both members
+         got 47.21 → sum 94.42. Same shape bug existed in itemized mode
+         when prorating tax+tip across members with non-integer-cent
+         fractional shares.
+
+         Fix (both modes, May 2026): largest-remainder distribution in
+         integer cents.
+         - Fast mode: compute `total_cents`, give every member
+           `total_cents // N`, then sprinkle the `total_cents % N`
+           remaining cents one each starting at member[0]. Lead is
+           members[0] by convention so they naturally take the extra
+           penny (which feels right since the Lead also owns shortfall).
+         - Itemized extras: take floor cents per member, distribute the
+           leftover cents to members with largest fractional remainder
+           (ties broken by member order so Lead-first).
+
+         Verified locally with 8 representative inputs — all sum to the
+         exact bill total (incl. $94.43/2, $10/3, $1/7, $0.05/4, $50.01/2,
+         $33.33/3, $100/4, $94.43/7).
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Penny-safe split shipped in _recompute_group(). User's squad
+        E3436-96437 will reflect on next dashboard fetch — bill $94.43
+        between 2 members will now show $47.22 + $47.21 = $94.43 exactly,
+        and `remaining_to_collect` reaches $0.00 cleanly.
+        Production deploy needed for it to apply to live squads.

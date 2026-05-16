@@ -14130,11 +14130,11 @@ agent_communication:
 backend:
   - task: "Lead absorbs residual cents on equal + itemized split"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/backend/core.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       -working: false
        -agent: "user"

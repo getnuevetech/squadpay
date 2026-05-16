@@ -210,6 +210,18 @@ def attach_legal_routes(api_router: APIRouter, db, require_admin):
 
     # ─────────────────── Public ───────────────────
 
+    # Cache headers for both public reads — admin edits must show on the
+    # next refresh, not after a Vercel / CDN TTL. We tell every layer
+    # explicitly NOT to cache. Vercel honours `cdn-cache-control`,
+    # Cloudflare honours `cache-control`; sending both keeps each one in
+    # check no matter where in the path the request terminates.
+    NO_CACHE_HEADERS = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "CDN-Cache-Control": "no-store",
+        "Vercel-CDN-Cache-Control": "no-store",
+        "Pragma": "no-cache",
+    }
+
     @api_router.get("/legal/pages/{slug}")
     async def get_legal_page(slug: str):
         if slug not in VALID_SLUGS:
@@ -219,17 +231,19 @@ def attach_legal_routes(api_router: APIRouter, db, require_admin):
             # Stored rows are user-customized; make the flag explicit so
             # public consumers can rely on its presence (mirrors what the
             # admin-list endpoint does).
-            return {**_hydrate(page), "is_default": False}
+            from fastapi.responses import JSONResponse
+            return JSONResponse({**_hydrate(page), "is_default": False}, headers=NO_CACHE_HEADERS)
         # Fallback to defaults (read-only). Admins can save edits to override.
+        from fastapi.responses import JSONResponse
         d = DEFAULT_PAGES[slug]
-        return {
+        return JSONResponse({
             "slug": slug,
             "title": d["title"],
             "content_md": d["content_md"],
             "content_html": d["content_html"],
             "updated_at": None,
             "is_default": True,
-        }
+        }, headers=NO_CACHE_HEADERS)
 
     @api_router.get("/legal/media/{media_id}")
     async def get_legal_media(media_id: str):

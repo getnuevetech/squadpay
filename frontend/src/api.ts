@@ -269,9 +269,15 @@ export const api = {
       slug: string;
       title: string;
       content_html: string;
+      content_md?: string;
       updated_at: string | null;
       is_default?: boolean;
-    }>(`/legal/pages/${slug}`),
+    }>(
+      // Cache-bust the public legal page fetch so an admin edit shows
+      // on the next refresh instead of waiting on a CDN / Vercel TTL.
+      `/legal/pages/${slug}?t=${Date.now()}`,
+      { cache: 'no-store' as RequestCache, headers: { 'Cache-Control': 'no-cache' } } as any,
+    ),
   getUserCredits: (user_id: string) =>
     request<{ user_id: string; balance: number; items: Array<{ id: string; amount: number; consumed_amount: number; remaining: number; kind: string; status: string; note: string | null; created_at: string; last_consumed_at: string | null }>; lead_auto_discount: any }>(
       `/users/${user_id}/credits`,

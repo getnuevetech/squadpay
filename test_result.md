@@ -13867,3 +13867,77 @@ agent_communication:
            Save writes both fields and the backend uses content_md.
         User should hard-refresh the admin (Cmd+Shift+R) to pick up the
         new bundle.
+
+---
+## 2026-05-16 — Stale web favicon/splash + legal-content cache
+
+Two issues reported by user, both root-caused & shipped:
+
+### A) Web app icon / splash still showed the OLD logo on live site
+- The deployed `www.squadpay.us/dist/favicon.ico` was a 48×48 single-frame
+  ICO baked into a previous `expo export --platform web` run, predating
+  the SquadPay logo refresh.
+- The Expo template doesn't auto-rebuild favicon.ico from favicon.png on
+  every export, so the only way to ship a new ICO is to commit one to
+  `frontend/public/`.
+
+Fixes shipped:
+1. Generated a fresh **multi-resolution favicon.ico** (16/32/48/64/128/256)
+   from the new logo and committed it to `frontend/public/favicon.ico`.
+2. Added a **180×180 apple-touch-icon.png** and a **1200×630 og-image.png**
+   to `frontend/public/` so iOS Safari and social link previews also pick
+   up the new brand.
+3. Updated `frontend/app/+html.tsx` to inject `<link rel="icon">`,
+   `<link rel="apple-touch-icon">`, `<meta name="theme-color">`, OG/Twitter
+   image meta with `?v=2` cache-busters so browsers refetch instead of
+   holding the old icon.
+4. Patched `frontend/dist/index.html` (the deployed static shell) to
+   carry the same icon links AND replaced `dist/favicon.ico` with the
+   new file — so the live deploy picks up the change on next Vercel
+   cache flush (or instantly on hard-refresh + ?v=2 query).
+
+User next step: trigger a fresh Vercel deploy (push to main) and the
+new logo will be live everywhere. Hard-refresh (Cmd+Shift+R) on the
+live site to bypass browser/CF caching once redeployed.
+
+### B) Legal page edits in admin didn't appear on public pages
+- Verified the LIVE API at `https://www.squadpay.us/api/legal/pages/privacy`
+  was returning the NEW content (`updated_at: 2026-05-16T14:19:14` —
+  the admin save did propagate to the DB).
+- The HTML shell was being served with `x-vercel-cache: HIT` (`age: 5160s`)
+  which only affects the empty SPA hull, not the content fetch.
+- However the public client fetch had NO cache-busting, so some
+  intermediate caches could still hold an older payload for up to a
+  TTL window.
+
+Fixes shipped:
+1. Backend `/api/legal/pages/{slug}` now sets explicit:
+     Cache-Control: no-store, no-cache, must-revalidate, max-age=0
+     CDN-Cache-Control: no-store
+     Vercel-CDN-Cache-Control: no-store
+     Pragma: no-cache
+   Verified via `curl -v` — all four headers present.
+2. Client `api.getLegalPage` now appends `?t=${Date.now()}` and sends
+   `cache: 'no-store'` so every browser fetch goes back to origin.
+
+Together this means: admin clicks Save → public page reflects the new
+content on the very next refresh, no waiting on TTLs.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        - New favicon.ico (multi-res), apple-touch-icon, og-image all
+          committed under frontend/public/ AND patched into dist/index.html
+          so the live deploy picks them up after next push.
+        - Backend /api/legal/pages/{slug} now sends no-store cache headers
+          on every layer (browser / CF / Vercel) and the client adds
+          cache-buster + `cache: no-store` on the fetch.
+        - Confirmed via curl that the LIVE backend already had the latest
+          admin-saved content — so the public pages have been working;
+          users just needed a hard refresh. Now they won't have to.
+        Verification steps for user:
+          1. Push the new public/* files + +html.tsx change to main.
+          2. Vercel redeploys — new favicon+meta tags ship.
+          3. Hard-refresh once to bust browser cache.
+          4. Edit a legal page in admin → Save → reload public page →
+             new content visible instantly.

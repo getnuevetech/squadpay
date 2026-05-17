@@ -40,9 +40,33 @@ logger = logging.getLogger(__name__)
 _ENV_KEYS: Dict[str, List[str]] = {
     "stripe":   ["STRIPE_API_KEY"],
     "lithic":   ["LITHIC_API_KEY", "LITHIC_ENV", "LITHIC_WEBHOOK_SECRET"],
-    "highnote": ["HIGHNOTE_API_KEY", "HIGHNOTE_ORG_ID"],
-    "unit":     ["UNIT_API_TOKEN"],
+    "highnote": ["HIGHNOTE_API_KEY", "HIGHNOTE_ENV"],
+    "unit":     ["UNIT_API_TOKEN", "UNIT_ENV"],
 }
+
+
+# ---------- Settlement Mode (June 2025) ----------
+# Hard mutex: every new squad uses EXACTLY ONE settlement rail.
+#
+#   "virtual_card" \u2014 the active issuer (Lithic / Highnote / Stripe) issues a
+#                    single-use card; lead pays merchant with that card via
+#                    Apple/Google Wallet. Squad money flows: collection \u2192
+#                    platform bank \u2192 issuer settlement \u2192 merchant. SquadPay
+#                    never holds funds.
+#
+#   "lead_card"    \u2014 squad-collected money is paid out to the lead's saved
+#                    bank/debit card via Stripe Connect Express (or active
+#                    payout provider). Lead then pays the merchant with their
+#                    own card. Used when virtual card issuance isn't ready or
+#                    when an issuer is in cooldown. Compliance posture stays
+#                    intact because money is in-flight (charge \u2192 instant
+#                    transfer to lead) and never rests in a SquadPay account.
+#
+# The user-facing UI must NEVER expose the mode to end-users. It reads this
+# config and only renders the relevant CTA / flow. Frontend complexity is
+# back-pressured into this single admin toggle.
+SETTLEMENT_MODES = ["virtual_card", "lead_card"]
+DEFAULT_SETTLEMENT_MODE = "virtual_card"
 
 
 def _now_iso() -> str:
@@ -72,6 +96,10 @@ class ToggleBody(BaseModel):
 class ConfigureBody(BaseModel):
     slug: str
     credentials: Dict[str, str]
+
+
+class SettlementBody(BaseModel):
+    mode: str  # "virtual_card" | "lead_card"
 
 
 def attach_payment_gateways_routes(api_router: APIRouter, db, admin_dep):
@@ -218,3 +246,58 @@ def attach_payment_gateways_routes(api_router: APIRouter, db, admin_dep):
             raise HTTPException(404, f"Provider {slug!r} not integrated")
         adapter = await get_issuer_by_slug(slug)
         return await adapter.health_check()
+
+    # ---- Settlement Mode (mutex: lead_card vs virtual_card) ----
+    @api_router.get("/admin/settlement-mode")
+    async def get_settlement_mode(admin=Depends(admin_dep)):
+        rec = await db.app_settings.find_one({"key": "integrations"}, {"_id": 0}) or {}
+        pg = dict(rec.get("payment_gateways") or {})
+        mode = pg.get("settlement_mode") or DEFAULT_SETTLEMENT_MODE
+        return {
+            "mode": mode,
+            "options": SETTLEMENT_MODES,
+            "default": DEFAULT_SETTLEMENT_MODE,
+            "active_issuer": pg.get("active_issuer", "stripe"),
+            "changed_by": pg.get("settlement_mode_changed_by"),
+            "changed_at": pg.get("settlement_mode_changed_at"),
+        }
+
+    @api_router.post("/admin/settlement-mode")
+    async def set_settlement_mode(body: SettlementBody, admin=Depends(admin_dep)):
+        if body.mode not in SETTLEMENT_MODES:
+            raise HTTPException(400, f"Invalid mode {body.mode!r}. Allowed: {SETTLEMENT_MODES}")
+        # Sanity: if switching to virtual_card, the active issuer MUST be
+        # configured. Otherwise new squads will fail to issue cards.
+        if body.mode == "virtual_card":
+            rec = await db.app_settings.find_one({"key": "integrations"}, {"_id": 0}) or {}
+            pg = dict(rec.get("payment_gateways") or {})
+            active = pg.get("active_issuer") or "stripe"
+            if not _is_configured(active):
+                raise HTTPException(
+                    400,
+                    f"Cannot switch to virtual_card mode: active issuer {active!r} "
+                    f"has no credentials configured. Configure it first.",
+                )
+        actor = (admin.get("username") if isinstance(admin, dict) else getattr(admin, "username", "admin")) or "admin"
+        rec = await db.app_settings.find_one({"key": "integrations"}, {"_id": 0}) or {"key": "integrations"}
+        pg = dict(rec.get("payment_gateways") or {})
+        pg["settlement_mode"] = body.mode
+        pg["settlement_mode_changed_by"] = actor
+        pg["settlement_mode_changed_at"] = _now_iso()
+        await db.app_settings.update_one(
+            {"key": "integrations"},
+            {"$set": {"payment_gateways": pg}},
+            upsert=True,
+        )
+        logger.info(f"[admin] settlement_mode set to {body.mode!r} by {actor}")
+        return {"ok": True, "mode": body.mode}
+
+    # ---- PUBLIC read endpoint for frontend (auth-free, low-sensitivity) ----
+    # Mounted at /api/runtime/settlement-mode so any client can ask "which
+    # payment flow am I in?" without admin auth. Returns ONLY the mode \u2014
+    # never which issuer is active or any credential info.
+    @api_router.get("/runtime/settlement-mode")
+    async def get_runtime_settlement_mode():
+        rec = await db.app_settings.find_one({"key": "integrations"}, {"_id": 0}) or {}
+        pg = dict(rec.get("payment_gateways") or {})
+        return {"mode": pg.get("settlement_mode") or DEFAULT_SETTLEMENT_MODE}

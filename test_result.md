@@ -14736,3 +14736,83 @@ agent_communication:
            via get_active_issuer() so changing the admin toggle actually
            switches which provider issues new squad cards.
 
+
+---
+## 2026-05-17 — Settlement Mode Mutex + Unit-in-both-tabs
+
+backend:
+  - task: "Settlement Mode mutex (virtual_card vs lead_card)"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/admin_payment_gateways.py"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "main"
+       -comment: |
+         Founder spec: Squad settlement MUST be one of:
+           - "virtual_card": active issuer (Lithic/Highnote/Stripe) issues
+             a single-use card; Lead pays merchant with that card.
+           - "lead_card": squad money paid out to Lead's saved card; Lead
+             pays merchant with own card.
+         Never both, never per-squad selection. End users never see this
+         choice \u2014 frontend reads the runtime setting and shows only the
+         relevant CTA.
+
+         Added endpoints:
+           - GET /api/admin/settlement-mode  (admin: full info)
+           - POST /api/admin/settlement-mode {mode}  (admin: switch)
+           - GET /api/runtime/settlement-mode  (public: mode only)
+         Stored in app_settings.integrations.payment_gateways.settlement_mode.
+         Sanity guard: switching to virtual_card refuses if the active
+         issuer has no credentials configured.
+
+  - task: "Unit.co purpose=both (visible in Virtual Card AND Payout tabs)"
+    implemented: true
+    working: true
+    file: "/app/backend/adapters/issuer_unit.py"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "main"
+       -comment: |
+         Per founder request, Unit.co now appears in BOTH tabs.
+         Activation as card issuer is still blocked at runtime by the
+         compliance NotImplementedError on issue_card() until founder
+         signs off on the creditAccount path.
+
+frontend:
+  - task: "Settlement Mode toggle card on /admin/gateways"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/admin/gateways.tsx, /app/frontend/src/adminApi/paymentGateways.ts"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "main"
+       -comment: |
+         Added prominent settlement-mode card at top of page (above the
+         Charge/Payout/Issuer tabs). Two side-by-side options, mutex.
+         Active option highlighted in primary color. Switching prompts
+         admin with what changes. Frontend bundled clean (3160 modules,
+         no errors).
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Settlement Mode admin toggle COMPLETE. Backend endpoints
+        verified live, frontend bundled, all 4 issuers reachable with
+        Lithic ACTIVE. Unit visible in both tabs.
+
+        NEXT (founder approval needed before I wire this into the
+        actual payment flow):
+        1. Wire issuing.issue_group_card() to read settlement_mode + 
+           route via get_active_issuer() instead of hard-coding Stripe.
+        2. Add a code branch in /api/groups/{id}/payout (or equivalent)
+           that, when mode==lead_card, pushes collected money to the
+           Lead's saved card via the active payout provider instead of
+           creating a Stripe Issuing card.
+        3. Frontend Lead Dashboard: read /api/runtime/settlement-mode 
+           on mount and pick the correct CTA copy ("Use Squad Card" vs
+           "Withdraw to your card").
+

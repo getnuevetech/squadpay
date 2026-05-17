@@ -101,21 +101,17 @@ async def _get(path: str, timeout: float = 10.0) -> Dict[str, Any]:
 
 class UnitIssuerAdapter(IssuerAdapter):
     slug = "unit"
-    display_name = "Unit.co (Payouts)"
-    # Per founder decision (June 2025): Unit is REPURPOSED for merchant-side
-    # payouts only. Virtual card issuance remains stubbed because Unit's
-    # card products require a deposit/credit account on Unit's side, which
-    # would violate SquadPay's 'never hold money' compliance posture.
-    #
-    # Issuance capabilities are advertised as FALSE so the admin Payment
-    # Gateways UI can grey-out the "Make Active" button for the Issuer
-    # role while still showing Unit as a configured provider.
+    display_name = "Unit.co"
+    # Per founder spec (June 2025): Unit appears in BOTH the Virtual Card
+    # Issuer tab AND the Payout tab. Issuance is blocked at runtime by the
+    # NotImplementedError below (compliance conflict re: deposit accounts),
+    # so even if an admin activates it, no squad card will be silently
+    # mis-issued \u2014 they'll get a clear error.
     supports_apple_wallet = False
     supports_google_wallet = False
     supports_single_use = False
     supports_multi_use = False
-    # Custom flag (consumed by the admin UI / payout group routing).
-    purpose = "payout"
+    purpose = "both"
 
     async def health_check(self) -> Dict[str, Any]:
         env = (os.environ.get("UNIT_ENV") or "sandbox").lower()

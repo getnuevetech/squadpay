@@ -249,6 +249,18 @@ class HighnoteIssuerAdapter(IssuerAdapter):
         except Exception as e:
             raise RuntimeError(f"Highnote issue_card failed: {e}")
 
+    async def fund_card(self, handle: CardHandle, cents: int) -> FundingResult:
+        # Highnote auto-funds the card from the platform's connected bank
+        # account on each authorization. No explicit pre-fund call needed,
+        # which keeps SquadPay's "never hold money" posture intact.
+        return FundingResult(
+            funded_cents=cents,
+            method="auto_from_bank",
+            transfer_id=None,
+            raw={"note": "Highnote auto-funds from connected bank at auth-time"},
+        )
+
+
     async def freeze_card(self, handle: CardHandle, reason: str = "squad_settled") -> None:
         mutation = """
         mutation Suspend($id: ID!) {

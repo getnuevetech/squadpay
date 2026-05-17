@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { CheckCircle2, ShieldAlert, Plug, ChevronDown, Save, Eye, EyeOff, Zap } from 'lucide-react-native';
 import { adminApi } from '../../src/adminApi';
+import { paymentGatewaysApi } from '../../src/adminApi/paymentGateways';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
 import IssuerGatewaysTab from '../../src/components/admin/IssuerGatewaysTab';
 
@@ -59,6 +60,10 @@ export default function GatewaysPage() {
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [savingKey, setSavingKey] = useState<string | null>(null);
+  // Settlement mode mutex \u2014 admin toggles whether new squads use the virtual
+  // card flow or the lead-card-payout flow. End users never see this choice.
+  const [settlementMode, setSettlementMode] = useState<'virtual_card' | 'lead_card' | null>(null);
+  const [settlementBusy, setSettlementBusy] = useState(false);
 
   // Edit-form local state, keyed by `${group}:${slug}`.
   const [formInputs, setFormInputs] = useState<Record<string, Record<string, string>>>({});
@@ -67,15 +72,17 @@ export default function GatewaysPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [cat, state] = await Promise.all([
+      const [cat, state, sm] = await Promise.all([
         adminApi.gatewayCatalog(),
         adminApi.gatewayState(),
+        paymentGatewaysApi.getSettlementMode().catch(() => null),
       ]);
       setCatalog({ charge: cat.charge_providers, payout: cat.payout_providers });
       setActive(cat.active);
       const map: Record<string, StoredConfig> = {};
       for (const c of state.items) map[`${c.group}:${c.provider_slug}`] = c;
       setConfigs(map);
+      if (sm) setSettlementMode(sm.mode);
     } catch (e: any) {
       Alert.alert('Failed to load', e?.message || '');
     } finally {
@@ -83,6 +90,25 @@ export default function GatewaysPage() {
     }
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  const onChangeSettlementMode = async (next: 'virtual_card' | 'lead_card') => {
+    if (next === settlementMode) return;
+    setSettlementBusy(true);
+    try {
+      await paymentGatewaysApi.setSettlementMode(next);
+      setSettlementMode(next);
+      Alert.alert(
+        'Settlement mode switched',
+        next === 'virtual_card'
+          ? 'New squads will pay the merchant via the active virtual card issuer.'
+          : "New squads will pay out the collected money to the Lead's saved card. Lead pays the merchant directly.",
+      );
+    } catch (e: any) {
+      Alert.alert('Failed to switch', e?.message || '');
+    } finally {
+      setSettlementBusy(false);
+    }
+  };
 
   const formKey = (p: Provider) => `${p.group}:${p.slug}`;
 
@@ -152,6 +178,65 @@ export default function GatewaysPage() {
         from members) and <Text style={styles.bold}>Payout</Text> (push funds to a debit card via iframe). Configure each provider's
         API keys, then activate exactly one provider per group.
       </Text>
+
+      {/* Settlement Mode toggle (June 2025) — system-wide mutex that decides
+          how every new squad pays the merchant. End users never see this
+          choice; the frontend reads it and renders the correct CTA only. */}
+      <View style={styles.settlementCard} testID="settlement-mode-card">
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Zap size={16} color={COLORS.primary} />
+          <Text style={styles.settlementTitle}>Settlement Mode</Text>
+          <View style={styles.modeBadge}>
+            <Text style={styles.modeBadgeText}>
+              {settlementMode === 'lead_card' ? "LEAD'S CARD" : settlementMode === 'virtual_card' ? 'VIRTUAL CARD' : '\u2026'}
+            </Text>
+          </View>
+        </View>
+        <Text style={styles.settlementSub}>
+          How EVERY new squad pays the merchant. Mutually exclusive — pick one.
+          End users never see this choice.
+        </Text>
+        <View style={styles.settlementOptions}>
+          <TouchableOpacity
+            onPress={() => onChangeSettlementMode('virtual_card')}
+            disabled={settlementBusy || settlementMode === 'virtual_card'}
+            activeOpacity={0.85}
+            style={[
+              styles.modeOption,
+              settlementMode === 'virtual_card' && styles.modeOptionActive,
+            ]}
+            testID="settlement-virtual-card"
+          >
+            <Text style={[styles.modeOptionTitle, settlementMode === 'virtual_card' && { color: '#fff' }]}>
+              Virtual Card
+            </Text>
+            <Text style={[styles.modeOptionSub, settlementMode === 'virtual_card' && { color: '#fff', opacity: 0.85 }]}>
+              Active issuer (e.g., Lithic) issues a single-use card. Lead pays merchant
+              via Apple/Google Pay using that card. Squad money flows through the issuer
+              — SquadPay never holds it.
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => onChangeSettlementMode('lead_card')}
+            disabled={settlementBusy || settlementMode === 'lead_card'}
+            activeOpacity={0.85}
+            style={[
+              styles.modeOption,
+              settlementMode === 'lead_card' && styles.modeOptionActive,
+            ]}
+            testID="settlement-lead-card"
+          >
+            <Text style={[styles.modeOptionTitle, settlementMode === 'lead_card' && { color: '#fff' }]}>
+              Lead's Card
+            </Text>
+            <Text style={[styles.modeOptionSub, settlementMode === 'lead_card' && { color: '#fff', opacity: 0.85 }]}>
+              Squad-collected money is paid out (instant) to the Lead's saved card via
+              the active payout provider. Lead then pays the merchant with their own card.
+              Used when no virtual card issuer is active.
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
 
       {/* Tabs */}
       <View style={styles.tabRow}>
@@ -365,7 +450,31 @@ const styles = StyleSheet.create({
   sub: { fontSize: FONT.sizes.sm, color: COLORS.subtext, lineHeight: 19 },
   bold: { fontWeight: FONT.weights.bold, color: COLORS.text },
   tabRow: { flexDirection: 'row', gap: 8, marginVertical: SPACING.sm },
-  tab: {
+  settlementCard: {
+    marginTop: SPACING.md,
+    padding: SPACING.md,
+    backgroundColor: COLORS.surfaceMuted,
+    borderRadius: RADIUS.lg,
+    gap: SPACING.sm,
+  },
+  settlementTitle: { fontSize: 14, fontWeight: FONT.weights.heavy, color: COLORS.text },
+  settlementSub: { fontSize: 11, color: COLORS.subtext, lineHeight: 16 },
+  modeBadge: {
+    paddingHorizontal: 6, paddingVertical: 2, borderRadius: 999,
+    backgroundColor: 'rgba(108,71,255,0.15)',
+  },
+  modeBadgeText: {
+    fontSize: 9, fontWeight: FONT.weights.heavy, color: COLORS.primary, letterSpacing: 0.8,
+  },
+  settlementOptions: { flexDirection: 'row', gap: SPACING.sm, marginTop: 4 },
+  modeOption: {
+    flex: 1, padding: SPACING.sm, borderRadius: RADIUS.md,
+    borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.surface,
+    gap: 4,
+  },
+  modeOptionActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  modeOptionTitle: { fontSize: 13, fontWeight: FONT.weights.heavy, color: COLORS.text },
+  modeOptionSub: { fontSize: 11, color: COLORS.subtext, lineHeight: 15 },  tab: {
     flex: 1, paddingVertical: 12, paddingHorizontal: SPACING.md, borderRadius: RADIUS.md,
     backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border,
   },

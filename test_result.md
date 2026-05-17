@@ -15352,3 +15352,151 @@ agent_communication:
 
         Admin credentials: admin@squadpay.us / Letmein@2007#ForReal
 
+
+frontend:
+  - task: "Lead Settlement Payout — /group/[id]/settle screen (choose / method picker / ACH / Card forms)"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/group/[id]/settle.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "testing"
+          comment: |
+            PARTIAL VERIFICATION ONLY — mobile dimensions 390x844 (iPhone 13) and
+            360x800 (Galaxy S21). Could NOT exercise the choose / method-picker /
+            ACH / Card form stages because the screen requires a valid user
+            session (loadUser + loadSessionId), and producing a real authenticated
+            session for the lead user of a fully-funded squad requires going
+            through the phone+OTP flow (admin SMS mode is likely LIVE in preview;
+            mock OTP 123456 not guaranteed to work).
+
+            ── WHAT IS CONFIRMED ──
+            ✅ The route `/group/{id}/settle` IS deployed and bundled in the
+               preview build. When AsyncStorage (localStorage on web) is seeded
+               with a user object + session_id, the screen MOUNTS and correctly
+               calls
+                 GET /api/group/{gid}/lead-payout/eligibility
+                     ?user_id=<uid>&session_id=<sid>
+               (observed in the network log; 401 response because the injected
+               session_id was fake, which is the expected behavior).
+            ✅ The eligibility endpoint query-string contract from the spec is
+               honored verbatim (user_id, session_id both present, group id in
+               path).
+            ✅ Mobile horizontal-overflow check at 360x800 (Galaxy S21):
+               document.scrollWidth == clientWidth → NO horizontal scroll.
+            ✅ Source code review of /app/frontend/app/group/[id]/settle.tsx
+               confirms all required UI elements ARE implemented:
+                  - SafeAreaView + KeyboardAvoidingView wrapper (line ~32-33)
+                  - "Settle Squad" header with back-arrow TouchableOpacity
+                    (line 266; hitSlop=10 → tap-target ≥ 44pt)
+                  - Stage machine: 'loading' | 'choose' | 'payout_method'
+                    | 'payout_form' | 'success'
+                  - mode==lead_choice → renders both "Pay with Squad Card" and
+                    "Send Money to Me" choice cards (lines 300, 313)
+                  - mode==virtual_card → router.replace('/group/{id}/pay?kind=lead')
+                  - mode==lead_card → goes straight to method picker
+                  - Method picker: "Bank Transfer (ACH)" + "Debit Card (Instant)"
+                    (lines 333, 344)
+                  - ACH form: holder, routing (numeric, max 9 digits), account
+                    (secureTextEntry, numeric, max 17), checking/savings segmented
+                    control (lines 360-410)
+                  - Card form: cardholder, card # (auto-formatted spaces every 4,
+                    max 19 incl. spaces), expMonth(2)/expYear(4)/CVV(4,
+                    secureTextEntry, masked) (lines 415-490)
+                  - Privacy badge "Details are tokenized and discarded after this
+                    single transfer." rendered next to the amount card
+                  - Submit buttons "Send $X.XX via ACH" / "Send $X.XX to card"
+                  - "Change method" link returns user to method picker (lines
+                    411, 488)
+                  - Input sanitization at the onChangeText handlers strips
+                    non-digits and clamps lengths.
+                  - Validation in submit() per the spec (routing must be 9 digits;
+                    card 13-19; month 01-12; etc).
+
+            ── WHAT COULD NOT BE EXERCISED ──
+            The choose / method-picker / ACH / Card form interactive flows were
+            not tested at runtime because:
+              1. Reaching `/group/{id}/settle` without a logged-in lead session
+                 triggers either an "Unmatched Route" fall-through (web router
+                 redirected to root before settle mounted) OR a forced redirect
+                 to "/login" (Welcome back / Enter phone) — both observed in
+                 the same run on iPhone 13 and Galaxy S21.
+              2. Injecting a fake session_id into localStorage made the screen
+                 mount and fire the eligibility request, but the backend
+                 (correctly) returned 401, which the screen surfaces as an
+                 "Unable to load settle screen" error or auto-redirect; the
+                 choose-stage UI was therefore not painted.
+              3. Producing a real session would require:
+                    POST /api/auth/register → POST /api/auth/send-otp →
+                    (admin SMS mode == 'mock' AND OTP 123456) →
+                    POST /api/auth/verify-otp → create group → contribute →
+                    fully fund — well beyond the scope of a UI test.
+
+            ── ADDITIONAL OBSERVATIONS ──
+            • The lead dashboard at /group/{id}/dashboard for an existing paid
+              group, when visited with NO session, redirected through the
+              full onboarding ("What's your name?" → "Welcome back / phone").
+              Could not visually verify the new "Settle bill — fully funded"
+              CTA on the dashboard either.
+            • Source review of settle.tsx: no testID / data-testid attributes
+              on any interactive elements. Strongly recommend adding them
+              (e.g., settle-back-btn, choose-squad-card, choose-direct-payout,
+              method-ach, method-card, ach-routing, ach-account, ach-holder,
+              ach-submit, card-number, card-month, card-year, card-cvv,
+              card-submit, change-method) so downstream UI regression tests
+              can run reliably without text-matching.
+            • The KeyboardAvoidingView uses Platform.OS === 'ios' ? 'padding'
+              : undefined — on Android this means the submit button can be
+              covered by keyboard. Consider 'height' or 'padding' on Android
+              too.
+
+            ── ACTION FOR MAIN AGENT ──
+            To get a green light on this task, the easiest path is one of:
+              (a) Temporarily enable admin SMS mode = MOCK in the preview
+                  env and re-call the testing agent with a seeded
+                  fully-funded group + the lead's phone number, so the agent
+                  can OTP-login as 123456 and walk the actual screens.
+              (b) Provide a one-shot debug endpoint that mints a valid
+                  session for a given user_id (gated by admin token), so the
+                  agent can inject a REAL session_id without OTP.
+              (c) Add testID / data-testid to all interactive elements in
+                  settle.tsx, then accept the static screenshot pass from
+                  this run as the UI verification.
+
+            Backend endpoints (eligibility, execute) are already verified per
+            prior status entries — no backend action required. The frontend
+            screen file exists, is bundled, and obeys the URL/route contract.
+            Interactive flow verification is pending the unblock above.
+
+metadata:
+  testing_run_at: "2026-05-17"
+  next_focus: "Lead Settlement Payout — /group/[id]/settle screen"
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        Lead Settlement Payout UI test — PARTIAL.
+        Confirmed: /group/[id]/settle route is deployed; eligibility endpoint
+        called with the correct querystring; no horizontal overflow at
+        360x800; source code implements all required UI per spec.
+
+        Blocked from interactive testing: cannot produce a valid user session
+        for the lead of a fully-funded squad without OTP. Injected fake
+        session → backend 401 → screen falls back to login; choose / method
+        / ACH / Card form stages therefore NOT exercised at runtime.
+
+        Strong recommendations for main agent:
+          1. Add testID props to settle.tsx interactive elements so future
+             UI tests can run by stable selectors (no testID anywhere today).
+          2. Either (a) flip admin SMS to MOCK + seed a fully-funded squad
+             with a known lead phone, OR (b) ship a dev-only "mint session"
+             endpoint, so the testing agent can complete Tests 2-8.
+          3. On Android the KeyboardAvoidingView behavior is `undefined` —
+             consider 'padding' to ensure the submit button isn't covered.
+
+        No backend regressions. The Lead Settlement Payout frontend
+        implementation looks correct on inspection.
+

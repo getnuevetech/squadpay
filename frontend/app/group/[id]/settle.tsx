@@ -259,14 +259,15 @@ export default function SettleScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
       >
         {/* Header */}
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={10}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={10} testID="settle-back-btn">
             <ArrowLeft size={22} color={COLORS.text} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Settle Squad</Text>
+          <Text style={styles.headerTitle} testID="settle-header-title">Settle Squad</Text>
           <View style={{ width: 22 }} />
         </View>
 
@@ -297,7 +298,7 @@ export default function SettleScreen() {
             <View>
               <Text style={styles.sectionTitle}>How would you like to settle?</Text>
               {elig.show_virtual_card_option && (
-                <TouchableOpacity style={styles.choiceCard} onPress={goToVirtualCard} activeOpacity={0.85}>
+                <TouchableOpacity style={styles.choiceCard} onPress={goToVirtualCard} activeOpacity={0.85} testID="settle-choice-virtual-card">
                   <View style={styles.choiceIconWrap}>
                     <Wallet size={24} color={COLORS.primary} />
                   </View>
@@ -310,7 +311,7 @@ export default function SettleScreen() {
                 </TouchableOpacity>
               )}
               {elig.show_lead_payout_option && (
-                <TouchableOpacity style={styles.choiceCard} onPress={goToPayoutMethod} activeOpacity={0.85}>
+                <TouchableOpacity style={styles.choiceCard} onPress={goToPayoutMethod} activeOpacity={0.85} testID="settle-choice-send-to-me">
                   <View style={styles.choiceIconWrap}>
                     <Landmark size={24} color={COLORS.primary} />
                   </View>
@@ -330,7 +331,7 @@ export default function SettleScreen() {
             <View>
               <Text style={styles.sectionTitle}>Where should we send the money?</Text>
               {elig.supports_ach && (
-                <TouchableOpacity style={styles.choiceCard} onPress={() => pickMethod('ach')} activeOpacity={0.85}>
+                <TouchableOpacity style={styles.choiceCard} onPress={() => pickMethod('ach')} activeOpacity={0.85} testID="settle-method-ach">
                   <View style={styles.choiceIconWrap}>
                     <Landmark size={24} color={COLORS.primary} />
                   </View>
@@ -341,7 +342,7 @@ export default function SettleScreen() {
                 </TouchableOpacity>
               )}
               {elig.supports_card && (
-                <TouchableOpacity style={styles.choiceCard} onPress={() => pickMethod('push_to_card')} activeOpacity={0.85}>
+                <TouchableOpacity style={styles.choiceCard} onPress={() => pickMethod('push_to_card')} activeOpacity={0.85} testID="settle-method-card">
                   <View style={styles.choiceIconWrap}>
                     <CreditCard size={24} color={COLORS.primary} />
                   </View>
@@ -366,6 +367,7 @@ export default function SettleScreen() {
                 placeholder="Full legal name"
                 placeholderTextColor={COLORS.disabledText}
                 autoCapitalize="words"
+                testID="settle-ach-holder-input"
               />
               <Text style={styles.fieldLabel}>Routing number</Text>
               <TextInput
@@ -376,6 +378,7 @@ export default function SettleScreen() {
                 placeholderTextColor={COLORS.disabledText}
                 keyboardType="number-pad"
                 maxLength={9}
+                testID="settle-ach-routing-input"
               />
               <Text style={styles.fieldLabel}>Account number</Text>
               <TextInput
@@ -386,6 +389,7 @@ export default function SettleScreen() {
                 placeholderTextColor={COLORS.disabledText}
                 keyboardType="number-pad"
                 secureTextEntry
+                testID="settle-ach-account-input"
               />
               <Text style={styles.fieldLabel}>Account type</Text>
               <View style={styles.segRow}>
@@ -394,6 +398,7 @@ export default function SettleScreen() {
                     key={t}
                     style={[styles.segBtn, accountType === t && styles.segBtnOn]}
                     onPress={() => setAccountType(t)}
+                    testID={`settle-ach-acct-type-${t}`}
                   >
                     <Text style={[styles.segText, accountType === t && styles.segTextOn]}>
                       {t === 'checking' ? 'Checking' : 'Savings'}
@@ -407,8 +412,9 @@ export default function SettleScreen() {
                 title={submitting ? 'Submitting…' : `Send $${elig?.available_usd.toFixed(2)} via ACH`}
                 onPress={submit}
                 disabled={submitting}
+                testID="settle-ach-submit-btn"
               />
-              <TouchableOpacity onPress={() => setStage('payout_method')} style={styles.linkBtn}>
+              <TouchableOpacity onPress={() => setStage('payout_method')} style={styles.linkBtn} testID="settle-change-method-link-ach">
                 <Text style={styles.linkText}>Change method</Text>
               </TouchableOpacity>
             </View>
@@ -425,6 +431,7 @@ export default function SettleScreen() {
                 placeholder="Name on card"
                 placeholderTextColor={COLORS.disabledText}
                 autoCapitalize="words"
+                testID="settle-card-holder-input"
               />
               <Text style={styles.fieldLabel}>Card number</Text>
               <TextInput
@@ -438,6 +445,7 @@ export default function SettleScreen() {
                 placeholder="1234 5678 9012 3456"
                 placeholderTextColor={COLORS.disabledText}
                 keyboardType="number-pad"
+                testID="settle-card-number-input"
               />
               <View style={styles.row}>
                 <View style={{ flex: 1, marginRight: SPACING.sm }}>
@@ -450,6 +458,7 @@ export default function SettleScreen() {
                     placeholderTextColor={COLORS.disabledText}
                     keyboardType="number-pad"
                     maxLength={2}
+                    testID="settle-card-exp-month-input"
                   />
                 </View>
                 <View style={{ flex: 1, marginRight: SPACING.sm }}>
@@ -462,6 +471,7 @@ export default function SettleScreen() {
                     placeholderTextColor={COLORS.disabledText}
                     keyboardType="number-pad"
                     maxLength={4}
+                    testID="settle-card-exp-year-input"
                   />
                 </View>
                 <View style={{ flex: 1 }}>
@@ -475,6 +485,7 @@ export default function SettleScreen() {
                     keyboardType="number-pad"
                     secureTextEntry
                     maxLength={4}
+                    testID="settle-card-cvv-input"
                   />
                 </View>
               </View>
@@ -484,8 +495,9 @@ export default function SettleScreen() {
                 title={submitting ? 'Submitting…' : `Send $${elig?.available_usd.toFixed(2)} to card`}
                 onPress={submit}
                 disabled={submitting}
+                testID="settle-card-submit-btn"
               />
-              <TouchableOpacity onPress={() => setStage('payout_method')} style={styles.linkBtn}>
+              <TouchableOpacity onPress={() => setStage('payout_method')} style={styles.linkBtn} testID="settle-change-method-link-card">
                 <Text style={styles.linkText}>Change method</Text>
               </TouchableOpacity>
             </View>

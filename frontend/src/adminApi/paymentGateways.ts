@@ -32,7 +32,8 @@ export type IssuerCapabilities = {
 export type IssuerProvider = {
   slug: string;                 // "stripe" | "lithic" | "highnote" | "unit"
   display_name: string;
-  active: boolean;              // true for exactly one entry
+  purpose: 'issuer' | 'payout' | 'both';
+  active: boolean;              // true for exactly one entry (only relevant for purpose=issuer)
   enabled: boolean;             // admin toggle
   configured: boolean;          // credentials present
   capabilities: IssuerCapabilities;
@@ -50,25 +51,26 @@ export type IssuerListResp = {
 };
 
 export const paymentGatewaysApi = {
-  list: () => request<IssuerListResp>('GET', '/payment-gateways'),
+  list: () => request<IssuerListResp>('/payment-gateways'),
 
   activate: (slug: string) =>
     request<{ ok: boolean; active_issuer: string }>(
-      'POST',
       '/payment-gateways/activate',
-      { slug },
+      { method: 'POST', body: JSON.stringify({ slug }) },
     ),
 
   toggle: (slug: string, enabled: boolean) =>
-    request<{ ok: boolean }>('POST', '/payment-gateways/toggle', { slug, enabled }),
+    request<{ ok: boolean }>(
+      '/payment-gateways/toggle',
+      { method: 'POST', body: JSON.stringify({ slug, enabled }) },
+    ),
 
   configure: (slug: string, credentials: Record<string, string>) =>
     request<{ ok: boolean; health: IssuerHealth }>(
-      'POST',
       '/payment-gateways/configure',
-      { slug, credentials },
+      { method: 'POST', body: JSON.stringify({ slug, credentials }) },
     ),
 
   health: (slug: string) =>
-    request<IssuerHealth>('GET', `/payment-gateways/${slug}/health`),
+    request<IssuerHealth>(`/payment-gateways/${slug}/health`),
 };

@@ -100,6 +100,7 @@ def attach_payment_gateways_routes(api_router: APIRouter, db, admin_dep):
             out.append({
                 "slug": adapter.slug,
                 "display_name": adapter.display_name,
+                "purpose": getattr(adapter, "purpose", "issuer"),  # "issuer" | "payout" | "both"
                 "active": adapter.slug == active,
                 "enabled": bool(cfg.get("enabled", configured)),
                 "configured": configured,

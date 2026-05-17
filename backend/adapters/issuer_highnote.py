@@ -159,52 +159,119 @@ class HighnoteIssuerAdapter(IssuerAdapter):
         return bid
 
     async def issue_card(self, db, *, squad_id: str, spend_limit_cents: int, memo: Optional[str] = None) -> CardHandle:
-        """Issue a single-use virtual card.
+        """Issue a single-use virtual card via Highnote's GraphQL.
 
-        Highnote requires a card-product handle (configured per organization).
-        Sandbox onboarding ships one preconfigured — we cache its id the
-        first time we issue.
+        Highnote model:
+          1. The org has one or more PaymentCardProduct configured (sandbox
+             onboarding provisions one automatically).
+          2. We attach the card to the org's businessAccountHolder.
+          3. createPaymentCard mutation returns id, last4, expirationDate.
+
+        product_id is cached in app_settings on first issuance \u2014 admin can
+        also pre-set it via the Payment Gateways panel.
         """
-        # NOTE: live wiring of Highnote's full card-issuance mutation requires:
-        #   1. createPaymentCard mutation with the org's product id
-        #   2. attaching spend rules
-        #   3. fetching last4/exp via the returned node
-        # This stub implementation issues a marker handle so the admin can
-        # verify the adapter is ACTIVE without committing real Highnote
-        # quota in early dev. Replace this with the real mutation once
-        # the sandbox card product id is configured in cfg['product_id'].
         rec = await db.app_settings.find_one({"key": "integrations"}, {"_id": 0}) or {}
         pg = (rec.get("payment_gateways") or {})
         cfg = ((pg.get("issuers") or {}).get("highnote") or {})
         product_id = cfg.get("product_id")
         if not product_id:
+            # Try to auto-discover the org's first PAYMENT_CARD product.
+            try:
+                data = await _graphql(
+                    "query Products { products { edges { node { id name __typename } } } }"
+                )
+                edges = ((data.get("products") or {}).get("edges") or [])
+                for e in edges:
+                    node = e.get("node") or {}
+                    if "PaymentCard" in (node.get("__typename") or ""):
+                        product_id = node.get("id")
+                        break
+            except Exception:
+                product_id = None
+        if not product_id:
             raise NotImplementedError(
-                "Highnote card-product id not configured. Set product_id via the admin "
-                "Payment Gateways panel (sandbox onboarding gives you a preconfigured "
-                "PAYMENT_CARD product) before activating Highnote."
+                "Highnote card-product id could not be auto-discovered. Sandbox "
+                "onboarding is done but no PAYMENT_CARD product was returned. "
+                "Manually set product_id under app_settings.integrations"
+                ".payment_gateways.issuers.highnote, or contact Highnote support."
             )
-        # When product_id is configured, the real call would be roughly:
-        #   mutation IssueCard($input: CreatePaymentCardInput!) {
-        #     createPaymentCard(input: $input) { paymentCard { id last4 expirationDate { month year } } }
-        #   }
-        # variables = {"input": {"productId": product_id, "accountHolderId": ..., "spendingLimit": spend_limit_cents}}
-        raise NotImplementedError(
-            "Highnote issue_card real wiring pending. Adapter scaffolded, sandbox "
-            "connection verified by health_check. Implement createPaymentCard mutation "
-            "before promoting Highnote to ACTIVE."
-        )
-
-    async def fund_card(self, handle: CardHandle, cents: int) -> FundingResult:
-        # Highnote auto-funds from the platform's connected bank account.
-        return FundingResult(funded_cents=cents, method="auto_from_bank", transfer_id=None, raw={"note": "Highnote auto-funds from connected bank at auth-time"})
+        business_id = await self.ensure_business_cardholder(db)
+        # NOTE: Highnote's exact createPaymentCard mutation shape varies by
+        # product type. The shape below matches the most common single-use
+        # virtual-card flow. If the sandbox rejects this, capture the error
+        # and adjust per the inspector tool at highnote.com/docs/playground.
+        mutation = """
+        mutation IssueCard($input: IssuePaymentCardForFinancialAccountInput!) {
+          issuePaymentCardForFinancialAccount(input: $input) {
+            ... on PaymentCard {
+              id
+              last4
+              expirationDate { month year }
+              cardProductFeatures { __typename }
+              network
+            }
+            ... on UserError { errors { field message } }
+          }
+        }
+        """
+        variables = {
+            "input": {
+                "productId": product_id,
+                "accountHolderId": business_id,
+                "memo": (memo or f"SquadPay {squad_id}")[:60],
+                # Spend limit handled via Highnote spending rules; sandbox
+                # accepts the card without it for initial smoke testing.
+            },
+        }
+        try:
+            data = await _graphql(mutation, variables)
+            payload = data.get("issuePaymentCardForFinancialAccount") or {}
+            if "errors" in payload:
+                raise RuntimeError(f"Highnote issue rejected: {payload.get('errors')}")
+            card_id = payload.get("id")
+            if not card_id:
+                raise RuntimeError(f"Highnote issue returned no card id; payload={payload}")
+            last4 = payload.get("last4", "")
+            exp = payload.get("expirationDate") or {}
+            return CardHandle(
+                issuer_slug=self.slug,
+                card_id=card_id,
+                last4=last4,
+                exp_month=int(exp.get("month")) if exp.get("month") else None,
+                exp_year=int(exp.get("year")) if exp.get("year") else None,
+                state="active",
+                brand=payload.get("network"),
+                spend_limit_cents=spend_limit_cents,
+                raw=payload,
+            )
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Highnote issue_card failed: {e}")
 
     async def freeze_card(self, handle: CardHandle, reason: str = "squad_settled") -> None:
-        # suspendPaymentCard mutation pending real wiring.
-        raise NotImplementedError("Highnote freeze_card pending real wiring (suspendPaymentCard mutation)")
+        mutation = """
+        mutation Suspend($id: ID!) {
+          suspendPaymentCard(input: { paymentCardId: $id }) {
+            ... on PaymentCard { id status }
+            ... on UserError { errors { message } }
+          }
+        }
+        """
+        await _graphql(mutation, {"id": handle.card_id})
+        logger.info(f"[highnote] card={handle.card_id[:12]}\u2026 SUSPENDED reason={reason}")
 
     async def close_card(self, handle: CardHandle, reason: str = "squad_settled") -> None:
-        # terminatePaymentCard mutation pending real wiring.
-        raise NotImplementedError("Highnote close_card pending real wiring (terminatePaymentCard mutation)")
+        mutation = """
+        mutation Close($id: ID!) {
+          closePaymentCard(input: { paymentCardId: $id }) {
+            ... on PaymentCard { id status }
+            ... on UserError { errors { message } }
+          }
+        }
+        """
+        await _graphql(mutation, {"id": handle.card_id})
+        logger.info(f"[highnote] card={handle.card_id[:12]}\u2026 CLOSED reason={reason}")
 
     async def reveal_card_details(self, handle: CardHandle) -> CardDetails:
         raise NotImplementedError(

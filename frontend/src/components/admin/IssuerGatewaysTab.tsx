@@ -30,7 +30,7 @@ import {
 import { paymentGatewaysApi, IssuerProvider, IssuerListResp } from '../../adminApi/paymentGateways';
 import { COLORS, FONT, RADIUS, SPACING } from '../../theme';
 
-export default function IssuerGatewaysTab() {
+export default function IssuerGatewaysTab({ purpose = 'issuer' }: { purpose?: 'issuer' | 'payout' }) {
   const [data, setData] = useState<IssuerListResp | null>(null);
   const [loading, setLoading] = useState(true);
   const [busySlug, setBusySlug] = useState<string | null>(null);
@@ -50,6 +50,15 @@ export default function IssuerGatewaysTab() {
     }
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  // Filter providers by tab purpose. Adapter.purpose tells us where each one
+  // belongs ("issuer", "payout", or "both"). Lithic / Stripe / Highnote =
+  // issuer; Unit.co = payout (founder repurposed June 2025).
+  const filteredProviders = (data?.providers || []).filter((p) =>
+    purpose === 'issuer'
+      ? p.purpose === 'issuer' || p.purpose === 'both'
+      : p.purpose === 'payout' || p.purpose === 'both',
+  );
 
   const onToggle = async (p: IssuerProvider, on: boolean) => {
     if (p.active && !on) {
@@ -140,15 +149,20 @@ export default function IssuerGatewaysTab() {
       {/* Header strip */}
       <View style={styles.headerCard}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>Virtual Card Issuer</Text>
+          <Text style={styles.headerTitle}>
+            {purpose === 'issuer' ? 'Virtual Card Issuer' : 'New Adapter-Based Payout Providers'}
+          </Text>
           <Text style={styles.headerSub}>
-            One active issuer at a time. The active provider owns every new squad's card lifecycle:
-            issuance, funding, tokenization, webhooks. Switching is instant — no code deploy.
+            {purpose === 'issuer'
+              ? "One active issuer at a time. The active provider owns every new squad's card lifecycle: issuance, funding, tokenization, webhooks. Switching is instant — no code deploy."
+              : "Adapter-based providers usable for pushing money out (merchant payouts, lead bank deposits). Configure credentials and enable each one independently. Existing legacy payout providers are listed above this section."}
           </Text>
-          <Text style={styles.headerActive}>
-            Active: <Text style={styles.headerActiveSlug}>{data.active_issuer}</Text>
-            {data.active_changed_by ? <Text style={styles.headerActiveBy}>  •  changed by {data.active_changed_by}</Text> : null}
-          </Text>
+          {purpose === 'issuer' ? (
+            <Text style={styles.headerActive}>
+              Active: <Text style={styles.headerActiveSlug}>{data.active_issuer}</Text>
+              {data.active_changed_by ? <Text style={styles.headerActiveBy}>  •  changed by {data.active_changed_by}</Text> : null}
+            </Text>
+          ) : null}
         </View>
         <TouchableOpacity onPress={load} style={styles.refreshBtn} testID="issuer-refresh">
           <RefreshCw size={16} color={COLORS.primary} />
@@ -156,8 +170,16 @@ export default function IssuerGatewaysTab() {
         </TouchableOpacity>
       </View>
 
+      {filteredProviders.length === 0 ? (
+        <View style={styles.empty}>
+          <Text style={styles.emptyText}>
+            No {purpose === 'issuer' ? 'card-issuance' : 'payout-capable'} adapters available.
+          </Text>
+        </View>
+      ) : null}
+
       {/* Provider cards */}
-      {data.providers.map((p) => {
+      {filteredProviders.map((p) => {
         const isExpanded = expanded === p.slug;
         const busy = busySlug === p.slug;
         return (
@@ -265,21 +287,26 @@ export default function IssuerGatewaysTab() {
                     <Save size={14} color={COLORS.primary} />
                     <Text style={styles.btnSecondaryText}>Save credentials</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => onActivate(p)}
-                    disabled={busy || p.active}
-                    style={[
-                      styles.btn,
-                      styles.btnPrimary,
-                      (busy || p.active) && { opacity: 0.5 },
-                    ]}
-                    testID={`issuer-activate-${p.slug}`}
-                  >
-                    {p.active ? <CheckCircle2 size={14} color="#fff" /> : <Smartphone size={14} color="#fff" />}
-                    <Text style={styles.btnPrimaryText}>
-                      {p.active ? 'Currently Active' : 'Make Active'}
-                    </Text>
-                  </TouchableOpacity>
+                  {/* "Make Active" only meaningful for issuer-purpose providers.
+                      Payout-purpose providers don't have a single-active mutex \u2014
+                      multiple payout rails can run in parallel. */}
+                  {purpose === 'issuer' ? (
+                    <TouchableOpacity
+                      onPress={() => onActivate(p)}
+                      disabled={busy || p.active}
+                      style={[
+                        styles.btn,
+                        styles.btnPrimary,
+                        (busy || p.active) && { opacity: 0.5 },
+                      ]}
+                      testID={`issuer-activate-${p.slug}`}
+                    >
+                      {p.active ? <CheckCircle2 size={14} color="#fff" /> : <Smartphone size={14} color="#fff" />}
+                      <Text style={styles.btnPrimaryText}>
+                        {p.active ? 'Currently Active' : 'Make Active'}
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
                 </View>
 
                 {/* Compliance footer */}
@@ -326,6 +353,11 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(108,71,255,0.10)',
   },
   refreshText: { color: COLORS.primary, fontSize: 12, fontWeight: FONT.weights.semibold },
+  empty: {
+    padding: SPACING.lg, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: COLORS.surfaceMuted, borderRadius: RADIUS.md,
+  },
+  emptyText: { color: COLORS.subtext, fontSize: 13, fontStyle: 'italic' },
   card: {
     borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS.lg,
     backgroundColor: COLORS.surface,

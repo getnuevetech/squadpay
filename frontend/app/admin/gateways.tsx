@@ -188,9 +188,10 @@ export default function GatewaysPage() {
       </View>
 
       {tab === 'issuer' ? (
-        <IssuerGatewaysTab />
+        <IssuerGatewaysTab purpose="issuer" />
       ) : (
-        tabProviders.map((p) => {
+        <>
+          {tabProviders.map((p) => {
         const fk = formKey(p);
         const cfg = configs[fk];
         const isActive = active[p.group] === p.slug;
@@ -343,7 +344,13 @@ export default function GatewaysPage() {
             ) : null}
           </View>
         );
-        })
+        })}
+        {/* Adapter-based payout providers (Lithic / Highnote / Unit / Stripe).
+            Founder spec: "add all new gateways to also be in group for payout".
+            Renders ONLY providers whose adapter.purpose includes "payout"
+            (currently Unit.co \u2014 repurposed for merchant payouts). */}
+        {tab === 'payout' && <IssuerGatewaysTab purpose="payout" />}
+        </>
       )}
     </ScrollView>
   );

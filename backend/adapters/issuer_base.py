@@ -111,6 +111,16 @@ class IssuerAdapter(ABC):
     slug: str = "abstract"
     display_name: str = "Abstract Issuer"
 
+    # Adapter purpose declares which admin tab this provider appears under:
+    #   "issuer" \u2014 lists under "Virtual Card Issuer" tab; eligible to be the
+    #              active card-issuance provider for new squads.
+    #   "payout" \u2014 lists under "Payout / Withdrawal" tab; used for pushing
+    #              money to merchants / lead bank accounts. Cannot be
+    #              activated as a card issuer.
+    #   "both"   \u2014 listed in both tabs (rare; e.g., a future provider that
+    #              does card-issuance AND ACH-out).
+    purpose: str = "issuer"
+
     # ---- capability flags (let callers fail fast on unsupported features) ----
     supports_apple_wallet: bool = False
     supports_google_wallet: bool = False

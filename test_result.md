@@ -112,6 +112,137 @@ user_problem_statement: |
 
 
 backend:
+  - task: "STRICT funding_complete check — integer-cent comparison in _recompute_group (penny-rounding bug B7857-24644)"
+    implemented: true
+    working: false
+    file: "backend/core.py, backend/routes/contribute_routes.py, backend/routes/contribute_native_routes.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: false
+          agent: "testing"
+          comment: |
+            STRICT FUNDING CHECK — verified via /app/backend_test.py against live
+            preview backend (https://joint-pay-1.preview.emergentagent.com/api).
+            29/31 assertions PASS. 2 FAIL — both reveal the SAME penny-rounding
+            bug still lurking in THREE OTHER files (the fix in core.py is correct
+            and complete; the fix was NOT applied to the contribute write-paths).
+
+            ── PART 1 — core.py _recompute_group ── (ALL PASS)
+
+            ✅ Scenario #1 — POSITIVE exact funding ($94.43 / 2):
+              • per_user[lead].food = 47.22  (lead absorbs the residual cent)  ✓
+              • per_user[member].food = 47.21                                  ✓
+              • lead.total − member.total == $0.01 (lead 1c higher)            ✓
+              • After member-only contrib (47.21): derived_status='contributing',
+                merchant_remaining > 0                                          ✓
+              • After both contrib (47.21 + 47.22 = 94.43 EXACTLY):
+                derived_status='contributed', merchant_remaining = $0.00       ✓
+
+            ✅ Scenario #2 — NEGATIVE 1¢ shortfall (CRITICAL):
+              Direct mongo insert of two $47.21 contributions on $94.43 bill
+              (bypasses the contribute-endpoint to isolate core.py logic):
+              • total_contributed = $94.42                                      ✓
+              • derived_status = 'contributing' (NOT 'contributed')             ✓
+              • merchant_remaining = $0.01                                      ✓
+              • funding.remaining_to_collect > 0                                ✓
+              • raw status stayed 'open'                                        ✓
+              • GET /api/payout/eligibility → eligible=false,
+                reasons=['group_not_paid'] — payout correctly REFUSED.          ✓
+              The strict integer-cent check (covered_cents=9442 >= total_cents=
+              9443 → False) is doing exactly what was specified.
+
+            ✅ Scenario #3 — EDGE Over-funding by 1¢:
+              $89.21/2; lead pays $44.62 (1c over), member pays $44.60.
+              total_contributed = $89.22, covered_cents=8922 ≥ total_cents=8921:
+              • derived_status = 'contributed'                                  ✓
+              • merchant_remaining = $0.00 (surplus absorbed; not negative)    ✓
+
+            ✅ Scenario #4 — EDGE cover_amount (shortfall settlement):
+              Lead contributes own $47.22; bill short $47.21. Inject
+              shortfall_settlement.amount=$47.21:
+              • value_covered = 47.22+47.21 = $94.43 → 'contributed'           ✓
+              • Replace cover with $47.20 (1c short) → reverts to 'contributing' ✓
+              Confirms cover_amount feeds value_covered AND the strict cent
+              check applies to that aggregate too.
+
+            ── PART 2 — Regression smoke ── (ALL PASS)
+
+            ✅ GET /api/runtime/landing-page → 200
+            ✅ GET /api/runtime/brand → 200
+            ✅ GET /api/admin/groups → 200 (returns list)
+            No 5xx anywhere.
+
+            ── PART 3 — Pipeline test via REAL /contribute endpoint ──
+            ❌ CRITICAL — SAME PENNY-ROUNDING BUG STILL PRESENT IN
+            CONTRIBUTE WRITE PATHS
+
+            Setup: same $94.43/2 group. Granted both members admin credits.
+            Both members called POST /api/groups/{id}/contribute with
+            body.amount=47.21 (lead intentionally underpays the 1c residual).
+            Both contributions accepted (200).
+
+            Observed raw mongo state AFTER both contribs:
+              raw_status   = "paid"     ← BUG: 1¢ short but flipped to paid
+              tc           = 94.42      (1¢ less than bill 94.43)
+              derived      = "contributed" ← cascades from raw_status='paid'
+
+            Root cause — the legacy `+0.01` tolerance check is STILL in three
+            other files; the fix in core.py is bypassed at the write step:
+
+              1. /app/backend/routes/contribute_routes.py LINE 101
+                 (credit_only path):
+                     if total_contributed + 0.01 >= group.get("total_amount", 0):
+                         update_doc.update({"status": "paid", ...})
+
+              2. /app/backend/routes/contribute_routes.py LINE 390
+                 (Stripe Checkout completion / poll-status path):
+                     if total_contributed + 0.01 >= float(group.get("total_amount") or 0):
+                         update_doc.update({"status": "paid", ...})
+
+              3. /app/backend/routes/contribute_native_routes.py LINE 424
+                 (Apple/Google Pay native PaymentSheet finalize path):
+                     if total_contributed + 0.01 >= group.get("total_amount", 0):
+                         group_update.update({"status": "paid", ...})
+
+            Impact: the exact production bug the fix is intended to prevent
+            (B7857-24644 — $94.42 collected on a $94.43 bill silently absorbed
+            on the platform side) is still reachable through ALL THREE
+            contribute paths (credit-only, Stripe Checkout, Apple/Google Pay).
+            Once contribute_routes/contribute_native_routes write status='paid',
+            the new strict check in _recompute_group is short-circuited because
+            line 897 maps raw_status='paid' → derived_status='contributed'
+            unconditionally. /api/payout/eligibility then returns eligible=true,
+            and /api/payout/push-to-card's `_lead_available_cents` gate
+            (line 88 in payout_routes.py: `if group.get("status") not in
+            ("paid","lead_paid"): raise 409`) is wide open.
+
+            FIX (parallel to core.py lines 889-891 — apply the same integer-
+            cent comparison in all three write paths):
+
+                total_cents = int(round(float(group.get("total_amount") or 0) * 100))
+                tc_cents    = int(round(float(total_contributed) * 100))
+                if total_cents > 0 and tc_cents >= total_cents:
+                    update_doc.update({"status": "paid", ...})
+
+            ── Per-scenario summary table ──
+              #1 POSITIVE exact funding     ......... PASS
+              #2 NEGATIVE 1c shortfall (core) ....... PASS
+              #2 NEGATIVE payout-blocked .......... PASS
+              #3 Over-funding ...................... PASS
+              #4 cover_amount ..................... PASS
+              #5 Regression smoke ................. PASS
+              #PIPE Real /contribute path .......... FAIL — same bug in 3 files
+
+            Test artifact: /app/backend_test.py (rewritten for this review).
+            Action required from main agent: apply the integer-cent
+            comparison to contribute_routes.py:101, contribute_routes.py:390,
+            contribute_native_routes.py:424 — same pattern as core.py:889-891.
+
+
+
+backend:
   - task: "Penny-rounding fix — Lead absorbs residual cents (_recompute_group equal-split + itemized extras)"
     implemented: true
     working: true
@@ -14126,6 +14257,79 @@ agent_communication:
 
 ---
 ## 2026-05-16 — Penny rounding REFINED to "Lead absorbs residual" (June 2025 spec)
+
+
+---
+## 2026-05-17 — Strict funding-complete check (penny-shortfall bug)
+
+backend:
+  - task: "Strict integer-cent funding_complete check"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/core.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      -working: false
+       -agent: "user"
+       -comment: |
+         User reported bill B7857-24644: when both members paid $47.21 each
+         on a $94.43 bill (sum $94.42), the app marked the squad as fully
+         funded and proceeded to create the withdrawal — silently absorbing
+         the missing $0.01 on the platform side. User caught this in the
+         Lead Dashboard screenshot: "Remaining $47.22" yet "Contribute
+         Share $47.21" CTA. If user paid that, total = $94.42 → app would
+         say complete & withdraw → platform eats the penny.
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         Root cause: line 881 had a $0.01 grace tolerance:
+           `funding_complete = (value_covered + 0.01) >= total_amount`
+         This was originally a float-precision safety guard but with our
+         new integer-cent split math, the only reason `value_covered` would
+         be 1 cent short is a REAL shortfall — exactly the case we should
+         block on.
+
+         Fix: compare in integer cents — exact match, no grace:
+           total_cents = int(round(total_amount * 100))
+           covered_cents = int(round(value_covered * 100))
+           funding_complete = covered_cents >= total_cents
+
+         Verified locally:
+         - Scenario A ($94.43 bill, lead $47.22 + member $47.21 = $94.43):
+           derived_status = "contributed" ✓ → Pay Out enabled
+         - Scenario B (legacy bug, both paid $47.21 = $94.42, 1c short):
+           derived_status = "contributing" ✓ → Pay Out BLOCKED until fixed
+
+         Combined with the Lead-absorbs-residual fix, no legitimate bill
+         will ever be 1 cent short going forward. The strict check is
+         purely a defensive guard against (1) legacy data and (2) any
+         future code path that introduces sub-cent drift.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        STRICT FUNDING CHECK added — please verify with backend tests:
+
+        1. Create an EQUAL split group ($94.43 / 2 members, fast mode).
+           - GET /api/groups/{id} → derived_status should be "contributing"
+             initially (no contributions).
+           - Have member contribute $47.21. Verify status still
+             "contributing", remaining > 0.
+           - Have lead contribute $47.22 (their share per Lead-absorbs
+             residual fix). Verify derived_status flips to "contributed"
+             and merchant_remaining == $0.00 EXACTLY.
+        2. Negative case (simulating legacy bug): manually contribute lead
+           = $47.21 instead of $47.22. Verify derived_status stays as
+           "contributing" (NOT "contributed") and Pay Out endpoint
+           rejects with "not fully funded" or similar guard.
+        3. Smoke test the lead payout endpoint (POST /api/groups/{id}/payout
+           or similar) — it MUST refuse to process a partially-funded squad.
+        4. Run regression on settlement/withdrawal flow — should be no
+           changes for groups that ARE fully funded.
+
+        Admin: admin@squadpay.us / Letmein@2007#ForReal
 
 backend:
   - task: "Lead absorbs residual cents on equal + itemized split"

@@ -1,19 +1,40 @@
-"""Backend test for the "Lead absorbs residual cents" penny-rounding fix.
+"""Backend test for the STRICT funding_complete check (penny-rounding bug fix).
 
-Verifies /app/backend/core.py :: _recompute_group's equal-split branch and
-itemized extras proration both route ALL leftover cents to the LEAD member
-(identified by role=="lead", not by array index).
+Targets /app/backend/core.py :: _recompute_group lines 889-891:
+
+    total_cents   = int(round(float(total_amount) * 100))
+    covered_cents = int(round(float(value_covered) * 100))
+    funding_complete = covered_cents >= total_cents and total_amount > 0
+
+Previously this was:
+    funding_complete = (value_covered + 0.01) >= total_amount
+which caused a 1¢-shortfall bill to be marked complete.
+
+Scenarios (per review request):
+    #1  POSITIVE — exact funding with Lead-absorbs-residual ($94.43/2)
+    #2  NEGATIVE — 1¢ shortfall MUST NOT mark complete (CRITICAL)
+    #3  EDGE — Over-funding by $0.01 still completes
+    #4  EDGE — cover_amount (shortfall settlement) counts toward value_covered
+    #5  REGRESSION — GET /api/groups, GET /api/groups/{id}, /api/admin/groups
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+from motor.motor_asyncio import AsyncIOMotorClient
 
 BASE = "https://joint-pay-1.preview.emergentagent.com/api"
 MOCK_OTP = "123456"
+
+ADMIN_EMAIL = "admin@squadpay.us"
+ADMIN_PASSWORD = "Letmein@2007#ForReal"
+
+MONGO_URL = os.environ.get("MONGO_URL") or "mongodb://localhost:27017"
+DB_NAME = os.environ.get("DB_NAME") or "test_database"
 
 PASS: List[str] = []
 FAIL: List[Tuple[str, str]] = []
@@ -22,74 +43,139 @@ FAIL: List[Tuple[str, str]] = []
 def check(name: str, cond: bool, detail: str = "") -> None:
     if cond:
         PASS.append(name)
-        print(f"  ✅ {name}")
+        print(f"  PASS  {name}")
     else:
         FAIL.append((name, detail))
-        print(f"  ❌ {name}  {detail}")
+        print(f"  FAIL  {name}  -- {detail}")
 
 
 def section(t: str) -> None:
     print(f"\n=== {t} ===")
 
 
-def _phone() -> str:
-    return "555" + "".join(c for c in uuid.uuid4().hex if c.isdigit())[:7].ljust(7, "0")
+# ---------------- Mongo helpers ---------------------------------------------
 
-
-def _direct_verify_user(user_id: str, phone: str) -> bool:
-    """Bypass /send-otp rate-limit by directly flipping user.verified=true in mongo."""
+def _run_async(coro):
+    loop = asyncio.new_event_loop()
     try:
-        import asyncio
-        from motor.motor_asyncio import AsyncIOMotorClient
-        mongo_url = os.environ.get("MONGO_URL") or "mongodb://localhost:27017"
-        db_name = os.environ.get("DB_NAME") or "test_database"
-        client = AsyncIOMotorClient(mongo_url)
-        db = client[db_name]
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
-        async def _go():
-            res = await db.users.update_one(
-                {"id": user_id},
-                {"$set": {"phone": phone, "verified": True}},
-            )
-            return res.modified_count
-        loop = asyncio.new_event_loop()
+
+def _db_op(fn):
+    """Run an async db function with a fresh client."""
+
+    async def _wrap():
+        client = AsyncIOMotorClient(MONGO_URL)
         try:
-            n = loop.run_until_complete(_go())
+            return await fn(client[DB_NAME])
         finally:
-            loop.close()
-        return n > 0
-    except Exception as e:
-        print(f"  ⚠ direct mongo verify failed: {e}")
-        return False
+            client.close()
+
+    return _run_async(_wrap())
+
+
+def _direct_verify_and_session(user_id: str, phone: str) -> Optional[str]:
+    """Set verified=true + a fresh session_id on the user (bypass OTP rate-limit)."""
+    sid = "sess_test_" + uuid.uuid4().hex[:16]
+
+    async def _go(db):
+        res = await db.users.update_one(
+            {"id": user_id},
+            {"$set": {"phone": phone, "verified": True, "current_session_id": sid}},
+        )
+        return res.modified_count > 0
+
+    return sid if _db_op(_go) else None
+
+
+def _insert_contribution(
+    group_id: str,
+    user_id: str,
+    amount: float,
+    *,
+    set_status_paid: bool = False,
+    funding_mode: str = "group",
+) -> None:
+    """Append a synthetic credit-only contribution row directly into mongo.
+
+    This bypasses contribute_routes' legacy `(total_contributed + 0.01) >= total`
+    threshold so we can isolate _recompute_group's NEW strict check.
+    """
+    contrib = {
+        "id": "c_test_" + uuid.uuid4().hex[:12],
+        "user_id": user_id,
+        "amount": round(float(amount), 2),
+        "cash_paid": 0.0,
+        "credit_applied": round(float(amount), 2),
+        "notify_on_settled": False,
+        "via": "test_direct_insert",
+        "at": "2025-06-01T00:00:00Z",
+    }
+
+    async def _go(db):
+        update: Dict[str, Any] = {"$push": {"contributions": contrib}}
+        if set_status_paid:
+            update["$set"] = {
+                "status": "paid",
+                "funding_mode": funding_mode,
+                "lead_paid_at": "2025-06-01T00:00:00Z",
+                "lead_shortfall": 0.0,
+            }
+        await db.groups.update_one({"id": group_id}, update)
+
+    _db_op(_go)
+
+
+def _set_settlement_cover(group_id: str, user_id: str, amount: float) -> None:
+    """Inject shortfall_settlement.amount to simulate a cover."""
+
+    async def _go(db):
+        await db.groups.update_one(
+            {"id": group_id},
+            {
+                "$set": {
+                    "shortfall_settlement": {
+                        "user_id": user_id,
+                        "amount": round(float(amount), 2),
+                        "mode": "lead",
+                        "is_loan": True,
+                        "at": "2025-06-01T00:00:00Z",
+                    }
+                }
+            },
+        )
+
+    _db_op(_go)
+
+
+def _raw_status(group_id: str) -> str:
+    async def _go(db):
+        g = await db.groups.find_one({"id": group_id}, {"_id": 0, "status": 1})
+        return (g or {}).get("status") or ""
+
+    return _db_op(_go)
+
+
+# ---------------- API helpers ------------------------------------------------
+
+def _phone() -> str:
+    digits = "".join(c for c in uuid.uuid4().hex if c.isdigit())
+    return "555" + (digits + "0000000")[:7]
 
 
 def register_and_verify(name: str) -> Dict[str, Any]:
     r = requests.post(f"{BASE}/auth/register", json={"name": name}, timeout=20)
     assert r.status_code == 200, f"register({name}) -> {r.status_code} {r.text[:200]}"
-    user = r.json()
-    user_id = user["id"]
+    uid = r.json()["id"]
     phone = _phone()
-    # Try the API route first; fall back to direct mongo on rate-limit (429).
-    r = requests.post(
-        f"{BASE}/auth/send-otp",
-        json={"user_id": user_id, "phone": phone},
-        timeout=20,
-    )
-    if r.status_code == 200:
-        rv = requests.post(
-            f"{BASE}/auth/verify-otp",
-            json={"user_id": user_id, "phone": phone, "code": MOCK_OTP},
-            timeout=20,
-        )
-        if rv.status_code == 200:
-            return {"id": user_id, "phone": phone, "name": name}
-    # API path failed -> direct DB shortcut.
-    ok = _direct_verify_user(user_id, phone)
-    assert ok, f"could not verify user {user_id} (api+direct both failed)"
-    return {"id": user_id, "phone": phone, "name": name}
+    sid = _direct_verify_and_session(uid, phone)
+    assert sid, f"failed to verify user {uid}"
+    return {"id": uid, "phone": phone, "name": name, "session_id": sid}
 
 
-def create_group_fast(lead_id: str, total: float, title: str = "Penny Test") -> Dict[str, Any]:
+def create_group_fast(lead_id: str, total: float, title: str = "Strict-fund Test") -> Dict[str, Any]:
     body = {
         "lead_id": lead_id,
         "title": title,
@@ -101,29 +187,6 @@ def create_group_fast(lead_id: str, total: float, title: str = "Penny Test") -> 
     }
     r = requests.post(f"{BASE}/groups", json=body, timeout=20)
     assert r.status_code == 200, f"create group -> {r.status_code} {r.text[:200]}"
-    return r.json()
-
-
-def create_group_itemized(
-    lead_id: str,
-    items: List[Dict[str, Any]],
-    tax: float,
-    tip: float,
-    title: str = "Itemized Penny Test",
-) -> Dict[str, Any]:
-    subtotal = sum(it["price"] * it["quantity"] for it in items)
-    total = round(subtotal + tax + tip, 2)
-    body = {
-        "lead_id": lead_id,
-        "title": title,
-        "total_amount": total,
-        "split_mode": "itemized",
-        "tax": tax,
-        "tip": tip,
-        "items": items,
-    }
-    r = requests.post(f"{BASE}/groups", json=body, timeout=20)
-    assert r.status_code == 200, f"create itemized -> {r.status_code} {r.text[:200]}"
     return r.json()
 
 
@@ -157,345 +220,377 @@ def lead_member_id(group: Dict[str, Any]) -> str:
     return group["members"][0]["user_id"]
 
 
-def test_equal_split_89_21() -> None:
-    section("1) Equal split — $89.21 / 2 (AB22C-1DC32 case)")
-    lead = register_and_verify(f"LeadA_{uuid.uuid4().hex[:6]}")
-    m1 = register_and_verify(f"MemberA_{uuid.uuid4().hex[:6]}")
-    g = create_group_fast(lead["id"], 89.21, title="AB22C repro")
-    g = join(g["id"], m1["id"])
-    g = get_group(g["id"])
-
-    lead_id = lead_member_id(g)
-    lp = find_member(g, lead_id)
-    other = next(p for p in g["per_user"] if p["user_id"] != lead_id)
-
-    total_food = round(sum(p["food"] for p in g["per_user"]), 2)
-    check("$89.21/2: sum(food) == 89.21", abs(total_food - 89.21) < 0.005,
-          f"got {total_food}")
-    check("$89.21/2: lead.food == 44.61", abs(lp["food"] - 44.61) < 0.005,
-          f"got {lp['food']}")
-    check("$89.21/2: non-lead.food == 44.60", abs(other["food"] - 44.60) < 0.005,
-          f"got {other['food']}")
-    check("$89.21/2: lead identified by role=='lead'",
-          lead_id == lead["id"], f"lead_id={lead_id} expected {lead['id']}")
+def admin_login() -> str:
+    r = requests.post(
+        f"{BASE}/admin/auth/login",
+        json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+        timeout=20,
+    )
+    assert r.status_code == 200, f"admin login -> {r.status_code} {r.text[:200]}"
+    j = r.json()
+    return j.get("token") or j.get("access_token")
 
 
-def test_equal_split_94_43() -> None:
-    section("2) Equal split — $94.43 / 2")
-    lead = register_and_verify(f"LeadB_{uuid.uuid4().hex[:6]}")
-    m1 = register_and_verify(f"MemberB_{uuid.uuid4().hex[:6]}")
-    g = create_group_fast(lead["id"], 94.43)
-    g = join(g["id"], m1["id"])
-    g = get_group(g["id"])
-
-    lead_id = lead_member_id(g)
-    lp = find_member(g, lead_id)
-    other = next(p for p in g["per_user"] if p["user_id"] != lead_id)
-
-    total_food = round(sum(p["food"] for p in g["per_user"]), 2)
-    check("$94.43/2: sum(food) == 94.43", abs(total_food - 94.43) < 0.005,
-          f"got {total_food}")
-    check("$94.43/2: lead.food == 47.22", abs(lp["food"] - 47.22) < 0.005,
-          f"got {lp['food']}")
-    check("$94.43/2: non-lead.food == 47.21", abs(other["food"] - 47.21) < 0.005,
-          f"got {other['food']}")
+def grant_credit_admin(admin_token: str, user_id: str, amount: float, reason: str = "Test") -> None:
+    r = requests.post(
+        f"{BASE}/admin/users/{user_id}/credits/grant",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"amount": amount, "note": reason},
+        timeout=20,
+    )
+    assert r.status_code == 200, f"grant_credit -> {r.status_code} {r.text[:200]}"
 
 
-def test_equal_split_50_seven() -> None:
-    section("3) Equal split — $50.00 / 7")
-    lead = register_and_verify(f"LeadC_{uuid.uuid4().hex[:6]}")
-    members = [register_and_verify(f"MC{i}_{uuid.uuid4().hex[:6]}") for i in range(6)]
-    g = create_group_fast(lead["id"], 50.00)
-    for m in members:
-        g = join(g["id"], m["id"])
-    g = get_group(g["id"])
-
-    lead_id = lead_member_id(g)
-    lp = find_member(g, lead_id)
-    non_lead = [p for p in g["per_user"] if p["user_id"] != lead_id]
-
-    total_food = round(sum(p["food"] for p in g["per_user"]), 2)
-    check("$50/7: sum(food) == 50.00", abs(total_food - 50.00) < 0.005,
-          f"got {total_food}")
-    check("$50/7: lead.food == 7.16 (base 7.14 + 0.02 residual)",
-          abs(lp["food"] - 7.16) < 0.005, f"got {lp['food']}")
-    others_correct = all(abs(p["food"] - 7.14) < 0.005 for p in non_lead)
-    check("$50/7: all 6 non-leads.food == 7.14", others_correct,
-          f"got {[p['food'] for p in non_lead]}")
-
-
-def test_equal_split_100_02_three() -> None:
-    section("4) Equal split — $100.02 / 3 (no residual)")
-    lead = register_and_verify(f"LeadD_{uuid.uuid4().hex[:6]}")
-    m1 = register_and_verify(f"MD1_{uuid.uuid4().hex[:6]}")
-    m2 = register_and_verify(f"MD2_{uuid.uuid4().hex[:6]}")
-    g = create_group_fast(lead["id"], 100.02)
-    g = join(g["id"], m1["id"])
-    g = join(g["id"], m2["id"])
-    g = get_group(g["id"])
-
-    total_food = round(sum(p["food"] for p in g["per_user"]), 2)
-    check("$100.02/3: sum(food) == 100.02", abs(total_food - 100.02) < 0.005,
-          f"got {total_food}")
-    all_3334 = all(abs(p["food"] - 33.34) < 0.005 for p in g["per_user"])
-    check("$100.02/3: all members.food == 33.34", all_3334,
-          f"got {[p['food'] for p in g['per_user']]}")
-
-
-def test_equal_split_100_four() -> None:
-    section("5) Equal split — $100.00 / 4 (no residual)")
-    lead = register_and_verify(f"LeadE_{uuid.uuid4().hex[:6]}")
-    members = [register_and_verify(f"ME{i}_{uuid.uuid4().hex[:6]}") for i in range(3)]
-    g = create_group_fast(lead["id"], 100.00)
-    for m in members:
-        g = join(g["id"], m["id"])
-    g = get_group(g["id"])
-
-    total_food = round(sum(p["food"] for p in g["per_user"]), 2)
-    check("$100/4: sum(food) == 100.00", abs(total_food - 100.00) < 0.005,
-          f"got {total_food}")
-    all_25 = all(abs(p["food"] - 25.00) < 0.005 for p in g["per_user"])
-    check("$100/4: all members.food == 25.00", all_25,
-          f"got {[p['food'] for p in g['per_user']]}")
-
-
-def test_lead_position_independence() -> None:
-    section("6) Lead position independence (DB-level reorder)")
-    lead = register_and_verify(f"LeadF_{uuid.uuid4().hex[:6]}")
-    m1 = register_and_verify(f"MF1_{uuid.uuid4().hex[:6]}")
-    m2 = register_and_verify(f"MF2_{uuid.uuid4().hex[:6]}")
-    g = create_group_fast(lead["id"], 100.01)  # residual = 1 cent
-    g = join(g["id"], m1["id"])
-    g = join(g["id"], m2["id"])
-    g_id = g["id"]
-
+def contribute_credit(group_id: str, user_id: str, amount: float) -> Tuple[int, Dict[str, Any]]:
+    r = requests.post(
+        f"{BASE}/groups/{group_id}/contribute",
+        json={"user_id": user_id, "amount": amount, "notify_on_settled": False},
+        timeout=30,
+    )
     try:
-        import asyncio
-        from motor.motor_asyncio import AsyncIOMotorClient
-        mongo_url = os.environ.get("MONGO_URL") or "mongodb://localhost:27017"
-        db_name = os.environ.get("DB_NAME") or "test_database"
-        client = AsyncIOMotorClient(mongo_url)
-        db = client[db_name]
-
-        async def _reorder():
-            doc = await db.groups.find_one({"id": g_id}, {"_id": 0, "members": 1})
-            members = doc["members"]
-            lead_entry = next(m for m in members if (m.get("role") or "").lower() == "lead")
-            non_lead = [m for m in members if m.get("user_id") != lead_entry["user_id"]]
-            new_order = non_lead + [lead_entry]
-            await db.groups.update_one({"id": g_id}, {"$set": {"members": new_order}})
-            return new_order
-
-        loop = asyncio.new_event_loop()
-        try:
-            new_order = loop.run_until_complete(_reorder())
-        finally:
-            loop.close()
-        check("DB reorder: lead now at last index (not 0)",
-              (new_order[-1].get("role") or "").lower() == "lead",
-              f"order: {[m.get('role') for m in new_order]}")
-    except Exception as e:
-        check("DB reorder skipped (no direct mongo access)", True,
-              f"skipped: {e}")
-        return
-
-    g = get_group(g_id)
-    lead_id_actual = lead_member_id(g)
-    lp = find_member(g, lead_id_actual)
-    non_lead_users = [p for p in g["per_user"] if p["user_id"] != lead_id_actual]
-
-    check("Reorder: lead_id resolves to original lead",
-          lead_id_actual == lead["id"],
-          f"got {lead_id_actual} expected {lead['id']}")
-    # $100.01/3 -> base 3333c, residual 2c. Lead absorbs both -> $33.35,
-    # others $33.33.
-    check("Reorder: lead.food == 33.35",
-          abs(lp["food"] - 33.35) < 0.005, f"got {lp['food']}")
-    check("Reorder: non-leads.food == 33.33",
-          all(abs(p["food"] - 33.33) < 0.005 for p in non_lead_users),
-          f"got {[p['food'] for p in non_lead_users]}")
-    total = round(sum(p["food"] for p in g["per_user"]), 2)
-    check("Reorder: sum(food) == 100.01", abs(total - 100.01) < 0.005,
-          f"got {total}")
+        return r.status_code, r.json()
+    except Exception:
+        return r.status_code, {"text": r.text[:300]}
 
 
-def test_itemized_lead_absorbs_extras_residual() -> None:
-    section("7) Itemized — extras residual goes to Lead")
-    lead = register_and_verify(f"LeadG_{uuid.uuid4().hex[:6]}")
-    m1 = register_and_verify(f"MG1_{uuid.uuid4().hex[:6]}")
-    m2 = register_and_verify(f"MG2_{uuid.uuid4().hex[:6]}")
-    items = [
-        {"name": "Burger", "price": 17.00, "quantity": 1},
-        {"name": "Pasta", "price": 17.00, "quantity": 1},
-        {"name": "Salad", "price": 16.00, "quantity": 1},
-    ]
-    g = create_group_itemized(lead["id"], items, tax=3.0, tip=5.0)
-    g = join(g["id"], m1["id"])
-    g = join(g["id"], m2["id"])
-    g_id = g["id"]
-    items_by_name = {it["name"]: it["id"] for it in g["items"]}
+def payout_eligibility(user_id: str, session_id: str, group_id: str) -> Tuple[int, Dict[str, Any]]:
+    r = requests.get(
+        f"{BASE}/payout/eligibility",
+        params={"user_id": user_id, "session_id": session_id, "group_id": group_id},
+        timeout=20,
+    )
+    try:
+        return r.status_code, r.json()
+    except Exception:
+        return r.status_code, {"text": r.text[:300]}
 
-    def assign(uid: str, item_id: str) -> None:
-        r = requests.post(
-            f"{BASE}/groups/{g_id}/assign",
-            json={"user_id": uid, "item_id": item_id, "quantity": 1},
-            timeout=20,
-        )
-        assert r.status_code == 200, f"assign -> {r.status_code} {r.text[:200]}"
 
-    assign(lead["id"], items_by_name["Burger"])
-    assign(m1["id"], items_by_name["Pasta"])
-    assign(m2["id"], items_by_name["Salad"])
+# ---------------- Tests ------------------------------------------------------
 
-    g = get_group(g_id)
+def setup_2member_group(total: float) -> Dict[str, Any]:
+    lead = register_and_verify(f"Lead_{uuid.uuid4().hex[:6]}")
+    member = register_and_verify(f"Member_{uuid.uuid4().hex[:6]}")
+    g = create_group_fast(lead["id"], total)
+    g = join(g["id"], member["id"])
+    g = get_group(g["id"])
+    return {"lead": lead, "member": member, "group": g}
+
+
+# ---------- Scenario #1 — POSITIVE exact funding -----------------------------
+
+def test_scenario1_exact_funding_positive():
+    section("#1 POSITIVE — exact funding $94.43/2 with Lead-absorbs-residual")
+    s = setup_2member_group(94.43)
+    g = s["group"]
+    gid = g["id"]
     lead_id = lead_member_id(g)
     lp = find_member(g, lead_id)
+    mp = next(p for p in g["per_user"] if p["user_id"] != lead_id)
 
-    sum_merchant = round(sum(p["merchant_share"] for p in g["per_user"]), 2)
-    check("Itemized: sum(merchant_share) == total_amount",
-          abs(sum_merchant - g["total_amount"]) < 0.005,
-          f"sum={sum_merchant} total={g['total_amount']}")
-    check("Itemized: lead.food == 17.00", abs(lp["food"] - 17.00) < 0.005,
-          f"got {lp['food']}")
-    check("Itemized: lead.tax_tip == 2.72 (17/50 * 8)",
-          abs(lp["tax_tip"] - 2.72) < 0.01, f"got {lp['tax_tip']}")
-
-    # ── 7b: forced 2-cent residual ─────────────────────────────
-    section("7b) Itemized — forced 2-cent extras residual")
-    lead2 = register_and_verify(f"LeadH_{uuid.uuid4().hex[:6]}")
-    mh1 = register_and_verify(f"MH1_{uuid.uuid4().hex[:6]}")
-    mh2 = register_and_verify(f"MH2_{uuid.uuid4().hex[:6]}")
-    items2 = [
-        {"name": "ItemA", "price": 10.00, "quantity": 1},
-        {"name": "ItemB", "price": 10.00, "quantity": 1},
-        {"name": "ItemC", "price": 10.00, "quantity": 1},
-    ]
-    g2 = create_group_itemized(lead2["id"], items2, tax=1.01, tip=0.0)
-    g2 = join(g2["id"], mh1["id"])
-    g2 = join(g2["id"], mh2["id"])
-    g2_id = g2["id"]
-    items2_by_name = {it["name"]: it["id"] for it in g2["items"]}
-
-    def assign2(uid: str, item_id: str) -> None:
-        r = requests.post(
-            f"{BASE}/groups/{g2_id}/assign",
-            json={"user_id": uid, "item_id": item_id, "quantity": 1},
-            timeout=20,
-        )
-        assert r.status_code == 200, f"assign -> {r.status_code} {r.text[:200]}"
-
-    assign2(lead2["id"], items2_by_name["ItemA"])
-    assign2(mh1["id"], items2_by_name["ItemB"])
-    assign2(mh2["id"], items2_by_name["ItemC"])
-
-    g2 = get_group(g2_id)
-    lead2_id = lead_member_id(g2)
-    lp2 = find_member(g2, lead2_id)
-    others2 = [p for p in g2["per_user"] if p["user_id"] != lead2_id]
-
-    # 10/30 * 1.01 = 0.33666... -> floor 0.33 each, sum 0.99, residual 0.02
-    # all 0.02 go to Lead -> lead.tax_tip = 0.35, others = 0.33.
-    check("Itemized residual: lead.tax_tip == 0.35 (33c + 2c residual)",
-          abs(lp2["tax_tip"] - 0.35) < 0.005, f"got {lp2['tax_tip']}")
-    others_tax_correct = all(abs(p["tax_tip"] - 0.33) < 0.005 for p in others2)
-    check("Itemized residual: non-leads.tax_tip == 0.33",
-          others_tax_correct, f"got {[p['tax_tip'] for p in others2]}")
-    sum_tax_tip = round(sum(p["tax_tip"] for p in g2["per_user"]), 2)
-    check("Itemized residual: sum(tax_tip) == 1.01 exactly",
-          abs(sum_tax_tip - 1.01) < 0.005, f"got {sum_tax_tip}")
-    sum_merchant2 = round(sum(p["merchant_share"] for p in g2["per_user"]), 2)
-    check("Itemized residual: sum(merchant_share) == total_amount ($31.01)",
-          abs(sum_merchant2 - g2["total_amount"]) < 0.005,
-          f"sum={sum_merchant2} total={g2['total_amount']}")
-
-
-def test_payment_intent_uses_lead_bonus_cent() -> None:
-    section("8) Payment intent — amount reflects Lead bonus cent")
-    lead = register_and_verify(f"LeadI_{uuid.uuid4().hex[:6]}")
-    m1 = register_and_verify(f"MI1_{uuid.uuid4().hex[:6]}")
-    g = create_group_fast(lead["id"], 89.21)
-    g = join(g["id"], m1["id"])
-    g_id = g["id"]
-    g = get_group(g_id)
-
-    lead_id = lead_member_id(g)
-    lp = find_member(g, lead_id)
-    other = next(p for p in g["per_user"] if p["user_id"] != lead_id)
-
-    lead_total = lp["total"]
-    other_total = other["total"]
+    # 1a) Lead per_user.total != member per_user.total (lead 1¢ higher).
     check(
-        "lead.total > other.total (lead absorbs extra cent)",
-        lead_total > other_total,
-        f"lead.total={lead_total} other.total={other_total}",
+        "#1a Lead.food == 47.22 (absorbed residual)",
+        abs(lp["food"] - 47.22) < 0.005,
+        f"lead.food={lp['food']}",
+    )
+    check(
+        "#1b Member.food == 47.21",
+        abs(mp["food"] - 47.21) < 0.005,
+        f"member.food={mp['food']}",
+    )
+    check(
+        "#1c lead.total != member.total (lead 1c higher)",
+        round(lp["total"] - mp["total"], 2) == 0.01,
+        f"lead.total={lp['total']} member.total={mp['total']}",
     )
 
-    def call_pi(user_id: str) -> requests.Response:
-        return requests.post(
-            f"{BASE}/groups/{g_id}/contribute-payment-intent",
-            json={"user_id": user_id, "notify_on_settled": False},
-            timeout=30,
+    # 1d) Member contributes exact food share ($47.21) via direct insert
+    # (avoids contribute_routes' legacy $0.01 buggy threshold).
+    _insert_contribution(gid, s["member"]["id"], 47.21)
+    g_after = get_group(gid)
+    check(
+        "#1d after member-only contrib: derived_status == 'contributing'",
+        g_after["derived_status"] == "contributing",
+        f"got {g_after['derived_status']}",
+    )
+    check(
+        "#1d2 merchant_remaining != 0 after member-only",
+        g_after["funding"]["merchant_remaining"] > 0.005,
+        f"merchant_remaining={g_after['funding']['merchant_remaining']}",
+    )
+
+    # 1e) Lead contributes exact food share ($47.22). Total contributed = 94.43.
+    _insert_contribution(gid, lead_id, 47.22)
+    g_final = get_group(gid)
+    check(
+        "#1e after both contrib: derived_status == 'contributed'",
+        g_final["derived_status"] == "contributed",
+        f"got {g_final['derived_status']}  total_contributed={g_final['funding']['total_contributed']}",
+    )
+    check(
+        "#1f merchant_remaining == 0.00 (exact match)",
+        abs(g_final["funding"]["merchant_remaining"]) < 0.005,
+        f"merchant_remaining={g_final['funding']['merchant_remaining']}",
+    )
+    check(
+        "#1g total_contributed == 94.43 EXACTLY",
+        abs(g_final["funding"]["total_contributed"] - 94.43) < 0.005,
+        f"total_contributed={g_final['funding']['total_contributed']}",
+    )
+
+
+# ---------- Scenario #2 — NEGATIVE 1c shortfall (CRITICAL) -------------------
+
+def test_scenario2_one_cent_shortfall_negative():
+    section("#2 NEGATIVE — 1c shortfall MUST NOT be marked complete (CRITICAL)")
+    s = setup_2member_group(94.43)
+    g = s["group"]
+    gid = g["id"]
+    lead_id = lead_member_id(g)
+
+    # Both contribute $47.21 (lead UNDERPAYS their residual cent).
+    # total_contributed = $94.42 vs total_amount = $94.43.
+    _insert_contribution(gid, s["member"]["id"], 47.21)
+    _insert_contribution(gid, lead_id, 47.21)
+    g_after = get_group(gid)
+
+    tc = g_after["funding"]["total_contributed"]
+    mr = g_after["funding"]["merchant_remaining"]
+    r2c = g_after["funding"]["remaining_to_collect"]
+
+    check(
+        "#2a total_contributed == 94.42 (1c short)",
+        abs(tc - 94.42) < 0.005,
+        f"total_contributed={tc}",
+    )
+    check(
+        "#2b CRITICAL: derived_status == 'contributing' (NOT 'contributed')",
+        g_after["derived_status"] == "contributing",
+        f"got '{g_after['derived_status']}' — funding_complete leaked through!  tc={tc} ta={g_after.get('total_amount') or g_after.get('total')}",
+    )
+    check(
+        "#2c merchant_remaining == 0.01 (1c uncollected)",
+        abs(mr - 0.01) < 0.005,
+        f"merchant_remaining={mr}",
+    )
+    check(
+        "#2d remaining_to_collect > 0",
+        r2c > 0.005,
+        f"remaining_to_collect={r2c}",
+    )
+
+    # 2e) Try payout — MUST be refused (raw status stayed 'open' because we
+    # bypassed contribute_routes via direct mongo insert).
+    raw = _raw_status(gid)
+    check(
+        "#2e raw status remained 'open' (no premature 'paid' from this path)",
+        raw == "open",
+        f"raw status={raw}",
+    )
+    code, body = payout_eligibility(s["lead"]["id"], s["lead"]["session_id"], gid)
+    check(
+        "#2f /payout/eligibility returns 200",
+        code == 200,
+        f"got {code} {body}",
+    )
+    if code == 200:
+        reasons = body.get("reasons") or []
+        check(
+            "#2g CRITICAL: payout NOT eligible (squad not fully funded)",
+            body.get("eligible") is False and "group_not_paid" in reasons,
+            f"eligible={body.get('eligible')} reasons={reasons}",
         )
 
-    r_lead = call_pi(lead["id"])
-    r_m1 = call_pi(m1["id"])
-    check("PI for lead -> 200", r_lead.status_code == 200,
-          f"got {r_lead.status_code} {r_lead.text[:200]}")
-    check("PI for non-lead -> 200", r_m1.status_code == 200,
-          f"got {r_m1.status_code} {r_m1.text[:200]}")
-    if r_lead.status_code == 200:
-        body = r_lead.json()
-        check("PI lead.cash_owed == lead.total",
-              abs(body["cash_owed"] - lead_total) < 0.005,
-              f"cash_owed={body['cash_owed']} lead.total={lead_total}")
-    if r_m1.status_code == 200:
-        body = r_m1.json()
-        check("PI non-lead.cash_owed == non-lead.total",
-              abs(body["cash_owed"] - other_total) < 0.005,
-              f"cash_owed={body['cash_owed']} other.total={other_total}")
-    if r_lead.status_code == 200 and r_m1.status_code == 200:
-        lead_cash = r_lead.json()["cash_owed"]
-        other_cash = r_m1.json()["cash_owed"]
-        check("PI: lead.cash_owed > non-lead.cash_owed (>= 1c diff)",
-              lead_cash > other_cash,
-              f"lead={lead_cash} other={other_cash}")
+
+# ---------- Scenario #3 — EDGE Over-funding ---------------------------------
+
+def test_scenario3_over_funding_edge():
+    section("#3 EDGE — Over-funding by 1c still completes ($89.21/2, paid 89.22)")
+    s = setup_2member_group(89.21)
+    g = s["group"]
+    gid = g["id"]
+    lead_id = lead_member_id(g)
+    lp = find_member(g, lead_id)
+    mp = next(p for p in g["per_user"] if p["user_id"] != lead_id)
+    check(
+        "#3a $89.21/2 lead.food == 44.61",
+        abs(lp["food"] - 44.61) < 0.005,
+        f"lead.food={lp['food']}",
+    )
+    check(
+        "#3b $89.21/2 member.food == 44.60",
+        abs(mp["food"] - 44.60) < 0.005,
+        f"member.food={mp['food']}",
+    )
+
+    # Lead overpays by 1c ($44.62), member exact ($44.60). Total = $89.22.
+    _insert_contribution(gid, lead_id, 44.62)
+    _insert_contribution(gid, s["member"]["id"], 44.60)
+    g_after = get_group(gid)
+    tc = g_after["funding"]["total_contributed"]
+    mr = g_after["funding"]["merchant_remaining"]
+
+    check(
+        "#3c over-funded total_contributed == 89.22",
+        abs(tc - 89.22) < 0.005,
+        f"total_contributed={tc}",
+    )
+    check(
+        "#3d derived_status == 'contributed' (covered_cents >= total_cents)",
+        g_after["derived_status"] == "contributed",
+        f"got '{g_after['derived_status']}'",
+    )
+    check(
+        "#3e merchant_remaining == 0 (surplus absorbed, NOT negative)",
+        abs(mr) < 0.005 and mr >= 0,
+        f"merchant_remaining={mr}",
+    )
 
 
-def test_regression_smoke() -> None:
-    section("9) Regression smoke (existing read endpoints still 200)")
-    r = requests.get(f"{BASE}/runtime/brand", timeout=15)
-    check("GET /runtime/brand -> 200", r.status_code == 200,
-          f"got {r.status_code}")
-    r = requests.get(f"{BASE}/runtime/landing-page", timeout=15)
-    check("GET /runtime/landing-page -> 200", r.status_code == 200,
-          f"got {r.status_code}")
+# ---------- Scenario #4 — EDGE cover_amount ---------------------------------
+
+def test_scenario4_cover_amount_edge():
+    section("#4 EDGE — cover_amount (shortfall settlement) counts toward value_covered")
+    s = setup_2member_group(94.43)
+    g = s["group"]
+    gid = g["id"]
+    lead_id = lead_member_id(g)
+
+    # Lead contributes own $47.22. Member contributes $0. Bill is short $47.21.
+    _insert_contribution(gid, lead_id, 47.22)
+    g_mid = get_group(gid)
+    check(
+        "#4a before cover: derived_status == 'contributing'",
+        g_mid["derived_status"] == "contributing",
+        f"got '{g_mid['derived_status']}'",
+    )
+
+    # Now inject shortfall_settlement cover of $47.21 (lead covers member's gap).
+    _set_settlement_cover(gid, lead_id, 47.21)
+    g_cov = get_group(gid)
+
+    # value_covered = total_contributed ($47.22) + cover_amount ($47.21) = $94.43.
+    # funding_complete = True. derived_status -> 'contributed'.
+    check(
+        "#4b after cover: derived_status == 'contributed'",
+        g_cov["derived_status"] == "contributed",
+        f"got '{g_cov['derived_status']}'  tc={g_cov['funding']['total_contributed']}",
+    )
+
+    # 4c — 1c-shortfall cover: replace cover with $47.20 (1c short).
+    _set_settlement_cover(gid, lead_id, 47.20)
+    g_short = get_group(gid)
+    check(
+        "#4c cover 1c short -> derived_status reverts to 'contributing'",
+        g_short["derived_status"] == "contributing",
+        f"got '{g_short['derived_status']}'  value_covered = tc+cover = {g_short['funding']['total_contributed']}+47.20",
+    )
 
 
-def main() -> int:
-    try:
-        test_equal_split_89_21()
-        test_equal_split_94_43()
-        test_equal_split_50_seven()
-        test_equal_split_100_02_three()
-        test_equal_split_100_four()
-        test_lead_position_independence()
-        test_itemized_lead_absorbs_extras_residual()
-        test_payment_intent_uses_lead_bonus_cent()
-        test_regression_smoke()
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        FAIL.append(("test runner exception", str(e)))
+# ---------- Pipeline: real contribute endpoint reveals secondary bug --------
 
-    print("\n" + "=" * 60)
-    print(f"PASS: {len(PASS)}   FAIL: {len(FAIL)}")
+def test_pipeline_real_contribute_path():
+    section("PIPELINE — /contribute endpoint with credit_only path on $94.43/2")
+    admin_tok = admin_login()
+    s = setup_2member_group(94.43)
+    gid = s["group"]["id"]
+    lead_id = lead_member_id(s["group"])
+
+    # Grant credits + ask each member to contribute their FOOD share ($47.21).
+    # The credit_only branch in contribute_routes (line ~100) has the legacy
+    # `total_contributed + 0.01 >= total_amount` buggy threshold; this test
+    # will reveal whether it has been updated to match the new strict logic.
+    grant_credit_admin(admin_tok, s["member"]["id"], 100.0, "scenario test")
+    grant_credit_admin(admin_tok, lead_id, 100.0, "scenario test")
+
+    code1, b1 = contribute_credit(gid, s["member"]["id"], 47.21)
+    check(
+        "PIPE-A member /contribute $47.21 -> 200",
+        code1 == 200,
+        f"got {code1} {b1}",
+    )
+    code2, b2 = contribute_credit(gid, lead_id, 47.21)
+    check(
+        "PIPE-B lead /contribute $47.21 -> 200",
+        code2 == 200,
+        f"got {code2} {b2}",
+    )
+
+    g_after = get_group(gid)
+    raw = _raw_status(gid)
+    tc = g_after["funding"]["total_contributed"]
+    print(f"  pipeline state: raw_status={raw}  tc={tc}  derived={g_after['derived_status']}")
+
+    # Expectation per review: with $94.42 collected on $94.43 bill, the bill
+    # must NOT be marked fully funded.
+    check(
+        "PIPE-C raw status remained 'open' (contribute path did NOT flip status='paid' on 1c short)",
+        raw == "open",
+        f"raw status={raw} — contribute_routes line 101/390 still uses legacy "
+        f"`+0.01` threshold and flipped status='paid' despite 1c short!",
+    )
+    check(
+        "PIPE-D derived_status == 'contributing' (1c short)",
+        g_after["derived_status"] == "contributing",
+        f"got '{g_after['derived_status']}' — likely cascade from PIPE-C (raw_status='paid' "
+        "forces derived='contributed' regardless of new strict check).",
+    )
+
+
+# ---------- Regression smoke ------------------------------------------------
+
+def test_regression_smoke():
+    section("#5 REGRESSION smoke — no 5xx on key endpoints")
+    r = requests.get(f"{BASE}/runtime/landing-page", timeout=20)
+    check("smoke landing-page 200", r.status_code == 200, f"got {r.status_code}")
+
+    r = requests.get(f"{BASE}/runtime/brand", timeout=20)
+    check("smoke runtime/brand 200", r.status_code == 200, f"got {r.status_code}")
+
+    admin_tok = admin_login()
+    r = requests.get(
+        f"{BASE}/admin/groups",
+        headers={"Authorization": f"Bearer {admin_tok}"},
+        timeout=30,
+    )
+    check("smoke /admin/groups 200 (no 5xx after fix)", r.status_code == 200, f"got {r.status_code} {r.text[:200]}")
+    if r.status_code == 200:
+        data = r.json()
+        items = data.get("items") if isinstance(data, dict) else data
+        check("admin/groups returned a list", isinstance(items, list), f"type={type(items).__name__}")
+
+
+# ---------- Main ------------------------------------------------------------
+
+def main():
+    print("Strict funding_complete check — Backend regression test")
+    print(f"Target: {BASE}")
+    print(f"Mongo:  {MONGO_URL}/{DB_NAME}")
+
+    tests = [
+        ("Scenario #1 (POSITIVE)", test_scenario1_exact_funding_positive),
+        ("Scenario #2 (NEGATIVE)", test_scenario2_one_cent_shortfall_negative),
+        ("Scenario #3 (OVER-FUND)", test_scenario3_over_funding_edge),
+        ("Scenario #4 (COVER)", test_scenario4_cover_amount_edge),
+        ("Pipeline (real contribute)", test_pipeline_real_contribute_path),
+        ("Regression smoke", test_regression_smoke),
+    ]
+    for label, fn in tests:
+        try:
+            fn()
+        except Exception as e:
+            FAIL.append((label, f"unhandled exception: {e!r}"))
+            print(f"  FAIL  {label} crashed: {e!r}")
+
+    print(f"\n=== TOTALS ===")
+    print(f"PASS: {len(PASS)}")
+    print(f"FAIL: {len(FAIL)}")
     if FAIL:
-        print("\nFAILED:")
+        print("--- failures ---")
         for name, detail in FAIL:
-            print(f"  - {name}: {detail}")
+            print(f"  - {name}\n      {detail}")
     return 0 if not FAIL else 1
 
 
 if __name__ == "__main__":
-    import sys
-    sys.exit(main())
+    raise SystemExit(main())

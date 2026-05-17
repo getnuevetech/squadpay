@@ -878,7 +878,17 @@ async def _recompute_group(group: dict) -> dict:
         # via shortfall_obligations + repayments.
         cover_amount = float(settlement.get("amount") or 0.0)
     value_covered = total_contributed + cover_amount
-    funding_complete = (value_covered + 0.01) >= total_amount and total_amount > 0
+    # STRICT FUNDING CHECK (June 2025 — penny-rounding bug fix). Previously
+    # we used `(value_covered + 0.01) >= total_amount` which masked $0.01
+    # shortfalls: if the squad collected $94.42 on a $94.43 bill, the app
+    # marked it as fully funded and triggered Lead Pay Out, leaving the
+    # platform to silently absorb the missing cent (user-reported bug in
+    # bill B7857-24644). We now compare in integer cents — exact match.
+    # The new "Lead absorbs residual" split math guarantees per_user.total
+    # sums to total_amount EXACTLY, so no legitimate float drift remains.
+    total_cents = int(round(float(total_amount) * 100))
+    covered_cents = int(round(float(value_covered) * 100))
+    funding_complete = covered_cents >= total_cents and total_amount > 0
 
     if raw_status == "closed":
         derived_status = "bill_settled"

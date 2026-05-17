@@ -60,9 +60,10 @@ export default function GatewaysPage() {
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [savingKey, setSavingKey] = useState<string | null>(null);
-  // Settlement mode mutex \u2014 admin toggles whether new squads use the virtual
-  // card flow or the lead-card-payout flow. End users never see this choice.
-  const [settlementMode, setSettlementMode] = useState<'virtual_card' | 'lead_card' | null>(null);
+  // Settlement mode \u2014 admin configures which payout rail(s) the Lead can use.
+  // Three options: virtual_card only, lead_card only, or lead_choice (both
+  // shown to lead, lead picks). End users only see what admin enabled.
+  const [settlementMode, setSettlementMode] = useState<'virtual_card' | 'lead_card' | 'lead_choice' | null>(null);
   const [settlementBusy, setSettlementBusy] = useState(false);
 
   // Edit-form local state, keyed by `${group}:${slug}`.
@@ -91,18 +92,18 @@ export default function GatewaysPage() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const onChangeSettlementMode = async (next: 'virtual_card' | 'lead_card') => {
+  const onChangeSettlementMode = async (next: 'virtual_card' | 'lead_card' | 'lead_choice') => {
     if (next === settlementMode) return;
     setSettlementBusy(true);
     try {
       await paymentGatewaysApi.setSettlementMode(next);
       setSettlementMode(next);
-      Alert.alert(
-        'Settlement mode switched',
-        next === 'virtual_card'
-          ? 'New squads will pay the merchant via the active virtual card issuer.'
-          : "New squads will pay out the collected money to the Lead's saved card. Lead pays the merchant directly.",
-      );
+      const msg = next === 'virtual_card'
+        ? 'New squads will pay the merchant via the active virtual card issuer. Lead sees only the Squad Card CTA.'
+        : next === 'lead_card'
+        ? "New squads will pay out the collected money to the Lead's saved card. Lead sees only the Withdraw CTA."
+        : "Lead will see BOTH the Squad Card and Withdraw options and choose at payment time. (Lead-side picker UI is future work — for now Lead defaults to Squad Card.)";
+      Alert.alert('Settlement mode switched', msg);
     } catch (e: any) {
       Alert.alert('Failed to switch', e?.message || '');
     } finally {
@@ -188,13 +189,19 @@ export default function GatewaysPage() {
           <Text style={styles.settlementTitle}>Settlement Mode</Text>
           <View style={styles.modeBadge}>
             <Text style={styles.modeBadgeText}>
-              {settlementMode === 'lead_card' ? "LEAD'S CARD" : settlementMode === 'virtual_card' ? 'VIRTUAL CARD' : '\u2026'}
+              {settlementMode === 'lead_card'
+                ? "LEAD'S CARD"
+                : settlementMode === 'virtual_card'
+                ? 'VIRTUAL CARD'
+                : settlementMode === 'lead_choice'
+                ? 'BOTH (LEAD CHOICE)'
+                : '\u2026'}
             </Text>
           </View>
         </View>
         <Text style={styles.settlementSub}>
-          How EVERY new squad pays the merchant. Mutually exclusive — pick one.
-          End users never see this choice.
+          What payout options Lead sees. If only one is enabled, Lead sees that single CTA.
+          If "Both" is enabled, Lead picks at payment time. End users never see the admin choice.
         </Text>
         <View style={styles.settlementOptions}>
           <TouchableOpacity
@@ -208,12 +215,10 @@ export default function GatewaysPage() {
             testID="settlement-virtual-card"
           >
             <Text style={[styles.modeOptionTitle, settlementMode === 'virtual_card' && { color: '#fff' }]}>
-              Virtual Card
+              Virtual Card only
             </Text>
             <Text style={[styles.modeOptionSub, settlementMode === 'virtual_card' && { color: '#fff', opacity: 0.85 }]}>
-              Active issuer (e.g., Lithic) issues a single-use card. Lead pays merchant
-              via Apple/Google Pay using that card. Squad money flows through the issuer
-              — SquadPay never holds it.
+              Lead only sees "Use Squad Card". Active issuer issues single-use card. SquadPay never holds money.
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -227,12 +232,27 @@ export default function GatewaysPage() {
             testID="settlement-lead-card"
           >
             <Text style={[styles.modeOptionTitle, settlementMode === 'lead_card' && { color: '#fff' }]}>
-              Lead's Card
+              Lead's Card only
             </Text>
             <Text style={[styles.modeOptionSub, settlementMode === 'lead_card' && { color: '#fff', opacity: 0.85 }]}>
-              Squad-collected money is paid out (instant) to the Lead's saved card via
-              the active payout provider. Lead then pays the merchant with their own card.
-              Used when no virtual card issuer is active.
+              Lead only sees "Withdraw to my card". Funds payout instant to Lead's saved card; they pay merchant directly.
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => onChangeSettlementMode('lead_choice')}
+            disabled={settlementBusy || settlementMode === 'lead_choice'}
+            activeOpacity={0.85}
+            style={[
+              styles.modeOption,
+              settlementMode === 'lead_choice' && styles.modeOptionActive,
+            ]}
+            testID="settlement-lead-choice"
+          >
+            <Text style={[styles.modeOptionTitle, settlementMode === 'lead_choice' && { color: '#fff' }]}>
+              Both \u2014 Lead chooses
+            </Text>
+            <Text style={[styles.modeOptionSub, settlementMode === 'lead_choice' && { color: '#fff', opacity: 0.85 }]}>
+              Lead sees BOTH options at payment time and picks one. Lead-side picker UI is future work; for now Lead defaults to Squad Card.
             </Text>
           </TouchableOpacity>
         </View>

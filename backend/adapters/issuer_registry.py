@@ -20,6 +20,7 @@ from .issuer_stripe import StripeIssuerAdapter
 from .issuer_lithic import LithicIssuerAdapter
 from .issuer_highnote import HighnoteIssuerAdapter
 from .issuer_unit import UnitIssuerAdapter
+from .issuer_increase import IncreaseIssuerAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ _INTEGRATED: Dict[str, Type[IssuerAdapter]] = {
     "lithic":   LithicIssuerAdapter,
     "highnote": HighnoteIssuerAdapter,
     "unit":     UnitIssuerAdapter,
+    "increase": IncreaseIssuerAdapter,
 }
 
 # Default active when nothing is configured yet (preserves pre-refactor

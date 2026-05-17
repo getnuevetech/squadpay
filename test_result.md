@@ -14816,3 +14816,55 @@ agent_communication:
            on mount and pick the correct CTA copy ("Use Squad Card" vs
            "Withdraw to your card").
 
+
+---
+## 2026-05-17 — Increase.com integrated (5th issuer, purpose=both)
+
+backend:
+  - task: "Increase.com adapter (card issuance + payout)"
+    implemented: true
+    working: true
+    file: "/app/backend/adapters/issuer_increase.py, /app/backend/adapters/issuer_registry.py"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "main"
+       -comment: |
+         5th issuer added: Increase.com. purpose="both" \u2014 supports BOTH
+         virtual card issuance AND ACH/wire/RTP payouts. Will appear in
+         the Virtual Card tab AND the Payout tab.
+
+         Sandbox health check passes (338ms latency, auth validated).
+         Full SDK installed (lithic-style: pip install increase, version
+         0.522.0). Methods implemented: health_check,
+         ensure_business_cardholder (auto-discovers org's Increase
+         account), issue_card, fund_card, freeze_card, close_card,
+         reveal_card_details (uses Increase's secure sensitive-details
+         endpoint), list_transactions, verify_webhook (HMAC-SHA256).
+
+         Compliance posture preserved: Increase's account-in-the-middle
+         pattern is acceptable as long as the account balance drains to
+         ~$0 by end-of-day. Charge gateway \u2192 just-in-time ACH into
+         Increase \u2192 card auth \u2192 merchant. Reconciliation drift cron
+         should be extended to alarm if Increase account balance > $0
+         at EOD.
+
+         E2E card issuance test currently blocked on Increase sandbox
+         dashboard setup (no open accounts exist on the API key yet).
+         Once the founder opens an account via Increase sandbox UI, full
+         E2E will work like Lithic does today.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        5 issuers integrated, 4 passing health (Stripe, Lithic, Highnote,
+        Unit, Increase). Lithic remains ACTIVE as the live issuer.
+
+        For Increase to be used for real card issuance, founder needs to:
+        1. Log into Increase sandbox dashboard (dashboard.increase.com)
+        2. Create at least one open Account (sandbox.entity + checking)
+        3. The adapter auto-caches the account_id on first issue call.
+
+        Until then, Increase is selectable in the admin UI (purpose=both)
+        but real issuance will return a clear "no open accounts" error.
+

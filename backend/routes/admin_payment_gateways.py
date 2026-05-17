@@ -42,30 +42,31 @@ _ENV_KEYS: Dict[str, List[str]] = {
     "lithic":   ["LITHIC_API_KEY", "LITHIC_ENV", "LITHIC_WEBHOOK_SECRET"],
     "highnote": ["HIGHNOTE_API_KEY", "HIGHNOTE_ENV"],
     "unit":     ["UNIT_API_TOKEN", "UNIT_ENV"],
+    "increase": ["INCREASE_API_KEY", "INCREASE_ENV", "INCREASE_WEBHOOK_SECRET"],
 }
 
 
 # ---------- Settlement Mode (June 2025) ----------
-# Hard mutex: every new squad uses EXACTLY ONE settlement rail.
+# Admin-controlled config that decides which payout rail(s) the Lead can use:
 #
-#   "virtual_card" \u2014 the active issuer (Lithic / Highnote / Stripe) issues a
-#                    single-use card; lead pays merchant with that card via
-#                    Apple/Google Wallet. Squad money flows: collection \u2192
-#                    platform bank \u2192 issuer settlement \u2192 merchant. SquadPay
-#                    never holds funds.
+#   "virtual_card"  \u2014 ONLY virtual card flow. Active issuer (Lithic / Highnote
+#                     / Stripe) issues a single-use card; Lead pays merchant
+#                     with it. Lead sees a single "Use Squad Card" CTA.
 #
-#   "lead_card"    \u2014 squad-collected money is paid out to the lead's saved
-#                    bank/debit card via Stripe Connect Express (or active
-#                    payout provider). Lead then pays the merchant with their
-#                    own card. Used when virtual card issuance isn't ready or
-#                    when an issuer is in cooldown. Compliance posture stays
-#                    intact because money is in-flight (charge \u2192 instant
-#                    transfer to lead) and never rests in a SquadPay account.
+#   "lead_card"     \u2014 ONLY lead-card payout flow. Squad money is paid out to
+#                     the Lead's saved card via the active payout provider;
+#                     Lead pays merchant with their own card. Lead sees a
+#                     single "Withdraw to your card" CTA.
 #
-# The user-facing UI must NEVER expose the mode to end-users. It reads this
-# config and only renders the relevant CTA / flow. Frontend complexity is
-# back-pressured into this single admin toggle.
-SETTLEMENT_MODES = ["virtual_card", "lead_card"]
+#   "lead_choice"   \u2014 BOTH flows enabled. Lead picks at payment time. (UI for
+#                     this is future work \u2014 in the meantime, frontend can
+#                     default to virtual_card and offer "Switch to my own card"
+#                     as a secondary action.)
+#
+# Compliance posture is preserved in ALL three modes \u2014 SquadPay never holds
+# money. lead_card mode uses instant transfer to Lead so funds are in-flight,
+# not at rest.
+SETTLEMENT_MODES = ["virtual_card", "lead_card", "lead_choice"]
 DEFAULT_SETTLEMENT_MODE = "virtual_card"
 
 

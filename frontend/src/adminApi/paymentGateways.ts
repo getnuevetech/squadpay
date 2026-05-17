@@ -74,14 +74,12 @@ export const paymentGatewaysApi = {
   health: (slug: string) =>
     request<IssuerHealth>(`/payment-gateways/${slug}/health`),
 
-  // Settlement mode mutex (June 2025): every new squad uses EXACTLY ONE
-  // settlement rail \u2014 either virtual_card (active issuer issues + pays
-  // merchant) or lead_card (squad money paid out to lead's saved card,
-  // lead pays merchant with own card). Frontend reads this and renders
-  // the appropriate CTA only \u2014 users never see the choice.
+  // Settlement mode mutex (June 2025): admin chooses which payout rail(s)
+  // the Lead can use. virtual_card / lead_card / lead_choice (both shown,
+  // lead picks at runtime). Frontend renders only what admin enabled.
   getSettlementMode: () =>
     request<{
-      mode: 'virtual_card' | 'lead_card';
+      mode: 'virtual_card' | 'lead_card' | 'lead_choice';
       options: string[];
       default: string;
       active_issuer: string;
@@ -89,7 +87,7 @@ export const paymentGatewaysApi = {
       changed_at?: string | null;
     }>('/settlement-mode'),
 
-  setSettlementMode: (mode: 'virtual_card' | 'lead_card') =>
+  setSettlementMode: (mode: 'virtual_card' | 'lead_card' | 'lead_choice') =>
     request<{ ok: boolean; mode: string }>(
       '/settlement-mode',
       { method: 'POST', body: JSON.stringify({ mode }) },

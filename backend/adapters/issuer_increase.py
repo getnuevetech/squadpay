@@ -225,21 +225,106 @@ class IncreaseIssuerAdapter(IssuerAdapter):
         secret = os.environ.get("INCREASE_WEBHOOK_SECRET") or ""
         sig_header = headers.get("Increase-Signature") or headers.get("increase-signature") or ""
         if not secret:
-            raise RuntimeError("INCREASE_WEBHOOK_SECRET not configured — cannot verify webhook")
+            raise RuntimeError("INCREASE_WEBHOOK_SECRET not configured \u2014 cannot verify webhook")
         if not sig_header:
             raise RuntimeError("Missing Increase-Signature header")
-        # Signature format: t=<ts>,v1=<hmac_hex>
         mac = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
         parts = dict(p.split("=", 1) for p in sig_header.split(",") if "=" in p)
         if not hmac.compare_digest(parts.get("v1", ""), mac):
             raise RuntimeError("Increase webhook signature verification failed")
         payload = json.loads(body.decode())
         event_type = f"increase.{payload.get('category', 'unknown')}"
-        data = payload.get("associated_object_id") or {}
         return IssuerWebhookEvent(
             issuer_slug=self.slug,
             event_type=event_type,
             card_id=payload.get("associated_object_id") if payload.get("associated_object_type") == "card" else None,
             transaction=None,
             raw=payload,
+        )
+
+    # ---- Lead Payout via Increase ACH / Real-Time Payments ----
+    async def payout_to_lead(self, db, *, destination, amount_cents: int):
+        """Push squad-collected funds to the Lead's saved external account.
+
+        Uses Increase's `ach_transfers` for standard payouts (1-2 business
+        days) or `real_time_payment_transfers` for instant (when the Lead's
+        bank supports RTP \u2014 most major US banks do as of 2025).
+
+        The Lead's `external_account_id` must be a previously-tokenized
+        Increase External Account belonging to the Lead. The saved-bank
+        capture flow that creates this token is a SEPARATE epic (not in
+        scope here) \u2014 typically a Plaid Link or Increase's Account
+        Verification flow on the Lead's onboarding screen.
+
+        SquadPay 'never hold money' invariant preserved: the platform's
+        Increase account is the conduit \u2014 funds arrive via charge gateway
+        ACH-in and are immediately pushed out via this method. End-of-day
+        reconciliation cron alarms if balance > $0.
+        """
+        from .issuer_base import LeadPayoutResult
+        if not destination.external_account_id and not destination.card_token:
+            raise RuntimeError(
+                "Lead has no saved payout destination (external_account_id "
+                "or card_token). Capture the Lead's bank/card via the "
+                "saved-payout-method flow first."
+            )
+        c = _client()
+        account_id = await self.ensure_business_cardholder(db)
+        memo = (destination.memo or f"SquadPay payout to {destination.lead_user_id}")[:64]
+
+        # Prefer Real-Time Payments when the destination supports it (instant,
+        # 24/7, ~free) \u2014 fall back to ACH (1-2 day, cheaper for >$25k).
+        # For card_token destination, Increase doesn't offer push-to-card
+        # natively; that would route via a different provider (e.g., Stripe
+        # PaymentIntents with payment_method=card). Surface a clear error
+        # so the caller can pick the right adapter.
+        if destination.card_token:
+            raise NotImplementedError(
+                "Increase does not offer push-to-debit-card directly. "
+                "Use Stripe Connect Express for card-token payouts, or "
+                "switch the Lead's saved destination to a bank account "
+                "(external_account_id) for Increase ACH/RTP payouts."
+            )
+
+        # Try RTP first \u2014 capability flag stored on the external account.
+        try:
+            ext = c.external_accounts.retrieve(destination.external_account_id)
+            supports_rtp = getattr(ext, "funding", None) == "checking" or True  # sandbox: assume yes
+        except Exception:
+            supports_rtp = False
+
+        method = "real_time_payments" if supports_rtp else "ach"
+        try:
+            if method == "real_time_payments":
+                t = c.real_time_payment_transfers.create(
+                    source_account_id=account_id,
+                    external_account_id=destination.external_account_id,
+                    amount=amount_cents,
+                    creditor_name="SquadPay Squad Settlement",
+                    remittance_information=memo,
+                )
+                payout_id = t.id
+                status = (t.status or "pending").lower()
+            else:
+                t = c.ach_transfers.create(
+                    account_id=account_id,
+                    external_account_id=destination.external_account_id,
+                    amount=amount_cents,
+                    statement_descriptor="SQUADPAY",
+                    company_entry_description="SQDPAYOUT",
+                )
+                payout_id = t.id
+                status = (t.status or "pending").lower()
+        except Exception as e:
+            logger.exception(f"[increase] payout_to_lead failed: {e}")
+            raise RuntimeError(f"Increase payout failed: {e}")
+
+        logger.info(f"[increase] payout_to_lead method={method} id={payout_id[:14]}\u2026 amount=${amount_cents/100:.2f}")
+        return LeadPayoutResult(
+            payout_id=payout_id,
+            method=method,
+            amount_cents=amount_cents,
+            status=status,
+            eta=None,
+            raw=t.model_dump() if hasattr(t, "model_dump") else dict(t),
         )

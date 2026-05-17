@@ -183,7 +183,7 @@ export default function AdminGroupDetailPage() {
       </View>
 
       {/* Phase F1: Stripe Issuing virtual card */}
-      {(group as any).virtual_card?.stripe_card_id ? (
+      {((group as any).virtual_card?.card_id || (group as any).virtual_card?.stripe_card_id) ? (
         <View style={styles.section}>
           <View style={styles.sectionHeader}><Crown size={14} color={COLORS.text} /><Text style={styles.sectionTitle}>Squad Card · {(group as any).virtual_card.nickname || 'SquadPay'}</Text></View>
           <Text style={styles.metaSmall}>

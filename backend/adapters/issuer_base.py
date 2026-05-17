@@ -65,6 +65,35 @@ class FundingResult:
 
 
 @dataclass
+class LeadPayoutDestination:
+    """How to push squad-collected funds to the Lead's own card / bank.
+
+    EXACTLY ONE of the destination fields must be set:
+      - card_token: provider-tokenized debit card (push-to-card, real-time)
+      - external_account_id: provider-tokenized bank account (ACH/RTP)
+
+    Providers MUST validate that the destination belongs to the Lead. End
+    users never type a PAN here \u2014 the token comes from a saved-card or
+    saved-bank UI capture flow (separate epic, not yet built).
+    """
+    lead_user_id: str
+    card_token: Optional[str] = None
+    external_account_id: Optional[str] = None
+    memo: Optional[str] = None
+
+
+@dataclass
+class LeadPayoutResult:
+    """Result of pushing funds to the Lead's card/bank."""
+    payout_id: str
+    method: str                    # "push_to_card" | "ach" | "real_time_payments" | "wire"
+    amount_cents: int
+    status: str                    # "pending" | "settled" | "failed"
+    eta: Optional[str] = None      # ISO timestamp expected settlement
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class CardTransaction:
     """Provider-agnostic view of an authorization/settlement on a card."""
     txn_id: str
@@ -207,3 +236,20 @@ class IssuerAdapter(ABC):
     async def verify_webhook(self, body: bytes, headers: Dict[str, str]) -> IssuerWebhookEvent:
         """Validate webhook signature, parse + normalize. Raise on failure."""
         raise NotImplementedError
+
+    # ---- Lead Payout (settlement_mode=lead_card path) ----
+    # Default implementation refuses \u2014 each provider opts in by overriding.
+    # Currently implemented by: Increase (ACH/RTP push), Stripe (push-to-card
+    # via Connect Express \u2014 separate impl, not via this adapter yet).
+    async def payout_to_lead(
+        self,
+        db,
+        *,
+        destination: "LeadPayoutDestination",
+        amount_cents: int,
+    ) -> "LeadPayoutResult":
+        raise NotImplementedError(
+            f"{self.slug} adapter does not implement payout_to_lead(). "
+            f"Activate a provider that supports lead-card payouts (e.g., Increase) "
+            f"or switch settlement_mode back to virtual_card."
+        )

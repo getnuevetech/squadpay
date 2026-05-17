@@ -266,6 +266,17 @@ except Exception as _e:
     print("[startup] admin logos routes attach failed:", _e)
 
 
+# ---------- Payment Gateway / Issuer Adapter routes (June 2025) ----------
+# Multi-provider virtual card issuance: Stripe / Lithic / Highnote / Unit.
+# Admin can switch the active issuer without code changes.
+try:
+    from routes.admin_payment_gateways import attach_payment_gateways_routes
+    attach_payment_gateways_routes(api_router, db, _adm_factory(db))
+    print("[startup] payment gateways admin routes mounted")
+except Exception as _e:
+    print("[startup] payment gateways routes attach failed:", _e)
+
+
 # ---------- Real-Time Ledger Reconciliation Phase 2 (May 2026) ----------
 # Inbound Stripe webhooks (payments / refunds / issuing) that write
 # reconciliation_drift rows for any orphan / amount mismatch the

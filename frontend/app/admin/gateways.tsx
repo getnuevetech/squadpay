@@ -16,6 +16,12 @@ import {
 import { CheckCircle2, ShieldAlert, Plug, ChevronDown, Save, Eye, EyeOff, Zap } from 'lucide-react-native';
 import { adminApi } from '../../src/adminApi';
 import { COLORS, FONT, RADIUS, SPACING } from '../../src/theme';
+import IssuerGatewaysTab from '../../src/components/admin/IssuerGatewaysTab';
+
+// Top-level tab union: original 2 (charge/payout) + new "issuer" for virtual
+// card adapters (Stripe / Lithic / Highnote / Unit). Per user spec all
+// payment gateway configuration lives on this single page.
+type TopTab = 'charge' | 'payout' | 'issuer';
 
 type ProviderField = {
   key: string;
@@ -46,7 +52,7 @@ type StoredConfig = {
 };
 
 export default function GatewaysPage() {
-  const [tab, setTab] = useState<'charge' | 'payout'>('charge');
+  const [tab, setTab] = useState<TopTab>('charge');
   const [catalog, setCatalog] = useState<{ charge: Provider[]; payout: Provider[] } | null>(null);
   const [active, setActive] = useState<{ charge: string | null; payout: string | null }>({ charge: null, payout: null });
   const [configs, setConfigs] = useState<Record<string, StoredConfig>>({}); // key: `${group}:${slug}`
@@ -149,9 +155,9 @@ export default function GatewaysPage() {
 
       {/* Tabs */}
       <View style={styles.tabRow}>
-        {(['charge', 'payout'] as const).map((t) => {
+        {(['charge', 'payout', 'issuer'] as const).map((t) => {
           const isOn = t === tab;
-          const activeSlug = active[t];
+          const activeSlug = t === 'issuer' ? null : active[t as 'charge' | 'payout'];
           return (
             <TouchableOpacity
               key={t}
@@ -161,9 +167,13 @@ export default function GatewaysPage() {
               testID={`gateways-tab-${t}`}
             >
               <Text style={[styles.tabText, isOn && { color: '#fff' }]}>
-                {t === 'charge' ? 'Charge / Collection' : 'Payout / Withdrawal'}
+                {t === 'charge' ? 'Charge / Collection' : t === 'payout' ? 'Payout / Withdrawal' : 'Virtual Card Issuer'}
               </Text>
-              {activeSlug ? (
+              {t === 'issuer' ? (
+                <Text style={[styles.tabSub, isOn && { color: '#fff', opacity: 0.85 }]}>
+                  Stripe / Lithic / Highnote / Unit
+                </Text>
+              ) : activeSlug ? (
                 <Text style={[styles.tabSub, isOn && { color: '#fff', opacity: 0.85 }]}>
                   Active: {activeSlug}
                 </Text>
@@ -177,7 +187,10 @@ export default function GatewaysPage() {
         })}
       </View>
 
-      {tabProviders.map((p) => {
+      {tab === 'issuer' ? (
+        <IssuerGatewaysTab />
+      ) : (
+        tabProviders.map((p) => {
         const fk = formKey(p);
         const cfg = configs[fk];
         const isActive = active[p.group] === p.slug;
@@ -330,7 +343,8 @@ export default function GatewaysPage() {
             ) : null}
           </View>
         );
-      })}
+        })
+      )}
     </ScrollView>
   );
 }

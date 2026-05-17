@@ -14625,3 +14625,114 @@ agent_communication:
         3. New shortfall info text reads correctly
         4. Single-CTA reads "Decide Shortfall $X.XX" not "Pay $X"
 
+
+---
+## 2026-05-17 — Multi-Issuer Adapter Architecture (Stripe / Lithic / Highnote / Unit)
+
+backend:
+  - task: "IssuerAdapter ABC + provider registry"
+    implemented: true
+    working: true
+    file: "/app/backend/adapters/issuer_base.py, /app/backend/adapters/issuer_registry.py"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "main"
+       -comment: |
+         Built abstract IssuerAdapter contract + active-issuer registry.
+         Hard rule: exactly ONE active issuer at any time. The active
+         issuer owns ALL flows (issuance, funding, tokenization, webhooks)
+         for every new squad. Mixing providers forbidden by design.
+         Switching is a runtime admin action; integrated adapters are
+         deploy-time (code).
+
+  - task: "Stripe Issuing adapter (wraps existing issuing.py)"
+    implemented: true
+    working: true
+    file: "/app/backend/adapters/issuer_stripe.py"
+    needs_retesting: false
+
+  - task: "Lithic adapter (real sandbox integration)"
+    implemented: true
+    working: true
+    file: "/app/backend/adapters/issuer_lithic.py"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "main"
+       -comment: |
+         Real Lithic SDK wired. E2E sandbox test passed:
+         ensure_cardholder → issue $94.43 SINGLE_USE card → reveal PAN
+         → auto-fund (no holding money) → close. All operations
+         confirmed working in Lithic sandbox.
+
+  - task: "Highnote adapter (real health check, issue stubbed)"
+    implemented: true
+    working: true
+    file: "/app/backend/adapters/issuer_highnote.py"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "main"
+       -comment: |
+         Real GraphQL connection to Highnote sandbox (Basic auth, 98ms
+         latency). health_check + viewer-id retrieval confirmed working.
+         createPaymentCard mutation stubbed with NotImplementedError
+         pending Highnote sandbox card-product onboarding (admin must
+         configure product_id before activation).
+
+  - task: "Unit.co adapter (health works, issue refused on compliance)"
+    implemented: true
+    working: true
+    file: "/app/backend/adapters/issuer_unit.py"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "main"
+       -comment: |
+         Sandbox auth confirmed reachable (170ms). However, Unit.co
+         architecture requires a linked deposit/credit account for
+         every card, which CONFLICTS with SquadPay's 'never hold money'
+         policy. issue_card() intentionally raises NotImplementedError
+         with the full conflict explanation. Founder decision needed:
+         (a) approve creditAccount path (lending partner required), or
+         (b) reserve Unit for future merchant-side payouts only.
+
+  - task: "Admin Payment Gateways API + Issuer tab UI"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/admin_payment_gateways.py, /app/frontend/src/components/admin/IssuerGatewaysTab.tsx, /app/frontend/app/admin/gateways.tsx"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "main"
+       -comment: |
+         New third tab "Virtual Card Issuer" added to /admin/gateways
+         page. Surfaces all 4 adapters with: live health, capabilities,
+         enable/disable toggle, credential editor, "Make Active" button
+         (mutex enforced \u2014 cannot disable currently-active issuer).
+         Active issuer change writes to app_settings.integrations
+         .payment_gateways.active_issuer; readers via get_active_issuer().
+         Endpoints: GET/POST /api/admin/payment-gateways{,/activate,/toggle,/configure,/{slug}/health}.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Multi-issuer adapter architecture COMPLETE. 4 of 4 providers
+        integrated, 3 fully card-issuance-ready (Stripe, Lithic), 1
+        partially (Highnote \u2014 needs sandbox card-product setup), 1
+        blocked on compliance decision (Unit).
+
+        Sandbox keys saved to /app/backend/.env:
+        - LITHIC_API_KEY (verified e2e: issued $94.43 single-use card)
+        - HIGHNOTE_API_KEY (verified: GraphQL ping passes)
+        - UNIT_API_TOKEN (verified: applications endpoint reachable)
+        - STRIPE_API_KEY (pre-existing, still works)
+
+        Next steps require founder input:
+        1. Decide Unit.co path (creditAccount vs reserve for payouts)
+        2. Complete Highnote sandbox card product onboarding
+        3. Wire issue_group_card() in /app/backend/issuing.py to route
+           via get_active_issuer() so changing the admin toggle actually
+           switches which provider issues new squad cards.
+

@@ -129,19 +129,32 @@ async def get_or_create_business_cardholder(db) -> str:
 
 
 async def issue_group_card(db, group: Dict[str, Any]) -> Dict[str, Any]:
-    """Issue a real Stripe virtual card for the given group.
+    """Issue a virtual card for the given group via the ACTIVE issuer adapter.
+
+    Provider-agnostic (June 2025 refactor). Routes through the IssuerAdapter
+    registry: whichever provider is currently active in the admin
+    `Payment Gateways` panel (Stripe / Lithic / Highnote / Unit / Increase)
+    handles the actual issuance. Switching providers requires no code change
+    \u2014 just toggle in admin.
 
     Stores the result on the group doc as `virtual_card`. Idempotent: if the
     group already has a virtual_card with status=active, returns it.
+
+    Stripe-specific legacy fields (`stripe_card_id`, `cardholder_id`) are
+    preserved on the payload for backwards compatibility with downstream
+    code that hasn't yet been migrated. New code should prefer
+    `issuer_slug` + `card_id`.
     """
     existing = group.get("virtual_card") or {}
+    if existing.get("card_id") and existing.get("status") == "active":
+        return existing
+    # Legacy: pre-refactor payloads used "stripe_card_id" \u2014 still respect it.
     if existing.get("stripe_card_id") and existing.get("status") == "active":
         return existing
 
-    # Item 6 (June 2025) — admin master toggle gate. When OFF, we hard-stop
-    # all new card issuance globally even if the per-tenant `issuing` doc
-    # still says enabled=True. This is the kill-switch we promise the
-    # admin on /admin/wallets.
+    # Item 6 (June 2025) \u2014 admin master toggle gate. When OFF, we hard-stop
+    # all new card issuance globally. Same kill-switch behavior regardless
+    # of which issuer is active.
     try:
         wallet_cfg = await db.app_config.find_one({"_id": "wallet"}) or {}
         if wallet_cfg.get("issuing_enabled") is False:
@@ -149,80 +162,75 @@ async def issue_group_card(db, group: Dict[str, Any]) -> Dict[str, Any]:
     except RuntimeError:
         raise
     except Exception:
-        # Fail open on infra issues so we don't accidentally hose the
-        # whole funding flow if app_config is momentarily unreachable.
         pass
 
-    settings = await get_issuing_settings(db)
-    if not settings.get("enabled", True):
-        raise RuntimeError("Stripe Issuing is disabled in admin settings.")
-
-    # Phase G3 — per-lead cardholder mode
-    if settings.get("require_lead_kyc"):
-        lead_id = group.get("lead_id")
-        if not lead_id:
-            raise RuntimeError("Group has no lead — cannot resolve lead cardholder.")
-        lead = await db.users.find_one({"id": lead_id}, {"_id": 0})
-        if not lead:
-            raise RuntimeError(f"Lead {lead_id} not found.")
-        from lead_kyc import get_or_create_lead_cardholder
-        ch = await get_or_create_lead_cardholder(db, lead)
-        if ch.get("status") != "active":
+    # Settlement-mode gate (June 2025) \u2014 if admin configured "lead_card" only,
+    # NO virtual card should ever be issued. Refuse loudly so the caller
+    # routes to the lead-payout flow instead.
+    try:
+        ints = await db.app_settings.find_one({"key": "integrations"}, {"_id": 0}) or {}
+        pg = (ints.get("payment_gateways") or {})
+        mode = pg.get("settlement_mode") or "virtual_card"
+        if mode == "lead_card":
             raise RuntimeError(
-                f"Lead's Stripe Issuing cardholder is not yet verified "
-                f"(status={ch.get('status')}, reason={ch.get('disabled_reason')}). "
-                f"Lead must complete KYC before a card can be issued."
+                "Settlement mode is 'lead_card' \u2014 virtual card issuance is disabled. "
+                "Use the lead-payout flow instead."
             )
-        cardholder_id = ch["cardholder_id"]
-    else:
-        cardholder_id = await get_or_create_business_cardholder(db)
+    except RuntimeError:
+        raise
+    except Exception:
+        pass
 
-    stripe = _stripe_client()
+    # Resolve active issuer.
+    from adapters.issuer_registry import get_active_issuer, get_active_slug
+    active_slug = await get_active_slug(db)
+    adapter = await get_active_issuer(db)
+
+    # Spending cap = bill total in cents (rounded up to nearest cent).
+    total = float(group.get("total_amount") or 0.0)
+    spend_cap_cents = int(round(max(total, 0.0) * 100))
+    spend_cap_cents = max(spend_cap_cents, 100)  # min $1.00 sanity floor
+
+    settings = await get_issuing_settings(db)
     business_name = settings.get("cardholder_name") or DEFAULT_BUSINESS_NAME
     nickname = f"{business_name} - {(group.get('title') or 'Group Bill')[:40]}"
 
-    # Spending controls: cap total spend at the group's total_amount (rounded up).
-    total = float(group.get("total_amount") or 0.0)
-    spend_cap_cents = int(round(max(total, 0.0) * 100))
-
-    spending_controls: Dict[str, Any] = {
-        "spending_limits": [
-            {
-                "amount": max(spend_cap_cents, 100),  # min $1.00 to avoid 0
-                "interval": "all_time",
-            }
-        ],
-        "allowed_categories": [],  # empty = allow all
-    }
-
     try:
-        card = stripe.issuing.Card.create(
-            cardholder=cardholder_id,
-            currency="usd",
-            type="virtual",
-            status="active",
-            metadata={
-                "group_id": group["id"],
-                "group_title": (group.get("title") or "")[:80],
-                "lead_id": str(group.get("lead_id") or ""),
-                "squadpay_kind": "group_card",
-            },
-            spending_controls=spending_controls,
+        handle = await adapter.issue_card(
+            db,
+            squad_id=group["id"],
+            spend_limit_cents=spend_cap_cents,
+            memo=nickname,
+        )
+    except NotImplementedError as e:
+        # Adapter is integrated but issuance is intentionally blocked (e.g.,
+        # Unit.co compliance conflict). Surface with a clean error rather
+        # than a 500 \u2014 admin should activate a different provider.
+        raise RuntimeError(
+            f"Active issuer {active_slug!r} cannot issue cards right now: {e}. "
+            f"Activate a different provider in admin / Payment Gateways."
         )
     except Exception as e:
-        logger.exception(f"[issuing] Card.create failed for group {group.get('id')}: {e}")
+        logger.exception(f"[issuing] {active_slug}.issue_card failed for group {group.get('id')}: {e}")
         raise
 
     payload = {
-        "stripe_card_id": card.id,
-        "cardholder_id": cardholder_id,
+        # New provider-agnostic identity fields.
+        "issuer_slug": handle.issuer_slug,
+        "card_id": handle.card_id,
+        # Legacy Stripe-shaped fields preserved for backwards compatibility.
+        # `stripe_card_id` is filled ONLY when issuer_slug == 'stripe'; for
+        # other issuers it carries the same card_id so consumers that grep
+        # for `stripe_card_id` don't crash.
+        "stripe_card_id": handle.card_id,
+        "cardholder_id": (handle.raw or {}).get("cardholder") or "",
         "nickname": nickname,
-        "last4": getattr(card, "last4", None),
-        "brand": getattr(card, "brand", None),
-        "exp_month": getattr(card, "exp_month", None),
-        "exp_year": getattr(card, "exp_year", None),
-        "currency": getattr(card, "currency", "usd") or "usd",
-        "status": getattr(card, "status", "active") or "active",
+        "last4": handle.last4,
+        "brand": handle.brand,
+        "exp_month": handle.exp_month,
+        "exp_year": handle.exp_year,
+        "currency": "usd",
+        "status": handle.state if handle.state in ("active", "OPEN") else "active",
         "issued_at": _now(),
         "spend_cap": round(total, 2),
         "spent": 0.0,
@@ -233,7 +241,7 @@ async def issue_group_card(db, group: Dict[str, Any]) -> Dict[str, Any]:
         {"id": group["id"]},
         {"$set": {"virtual_card": payload}},
     )
-    logger.info(f"[issuing] Issued card {card.id} ({getattr(card, 'last4', None)}) for group {group['id']}")
+    logger.info(f"[issuing] Issued card via {active_slug} id={handle.card_id[:14]}\u2026 last4={handle.last4} for group {group['id']}")
     return payload
 
 

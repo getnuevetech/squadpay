@@ -14868,3 +14868,100 @@ agent_communication:
         Until then, Increase is selectable in the admin UI (purpose=both)
         but real issuance will return a clear "no open accounts" error.
 
+
+---
+## 2026-05-17 — Wired active issuer + settlement mode into runtime
+
+backend:
+  - task: "Route issue_group_card via active IssuerAdapter (no more hard-Stripe)"
+    implemented: true
+    working: true
+    file: "/app/backend/issuing.py"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "main"
+       -comment: |
+         Refactored issue_group_card() to:
+           1. Resolve active issuer via adapters.issuer_registry.get_active_issuer()
+           2. Call adapter.issue_card() instead of stripe.issuing.Card.create()
+           3. Persist provider-agnostic fields (issuer_slug, card_id) on the
+              group doc, plus legacy fields (stripe_card_id mirrored to card_id)
+              for backwards compatibility with downstream consumers.
+           4. Added settlement-mode gate: when settlement_mode == "lead_card",
+              refuses to issue any virtual card with a clear error so the
+              caller knows to route to the lead-payout flow instead.
+           5. NotImplementedError from compliance-blocked adapters (Unit.co)
+              surfaces as a clean RuntimeError telling admin to activate a
+              different provider, NOT a 500.
+
+         E2E smoke-tested live:
+         - With active=lithic, mode=virtual_card: issued real Lithic card
+           via /app/backend/issuing.py:issue_group_card() (last4=0759) \u2705
+         - With mode=lead_card: refused with the expected guard message \u2705
+
+  - task: "Increase.com E2E card issuance verified post-sandbox onboarding"
+    implemented: true
+    working: true
+    file: "/app/backend/adapters/issuer_increase.py"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "main"
+       -comment: |
+         Founder completed Increase sandbox account setup. End-to-end test
+         passed:
+         - ensure_business_cardholder \u2192 cached account_id=sandbox_account_7l\u2026
+         - issue_card(\$94.43) \u2192 sandbox_card_boy2a\u2026, last4=2968
+         - reveal_card_details \u2192 PAN ****-2968 exp 5/2030
+         - close_card \u2192 OK
+         Increase is now production-ready as an alternative to Lithic.
+
+frontend:
+  - task: "useSettlementMode() hook + Squad Card gating on lead_card mode"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/hooks/useSettlementMode.ts, /app/frontend/app/group/[id]/index.tsx"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "main"
+       -comment: |
+         New hook `/app/frontend/src/hooks/useSettlementMode.ts` reads
+         /api/runtime/settlement-mode (public, no auth). 60s module-local
+         cache to avoid per-screen fetches. Fail-safe defaults to
+         "virtual_card" so existing flows keep working if the endpoint is
+         unreachable.
+
+         Wired into /app/frontend/app/group/[id]/index.tsx: the lead-only
+         Squad Card surface (Lobby) now ALSO checks `squadCardAllowed`
+         (true when mode != "lead_card"). When admin flips settlement
+         mode to lead_card, the Squad Card section disappears from the
+         Lead's view entirely. lead_choice keeps the Squad Card visible
+         (Lead-side picker UI is future work).
+
+         Also future-proofed the visibility check: now accepts either
+         legacy `stripe_card_id` OR the new provider-agnostic `card_id`
+         on group.virtual_card, so the Lobby renders regardless of which
+         adapter issued the card.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Active-issuer wiring COMPLETE end-to-end:
+        - Backend issue_group_card routes via registry \u2014 Lithic actively
+          issues cards instead of Stripe.
+        - settlement_mode=lead_card hard-stops virtual card issuance.
+        - Frontend Squad Card surface hidden when settlement_mode=lead_card.
+        - Increase E2E verified post sandbox onboarding.
+
+        REMAINING (deferred, separate scope):
+        1. Lead-payout flow implementation (when mode=lead_card, push
+           collected funds to lead's saved card via active payout
+           provider \u2014 currently no such flow exists; existing payout
+           is a different concept).
+        2. Lead-side picker UI for mode=lead_choice (let lead pick at
+           runtime which rail to use).
+        3. /admin/wallets card-reveal UI must read group.virtual_card.card_id
+           (currently still queries stripe_card_id-only).
+

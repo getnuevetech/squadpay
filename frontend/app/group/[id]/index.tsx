@@ -22,6 +22,7 @@ import { api, BACKEND_URL, Group } from '../../../src/api';
 import { loadUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING, SHADOW } from '../../../src/theme';
 import { StatusBadge } from '../../../src/StatusBadge';
+import { useSettlementMode } from '../../../src/hooks/useSettlementMode';
 import { EditMetaModal } from '../../../src/EditMetaModal';
 import { RevealCardModal } from '../../../src/RevealCardModal';
 import { toast } from '../../../src/components/Toast';
@@ -51,6 +52,10 @@ export default function GroupLobbyScreen() {
   // entirely. Defaults to enabled so a cold-start fetch failure doesn't
   // accidentally hide the card.
   const [issuingEnabled, setIssuingEnabled] = useState<boolean>(true);
+  // Settlement mode hook (June 2025) — admin-configured payment rail.
+  // virtual_card / lead_choice → show Squad Card surface; lead_card → hide.
+  const { mode: settlementMode } = useSettlementMode();
+  const squadCardAllowed = settlementMode !== 'lead_card';
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -305,7 +310,7 @@ export default function GroupLobbyScreen() {
             (a) no card has been issued yet, OR
             (b) admin has flipped the issuing master toggle OFF.
             Lead-only view, regardless. */}
-        {isLead && issuingEnabled && group.virtual_card && group.virtual_card.stripe_card_id && (
+        {isLead && issuingEnabled && squadCardAllowed && group.virtual_card && (group.virtual_card.card_id || group.virtual_card.stripe_card_id) && (
           <View style={styles.cardWrap} testID="lobby-virtual-card">
             <Text style={styles.cardLabel}>
               Squad card · {group.virtual_card.status === 'inactive' ? 'disabled' :

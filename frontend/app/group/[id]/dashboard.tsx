@@ -163,7 +163,16 @@ export default function DashboardScreen() {
     router.push(`/group/${group.id}/pay?kind=contribute`);
   };
   const handleLeadPay = () => {
-    router.push(`/group/${group.id}/pay?kind=lead`);
+    // June 2025 — when the squad is fully funded, route to the new Settle
+    // screen which respects the admin-configured Settlement Mode and offers
+    // ACH / push-to-debit-card / virtual-card choices. For non-fully-funded
+    // squads (shortfall coverage), keep the legacy /pay?kind=lead flow.
+    const remainingNow = group.funding?.remaining_to_collect ?? 0;
+    if (remainingNow < 0.005) {
+      router.push(`/group/${group.id}/settle`);
+    } else {
+      router.push(`/group/${group.id}/pay?kind=lead`);
+    }
   };
 
   const handleRemoveMember = (targetId: string, name: string) => {

@@ -329,6 +329,14 @@ except Exception as _e:
     print("[startup] payout routes attach failed:", _e)
 
 
+# ---------- Lead-direct Settlement Payout (no-store, fresh each settlement) ----------
+try:
+    from routes.lead_payout_routes import attach_lead_payout_routes
+    attach_lead_payout_routes(api_router, db)
+except Exception as _e:
+    print("[startup] lead-payout routes attach failed:", _e)
+
+
 # ---------- Stripe Issuing PAN reveal + spend webhook (Phase F2) ----------
 try:
     from issuing_reveal import attach_reveal_routes

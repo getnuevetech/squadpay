@@ -63,35 +63,49 @@ type ModuleEntry = {
 // the role assignments.
 // ---------------------------------------------------------------------------
 const FALLBACK_MODULES: ModuleEntry[] = [
-  { key: 'dashboard',         label: 'Dashboard',        group: 'Overview',   path: '/admin/dashboard',         sensitive: false },
-  { key: 'analytics',         label: 'Analytics',        group: 'Overview',   path: '/admin/analytics',         sensitive: false },
-  { key: 'users',             label: 'Users',            group: 'Operations', path: '/admin/users',             sensitive: false },
-  { key: 'squads',            label: 'Squads',           group: 'Operations', path: '/admin/squads',            sensitive: false },
-  { key: 'customer_service',  label: 'Customer Service', group: 'Operations', path: '/admin/customer-service',  sensitive: false },
-  { key: 'notifications',     label: 'Notifications',    group: 'Marketing',  path: '/admin/notifications',     sensitive: false },
-  { key: 'notification_config', label: 'Notification Config', group: 'Marketing', path: '/admin/notification-config', sensitive: false },
-  { key: 'kyc_incentives',    label: 'KYC Incentives',      group: 'Marketing', path: '/admin/kyc-incentives',     sensitive: false },
-  { key: 'landing_page',      label: 'App Landing Page',    group: 'Marketing', path: '/admin/landing-page',       sensitive: false },
-  { key: 'bulk_sms',          label: 'Bulk SMS',         group: 'Marketing',  path: '/admin/bulk-sms',          sensitive: false },
-  { key: 'credit_rules',      label: 'Credit Rules',     group: 'Marketing',  path: '/admin/credit-rules',      sensitive: false },
-  { key: 'referrals',         label: 'Referrals',        group: 'Marketing',  path: '/admin/referrals',         sensitive: false },
-  { key: 'platform_fees',     label: 'Platform Fees',    group: 'Finance',    path: '/admin/platform-fees',     sensitive: true  },
-  { key: 'income_fees',       label: 'Income & Fees',    group: 'Finance',    path: '/admin/income-fees',       sensitive: true  },
-  { key: 'master_account',    label: 'Master Account',   group: 'Finance',    path: '/admin/master-account',    sensitive: true  },
-  { key: 'reconciliations',   label: 'Reconciliations',  group: 'Finance',    path: '/admin/reconciliations',   sensitive: false },
-  { key: 'integrations',      label: 'Integrations',     group: 'System',     path: '/admin/integrations',      sensitive: true  },
-  { key: 'security',          label: 'Security',         group: 'System',     path: '/admin/security',          sensitive: true  },
-  { key: 'audit',             label: 'Audit Log',        group: 'System',     path: '/admin/audit',             sensitive: false },
-  { key: 'legal_pages',       label: 'Legal Pages',      group: 'System',     path: '/admin/legal-pages',       sensitive: false },
-  { key: 'branding_logos',    label: 'Branding & Logos', group: 'System',     path: '/admin/branding-logos',    sensitive: false },
-  { key: 'cms_pages',         label: 'CMS Pages',        group: 'System',     path: '/admin/cms-pages',         sensitive: false },
-  { key: 'ocr_config',        label: 'Receipt OCR',      group: 'System',     path: '/admin/ocr-config',        sensitive: false },
-  { key: 'wallets',           label: 'Wallets',          group: 'System',     path: '/admin/wallets',           sensitive: false },
-  { key: 'join_code',         label: 'Join Codes',       group: 'System',     path: '/admin/join-code-config',  sensitive: false },
-  { key: 'admins',            label: 'Admins',           group: 'System',     path: '/admin/admins',            sensitive: true  },
-  { key: 'access',            label: 'Access Roles',     group: 'System',     path: '/admin/access',            sensitive: true  },
-  { key: 'capabilities',      label: 'Capabilities',     group: 'System',     path: '/admin/capabilities',      sensitive: true  },
-  { key: 'gateways',          label: 'Payment Gateways', group: 'System',     path: '/admin/gateways',          sensitive: true  },
+  // Overview
+  { key: 'dashboard',           label: 'Dashboard',                 group: 'Overview',      path: '/admin/dashboard',           sensitive: false },
+  { key: 'analytics',           label: 'Analytics',                 group: 'Overview',      path: '/admin/analytics',           sensitive: false },
+
+  // Operations
+  { key: 'users',               label: 'Users',                     group: 'Operations',    path: '/admin/users',               sensitive: false },
+  { key: 'squads',              label: 'Squads',                    group: 'Operations',    path: '/admin/squads',              sensitive: false },
+  { key: 'customer_service',    label: 'Customer Service',          group: 'Operations',    path: '/admin/customer-service',    sensitive: false },
+
+  // Marketing
+  { key: 'notifications',       label: 'Notifications',             group: 'Marketing',     path: '/admin/notifications',       sensitive: false },
+  { key: 'bulk_sms',            label: 'Bulk SMS',                  group: 'Marketing',     path: '/admin/bulk-sms',            sensitive: false },
+  { key: 'referrals',           label: 'Referrals',                 group: 'Marketing',     path: '/admin/referrals',           sensitive: false },
+
+  // Configuration
+  { key: 'notification_config', label: 'Notification Config',       group: 'Configuration', path: '/admin/notification-config', sensitive: false },
+  { key: 'kyc_incentives',      label: 'KYC Incentives',            group: 'Configuration', path: '/admin/kyc-incentives',      sensitive: false },
+  { key: 'credit_rules',        label: 'Credit Rules',              group: 'Configuration', path: '/admin/credit-rules',        sensitive: false },
+  { key: 'ocr_config',          label: 'Receipt OCR',               group: 'Configuration', path: '/admin/ocr-config',          sensitive: false },
+  { key: 'join_code',           label: 'Join Codes',                group: 'Configuration', path: '/admin/join-code-config',    sensitive: false },
+
+  // Content
+  { key: 'branding_logos',      label: 'Branding & Logos',          group: 'Content',       path: '/admin/branding-logos',      sensitive: false },
+  { key: 'landing_page',        label: 'App Landing Page',          group: 'Content',       path: '/admin/landing-page',        sensitive: false },
+  { key: 'legal_pages',         label: 'Legal Pages',               group: 'Content',       path: '/admin/legal-pages',         sensitive: false },
+  { key: 'cms_pages',           label: 'CMS Pages',                 group: 'Content',       path: '/admin/cms-pages',           sensitive: false },
+
+  // Payments
+  { key: 'platform_fees',       label: 'Platform Fees',             group: 'Payments',      path: '/admin/platform-fees',       sensitive: true  },
+  { key: 'income_fees',         label: 'Income & Fees',             group: 'Payments',      path: '/admin/income-fees',         sensitive: true  },
+  { key: 'master_account',      label: 'Master Account',            group: 'Payments',      path: '/admin/master-account',      sensitive: true  },
+  { key: 'gateways',            label: 'Payment Gateways',          group: 'Payments',      path: '/admin/gateways',            sensitive: true  },
+  { key: 'wallets',             label: 'Squad Cards',               group: 'Payments',      path: '/admin/wallets',             sensitive: true  },
+  { key: 'reconciliations',     label: 'Reconciliations',           group: 'Payments',      path: '/admin/reconciliations',     sensitive: false },
+  { key: 'reconciliation_drift',label: 'Ledger Drift',              group: 'Payments',      path: '/admin/reconciliation-drift',sensitive: true  },
+
+  // System
+  { key: 'integrations',        label: 'Integrations',              group: 'System',        path: '/admin/integrations',        sensitive: true  },
+  { key: 'security',            label: 'Security',                  group: 'System',        path: '/admin/security',            sensitive: true  },
+  { key: 'audit',               label: 'Audit Log',                 group: 'System',        path: '/admin/audit',               sensitive: false },
+  { key: 'admins',              label: 'Admin Users',               group: 'System',        path: '/admin/admins',              sensitive: true  },
+  { key: 'access',              label: 'Access Role Management',    group: 'System',        path: '/admin/access',              sensitive: true  },
+  { key: 'capabilities',        label: 'Capabilities',              group: 'System',        path: '/admin/capabilities',        sensitive: true  },
 ];
 
 // ---------------------------------------------------------------------------

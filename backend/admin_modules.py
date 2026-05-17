@@ -39,79 +39,111 @@ import re
 # Once roles are stored in db.roles, this list is irrelevant for access checks.
 
 MODULES: List[Dict] = [
-    # ----- Overview
+    # ──────────────────────────────────────────────────────────────────────
+    # OVERVIEW
+    # ──────────────────────────────────────────────────────────────────────
     {"key": "dashboard",       "label": "Dashboard",          "group": "Overview",   "path": "/admin/dashboard",
-     "default_roles": ["super_admin", "manager", "support"]},
+     "default_roles": ["super_admin"]},
     {"key": "analytics",       "label": "Analytics",          "group": "Overview",   "path": "/admin/analytics",
-     "default_roles": ["super_admin", "manager"]},
+     "default_roles": ["super_admin"]},
 
-    # ----- Operations
+    # ──────────────────────────────────────────────────────────────────────
+    # OPERATIONS — day-to-day customer + squad management
+    # ──────────────────────────────────────────────────────────────────────
     {"key": "users",           "label": "Users",              "group": "Operations", "path": "/admin/users",
-     "default_roles": ["super_admin", "manager", "support"]},
+     "default_roles": ["super_admin"]},
     {"key": "squads",          "label": "Squads",             "group": "Operations", "path": "/admin/groups",
-     "default_roles": ["super_admin", "manager", "support"]},
+     "default_roles": ["super_admin"]},
     {"key": "customer_service","label": "Customer Service",   "group": "Operations", "path": "/admin/customer-service",
-     "default_roles": ["super_admin", "manager", "support"]},
+     "default_roles": ["super_admin"]},
 
-    # ----- Marketing
+    # ──────────────────────────────────────────────────────────────────────
+    # MARKETING — outbound comms, growth, rewards
+    # ──────────────────────────────────────────────────────────────────────
     {"key": "notifications",   "label": "Notifications",      "group": "Marketing",  "path": "/admin/notifications",
-     "default_roles": ["super_admin", "manager"]},
-    {"key": "notification_config", "label": "Notification Config", "group": "Marketing",  "path": "/admin/notification-config",
-     "default_roles": ["super_admin", "manager"]},
-    {"key": "kyc_incentives", "label": "KYC Incentives", "group": "Marketing", "path": "/admin/kyc-incentives",
-     "default_roles": ["super_admin", "manager"]},
-    {"key": "landing_page",  "label": "App Landing Page", "group": "Marketing", "path": "/admin/landing-page",
-     "default_roles": ["super_admin", "manager"]},
+     "default_roles": ["super_admin"]},
     {"key": "bulk_sms",        "label": "Bulk SMS",           "group": "Marketing",  "path": "/admin/bulk-sms",
-     "default_roles": ["super_admin", "manager"]},
-    {"key": "credit_rules",    "label": "Credit Rules",       "group": "Marketing",  "path": "/admin/credit-rules",
-     "default_roles": ["super_admin", "manager"]},
+     "default_roles": ["super_admin"]},
     {"key": "referrals",       "label": "Referrals",          "group": "Marketing",  "path": "/admin/referrals",
-     "default_roles": ["super_admin", "manager"]},
+     "default_roles": ["super_admin"]},
 
-    # ----- Finance (sensitive)
-    {"key": "platform_fees",   "label": "Platform Fees",      "group": "Finance",    "path": "/admin/platform-fees",
+    # ──────────────────────────────────────────────────────────────────────
+    # CONFIGURATION — runtime behaviour switches (non-content)
+    # ──────────────────────────────────────────────────────────────────────
+    {"key": "notification_config", "label": "Notification Config", "group": "Configuration", "path": "/admin/notification-config",
+     "default_roles": ["super_admin"]},
+    {"key": "kyc_incentives",  "label": "KYC Incentives",     "group": "Configuration", "path": "/admin/kyc-incentives",
+     "default_roles": ["super_admin"]},
+    {"key": "credit_rules",    "label": "Credit Rules",       "group": "Configuration", "path": "/admin/credit-rules",
+     "default_roles": ["super_admin"]},
+    # NEW — Receipt OCR settings (model selection, confidence thresholds).
+    {"key": "ocr_config",      "label": "Receipt OCR",        "group": "Configuration", "path": "/admin/ocr-config",
+     "default_roles": ["super_admin"]},
+    # NEW — Join Code Config (invite-code length / expiry / throttling).
+    {"key": "join_code",       "label": "Join Codes",         "group": "Configuration", "path": "/admin/join-code-config",
+     "default_roles": ["super_admin"]},
+
+    # ──────────────────────────────────────────────────────────────────────
+    # CONTENT — anything the user sees (branding, copy, legal, marketing)
+    # ──────────────────────────────────────────────────────────────────────
+    # May 2026 — Branding & Logos. Lets admin replace any logo surface
+    # (in-app brand mark, web favicon, splash, iOS/Android icons,
+    # landing hero, email banner). Native icons still need an EAS
+    # rebuild to apply on installed devices — flagged in the UI.
+    {"key": "branding_logos",  "label": "Branding & Logos",   "group": "Content",    "path": "/admin/branding-logos",
+     "default_roles": ["super_admin"]},
+    {"key": "landing_page",    "label": "App Landing Page",   "group": "Content",    "path": "/admin/landing-page",
+     "default_roles": ["super_admin"]},
+    {"key": "legal_pages",     "label": "Legal Pages",        "group": "Content",    "path": "/admin/legal-pages",
+     "default_roles": ["super_admin"]},
+    # NEW — CMS Pages (free-form static content surfaces).
+    {"key": "cms_pages",       "label": "CMS Pages",          "group": "Content",    "path": "/admin/cms-pages",
+     "default_roles": ["super_admin"]},
+
+    # ──────────────────────────────────────────────────────────────────────
+    # PAYMENTS — money rails, fees, virtual cards, reconciliation
+    # ──────────────────────────────────────────────────────────────────────
+    {"key": "platform_fees",   "label": "Platform Fees",      "group": "Payments",   "path": "/admin/platform-fees",
      "default_roles": ["super_admin"], "sensitive": True},
-    {"key": "income_fees",     "label": "Income & Fees",      "group": "Finance",    "path": "/admin/income-fees",
+    {"key": "income_fees",     "label": "Income & Fees",      "group": "Payments",   "path": "/admin/income-fees",
      "default_roles": ["super_admin"], "sensitive": True},
-    {"key": "master_account",  "label": "Master Account",     "group": "Finance",    "path": "/admin/master-account",
+    {"key": "master_account",  "label": "Master Account",     "group": "Payments",   "path": "/admin/master-account",
      "default_roles": ["super_admin"], "sensitive": True},
-    {"key": "reconciliations", "label": "Reconciliations",    "group": "Finance",    "path": "/admin/reconciliations",
-     "default_roles": ["super_admin", "manager"]},
+    {"key": "gateways",        "label": "Payment Gateways",   "group": "Payments",   "path": "/admin/gateways",
+     "default_roles": ["super_admin"], "sensitive": True},
+    # NEW — Squad Cards admin view. Provider-agnostic card reveal across the
+    # multi-issuer adapter architecture (Stripe / Lithic / Highnote / Unit /
+    # Increase). Sensitive — exposes PAN via OTP-gated reveal flow.
+    {"key": "wallets",         "label": "Squad Cards",        "group": "Payments",   "path": "/admin/wallets",
+     "default_roles": ["super_admin"], "sensitive": True},
+    {"key": "reconciliations", "label": "Reconciliations",    "group": "Payments",   "path": "/admin/reconciliations",
+     "default_roles": ["super_admin"]},
     # June 2025 — Phase 1 of Real-Time Ledger Reconciliation. Pure observation
     # screen that surfaces ledger drift (DB denormalization, settlement
     # imbalances). Future phases add webhook-driven real-time updates +
     # auto-recovery.
-    {"key": "reconciliation_drift", "label": "Ledger Drift",   "group": "Finance",    "path": "/admin/reconciliation-drift",
-     "default_roles": ["super_admin", "manager"], "sensitive": True},
+    {"key": "reconciliation_drift", "label": "Ledger Drift",  "group": "Payments",   "path": "/admin/reconciliation-drift",
+     "default_roles": ["super_admin"], "sensitive": True},
 
-    # ----- System (super_admin)
+    # ──────────────────────────────────────────────────────────────────────
+    # SYSTEM — platform plumbing (admins themselves, security, integrations)
+    # ──────────────────────────────────────────────────────────────────────
     {"key": "integrations",    "label": "Integrations",       "group": "System",     "path": "/admin/integrations",
      "default_roles": ["super_admin"], "sensitive": True},
     {"key": "security",        "label": "Security",           "group": "System",     "path": "/admin/security",
      "default_roles": ["super_admin"], "sensitive": True},
     {"key": "audit",           "label": "Audit Log",          "group": "System",     "path": "/admin/audit",
-     "default_roles": ["super_admin", "manager"]},
-    {"key": "legal_pages",     "label": "Legal Pages",        "group": "System",     "path": "/admin/legal-pages",
      "default_roles": ["super_admin"]},
-    # May 2026 — Branding & Logos. Lets admin replace any logo surface
-    # (in-app brand mark, web favicon, splash, iOS/Android icons,
-    # landing hero, email banner). Native icons still need an EAS
-    # rebuild to apply on installed devices — flagged in the UI.
-    {"key": "branding_logos",  "label": "Branding & Logos",   "group": "System",     "path": "/admin/branding-logos",
-     "default_roles": ["super_admin", "manager"]},
     {"key": "admins",          "label": "Admin Users",        "group": "System",     "path": "/admin/admins",
      "default_roles": ["super_admin"], "sensitive": True},
     {"key": "access",          "label": "Access Role Management", "group": "System", "path": "/admin/access",
      "default_roles": ["super_admin"], "sensitive": True},
     {"key": "capabilities",    "label": "Capabilities",       "group": "System",     "path": "/admin/capabilities",
      "default_roles": ["super_admin"], "sensitive": True},
-    {"key": "gateways",        "label": "Payment Gateways",   "group": "System",     "path": "/admin/gateways",
-     "default_roles": ["super_admin"], "sensitive": True},
 ]
 
 VALID_KEYS: Set[str] = {m["key"] for m in MODULES}
-GROUP_ORDER = ["Overview", "Operations", "Marketing", "Finance", "System"]
+GROUP_ORDER = ["Overview", "Operations", "Marketing", "Configuration", "Content", "Payments", "System"]
 SYSTEM_SUPER_ADMIN_SLUG = "super_admin"
 SYSTEM_ROLE_SLUGS = {SYSTEM_SUPER_ADMIN_SLUG, "manager", "support"}
 
@@ -152,18 +184,23 @@ async def seed_system_roles(db) -> None:
             "modules": [m["key"] for m in MODULES],
             "is_system": True,
         },
+        # June 2026 — Founder mandate: NO defaults for any role other than
+        # super_admin. Manager and Support are seeded with an EMPTY module
+        # list so the super admin must explicitly grant access in
+        # /admin/access. Existing role docs in DB are preserved (we never
+        # overwrite a non-super_admin role's modules on boot).
         "manager": {
             "slug": "manager",
             "name": "Manager",
-            "description": "Day-to-day operations + analytics + marketing.",
-            "modules": [m["key"] for m in MODULES if "manager" in m["default_roles"]],
-            "is_system": True,  # seeded by system but EDITABLE (modules can be changed)
+            "description": "Custom role. Super admin must assign modules in Access Role Management.",
+            "modules": [],
+            "is_system": True,  # seeded by system but EDITABLE
         },
         "support": {
             "slug": "support",
             "name": "Support",
-            "description": "Customer-facing read access.",
-            "modules": [m["key"] for m in MODULES if "support" in m["default_roles"]],
+            "description": "Custom role. Super admin must assign modules in Access Role Management.",
+            "modules": [],
             "is_system": True,
         },
     }

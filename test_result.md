@@ -15146,6 +15146,92 @@ backend:
                 available_cents: 6000, available_usd: 60.0,
                 supports_ach: true,            (INCREASE_API_KEY set)
                 supports_card: true,           (STRIPE_API_KEY set)
+---
+## 2026-05-17 — Access Role Management — registry expansion + re-grouping
+
+backend:
+  - task: "Module registry — add 4 missing modules + re-group + no-default policy"
+    implemented: true
+    working: true
+    file: "/app/backend/admin_modules.py"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "main"
+       -comment: |
+         Module registry audit identified 4 admin screens that existed in
+         the frontend but were not declared in the backend MODULES list,
+         so they could not be assigned to any custom role (only visible
+         to super_admin via the FALLBACK path on /me/modules failures).
+
+         ADDED 4 modules:
+         - wallets       → /admin/wallets        (sensitive, Payments)
+         - ocr_config    → /admin/ocr-config     (Configuration)
+         - cms_pages     → /admin/cms-pages      (Content)
+         - join_code     → /admin/join-code-config (Configuration)
+
+         RE-GROUPED from 5 groups → 7 groups:
+           Overview (2), Operations (3), Marketing (3),
+           Configuration (5), Content (4), Payments (7), System (6)
+         Total: 30 modules.
+
+         POLICY CHANGE (founder mandate):
+         - Only super_admin has access to everything by default.
+         - All other roles (including system manager + support) seed with
+           an EMPTY module list. Super admin manually grants access via
+           /admin/access UI.
+         - All existing modules' default_roles arrays trimmed to
+           ["super_admin"] — preserves backward compat with the seed code
+           but ensures no future module is auto-assigned beyond super_admin.
+
+         DB MIGRATION executed:
+         - manager role: 11 modules → 0 (reset)
+         - support role: 4 modules → 0 (reset)
+         - super_admin: auto-extended to all 30 modules (immutable rule
+           in seed_system_roles still enforces this on every boot).
+
+         IMPACT: 23 existing admins (12 manager + 11 support) will see an
+         empty admin sidebar until super_admin grants them modules via
+         /admin/access. Super admin still has full access.
+
+frontend:
+  - task: "Admin layout FALLBACK_MODULES — sync with backend registry"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/admin/_layout.tsx"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "main"
+       -comment: |
+         FALLBACK_MODULES list re-organised to mirror new backend groups
+         (Overview / Operations / Marketing / Configuration / Content /
+         Payments / System). Used only when /api/admin/me/modules fails
+         on cold boot — backend remains the source of truth.
+
+         Sensitivity flags updated:
+         - wallets → sensitive=true (PCI-adjacent, card reveal flow)
+         - All Payments modules sensitive (except reconciliations)
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Access Role Management updated to reflect the multi-issuer
+        adapter, lead settlement payout, and other recent feature work.
+
+        Key changes:
+        1. 4 admin screens are now properly registered modules
+           (wallets, ocr_config, cms_pages, join_code).
+        2. System group split into 4 logical groups for clarity
+           (Configuration, Content, Payments, System).
+        3. NO defaults — only super_admin gets modules automatically.
+           Manager and Support roles seeded empty; super admin assigns
+           via /admin/access.
+
+        Verified via live /api/admin/access/registry response:
+        Total 30 modules across 7 groups in correct order.
+
+
                 show_virtual_card_option: true (lead_choice → both options)
                 show_lead_payout_option: true,
                 reasons: []

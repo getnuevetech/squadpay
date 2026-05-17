@@ -114,12 +114,121 @@ user_problem_statement: |
 backend:
   - task: "STRICT funding_complete check — integer-cent comparison in _recompute_group (penny-rounding bug B7857-24644)"
     implemented: true
-    working: false
-    file: "backend/core.py, backend/routes/contribute_routes.py, backend/routes/contribute_native_routes.py"
+    working: true
+    file: "backend/core.py, backend/routes/contribute_routes.py, backend/routes/contribute_native_routes.py, backend/routes/pay_routes.py"
     stuck_count: 0
     priority: "high"
     needs_retesting: false
     status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            RE-TEST AFTER MAIN-AGENT PATCHES — all 5 sites now use integer-cent
+            comparison and the bug is fully closed. Verified via
+            /app/backend_test.py against live preview backend
+            (https://joint-pay-1.preview.emergentagent.com/api).
+            51/51 assertions PASS. 0 5xx anywhere.
+
+            Patches verified in code:
+              1. contribute_routes.py line 105-113  (credit_only path)           ✅
+              2. contribute_routes.py line 397-405  (Stripe Checkout poll path)  ✅
+              3. contribute_native_routes.py line 425-431  (PaymentSheet)        ✅
+              4. pay_routes.py        line 93-100   (lead-own-share gate)        ✅
+              5. pay_routes.py        line 310-318  (virtual card issuing gate)  ✅
+            All use:
+                _total_cents = int(round(float(total_amount) * 100))
+                _tc_cents    = int(round(float(total_contributed) * 100))
+                if _total_cents > 0 and _tc_cents >= _total_cents: ...
+
+            ── Scenarios #1-#4 + Regression smoke (no regressions) ──
+            ✅ #1 POSITIVE exact $94.43/2 funding — lead.food=$47.22,
+               member.food=$47.21, after both contrib derived='contributed',
+               merchant_remaining=$0.00, tc=$94.43.
+            ✅ #2 NEGATIVE 1c shortfall (direct mongo) — derived='contributing',
+               raw='open', merchant_remaining=$0.01, payout.eligible=false with
+               reason 'group_not_paid'.
+            ✅ #3 Over-funding by 1c — derived='contributed',
+               merchant_remaining=$0.00 (surplus absorbed, not negative).
+            ✅ #4 cover_amount in shortfall_settlement counts toward
+               value_covered; reverts to 'contributing' if cover is 1c short.
+            ✅ /runtime/landing-page, /runtime/brand, /admin/groups all 200,
+               admin/groups returns a list.
+
+            ── PIPE pipeline via real /contribute endpoint (THE FORMERLY-FAILING
+            SCENARIO 4-6 from the review request) ──
+            Setup: $94.43/2 group; admin granted both members credits;
+            each posted POST /api/groups/{id}/contribute with amount=$47.21.
+            Both contributions 200. total_contributed=$94.42 (1c short of $94.43).
+            ✅ PIPE-C CRITICAL — raw mongo status STAYED 'open' (NOT flipped
+               to 'paid'). The legacy `+0.01` tolerance is gone from
+               contribute_routes:107 (credit_only) and the Checkout poll path.
+            ✅ PIPE-D CRITICAL — derived_status='contributing'.
+            ✅ PIPE-D2 funding.total_contributed=$94.42.
+            ✅ PIPE-D3 funding.merchant_remaining=$0.01.
+            ✅ PIPE-E2 CRITICAL — GET /api/payout/eligibility for the lead
+               returned eligible=false, reasons=['group_not_paid', ...].
+            ✅ PIPE-F CRITICAL — POST /api/groups/{id}/issue-card returned
+               400 "Bill is not fully funded yet ($94.42 of $94.43 collected).
+               Card will be auto-issued the moment funding completes."
+               Confirms pay_routes.py:310-318 integer-cent gate is live.
+
+            POSITIVE PATH after lead tops up the missing $0.01:
+            ✅ PIPE-G2 raw status flipped to 'paid'.
+            ✅ PIPE-G3 derived_status='contributed'.
+            ✅ PIPE-G4 funding.merchant_remaining=$0.00.
+            ✅ PIPE-G5 funding.total_contributed=$94.43 exactly.
+            ✅ PIPE-H2 /payout/eligibility no longer returns 'group_not_paid'
+               in reasons.
+            ✅ PIPE-I POST /issue-card returned 200 ok=true with provisioned
+               virtual_card (Stripe Issuing log: "Issued card ic_1TXsWqJuc7…
+               (0476) for group g_a6f5901319"). End-to-end positive path works.
+
+            ── Scenario #8 — Cover-shortfall flow gate (pay_routes.py:93-100)
+            Note on harness vs review-spec amounts: the review request assumed
+            lead.per_user.total=$47.22 (food only). In live production fees
+            are layered on top (platform $0.50 + insurance 1% + tx 2%), so
+            for the $94.43/2 fast-split group the lead's full per_user.total
+            is $49.16 (food $47.22 + fees $1.94). The cover-shortfall gate at
+            pay_routes.py:93-100 compares the FULL per_user.total against
+            contributed, so I used lead.total dynamically and set the lead's
+            contribution to lead.total − $0.01 to faithfully reproduce
+            "1¢ short of own share" semantics.
+            ✅ #8a lead.food=$47.22 (residual absorbed).
+            ✅ #8b lead /contribute $49.15 (= $49.16 − $0.01) → 200.
+            ✅ #8c raw status still 'open' before /pay.
+            ✅ #8d CRITICAL — POST /pay shortfall_mode=lead → 400.
+            ✅ #8e CRITICAL — 400 detail exactly:
+                 "Please contribute your own share first ($0.01)."
+               (Integer-cent gate yields the exact $0.01 amount.)
+            ✅ #8f lead tops up the $0.01 → 200.
+            ✅ #8g POSITIVE — POST /pay shortfall_mode=lead → 200 (gate
+               cleared; lead now covers the member's share as expected).
+
+            Per-scenario summary:
+              #1 POSITIVE exact funding ............................ PASS
+              #2 NEGATIVE 1c shortfall (core) ...................... PASS
+              #2g payout-blocked (group_not_paid) .................. PASS
+              #3 Over-funding ...................................... PASS
+              #4 cover_amount ...................................... PASS
+              PIPE-C/D real /contribute does NOT flip on 1c short ... PASS  ◀ new
+              PIPE-E2 /payout/eligibility refuses (group_not_paid) .. PASS  ◀ new
+              PIPE-F /issue-card refuses ("not fully funded") ....... PASS  ◀ new
+              PIPE-G* positive path (lead $0.01 top-up) ............. PASS  ◀ new
+              PIPE-I /issue-card succeeds after funding closes ...... PASS  ◀ new
+              #8d/8e cover-shortfall gate refuses 1c short .......... PASS  ◀ new
+              #8g cover-shortfall succeeds once own share closed .... PASS  ◀ new
+              #5 Regression smoke .................................. PASS
+
+            The exact production bug B7857-24644 ($94.42 collected on $94.43
+            silently absorbed on the platform side) is now CLOSED across all
+            three contribute paths AND the payout/issue-card/cover-shortfall
+            downstream gates. No further backend action required for this
+            review request.
+
+            Test artifact: /app/backend_test.py (extended for this re-test;
+            adds PIPE-E…PIPE-I and Scenario #8 on top of the existing #1-#4
+            and regression smoke).
+
         - working: false
           agent: "testing"
           comment: |

@@ -421,7 +421,10 @@ def attach_native_contribute_routes(router: APIRouter, db):
         })
         group_update: Dict[str, Any] = {"contributions": contributions}
         total_contributed = sum(c["amount"] for c in contributions)
-        if total_contributed + 0.01 >= group.get("total_amount", 0):
+        # STRICT funding check (June 2025 — penny-shortfall bug fix).
+        _total_cents = int(round(float(group.get("total_amount") or 0) * 100))
+        _tc_cents = int(round(float(total_contributed) * 100))
+        if _total_cents > 0 and _tc_cents >= _total_cents:
             group_update.update({
                 "status": "paid", "funding_mode": "group",
                 "lead_paid_at": now_iso(), "lead_shortfall": 0.0,

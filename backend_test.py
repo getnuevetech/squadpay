@@ -487,19 +487,18 @@ def test_scenario4_cover_amount_edge():
     )
 
 
-# ---------- Pipeline: real contribute endpoint reveals secondary bug --------
+# ---------- Pipeline: real contribute endpoint -------------------------------
 
 def test_pipeline_real_contribute_path():
-    section("PIPELINE — /contribute endpoint with credit_only path on $94.43/2")
+    section("PIPELINE — /contribute endpoint credit_only path on $94.43/2 (1c short)")
     admin_tok = admin_login()
     s = setup_2member_group(94.43)
     gid = s["group"]["id"]
     lead_id = lead_member_id(s["group"])
+    lead_sid = s["lead"]["session_id"]
 
-    # Grant credits + ask each member to contribute their FOOD share ($47.21).
-    # The credit_only branch in contribute_routes (line ~100) has the legacy
-    # `total_contributed + 0.01 >= total_amount` buggy threshold; this test
-    # will reveal whether it has been updated to match the new strict logic.
+    # Grant credits + ask each member to contribute $47.21 each (lead is 1c short
+    # of own per_user.total=$47.22; total_contributed=$94.42 vs total=$94.43).
     grant_credit_admin(admin_tok, s["member"]["id"], 100.0, "scenario test")
     grant_credit_admin(admin_tok, lead_id, 100.0, "scenario test")
 
@@ -519,21 +518,225 @@ def test_pipeline_real_contribute_path():
     g_after = get_group(gid)
     raw = _raw_status(gid)
     tc = g_after["funding"]["total_contributed"]
-    print(f"  pipeline state: raw_status={raw}  tc={tc}  derived={g_after['derived_status']}")
+    mr = g_after["funding"]["merchant_remaining"]
+    print(f"  pipeline state: raw_status={raw}  tc={tc}  derived={g_after['derived_status']}  mr={mr}")
 
-    # Expectation per review: with $94.42 collected on $94.43 bill, the bill
-    # must NOT be marked fully funded.
     check(
-        "PIPE-C raw status remained 'open' (contribute path did NOT flip status='paid' on 1c short)",
+        "PIPE-C CRITICAL: raw status remained 'open' (contribute path did NOT flip status='paid' on 1c short)",
         raw == "open",
-        f"raw status={raw} — contribute_routes line 101/390 still uses legacy "
-        f"`+0.01` threshold and flipped status='paid' despite 1c short!",
+        f"raw status={raw} — contribute_routes legacy `+0.01` threshold still flipping prematurely",
     )
     check(
-        "PIPE-D derived_status == 'contributing' (1c short)",
+        "PIPE-D CRITICAL: derived_status == 'contributing' (1c short)",
         g_after["derived_status"] == "contributing",
-        f"got '{g_after['derived_status']}' — likely cascade from PIPE-C (raw_status='paid' "
-        "forces derived='contributed' regardless of new strict check).",
+        f"got '{g_after['derived_status']}'",
+    )
+    check(
+        "PIPE-D2 funding.total_contributed == $94.42",
+        abs(tc - 94.42) < 0.005,
+        f"tc={tc}",
+    )
+    check(
+        "PIPE-D3 funding.merchant_remaining ≈ $0.01",
+        abs(mr - 0.01) < 0.005,
+        f"merchant_remaining={mr}",
+    )
+
+    # PIPE-E — payout eligibility for the LEAD with 1c short must be refused.
+    code_e, b_e = payout_eligibility(s["lead"]["id"], lead_sid, gid)
+    check(
+        "PIPE-E /payout/eligibility 200",
+        code_e == 200,
+        f"got {code_e} {b_e}",
+    )
+    if code_e == 200:
+        reasons = b_e.get("reasons") or []
+        check(
+            "PIPE-E2 CRITICAL: payout eligible=False with reason 'group_not_paid'",
+            (b_e.get("eligible") is False) and ("group_not_paid" in reasons),
+            f"eligible={b_e.get('eligible')} reasons={reasons}",
+        )
+
+    # PIPE-F — issue-card MUST refuse with "Bill is not fully funded" on 1c short.
+    r_ic = requests.post(
+        f"{BASE}/groups/{gid}/issue-card",
+        json={"user_id": lead_id},
+        timeout=30,
+    )
+    try:
+        body_ic = r_ic.json()
+    except Exception:
+        body_ic = {"text": r_ic.text[:300]}
+    detail_ic = (body_ic or {}).get("detail") if isinstance(body_ic, dict) else ""
+    check(
+        "PIPE-F CRITICAL: POST /issue-card returns 400 'Bill is not fully funded'",
+        r_ic.status_code == 400 and isinstance(detail_ic, str) and "not fully funded" in detail_ic.lower(),
+        f"status={r_ic.status_code} detail={detail_ic!r}",
+    )
+
+    # PIPE-G — POSITIVE PATH: lead tops up the missing $0.01 → status flips.
+    code_top, b_top = contribute_credit(gid, lead_id, 0.01)
+    check(
+        "PIPE-G lead tops up $0.01 -> 200",
+        code_top == 200,
+        f"got {code_top} {b_top}",
+    )
+    raw2 = _raw_status(gid)
+    g_paid = get_group(gid)
+    check(
+        "PIPE-G2 POSITIVE: raw status flipped to 'paid' after exact funding",
+        raw2 == "paid",
+        f"raw status={raw2}",
+    )
+    check(
+        "PIPE-G3 POSITIVE: derived_status == 'contributed'",
+        g_paid["derived_status"] == "contributed",
+        f"got '{g_paid['derived_status']}'",
+    )
+    check(
+        "PIPE-G4 POSITIVE: funding.merchant_remaining == 0.00",
+        abs(g_paid["funding"]["merchant_remaining"]) < 0.005,
+        f"merchant_remaining={g_paid['funding']['merchant_remaining']}",
+    )
+    check(
+        "PIPE-G5 POSITIVE: funding.total_contributed == $94.43 exactly",
+        abs(g_paid["funding"]["total_contributed"] - 94.43) < 0.005,
+        f"tc={g_paid['funding']['total_contributed']}",
+    )
+
+    # PIPE-H — payout eligibility now should pass funding gate (group_not_paid reason gone).
+    code_h, b_h = payout_eligibility(s["lead"]["id"], lead_sid, gid)
+    check(
+        "PIPE-H /payout/eligibility 200 after full funding",
+        code_h == 200,
+        f"got {code_h} {b_h}",
+    )
+    if code_h == 200:
+        reasons_h = b_h.get("reasons") or []
+        check(
+            "PIPE-H2 POSITIVE: 'group_not_paid' no longer in payout reasons",
+            "group_not_paid" not in reasons_h,
+            f"reasons={reasons_h}",
+        )
+        # (eligibility may still be False due to absence of linked payout card, but the
+        # funding-gate reason is what this regression is about.)
+
+    # PIPE-I — issue-card now should succeed (or already issued from auto-issue path).
+    r_ic2 = requests.post(
+        f"{BASE}/groups/{gid}/issue-card",
+        json={"user_id": lead_id},
+        timeout=30,
+    )
+    try:
+        body_ic2 = r_ic2.json()
+    except Exception:
+        body_ic2 = {"text": r_ic2.text[:300]}
+    # 200 (succeeded or already_issued) is acceptable; 502 = Stripe Issuing not configured
+    # in this preview env — treat that as informational and still confirm funding-gate cleared.
+    if r_ic2.status_code == 200:
+        check(
+            "PIPE-I POSITIVE: POST /issue-card -> 200 (provisioned or already_issued)",
+            (body_ic2.get("ok") is True) or bool(body_ic2.get("virtual_card")),
+            f"body={body_ic2}",
+        )
+    else:
+        # If it failed, the failure MUST NOT be the "not fully funded" message.
+        detail2 = (body_ic2 or {}).get("detail") if isinstance(body_ic2, dict) else ""
+        check(
+            "PIPE-I POSITIVE: /issue-card no longer rejects with 'Bill is not fully funded'",
+            not (r_ic2.status_code == 400 and isinstance(detail2, str) and "not fully funded" in detail2.lower()),
+            f"status={r_ic2.status_code} detail={detail2!r}",
+        )
+
+
+# ---------- Scenario #8 — Cover-shortfall flow gate (pay_routes.py:92-100) ---
+
+def test_scenario8_cover_shortfall_gate_lead_own_share():
+    section("#8 Cover-shortfall gate — lead 1c short of own per_user.total")
+    admin_tok = admin_login()
+    s = setup_2member_group(94.43)
+    gid = s["group"]["id"]
+    lead_id = lead_member_id(s["group"])
+    lp = find_member(s["group"], lead_id)
+    # Lead-absorbs-residual: lead.food should be $47.22 (residual cent absorbed).
+    # NOTE: lead.total INCLUDES per-member layered fees (platform + insurance + tx),
+    # so lead.total > lead.food at live fee config. The cover-shortfall gate at
+    # pay_routes.py:96 compares `per_user.contributed` against `per_user.total`
+    # (food + fees), so we use lead.total to set up the "1¢ short" scenario.
+    lead_total = float(lp["total"])
+    check(
+        "#8a lead.food == 47.22 (residual absorbed)",
+        abs(float(lp["food"]) - 47.22) < 0.005,
+        f"lead.food={lp['food']}",
+    )
+    print(f"  lead per_user.total (food+fees) = ${lead_total:.2f}")
+    short_by = 0.01
+    pay_just_under = round(lead_total - short_by, 2)
+
+    grant_credit_admin(admin_tok, lead_id, 200.0, "scenario8")
+    code, b = contribute_credit(gid, lead_id, pay_just_under)
+    check(
+        f"#8b lead /contribute ${pay_just_under:.2f} (1c short of total) -> 200",
+        code == 200,
+        f"got {code} {b}",
+    )
+
+    # Sanity: raw status MUST still be open.
+    raw = _raw_status(gid)
+    check(
+        "#8c raw status still 'open' before /pay attempt",
+        raw == "open",
+        f"raw={raw}",
+    )
+
+    # Now attempt /pay with shortfall_mode=lead — gate at pay_routes.py:92-100 must
+    # refuse because lead is 1c short of own share.
+    r = requests.post(
+        f"{BASE}/groups/{gid}/pay",
+        json={"user_id": lead_id, "shortfall_mode": "lead", "is_loan": True},
+        timeout=30,
+    )
+    try:
+        body = r.json()
+    except Exception:
+        body = {"text": r.text[:300]}
+    detail = (body or {}).get("detail") if isinstance(body, dict) else ""
+    check(
+        "#8d CRITICAL: POST /pay returns 400 (lead must contribute own share first)",
+        r.status_code == 400,
+        f"status={r.status_code} body={body}",
+    )
+    check(
+        "#8e CRITICAL: 400 detail mentions 'contribute your own share' and exactly $0.01",
+        isinstance(detail, str)
+        and ("contribute your own share" in detail.lower())
+        and ("$0.01" in detail),
+        f"detail={detail!r}  (expected '$0.01' since lead is exactly 1c short of own total)",
+    )
+
+    # Positive path: lead tops up the $0.01 — gate should clear.
+    code2, b2 = contribute_credit(gid, lead_id, 0.01)
+    check(
+        "#8f lead /contribute $0.01 (close own share) -> 200",
+        code2 == 200,
+        f"got {code2} {b2}",
+    )
+    # Lead's per_user.contributed now == per_user.total. /pay should now pass the
+    # own-share gate. Member still owes their share, so /pay with shortfall_mode=lead
+    # should SUCCEED (lead covers member shortfall).
+    r2 = requests.post(
+        f"{BASE}/groups/{gid}/pay",
+        json={"user_id": lead_id, "shortfall_mode": "lead", "is_loan": True},
+        timeout=30,
+    )
+    try:
+        body2 = r2.json()
+    except Exception:
+        body2 = {"text": r2.text[:300]}
+    check(
+        "#8g POSITIVE: after own-share closed, /pay shortfall_mode=lead -> 200",
+        r2.status_code == 200,
+        f"status={r2.status_code} body={(body2 or {}).get('detail') or body2}",
     )
 
 
@@ -572,7 +775,8 @@ def main():
         ("Scenario #2 (NEGATIVE)", test_scenario2_one_cent_shortfall_negative),
         ("Scenario #3 (OVER-FUND)", test_scenario3_over_funding_edge),
         ("Scenario #4 (COVER)", test_scenario4_cover_amount_edge),
-        ("Pipeline (real contribute)", test_pipeline_real_contribute_path),
+        ("Pipeline (real contribute + payout + issue-card + positive)", test_pipeline_real_contribute_path),
+        ("Scenario #8 (cover-shortfall gate)", test_scenario8_cover_shortfall_gate_lead_own_share),
         ("Regression smoke", test_regression_smoke),
     ]
     for label, fn in tests:

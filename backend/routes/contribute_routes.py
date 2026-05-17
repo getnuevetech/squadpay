@@ -98,7 +98,13 @@ def attach_contribute_routes(router: APIRouter, db):
             })
             update_doc: Dict[str, Any] = {"contributions": contributions}
             total_contributed = sum(c["amount"] for c in contributions)
-            if total_contributed + 0.01 >= group.get("total_amount", 0):
+            # STRICT funding check (June 2025 — penny-shortfall bug fix).
+            # Previously used `total_contributed + 0.01 >= total_amount` which
+            # silently flipped the group to "paid" when $0.01 short. Mirror
+            # the integer-cent check used in core._recompute_group.
+            _total_cents = int(round(float(group.get("total_amount") or 0) * 100))
+            _tc_cents = int(round(float(total_contributed) * 100))
+            if _total_cents > 0 and _tc_cents >= _total_cents:
                 update_doc.update({
                     "status": "paid",
                     "funding_mode": "group",
@@ -387,7 +393,10 @@ def attach_contribute_routes(router: APIRouter, db):
                 })
                 update_doc: Dict[str, Any] = {"contributions": contributions}
                 total_contributed = sum(c["amount"] for c in contributions)
-                if total_contributed + 0.01 >= float(group.get("total_amount") or 0):
+                # STRICT funding check (June 2025 — penny-shortfall bug fix).
+                _total_cents = int(round(float(group.get("total_amount") or 0) * 100))
+                _tc_cents = int(round(float(total_contributed) * 100))
+                if _total_cents > 0 and _tc_cents >= _total_cents:
                     update_doc.update({
                         "status": "paid",
                         "funding_mode": "group",

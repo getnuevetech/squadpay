@@ -89,11 +89,15 @@ def attach_pay_routes(router: APIRouter, db):
 
         enriched = await _recompute_group(group)
         lead_per = next((p for p in enriched["per_user"] if p["user_id"] == body.user_id), None)
-        if lead_per and lead_per["contributed"] + 0.01 < lead_per["total"]:
-            raise HTTPException(
-                400,
-                f"Please contribute your own share first (${lead_per['total'] - lead_per['contributed']:.2f}).",
-            )
+        # STRICT integer-cent check (June 2025 — penny-shortfall bug fix).
+        if lead_per:
+            _need_c = int(round(float(lead_per["total"]) * 100))
+            _have_c = int(round(float(lead_per["contributed"]) * 100))
+            if _have_c < _need_c:
+                raise HTTPException(
+                    400,
+                    f"Please contribute your own share first (${lead_per['total'] - lead_per['contributed']:.2f}).",
+                )
 
         contributions = list(group.get("contributions", []))
         obligations = [
@@ -295,18 +299,21 @@ def attach_pay_routes(router: APIRouter, db):
         existing = group.get("virtual_card") or {}
         if existing.get("stripe_card_id"):
             return {"ok": True, "already_issued": True, "virtual_card": existing}
-        # Must be fully funded (within $0.01)
+        # Must be fully funded — STRICT integer-cent check (June 2025).
         total_contributed = float((group.get("funding") or {}).get("total_contributed") or 0)
         if not total_contributed:
             # try recomputing from contributions
             total_contributed = sum(
                 float(c.get("amount") or 0) for c in (group.get("contributions") or [])
             )
-        if total_contributed + 0.01 < float(group.get("total") or group.get("total_amount") or 0):
+        _target_amount = float(group.get("total") or group.get("total_amount") or 0)
+        _total_cents = int(round(_target_amount * 100))
+        _tc_cents = int(round(total_contributed * 100))
+        if _tc_cents < _total_cents:
             raise HTTPException(
                 400,
                 f"Bill is not fully funded yet (${total_contributed:.2f} of "
-                f"${float(group.get('total') or 0):.2f} collected). Card will be auto-issued "
+                f"${_target_amount:.2f} collected). Card will be auto-issued "
                 f"the moment funding completes.",
             )
         # Mark group as paid+group-funded if not already, then issue

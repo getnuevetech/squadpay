@@ -14536,3 +14536,92 @@ agent_communication:
         5. Itemized mode: tax+tip extras should also route to Lead.
 
         Admin credentials: admin@squadpay.us / Letmein@2007#ForReal
+
+---
+## 2026-05-17 — Squad/Lead Dashboard 4-pack UX polish
+
+frontend:
+  - task: "Show Split mode chip on HeroCard (Squad + Lead Dashboard top card)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/src/components/redesign/HeroCard.tsx"
+    needs_retesting: false
+    status_history:
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         Added inline white "Split · Equal | Itemized" chip next to the
+         sub-label inside HeroCard. Reads from group.split_mode (treats
+         legacy "smart" as itemized). Since HeroCard is shared between
+         Lead and User dashboards, both screens get the chip automatically.
+
+  - task: "Fix Add/Scan/Upload broken on web after contributions started"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/group/[id]/items.tsx"
+    needs_retesting: false
+    status_history:
+      -working: false
+       -agent: "user"
+       -comment: |
+         User reported Add Item / Scan / Upload buttons stopped working
+         on the items screen once any squad member made a contribution.
+         Used to work before — regression.
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         Root cause: `guardAndRun()` used `Alert.alert()` with multiple
+         buttons ([Cancel, Continue]). On React Native Web (Vercel),
+         multi-button Alert.alert silently collapses to a single OK that
+         doesn't fire the Continue callback, so the action never runs.
+         Replaced with the existing cross-platform `ConfirmModal`
+         component (same pattern already used for member-remove etc.).
+         Modal is now staged via `pendingAction` state.
+
+  - task: "Replace shortfall info text on Lead Dashboard"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/group/[id]/dashboard.tsx"
+    needs_retesting: false
+    status_history:
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         Old: "You'll cover the remaining $X.XX when you pay the merchant
+         — choose how on the next screen."
+         New: "You can decide how the shortfall will be paid when you
+         click on Decide Shortfall."
+
+  - task: "Revert single-CTA label from 'Pay $X' back to 'Decide Shortfall'"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/group/[id]/dashboard.tsx"
+    needs_retesting: false
+    status_history:
+      -working: false
+       -agent: "user"
+       -comment: |
+         User noticed the CTA was relabeled to "Pay $X (cover shortfall)"
+         when only the shortfall remained (lead had paid own share).
+         Wants it to stay "Decide Shortfall $X.XX" — consistent with the
+         dual-CTA branch.
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         Changed single-CTA branch (line ~737, !showDualCtas &&
+         !showContributeCta && showShortfallCta) to use the same
+         "Decide Shortfall\n$X.XX" label as the dual-CTA path. Removed
+         the funding.total_contributed > 0 conditional that produced the
+         "Pay $X" variant.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        4 dashboard/items UX fixes shipped on the frontend. No backend
+        changes. Awaiting user verification in production (after
+        push + Vercel redeploy):
+        1. Split chip shows on HeroCard
+        2. Add/Scan/Upload work after contributions start (ConfirmModal)
+        3. New shortfall info text reads correctly
+        4. Single-CTA reads "Decide Shortfall $X.XX" not "Pay $X"
+

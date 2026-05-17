@@ -651,7 +651,7 @@ export default function DashboardScreen() {
           <View style={styles.infoCard}>
             <AlertCircle size={18} color={COLORS.primary} />
             <Text style={styles.infoText}>
-              You'll cover the remaining ${(funding.remaining_to_collect || 0).toFixed(2)} when you pay the merchant — choose how on the next screen.
+              You can decide how the shortfall will be paid when you click on Decide Shortfall.
             </Text>
           </View>
         )}
@@ -733,9 +733,7 @@ export default function DashboardScreen() {
             title={
               !showShortfallCta
                 ? `Settle bill — fully funded`
-                : funding.total_contributed > 0
-                ? `Pay $${remaining.toFixed(2)} (cover shortfall)`
-                : `Pay $${(remaining || group.total || 0).toFixed(2)} for group`
+                : `Decide Shortfall\n$${remaining.toFixed(2)}`
             }
             testID="dashboard-pay-btn"
             onPress={handleLeadPay}

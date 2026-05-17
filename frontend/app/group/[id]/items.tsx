@@ -26,6 +26,7 @@ import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 import { toast } from '../../../src/components/Toast';
 import { friendlyError } from '../../../src/errors';
 import { Skeleton, SkeletonGroupRow } from '../../../src/components/Skeleton';
+import { ConfirmModal } from '../../../src/ConfirmModal';
 
 export default function ItemsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -46,6 +47,12 @@ export default function ItemsScreen() {
   const [newPrice, setNewPrice] = useState('');
   const [newQty, setNewQty] = useState('1');
   const [adding, setAdding] = useState(false);
+  // After-contributions warning gate (Add / Scan / Upload). React Native
+  // Web's Alert.alert silently collapses multi-button alerts to a single
+  // OK on the web bundle (Vercel), which broke all three lead actions
+  // once the first contribution arrived. We drive a cross-platform
+  // ConfirmModal instead — pending action is staged here.
+  const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
   // Item 1 (June 2025 batch) — Lead can now append additional receipts to the
   // existing bill from this screen via Upload / Scan icons (mirrors the
   // Start-a-Bill toolbar). The OCR pipeline is the same one used in
@@ -289,19 +296,17 @@ export default function ItemsScreen() {
 
   // Confirm-with-contributions warning shared by all three lead actions —
   // mirrors the existing inline-add behaviour so swiped/edited items can't
-  // be quietly inserted after money has started moving.
+  // be quietly inserted after money has started moving. Uses the
+  // cross-platform ConfirmModal (RN-Web Alert.alert silently collapses
+  // multi-button alerts to a single OK, which broke this gate on the
+  // web build).
   const guardAndRun = (fn: () => void) => {
     if (!group) return;
     const hasContribs = (group.contributions || []).length > 0;
     if (hasContribs) {
-      Alert.alert(
-        'Heads up',
-        'Items you add now CANNOT be deleted because contributions have already started. Continue?',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Continue', onPress: fn },
-        ],
-      );
+      // Wrap the action in an arrow so React doesn't invoke it when
+      // setState receives a function ref (functional updates).
+      setPendingAction(() => fn);
     } else {
       fn();
     }
@@ -732,6 +737,25 @@ export default function ItemsScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      {/* Cross-platform "are-you-sure" prompt for Add/Scan/Upload when
+          contributions have already started. RN-Web's Alert.alert silently
+          collapses multi-button alerts to a single OK, which broke these
+          actions on web. */}
+      <ConfirmModal
+        visible={!!pendingAction}
+        title="Heads up"
+        message="Items you add now CANNOT be deleted because contributions have already started. Continue?"
+        confirmLabel="Continue"
+        cancelLabel="Cancel"
+        onConfirm={() => {
+          const fn = pendingAction;
+          setPendingAction(null);
+          if (fn) fn();
+        }}
+        onClose={() => setPendingAction(null)}
+        testID="items-contrib-warn-modal"
+      />
 
       {/* Multi-receipt scan progress modal — shows live progress when the
           lead picks several receipts at once via the gallery. We block

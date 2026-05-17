@@ -43,6 +43,11 @@ export function HeroCard({
   remaining,
   testIDPrefix,
 }: HeroCardProps) {
+  // Split-mode chip lives on the hero card so the lead/member can see
+  // at a glance whether the bill is being split equally or by claimed
+  // items. "smart" is a legacy intermediate mode treated as itemized.
+  const splitModeRaw = ((group as any).split_mode || 'fast').toLowerCase();
+  const splitModeLabel = splitModeRaw === 'fast' ? 'Equal' : 'Itemized';
   return (
     <LinearGradient
       colors={['#3F1F8C', '#5B2BC8', '#7C3AED']}
@@ -60,7 +65,12 @@ export function HeroCard({
           >
             {(group as any).title || (group as any).name || 'Bill'}
           </Text>
-          <Text style={styles.heroV2SubLabel}>{subLabel}</Text>
+          <View style={styles.heroV2SubLabelRow}>
+            <Text style={styles.heroV2SubLabel}>{subLabel}</Text>
+            <View style={styles.heroV2SplitChip} testID={`${testIDPrefix}-split-mode-chip`}>
+              <Text style={styles.heroV2SplitChipText}>Split · {splitModeLabel}</Text>
+            </View>
+          </View>
           {/* Customer-service-friendly Squad ID — selectable for copy/paste. */}
           <Text
             style={styles.heroV2SidLabel}
@@ -146,13 +156,32 @@ const styles = StyleSheet.create({
     letterSpacing: -0.3,
     lineHeight: 22,
   },
+  heroV2SubLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 4,
+    flexWrap: 'wrap',
+  },
   heroV2SubLabel: {
     color: '#D7C7FB',
     fontSize: 11,
     fontWeight: FONT.weights.semibold,
     letterSpacing: 1,
     textTransform: 'uppercase',
-    marginTop: 4,
+  },
+  heroV2SplitChip: {
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
+  },
+  heroV2SplitChipText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: FONT.weights.heavy,
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
   },
   heroV2SidLabel: {
     color: 'rgba(255,255,255,0.55)',

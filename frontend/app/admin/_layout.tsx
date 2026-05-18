@@ -89,6 +89,7 @@ const FALLBACK_MODULES: ModuleEntry[] = [
   { key: 'landing_page',        label: 'App Landing Page',          group: 'Content',       path: '/admin/landing-page',        sensitive: false },
   { key: 'legal_pages',         label: 'Legal Pages',               group: 'Content',       path: '/admin/legal-pages',         sensitive: false },
   { key: 'cms_pages',           label: 'CMS Pages',                 group: 'Content',       path: '/admin/cms-pages',           sensitive: false },
+  { key: 'home_widgets',        label: 'Home Widgets',              group: 'Content',       path: '/admin/home-widgets',        sensitive: false },
 
   // Payments
   { key: 'platform_fees',       label: 'Platform Fees',             group: 'Payments',      path: '/admin/platform-fees',       sensitive: true  },

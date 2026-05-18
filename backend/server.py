@@ -337,6 +337,15 @@ except Exception as _e:
     print("[startup] lead-payout routes attach failed:", _e)
 
 
+# ---------- Home Widgets (admin-configurable cards on the user home) ----------
+try:
+    from routes.home_widgets_routes import attach_home_widgets_routes
+    from admin_routes import get_current_admin_factory_sync as _hw_adm_factory
+    attach_home_widgets_routes(api_router, db, _hw_adm_factory(db))
+except Exception as _e:
+    print("[startup] home-widgets routes attach failed:", _e)
+
+
 # ---------- Stripe Issuing PAN reveal + spend webhook (Phase F2) ----------
 try:
     from issuing_reveal import attach_reveal_routes

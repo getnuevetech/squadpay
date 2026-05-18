@@ -99,6 +99,10 @@ MODULES: List[Dict] = [
     # NEW — CMS Pages (free-form static content surfaces).
     {"key": "cms_pages",       "label": "CMS Pages",          "group": "Content",    "path": "/admin/cms-pages",
      "default_roles": ["super_admin"]},
+    # NEW (June 2026) — Home Widgets. Admin-configurable cards rendered on
+    # the user home screen: "What's Next" smart suggestion + Promo banner.
+    {"key": "home_widgets",    "label": "Home Widgets",       "group": "Content",    "path": "/admin/home-widgets",
+     "default_roles": ["super_admin"]},
 
     # ──────────────────────────────────────────────────────────────────────
     # PAYMENTS — money rails, fees, virtual cards, reconciliation

@@ -51,6 +51,7 @@ import { SquadPayMark } from '../src/components/redesign/SquadPayMark';
 import { HeroPhoneFrame } from '../src/components/redesign/HeroPhoneFrame';
 import { LiveSessionPill } from '../src/components/redesign/LiveSessionPill';
 import { FeaturedBillCard } from '../src/components/redesign/FeaturedBillCard';
+import { HomeWidgets } from '../src/components/HomeWidgets';
 import { BottomTabBar } from '../src/components/redesign/BottomTabBar';
 
 // Feature flag — flip to "off" in .env to render legacy screen via the backup file.
@@ -316,12 +317,25 @@ export default function HomeScreen() {
           </SafeAreaView>
         </LinearGradient>
 
-        {/* ───── Light list section ───── */}
-        {/* June 2026 — Founder mandate: home page is action-focused, not
-            data-heavy. The inline "Your bills" list (with its "See all"
-            link) was removed because Activity is reachable as a primary
-            tab in the bottom bar. The featured-bill card above still
-            shows the user's most-actionable squad at a glance. */}
+        {/* ───── Admin-configurable Widget Cards (June 2026) ─────
+            Fills the post-declutter white space with:
+              • <WhatsNextCard>: dynamic suggestion based on user state.
+              • <PromoBanner>: evergreen promo with × dismiss.
+            Both editable in /admin/home-widgets — turn off, edit copy,
+            change icons, change routes. */}
+        <HomeWidgets
+          userState={{
+            verified: Boolean(user?.verified),
+            outstandingCents: Math.round(
+              (groups || []).reduce((acc: number, g: any) => acc + Math.max(0, Number(g.user_outstanding || 0)), 0) * 100,
+            ),
+            outstandingGroupsCount: (groups || []).filter(
+              (g: any) => Number(g.user_outstanding || 0) > 0.005,
+            ).length,
+            hasAnySquad: (groups || []).length > 0,
+            inviteEnabled: Boolean(features.invite_friends_enabled),
+          }}
+        />
       </ScrollView>
       <BottomTabBar active="home" />
     </View>

@@ -15844,6 +15844,129 @@ frontend:
            @stripe/stripe-react-native 0.50.3
            @stripe/react-stripe-js     6.3.0
            @stripe/stripe-js           9.4.0
+---
+## 2026-05-18 — Home Widgets (admin-configurable cards) — fills the post-declutter void
+
+backend:
+  - task: "Home Widgets — runtime + admin CRUD endpoints with icon/rule allow-lists"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/home_widgets_routes.py"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "main"
+       -comment: |
+         NEW route file mounted at startup. Endpoints:
+
+           GET  /api/runtime/home-widgets        (public; cached client-side)
+           GET  /api/admin/home-widgets          (admin module=home_widgets)
+           PUT  /api/admin/home-widgets          (admin module=home_widgets)
+
+         Storage: single doc `{key: "home_widgets"}` in app_settings collection.
+
+         Sanitisation on PUT:
+         - Drops rules with unknown keys (allow-list of 4: verify_phone,
+           outstanding_owed, no_squads, invite_friends).
+         - Coerces unknown icons to "sparkles" (allow-list of 22 lucide
+           icon names).
+         - Caps title at 120 chars, subtitle at 160, body at 200,
+           dismiss_days clamped 0–365.
+         - Deduplicates rule keys; preserves submitted order (used as
+           match priority on the client).
+
+         Defaults seeded on first read so the widgets render out of the
+         box with sensible copy.
+
+         Round-trip verified live (curl):
+         - Admin GET → 4 rules + 22 allowed icons returned.
+         - Admin PUT → 200, edits visible in subsequent GET /runtime.
+         - Reset to defaults → 200.
+
+  - task: "Module registry — register `home_widgets` under Content group"
+    implemented: true
+    working: true
+    file: "/app/backend/admin_modules.py"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "main"
+       -comment: |
+         Added `home_widgets` module entry. Default role: super_admin
+         only (per the no-defaults policy). On next backend boot the
+         super_admin role auto-extended to include this module (verified:
+         31 total modules now).
+
+frontend:
+  - task: "User home — render <HomeWidgets> below FeaturedBillCard"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/src/components/HomeWidgets.tsx /app/frontend/app/index.tsx"
+    needs_retesting: false
+    status_history:
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         <HomeWidgets> consumes GET /api/runtime/home-widgets (60s in-
+         memory cache). Picks the first ENABLED What's-Next rule whose
+         trigger matches userState (verified, outstandingCents, etc.) and
+         renders a compact card. Promo banner renders below with optional
+         × dismiss (state persisted in AsyncStorage under
+         "home.promo.dismissedUntil" for `dismiss_days` days).
+
+         Template substitution supported on the "outstanding_owed" rule:
+           {amount} -> "$24.50"
+           {count}  -> "2"
+           {plural} -> "s" or empty
+
+         Mounted in /app/frontend/app/index.tsx replacing the empty space
+         left by Phase 2's bill-list removal. userState computed from
+         already-loaded user + groups data — NO new backend fetches on the
+         client beyond the widgets config itself.
+
+  - task: "Admin — /admin/home-widgets editor"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/admin/home-widgets.tsx"
+    needs_retesting: false
+    status_history:
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         New admin page with two sections:
+           1. "What's Next" — global enable toggle + per-rule editor.
+              Each rule shows its trigger explainer (English), then
+              editable title / subtitle / route / icon (curated picker).
+              Per-rule enable toggle.
+           2. "Promo Banner" — enable toggle, title, body, route, icon
+              (curated picker), dismissible toggle, dismiss_days field.
+
+         Save button hits PUT /api/admin/home-widgets, reloads from GET.
+
+         Module key `home_widgets` already added to backend MODULES and
+         frontend FALLBACK_MODULES under Content group.
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Shipped admin-configurable Home Widgets (A + E from the design
+        discussion).
+
+        Frontend:
+          - <HomeWidgets> on user home (replaces post-declutter void)
+          - /admin/home-widgets editor page
+          - Added home_widgets to module registry (Content group)
+
+        Backend:
+          - GET /api/runtime/home-widgets (public, seeded defaults)
+          - GET/PUT /api/admin/home-widgets (admin)
+          - Rule + icon allow-lists prevent malformed inputs
+
+        Live verified: backend round-trip 200/200, super_admin role
+        auto-extended to include the new module. Frontend bundle
+        compiles clean. Module renders to logged-in user immediately.
+
+
          Publishable key already in /app/frontend/.env:
            EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_...
 

@@ -108,7 +108,7 @@ class OcrSettings(BaseModel):
 
 class Brand(BaseModel):
     sms_sender_id: str = Field("SquadPay", max_length=11)
-    support_email: str = "support@squadpay.us"
+    support_email: str = "help@getsquadpay.com"
     default_tip_suggestions: List[float] = [15.0, 18.0, 20.0]
     currency: Literal["USD"] = "USD"  # MVP: USD only
 

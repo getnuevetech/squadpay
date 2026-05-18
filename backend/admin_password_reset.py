@@ -59,7 +59,7 @@ def _hash_token(raw: str) -> str:
 
 
 def _build_reset_url(token: str) -> str:
-    base = (os.environ.get("ADMIN_RESET_BASE_URL") or "https://www.squadpay.us").rstrip("/")
+    base = (os.environ.get("ADMIN_RESET_BASE_URL") or "https://www.getsquadpay.com").rstrip("/")
     return f"{base}/admin/reset-password?token={token}"
 
 

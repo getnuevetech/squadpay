@@ -103,7 +103,7 @@ export default function AdminCustomerServiceScreen() {
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={['bottom']}>
       <ScrollView contentContainerStyle={{ padding: SPACING.lg, gap: SPACING.md }}>
         <Text style={styles.h1}>Customer Service</Text>
-        <Text style={styles.subtle}>Tickets submitted from the in-app Contact Us form. A copy of each ticket is also emailed to help@squadpay.us.</Text>
+        <Text style={styles.subtle}>Tickets submitted from the in-app Contact Us form. A copy of each ticket is also emailed to help@getsquadpay.com.</Text>
 
         {/* Counters row */}
         <View style={styles.countersRow}>

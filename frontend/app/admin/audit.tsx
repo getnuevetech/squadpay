@@ -157,7 +157,7 @@ export default function AdminAudit() {
             <Text style={styles.filterLabel}>Admin email</Text>
             <TextInput
               style={styles.filterInput}
-              placeholder="admin@squadpay.us"
+              placeholder="admin@getsquadpay.com"
               placeholderTextColor={COLORS.disabledText}
               value={filterAdmin}
               onChangeText={setFilterAdmin}

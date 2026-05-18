@@ -96,7 +96,7 @@ DEFAULT_PAGES = {
         "content_md": """\
 ## Need help?
 
-Our support team is here for you. Email us at <support@squadpay.us> and we'll respond within 24 hours.
+Our support team is here for you. Email us at <help@getsquadpay.com> and we'll respond within 24 hours.
 
 ### Frequently Asked Questions
 
@@ -138,7 +138,7 @@ To provide the service: split bills, send OTPs, process payments, send receipts.
 
 ### Your Rights
 
-You can request export or deletion of your data at any time by emailing <support@squadpay.us>.
+You can request export or deletion of your data at any time by emailing <help@getsquadpay.com>.
 """,
     },
     "terms": {

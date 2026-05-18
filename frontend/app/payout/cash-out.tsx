@@ -84,14 +84,14 @@ type Card = {
 
 // Stripe Connect onboarding return URL — Stripe redirects here with no
 // payload; the WebView nav listener fires and we move to sync_needed.
-// We use the production squadpay.us universal-link domain. Stripe blocks
+// We use the production getsquadpay.com universal-link domain. Stripe blocks
 // custom-scheme URIs (squadpay://...) on AccountLinks for security reasons,
 // so we MUST use https://. The /payout/return path is registered in both
 // app.json (associatedDomains + Android intent filters) and the
 // .well-known/apple-app-site-association manifest so iOS opens this URL
 // straight into the app (skipping the browser).
-const RETURN_URL = 'https://squadpay.us/payout/return';
-const REFRESH_URL = 'https://squadpay.us/payout/refresh';
+const RETURN_URL = 'https://www.getsquadpay.com/payout/return';
+const REFRESH_URL = 'https://www.getsquadpay.com/payout/refresh';
 
 export default function CashOutScreen() {
   const { group_id } = useLocalSearchParams<{ group_id?: string }>();

@@ -16,7 +16,9 @@
       "icon": "./assets/images/icon.png",
       "associatedDomains": [
         "applinks:squadpay.us",
-        "applinks:www.squadpay.us"
+        "applinks:www.squadpay.us",
+        "applinks:getsquadpay.com",
+        "applinks:www.getsquadpay.com"
       ],
       "entitlements": {
         "com.apple.developer.in-app-payments": [
@@ -166,6 +168,36 @@
             {
               "scheme": "https",
               "host": "www.squadpay.us",
+              "pathPrefix": "/payout/"
+            },
+            {
+              "scheme": "https",
+              "host": "getsquadpay.com",
+              "pathPrefix": "/join/"
+            },
+            {
+              "scheme": "https",
+              "host": "getsquadpay.com",
+              "pathPrefix": "/group/"
+            },
+            {
+              "scheme": "https",
+              "host": "getsquadpay.com",
+              "pathPrefix": "/payout/"
+            },
+            {
+              "scheme": "https",
+              "host": "www.getsquadpay.com",
+              "pathPrefix": "/join/"
+            },
+            {
+              "scheme": "https",
+              "host": "www.getsquadpay.com",
+              "pathPrefix": "/group/"
+            },
+            {
+              "scheme": "https",
+              "host": "www.getsquadpay.com",
               "pathPrefix": "/payout/"
             }
           ],

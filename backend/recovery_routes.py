@@ -393,7 +393,7 @@ def build_recovery_router(db) -> APIRouter:
             "outstanding_tokens_invalidated": rt.modified_count,
             "sessions_killed": s.deleted_count,
             "recovered_via": gate,
-            "sign_in_url": "https://www.squadpay.us/admin/login",
+            "sign_in_url": "https://www.getsquadpay.com/admin/login",
             "note": (
                 "Use this password to sign in immediately."
                 if not force_reset else

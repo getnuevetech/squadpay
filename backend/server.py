@@ -382,6 +382,8 @@ except Exception as _e:
 _default_origins = [
     "https://squadpay.us",
     "https://www.squadpay.us",
+    "https://getsquadpay.com",
+    "https://www.getsquadpay.com",
     "http://localhost:3000",
     "http://localhost:8081",
     "https://joint-pay-1.preview.emergentagent.com",

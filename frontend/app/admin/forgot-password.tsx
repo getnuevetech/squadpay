@@ -108,7 +108,7 @@ export default function AdminForgotPasswordScreen() {
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="email-address"
-            placeholder="admin@squadpay.us"
+            placeholder="admin@getsquadpay.com"
             placeholderTextColor={COLORS.disabledText}
             onSubmitEditing={submit}
           />

@@ -19,7 +19,7 @@ type Banner = {
 
 export default function AdminLogin() {
   const router = useRouter();
-  const [email, setEmail] = useState('admin@squadpay.us');
+  const [email, setEmail] = useState('admin@getsquadpay.com');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<Banner>(null);
@@ -106,7 +106,7 @@ export default function AdminLogin() {
           autoCapitalize="none"
           autoCorrect={false}
           keyboardType="email-address"
-          placeholder="admin@squadpay.us"
+          placeholder="admin@getsquadpay.com"
           placeholderTextColor={COLORS.disabledText}
         />
 

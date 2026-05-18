@@ -6,7 +6,7 @@ User-facing flow:
                                  - validates name + email + subject + message
                                  - silently attaches user_id + phone if authenticated
                                  - stores in db.contact_messages
-                                 - emails help@squadpay.us via Gmail SMTP (best-effort)
+                                 - emails help@getsquadpay.com via Gmail SMTP (best-effort)
 
 Admin flow (/admin/customer-service):
   GET    /api/admin/contact-messages?status=&subject=&page=  paginated list
@@ -146,10 +146,10 @@ def attach_contact_routes(api_router: APIRouter, db, get_current_admin):
         }
         await db.contact_messages.insert_one(doc)
 
-        # Best-effort: copy the inbound message to help@squadpay.us so the
+        # Best-effort: copy the inbound message to help@getsquadpay.com so the
         # CS team can reply directly from their inbox even if the admin
         # UI isn't open. Failures NEVER block the user-side submit.
-        to_addr = os.environ.get("CONTACT_US_DEST") or "help@squadpay.us"
+        to_addr = os.environ.get("CONTACT_US_DEST") or "help@getsquadpay.com"
         body_text = (
             f"New SquadPay contact form submission\n"
             f"--------------------------------------\n"

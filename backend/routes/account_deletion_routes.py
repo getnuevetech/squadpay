@@ -141,7 +141,7 @@ def attach_account_deletion_routes(router: APIRouter, db, admin_dep):
             "grace_days": GRACE_PERIOD_DAYS,
             "message": (
                 f"Account scheduled for deletion. You have {GRACE_PERIOD_DAYS} days "
-                "to restore it by contacting help@squadpay.us."
+                "to restore it by contacting help@getsquadpay.com."
             ),
         }
 

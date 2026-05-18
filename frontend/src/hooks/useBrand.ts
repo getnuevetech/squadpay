@@ -25,7 +25,7 @@ export type BrandConfig = {
 };
 
 const DEFAULTS: BrandConfig = {
-  support_email: 'help@squadpay.us',
+  support_email: 'help@getsquadpay.com',
   default_tip_suggestions: [15, 18, 20],
   currency: 'USD',
 };

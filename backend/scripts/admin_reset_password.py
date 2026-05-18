@@ -154,7 +154,7 @@ async def main(email: str, new_password: str | None, force_reset: bool = False) 
         print(f"⚠️  audit log write failed: {e}")
 
     print("")
-    print("✨ Done. Sign in at https://www.squadpay.us/admin/login with:")
+    print("✨ Done. Sign in at https://www.getsquadpay.com/admin/login with:")
     print(f"   email:    {email}")
     print(f"   password: {new_password}")
     if force_reset:

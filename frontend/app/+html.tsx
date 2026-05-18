@@ -34,7 +34,7 @@ export default function Root({ children }: PropsWithChildren) {
         <meta property="og:description" content="Pay, scan receipts and settle up instantly." />
         <meta property="og:image" content="/og-image.png?v=2" />
         <meta property="og:type" content="website" />
-        <meta property="og:url" content="https://www.squadpay.us/" />
+        <meta property="og:url" content="https://www.getsquadpay.com/" />
         <meta name="twitter:card" content="summary_large_image" />
         <meta name="twitter:image" content="/og-image.png?v=2" />
 

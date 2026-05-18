@@ -22,7 +22,7 @@ import { QRScannerModal } from '../../src/QRScannerModal';
 
 /** Pull a SquadPay invite code out of either a raw code or a join URL.
  *  We expect codes to be 4-12 alphanumeric chars; URLs look like
- *  `https://squadpay.us/join/ABC12345`. We also handle the deep link
+ *  `https://www.getsquadpay.com/join/ABC12345`. We also handle the deep link
  *  scheme `squadpay://join/ABC12345`. */
 function extractCode(raw: string): string {
   const s = (raw || '').trim();

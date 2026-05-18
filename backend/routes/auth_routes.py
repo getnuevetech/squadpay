@@ -218,7 +218,7 @@ def attach_auth_routes(router: APIRouter, db):
         if user.get("is_deleted"):
             raise HTTPException(
                 403,
-                "This account has been deleted. Please contact help@squadpay.us to restore "
+                "This account has been deleted. Please contact help@getsquadpay.com to restore "
                 "within 30 days, or create a new account.",
             )
         # Also block if another verified user owning this phone is soft-deleted.
@@ -231,7 +231,7 @@ def attach_auth_routes(router: APIRouter, db):
             raise HTTPException(
                 403,
                 "An account using this phone number was deleted. Please contact "
-                "help@squadpay.us to restore it within 30 days.",
+                "help@getsquadpay.com to restore it within 30 days.",
             )
         # Phase H6.2 — mode-aware OTP. In LIVE mode the code is cryptographically
         # random and never returned in the response. In MOCK mode the code is
@@ -304,7 +304,7 @@ def attach_auth_routes(router: APIRouter, db):
                 raise HTTPException(
                     403,
                     "An account using this phone number was deleted. Please contact "
-                    "help@squadpay.us to restore it within 30 days.",
+                    "help@getsquadpay.com to restore it within 30 days.",
                 )
 
             # Phase H2 — REQUIRE explicit confirmation before merging.

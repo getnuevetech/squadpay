@@ -19,7 +19,7 @@
 import { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
-import { Home, MessageSquare, Plus, LifeBuoy, Settings as SettingsIcon } from 'lucide-react-native';
+import { Home, MessageSquare, Plus, Headphones, Settings as SettingsIcon } from 'lucide-react-native';
 import { COLORS, FONT } from '../../theme';
 import { NewBillSheet } from '../NewBillSheet';
 
@@ -36,7 +36,7 @@ const TABS: Tab[] = [
   { key: 'home', label: 'Home', href: '/', icon: Home },
   { key: 'activity', label: 'Activity', href: '/activity', icon: MessageSquare },
   { key: 'create', label: '', href: '/create', icon: Plus },
-  { key: 'support', label: 'Support', href: '/contact', icon: LifeBuoy },
+  { key: 'support', label: 'Support', href: '/contact', icon: Headphones },
   { key: 'settings', label: 'Settings', href: '/settings', icon: SettingsIcon },
 ];
 

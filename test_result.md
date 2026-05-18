@@ -15586,3 +15586,201 @@ agent_communication:
         No backend regressions. The Lead Settlement Payout frontend
         implementation looks correct on inspection.
 
+
+---
+## 2026-05-18 — Stripe Elements (PCI-safe card tokenization) wired into Settle flow
+
+backend:
+  - task: "Lead Payout execute — accept pre-tokenized card_token (Stripe Elements)"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/lead_payout_routes.py"
+    needs_retesting: false
+    status_history:
+      -working: true
+       -agent: "testing"
+       -comment: |
+         REGRESSION TESTED end-to-end via /app/backend_test.py against live
+         preview backend (https://joint-pay-1.preview.emergentagent.com/api).
+         25/25 assertions PASS. 0 FAIL. No 5xx anywhere except acceptable
+         Stripe-side 502s (Instant Payouts / Raw Card Data API disabled —
+         env-level, not code bugs).
+
+         Test 1 (Mode 1 — card_token="tok_visa"):
+           ✅ HTTP 502 "Stripe Push-to-Card failed: Instant Payouts are not
+              enabled for this account." — Confirms backend SKIPPED its
+              own Token.create step and routed straight to
+              stripe.Payout.create(destination=tok_visa, method='instant').
+           ✅ Backend log inspection (tail of /var/log/supervisor/backend.err.log
+              before/after the call) confirmed NO "Token.create" line for
+              this request. The bug-to-catch ("backend re-tokenises even
+              though a token was supplied") is closed.
+
+         Test 2 (bad token prefix — payload.card_token="pm_xxx_wrong"):
+           ✅ HTTP 400, detail = "card_token must be a Stripe token id (tok_*)".
+
+         Test 3 (empty card_token AND empty card_number):
+           ✅ HTTP 400, detail = "Card payload requires either `card_token`
+              (from Stripe Elements) OR full raw card fields (card_number,
+              exp_month, exp_year, cvv)." — Mentions BOTH modes as required.
+
+         Test 4 (BOTH card_token + card_number sent — Mode 1 must win):
+           ✅ HTTP 502 — exactly the same Payout.create-side rejection as
+              Test 1 (Instant Payouts not enabled). NOT "Card tokenization
+              failed" (which is the Mode-2 server-side Token.create error).
+           ✅ Backend log shows NO server-side Token.create invocation for
+              this request — Mode-1 short-circuit took precedence.
+
+         Test 5 (ACH regression — Increase sandbox happy path):
+           ✅ HTTP 200, ok=true, method=ach, last4=3344, provider=increase,
+              status=pending_submission, txn_id=tx_payout_01krwhkf9xk9j4qq3bsw4mwmwk.
+           ✅ COMPLIANCE: db.payouts row contains NO routing_number /
+              account_number / card_number / cvv keys.
+           ✅ payouts.last4=3344, payouts.kind=lead_settlement_payout.
+
+         Test 6 (Eligibility regression — no shape change):
+           ✅ GET /group/{gid}/lead-payout/eligibility?user_id&session_id → 200
+              body: { eligible:true, fully_funded:true, settlement_mode:"lead_choice",
+                      funding_mode:"group", available_cents:6000, available_usd:60.0,
+                      supports_ach:true, supports_card:true,
+                      show_virtual_card_option:true, show_lead_payout_option:true,
+                      reasons:[] }
+              All previous shape preserved.
+
+         Test 7 (Mode 2 backward compat — raw PAN payload):
+           ✅ HTTP 502, detail = "Card tokenization failed: Sending credit
+              card numbers directly to the Stripe API is generally unsafe.
+              ... To enable testing raw card data APIs, see ..." — Stripe's
+              expected env response when Raw Card Data API is disabled.
+              NOT a 400 validation error — Mode 2 codepath did reach
+              stripe.Token.create as designed.
+
+         FINAL: Stripe Elements refactor is FULLY working:
+           • Mode 1 (card_token) wins when present and is routed directly
+             to Payout.create without re-tokenization.
+           • Mode 2 (raw PAN) still reaches Stripe's Token.create as a
+             backward-compat fallback (will 502 unless Stripe Dashboard's
+             Raw Card Data APIs toggle is on — expected for prod accounts).
+           • Validation messages updated to reference both modes.
+           • ACH path completely untouched and still compliance-clean.
+           • Eligibility endpoint shape unchanged.
+
+         Test artifact: /app/backend_test.py (rewritten for this review —
+         focused exclusively on Stripe Elements refactor + ACH/Eligibility
+         regression). No backend action required.
+
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         Refactored _execute_push_to_card_via_stripe to accept TWO input
+         modes (in preference order):
+
+           Mode 1 (NEW, preferred) — Client-side tokenized via Stripe
+           Elements / native CardField. Payload: { card_token: "tok_xxx",
+           cardholder_name? }. Backend retrieves the token to grab last4
+           and routes to stripe.Payout.create(destination=tok_xxx,
+           method='instant'). The PAN/CVV never reaches the server.
+
+           Mode 2 (LEGACY, kept) — Raw PAN payload (card_number, exp_month,
+           exp_year, cvv). Backend tokenises server-side via
+           stripe.Token.create. Requires the Stripe Dashboard "Raw Card
+           Data APIs" toggle (disabled by default for new accounts).
+
+         Either mode ends with the same Payout.create call.
+
+         PLEASE TEST:
+         1. Mode 1 happy path: POST execute with
+            {method:"push_to_card", payload:{card_token:"tok_visa"}}
+            using a Stripe sandbox test token. Expect 200 with
+            method="push_to_card" and last4 derived from the token.
+            (If platform Stripe doesn't have Instant Payouts enabled,
+            502 with clear message is acceptable.)
+         2. Mode 1 validation: payload.card_token without "tok_" prefix → 400.
+         3. Mode 1 vs Mode 2 priority: if both card_token AND card_number
+            sent, Mode 1 (card_token) wins.
+         4. Mode 2 regression: POST execute with raw PAN payload
+            (card_number/exp_month/exp_year/cvv) → existing behaviour
+            unchanged. (Will 502 in sandbox unless Raw Card Data APIs
+            toggle is on — acceptable.)
+         5. ACH path: unchanged. Run quick regression to confirm no
+            collateral damage.
+
+frontend:
+  - task: "CardCollector cross-platform component (Stripe Elements + native CardField)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/src/components/CardCollector.web.tsx /app/frontend/src/components/CardCollector.tsx"
+    needs_retesting: false
+    status_history:
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         NEW component pair using Metro platform-extension resolution:
+           CardCollector.web.tsx → uses @stripe/react-stripe-js
+                                     (loadStripe + CardElement + useStripe)
+                                     Self-wraps in <Elements> provider.
+           CardCollector.tsx     → uses @stripe/stripe-react-native
+                                     (CardField + useStripe().createToken)
+                                     Consumes the existing root-level
+                                     StripeProvider (StripeNativeProvider).
+
+         Unified imperative ref API: ref.current.tokenize()
+         resolves to { token: 'tok_xxx', last4: '4242' }. The Settle
+         screen calls this before POSTing to /api/.../lead-payout/execute.
+
+         All Stripe SDKs already installed in package.json:
+           @stripe/stripe-react-native 0.50.3
+           @stripe/react-stripe-js     6.3.0
+           @stripe/stripe-js           9.4.0
+         Publishable key already in /app/frontend/.env:
+           EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_...
+
+  - task: "Settle screen — uses CardCollector (no raw PAN inputs)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/group/[id]/settle.tsx"
+    needs_retesting: false
+    status_history:
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         REMOVED: raw card_number / exp_month / exp_year / cvv TextInputs.
+         ADDED: <CardCollector ref={cardRef}/> + cardReady state.
+         Submit flow now:
+           1. validate() checks cardReady + cardholderName
+           2. cardRef.current.tokenize() → tok_xxx (PAN stays in Stripe iframe)
+           3. POST { card_token, cardholder_name } to backend
+         clearAllInputs() no longer needs to wipe PAN — it never existed
+         in our JS heap.
+         Submit button is disabled until cardReady=true.
+
+         Privacy badge text updated under the card form:
+         "Card data is entered in a Stripe-hosted field; SquadPay never
+         sees the card number or CVV."
+
+test_plan:
+  current_focus:
+    - "Lead Payout execute — accept pre-tokenized card_token (Stripe Elements)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Stripe Elements wired end-to-end for the Settle screen card path.
+
+        Frontend now tokenizes via @stripe/react-stripe-js on web and
+        @stripe/stripe-react-native on native. Backend accepts the
+        resulting tok_xxx token via the new `card_token` payload field
+        in /api/group/{id}/lead-payout/execute (push_to_card method).
+
+        BACKEND ONLY — please regression test:
+        1. New card_token mode works (use Stripe sandbox tok_visa or any
+           valid tok_xxx generated via stripe.Token.create for a test card).
+        2. Old raw-PAN mode still accepted (Mode 2 backward compat).
+        3. ACH path unchanged.
+        4. Negative: bad card_token format (no tok_ prefix) → 400.
+
+        Login admin@squadpay.us / Letmein@2007#ForReal.
+

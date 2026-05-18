@@ -203,18 +203,24 @@ async def _execute_ach_via_increase(
 async def _execute_push_to_card_via_stripe(
     *, amount_cents: int, payload: Dict[str, Any], memo: str
 ) -> Dict[str, Any]:
-    """Single-use card payout via Stripe Issuing-style tokenization.
+    """Single-use card payout via Stripe.
 
-    For the MVP no-store flow we use the Stripe Tokens API to convert raw
-    card details into a one-time token, then issue a Payout via the
-    platform's Stripe balance. Stripe never persists the PAN on our side
-    and the token expires immediately after use.
+    Two input modes, in preference order:
 
-    NOTE: For production, the frontend SHOULD tokenize using Stripe.js /
-    Stripe Elements (PCI scope minimisation). The raw-PAN endpoint
-    accepted here is for the no-Onboarding lightweight path; admin can
-    later flip to Stripe Elements once the public key + Elements SDK is
-    wired into the React Native shell.
+      1. **Pre-tokenized** (PCI-safe, preferred) — frontend used Stripe
+         Elements (`@stripe/react-stripe-js`) on web or `CardField`
+         (`@stripe/stripe-react-native`) on native to create a token
+         client-side. We never see the PAN. Payload: { card_token,
+         cardholder_name? }.
+
+      2. **Raw PAN fallback** (legacy, requires Stripe Dashboard's
+         "Raw Card Data APIs" toggle — disabled by default in 2026).
+         Payload: { card_number, exp_month, exp_year, cvv,
+         cardholder_name? }. Backend tokenises server-side via
+         `stripe.Token.create`.
+
+    Either way the final flow is the same: `stripe.Payout.create(
+    destination=tok_xxx, method='instant')` to push funds to the card.
     """
     import stripe
     from dotenv import load_dotenv
@@ -224,56 +230,72 @@ async def _execute_push_to_card_via_stripe(
         raise HTTPException(503, "Stripe API key not configured — cannot push to card")
     stripe.api_key = api_key
 
-    card_number = (payload.get("card_number") or "").replace(" ", "").replace("-", "")
-    exp_month = payload.get("exp_month")
-    exp_year = payload.get("exp_year")
-    cvv = str(payload.get("cvv") or "")
+    card_token = (payload.get("card_token") or "").strip()
     cardholder_name = (payload.get("cardholder_name") or "Squad Lead")[:64]
 
-    if not (card_number and exp_month and exp_year and cvv):
-        raise HTTPException(400, "Card payload requires card_number, exp_month, exp_year, cvv")
-    try:
-        exp_month = int(exp_month)
-        exp_year = int(exp_year)
-        if exp_year < 100:
-            exp_year += 2000
-    except Exception:
-        raise HTTPException(400, "Invalid exp_month/exp_year")
+    # ─── Mode 1: pre-tokenized (preferred) ───
+    if card_token:
+        if not card_token.startswith("tok_"):
+            raise HTTPException(400, "card_token must be a Stripe token id (tok_*)")
+        # Retrieve token to grab last4 for the receipt row.
+        try:
+            tok_obj = stripe.Token.retrieve(card_token)
+            last4 = tok_obj.card.last4
+        except Exception as e:
+            logger.warning(f"[lead-payout/card] token.retrieve failed (non-fatal): {e}")
+            last4 = "****"
+        token_id = card_token
 
-    # 1. Tokenize via Stripe (one-shot, never stored).
-    try:
-        token = stripe.Token.create(
-            card={
-                "number": card_number,
-                "exp_month": exp_month,
-                "exp_year": exp_year,
-                "cvc": cvv,
-                "name": cardholder_name,
-            }
-        )
-    except Exception as e:
-        logger.exception(f"[lead-payout/card] Token.create failed: {e}")
-        raise HTTPException(502, f"Card tokenization failed: {e}")
+    # ─── Mode 2: raw PAN (legacy) ───
+    else:
+        card_number = (payload.get("card_number") or "").replace(" ", "").replace("-", "")
+        exp_month = payload.get("exp_month")
+        exp_year = payload.get("exp_year")
+        cvv = str(payload.get("cvv") or "")
 
-    last4 = token.card.last4 if hasattr(token, "card") else card_number[-4:]
+        if not (card_number and exp_month and exp_year and cvv):
+            raise HTTPException(
+                400,
+                "Card payload requires either `card_token` (from Stripe Elements) "
+                "OR full raw card fields (card_number, exp_month, exp_year, cvv).",
+            )
+        try:
+            exp_month = int(exp_month)
+            exp_year = int(exp_year)
+            if exp_year < 100:
+                exp_year += 2000
+        except Exception:
+            raise HTTPException(400, "Invalid exp_month/exp_year")
 
-    # 2. Single-use payout via Stripe Payout API to the tokenized card.
-    #    For platform balance → card direct payout, we use the Stripe
-    #    Payout API with destination=<token_id> in instant mode.
+        try:
+            tok_obj = stripe.Token.create(
+                card={
+                    "number": card_number,
+                    "exp_month": exp_month,
+                    "exp_year": exp_year,
+                    "cvc": cvv,
+                    "name": cardholder_name,
+                }
+            )
+        except Exception as e:
+            logger.exception(f"[lead-payout/card] Token.create failed: {e}")
+            raise HTTPException(502, f"Card tokenization failed: {e}")
+        token_id = tok_obj.id
+        last4 = tok_obj.card.last4 if hasattr(tok_obj, "card") else card_number[-4:]
+
+    # ─── Single-use payout via Stripe Payout API ───
     try:
         payout = stripe.Payout.create(
             amount=int(amount_cents),
             currency="usd",
             method="instant",
-            destination=token.id,
+            destination=token_id,
             metadata={"memo": memo[:200]},
             statement_descriptor="SQUADPAY",
         )
         provider_payout_id = payout.id
         status_raw = (getattr(payout, "status", "pending") or "pending").lower()
     except Exception as e:
-        # Fallback: some Stripe accounts don't have direct platform→card
-        # push-to-card enabled. Bubble up a clear error.
         logger.exception(f"[lead-payout/card] Payout.create failed: {e}")
         raise HTTPException(
             502,

@@ -17,7 +17,7 @@
  *   - All input state cleared once the POST completes.
  */
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -36,6 +36,7 @@ import { Button } from '../../../src/Button';
 import { loadUser, loadSessionId } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../../../src/theme';
 import { toast } from '../../../src/components/Toast';
+import { CardCollector, type CardCollectorHandle } from '../../../src/components/CardCollector';
 
 type Eligibility = {
   eligible: boolean;
@@ -71,12 +72,12 @@ export default function SettleScreen() {
   const [accountHolder, setAccountHolder] = useState('');
   const [accountType, setAccountType] = useState<'checking' | 'savings'>('checking');
 
-  // Card inputs (cleared after submit — never persisted)
-  const [cardNumber, setCardNumber] = useState('');
-  const [expMonth, setExpMonth] = useState('');
-  const [expYear, setExpYear] = useState('');
-  const [cvv, setCvv] = useState('');
+  // Card inputs — now collected via Stripe Elements (web) / CardField (native).
+  // We only retain the cardholder name in JS state; PAN/exp/CVV are owned by
+  // the Stripe iframe / native view and never enter our memory.
   const [cardholderName, setCardholderName] = useState('');
+  const cardRef = useRef<CardCollectorHandle | null>(null);
+  const [cardReady, setCardReady] = useState(false);
 
   // Success state
   const [receipt, setReceipt] = useState<{ amount: number; method: string; last4: string; status: string } | null>(null);
@@ -144,11 +145,8 @@ export default function SettleScreen() {
     setRoutingNumber('');
     setAccountNumber('');
     setAccountHolder('');
-    setCardNumber('');
-    setExpMonth('');
-    setExpYear('');
-    setCvv('');
     setCardholderName('');
+    // Card iframe (web) / native field clears itself on unmount.
   };
 
   const validate = (): string | null => {
@@ -157,13 +155,9 @@ export default function SettleScreen() {
       if (!/^\d{4,17}$/.test(accountNumber)) return 'Account number is invalid';
       if (accountHolder.trim().length < 2) return 'Enter the account holder name';
     } else {
-      const digits = cardNumber.replace(/\s|-/g, '');
-      if (!/^\d{13,19}$/.test(digits)) return 'Card number is invalid';
-      const mm = parseInt(expMonth, 10);
-      const yy = parseInt(expYear, 10);
-      if (!(mm >= 1 && mm <= 12)) return 'Invalid expiry month';
-      if (!yy || (yy < 100 && yy < (new Date().getFullYear() % 100))) return 'Invalid expiry year';
-      if (!/^\d{3,4}$/.test(cvv)) return 'CVV is invalid';
+      if (!cardReady) return 'Card form is still loading';
+      if (cardholderName.trim().length < 2) return 'Enter the cardholder name';
+      // CardCollector.tokenize() handles full card validation via Stripe.
     }
     return null;
   };
@@ -178,21 +172,25 @@ export default function SettleScreen() {
     try {
       const user = await loadUser();
       const sid = await loadSessionId();
-      const payload =
-        method === 'ach'
-          ? {
-              routing_number: routingNumber.trim(),
-              account_number: accountNumber.trim(),
-              account_holder_name: accountHolder.trim(),
-              account_type: accountType,
-            }
-          : {
-              card_number: cardNumber.replace(/\s|-/g, ''),
-              exp_month: parseInt(expMonth, 10),
-              exp_year: parseInt(expYear, 10),
-              cvv: cvv.trim(),
-              cardholder_name: cardholderName.trim() || undefined,
-            };
+
+      let payload: any;
+      if (method === 'ach') {
+        payload = {
+          routing_number: routingNumber.trim(),
+          account_number: accountNumber.trim(),
+          account_holder_name: accountHolder.trim(),
+          account_type: accountType,
+        };
+      } else {
+        // Tokenize via Stripe Elements / native CardField BEFORE the network
+        // call. The PAN never leaves the Stripe iframe / native view.
+        if (!cardRef.current) throw new Error('Card form not ready');
+        const tok = await cardRef.current.tokenize();
+        payload = {
+          card_token: tok.token,
+          cardholder_name: cardholderName.trim() || undefined,
+        };
+      }
 
       const r = await fetch(`${BACKEND}/api/group/${id}/lead-payout/execute`, {
         method: 'POST',
@@ -433,68 +431,21 @@ export default function SettleScreen() {
                 autoCapitalize="words"
                 testID="settle-card-holder-input"
               />
-              <Text style={styles.fieldLabel}>Card number</Text>
-              <TextInput
-                style={styles.input}
-                value={cardNumber}
-                onChangeText={(t) => {
-                  const digits = t.replace(/\D/g, '').slice(0, 19);
-                  const grouped = digits.replace(/(\d{4})(?=\d)/g, '$1 ');
-                  setCardNumber(grouped);
-                }}
-                placeholder="1234 5678 9012 3456"
-                placeholderTextColor={COLORS.disabledText}
-                keyboardType="number-pad"
-                testID="settle-card-number-input"
+              <Text style={styles.fieldLabel}>Card details</Text>
+              <CardCollector
+                ref={cardRef}
+                cardholderName={cardholderName}
+                onReady={setCardReady}
               />
-              <View style={styles.row}>
-                <View style={{ flex: 1, marginRight: SPACING.sm }}>
-                  <Text style={styles.fieldLabel}>Exp month</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={expMonth}
-                    onChangeText={(t) => setExpMonth(t.replace(/\D/g, '').slice(0, 2))}
-                    placeholder="MM"
-                    placeholderTextColor={COLORS.disabledText}
-                    keyboardType="number-pad"
-                    maxLength={2}
-                    testID="settle-card-exp-month-input"
-                  />
-                </View>
-                <View style={{ flex: 1, marginRight: SPACING.sm }}>
-                  <Text style={styles.fieldLabel}>Exp year</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={expYear}
-                    onChangeText={(t) => setExpYear(t.replace(/\D/g, '').slice(0, 4))}
-                    placeholder="YYYY"
-                    placeholderTextColor={COLORS.disabledText}
-                    keyboardType="number-pad"
-                    maxLength={4}
-                    testID="settle-card-exp-year-input"
-                  />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.fieldLabel}>CVV</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={cvv}
-                    onChangeText={(t) => setCvv(t.replace(/\D/g, '').slice(0, 4))}
-                    placeholder="123"
-                    placeholderTextColor={COLORS.disabledText}
-                    keyboardType="number-pad"
-                    secureTextEntry
-                    maxLength={4}
-                    testID="settle-card-cvv-input"
-                  />
-                </View>
-              </View>
+              <Text style={styles.cardHint}>
+                Card data is entered in a Stripe-hosted field; SquadPay never sees the card number or CVV.
+              </Text>
 
               <View style={{ height: SPACING.lg }} />
               <Button
                 title={submitting ? 'Submitting…' : `Send $${elig?.available_usd.toFixed(2)} to card`}
                 onPress={submit}
-                disabled={submitting}
+                disabled={submitting || !cardReady}
                 testID="settle-card-submit-btn"
               />
               <TouchableOpacity onPress={() => setStage('payout_method')} style={styles.linkBtn} testID="settle-change-method-link-card">
@@ -595,6 +546,7 @@ const styles = StyleSheet.create({
   segTextOn: { color: '#fff' },
   linkBtn: { alignItems: 'center', padding: SPACING.md },
   linkText: { color: COLORS.primary, fontWeight: '600' },
+  cardHint: { fontSize: 11, color: COLORS.subtext, marginTop: 8, lineHeight: 16 },
   successWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: SPACING.xl },
   successTitle: { fontSize: FONT.h2, fontWeight: '800', color: COLORS.text, marginTop: SPACING.lg },
   successAmt: { fontSize: 40, fontWeight: '800', color: COLORS.primary, marginTop: SPACING.sm, letterSpacing: -1 },

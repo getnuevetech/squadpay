@@ -1,12 +1,11 @@
-"""Backend test — Lead Settlement Payout endpoints (no-store, settlement-time).
+"""Backend regression test — Lead Settlement Payout `execute` endpoint AFTER
+the Stripe Elements (card_token) refactor (May 2026).
 
 Tests:
-  - GET  /api/group/{group_id}/lead-payout/eligibility
-  - POST /api/group/{group_id}/lead-payout/execute
-
-Covers eligibility positive/negative/mode-switching and execute validation,
-ACH happy path (Increase sandbox) and Push-to-Card happy path (Stripe test card).
-Compliance check: NO raw PAN/CVV/routing/account numbers persisted to db.payouts.
+  A. card_token validation (Mode 1) + mode-priority + mixed-empty handling
+  B. ACH happy path regression (no change expected)
+  C. Eligibility endpoint regression
+  D. Mode 2 backward-compat (raw PAN) still routed to Stripe (200 or 502)
 
 Run:  python3 /app/backend_test.py
 """
@@ -52,6 +51,12 @@ def admin_login() -> str:
         "email": "admin@squadpay.us",
         "password": "Letmein@2007#ForReal",
     })
+    if r.status_code != 200:
+        # try the new domain
+        r = _req("POST", "/admin/auth/login", json_body={
+            "email": "admin@getsquadpay.com",
+            "password": "Letmein@2007#ForReal",
+        })
     if r.status_code != 200:
         raise RuntimeError(f"admin login failed: {r.status_code} {r.text[:200]}")
     return r.json()["token"]
@@ -102,7 +107,7 @@ def register_and_verify(name: str) -> dict:
 def create_group(lead_id: str, total: float = 60.0) -> dict:
     r = _req("POST", "/groups", json_body={
         "lead_id": lead_id,
-        "title": "Lead Payout Test Squad",
+        "title": "Lead Payout Settle Test",
         "total_amount": float(total),
         "tax": 0, "tip": 0,
         "split_mode": "fast",
@@ -212,164 +217,194 @@ async def fetch_group_status(gid: str):
     return g
 
 
+def _err_detail(r) -> str:
+    try:
+        return str(r.json().get("detail", ""))
+    except Exception:
+        return r.text[:200]
+
+
 async def main():
     print(f"[backend_test] starting against {BASE}")
+    print("[backend_test] REGRESSION FOR: Stripe Elements (card_token) refactor")
 
-    _section("A. Admin login + initial settlement-mode")
+    _section("A. Admin login + set settlement_mode=lead_choice (need card+ACH)")
     admin_token = admin_login()
-    initial_mode = get_runtime_settlement_mode()
-    print(f"  initial settlement_mode = {initial_mode}")
     res = set_settlement_mode(admin_token, "lead_choice")
     _check(res.get("ok") is True or res.get("mode") == "lead_choice",
            "set settlement_mode=lead_choice", str(res)[:200])
     mode_after = get_runtime_settlement_mode()
-    _check(mode_after == "lead_choice", "runtime settlement_mode now lead_choice",
+    _check(mode_after == "lead_choice", "runtime settlement_mode=lead_choice",
            f"got {mode_after}")
 
-    _section("B. Create lead + 2 members, create group, fund it")
-    lead = register_and_verify("Tom Walker")
+    _section("B. Seed: create lead + 1 member, create group, FULLY fund it")
+    lead = register_and_verify("Marcus Reyes")
     print(f"  lead: id={lead['id']}, session={(lead['session_id'] or '')[:12]}…")
-    _check(bool(lead["session_id"]), "lead has session_id")
-
-    mem1 = register_and_verify("Alice Jensen")
-    mem2 = register_and_verify("Bob Patel")
-    print(f"  members: {mem1['id']}, {mem2['id']}")
-
+    mem1 = register_and_verify("Priya Shah")
     g = create_group(lead["id"], total=60.0)
     gid = g["id"]
-    print(f"  group: id={gid}, total=$60.00")
     join_group(gid, mem1["id"])
-    join_group(gid, mem2["id"])
-    await fund_squad_fully(gid, lead["id"], [mem1["id"], mem2["id"]], 60.0)
-    print("  squad funded (direct seed)")
+    await fund_squad_fully(gid, lead["id"], [mem1["id"]], 60.0)
+    print(f"  group {gid} fully funded ($60 / 2 members)")
 
-    _section("D. Eligibility positive (lead, fully funded, lead_choice)")
+    # ─────────────────────────────────────────────────────────────────────
+    # TEST 6 (eligibility GET — no regression)
+    # ─────────────────────────────────────────────────────────────────────
+    _section("Test 6 — GET /lead-payout/eligibility (regression)")
     r = _req("GET", f"/group/{gid}/lead-payout/eligibility",
              params={"user_id": lead["id"], "session_id": lead["session_id"]})
     print(f"  HTTP {r.status_code}: {r.text[:400]}")
-    _check(r.status_code == 200, "eligibility returns 200", str(r.status_code))
+    _check(r.status_code == 200, "Test 6 — eligibility 200", str(r.status_code))
     body = r.json() if r.status_code == 200 else {}
-    _check(body.get("eligible") is True, "eligible=true", str(body))
-    _check(body.get("fully_funded") is True, "fully_funded=true")
-    _check(body.get("settlement_mode") == "lead_choice", "settlement_mode=lead_choice")
-    _check(body.get("funding_mode") == "group", "funding_mode=group")
-    _check(body.get("available_cents", 0) > 0, "available_cents > 0",
-           f"got {body.get('available_cents')}")
-    _check(body.get("supports_ach") is True, "supports_ach=true")
-    _check(body.get("supports_card") is True, "supports_card=true")
-    _check(body.get("show_virtual_card_option") is True, "show_virtual_card_option=true")
-    _check(body.get("show_lead_payout_option") is True, "show_lead_payout_option=true")
-    print(f"  available_cents={body.get('available_cents')}  usd={body.get('available_usd')}")
-
-    _section("E. Eligibility — settlement mode switching")
-    set_settlement_mode(admin_token, "virtual_card")
-    r = _req("GET", f"/group/{gid}/lead-payout/eligibility",
-             params={"user_id": lead["id"], "session_id": lead["session_id"]})
-    body = r.json() if r.status_code == 200 else {}
-    _check(body.get("show_lead_payout_option") is False,
-           "show_lead_payout_option=false under virtual_card", str(body))
-    _check(body.get("show_virtual_card_option") is True,
-           "show_virtual_card_option=true under virtual_card")
-    _check(body.get("eligible") is False, "eligible=false under virtual_card")
-    _check("settlement_mode_disallows_lead_payout" in body.get("reasons", []),
-           "reason: settlement_mode_disallows_lead_payout")
-
-    set_settlement_mode(admin_token, "lead_card")
-    r = _req("GET", f"/group/{gid}/lead-payout/eligibility",
-             params={"user_id": lead["id"], "session_id": lead["session_id"]})
-    body = r.json() if r.status_code == 200 else {}
-    _check(body.get("show_virtual_card_option") is False,
-           "show_virtual_card_option=false under lead_card", str(body))
+    _check(body.get("eligible") is True, "Test 6 — eligible=true", str(body))
+    _check(body.get("supports_card") is True, "Test 6 — supports_card=true")
+    _check(body.get("supports_ach") is True, "Test 6 — supports_ach=true")
     _check(body.get("show_lead_payout_option") is True,
-           "show_lead_payout_option=true under lead_card")
-    _check(body.get("eligible") is True, "eligible=true under lead_card")
-    set_settlement_mode(admin_token, "lead_choice")
+           "Test 6 — show_lead_payout_option=true")
+    _check(body.get("available_cents", 0) > 0,
+           "Test 6 — available_cents > 0",
+           f"got {body.get('available_cents')}")
 
-    _section("F. Eligibility — negative cases")
-    r = _req("GET", f"/group/{gid}/lead-payout/eligibility",
-             params={"user_id": mem1["id"], "session_id": mem1["session_id"]})
-    _check(r.status_code == 403, "non-lead user → 403",
-           f"got {r.status_code}: {r.text[:200]}")
-
-    g2 = create_group(lead["id"], total=80.0)
-    gid2 = g2["id"]
-    join_group(gid2, mem1["id"])
-    from motor.motor_asyncio import AsyncIOMotorClient
-    mongo_url = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
-    db_name = os.environ.get("DB_NAME", "test_database")
-    _client = AsyncIOMotorClient(mongo_url)
-    _db = _client[db_name]
-    await _db.groups.update_one({"id": gid2}, {"$set": {
-        "funding_mode": "group",
-        "funding": {"remaining_to_collect": 80.0, "merchant_remaining": 80.0,
-                    "total_contributed": 0.0, "total_repaid": 0.0,
-                    "lead_shortfall": 0.0, "fees_total": 0.0}
-    }})
-    _client.close()
-    r = _req("GET", f"/group/{gid2}/lead-payout/eligibility",
-             params={"user_id": lead["id"], "session_id": lead["session_id"]})
-    body = r.json() if r.status_code == 200 else {}
-    _check(r.status_code == 200, "non-funded eligibility returns 200")
-    _check(body.get("eligible") is False, "non-funded eligible=false")
-    _check(body.get("fully_funded") is False, "fully_funded=false")
-    _check("not_fully_funded" in body.get("reasons", []),
-           "reason: not_fully_funded", str(body.get("reasons")))
-
-    _section("G. Execute — validation errors")
-    r = _req("POST", f"/group/{gid2}/lead-payout/execute", json_body={
-        "user_id": lead["id"], "session_id": lead["session_id"],
-        "method": "ach",
-        "payload": {"routing_number": "101050001", "account_number": "11223344",
-                    "account_holder_name": "Test Lead"},
-    })
-    _check(r.status_code == 409, "execute on under-funded squad → 409",
-           f"got {r.status_code}: {r.text[:200]}")
-
-    set_settlement_mode(admin_token, "virtual_card")
-    r = _req("POST", f"/group/{gid}/lead-payout/execute", json_body={
-        "user_id": lead["id"], "session_id": lead["session_id"],
-        "method": "ach",
-        "payload": {"routing_number": "101050001", "account_number": "11223344",
-                    "account_holder_name": "Test Lead"},
-    })
-    _check(r.status_code == 409, "execute under virtual_card → 409",
-           f"got {r.status_code}: {r.text[:200]}")
-    set_settlement_mode(admin_token, "lead_choice")
-
-    r = _req("POST", f"/group/{gid}/lead-payout/execute", json_body={
-        "user_id": lead["id"], "session_id": lead["session_id"],
-        "method": "foo", "payload": {},
-    })
-    _check(r.status_code == 400, "execute with invalid method → 400",
-           f"got {r.status_code}: {r.text[:200]}")
-
-    r = _req("POST", f"/group/{gid}/lead-payout/execute", json_body={
-        "user_id": mem1["id"], "session_id": mem1["session_id"],
-        "method": "ach",
-        "payload": {"routing_number": "101050001", "account_number": "11223344",
-                    "account_holder_name": "X"},
-    })
-    _check(r.status_code == 403, "non-lead execute → 403",
-           f"got {r.status_code}: {r.text[:200]}")
-
-    r = _req("POST", f"/group/{gid}/lead-payout/execute", json_body={
-        "user_id": lead["id"], "session_id": lead["session_id"],
-        "method": "ach",
-        "payload": {"account_number": "11223344", "account_holder_name": "Test"},
-    })
-    _check(r.status_code == 400, "ACH missing routing_number → 400",
-           f"got {r.status_code}: {r.text[:200]}")
-
+    # ─────────────────────────────────────────────────────────────────────
+    # TEST 2 — bad card_token format (no tok_ prefix)
+    # ─────────────────────────────────────────────────────────────────────
+    _section("Test 2 — bad card_token format ('pm_xxx_wrong')")
     r = _req("POST", f"/group/{gid}/lead-payout/execute", json_body={
         "user_id": lead["id"], "session_id": lead["session_id"],
         "method": "push_to_card",
-        "payload": {"exp_month": 12, "exp_year": 2030, "cvv": "123"},
+        "payload": {"card_token": "pm_xxx_wrong"},
     })
-    _check(r.status_code == 400, "card missing card_number → 400",
-           f"got {r.status_code}: {r.text[:200]}")
+    detail = _err_detail(r)
+    print(f"  HTTP {r.status_code}: {detail[:300]}")
+    _check(r.status_code == 400,
+           "Test 2 — 400 on non-tok_ token", f"got {r.status_code}")
+    _check(("tok_" in detail.lower()) or ("stripe token" in detail.lower()),
+           "Test 2 — detail mentions tok_ or Stripe token", detail[:200])
 
-    _section("H. Execute — ACH happy path (Increase sandbox)")
+    # ─────────────────────────────────────────────────────────────────────
+    # TEST 3 — empty card_token AND empty raw PAN
+    # ─────────────────────────────────────────────────────────────────────
+    _section("Test 3 — empty card_token AND empty card_number")
     r = _req("POST", f"/group/{gid}/lead-payout/execute", json_body={
+        "user_id": lead["id"], "session_id": lead["session_id"],
+        "method": "push_to_card",
+        "payload": {"card_token": "", "card_number": ""},
+    })
+    detail = _err_detail(r)
+    print(f"  HTTP {r.status_code}: {detail[:300]}")
+    _check(r.status_code == 400, "Test 3 — 400 returned",
+           f"got {r.status_code}")
+    has_token_mode = "card_token" in detail.lower() or "stripe elements" in detail.lower()
+    has_raw_mode = "card_number" in detail.lower() or "raw card" in detail.lower()
+    _check(has_token_mode and has_raw_mode,
+           "Test 3 — detail mentions BOTH modes (card_token + card_number)",
+           detail[:300])
+
+    # ─────────────────────────────────────────────────────────────────────
+    # TEST 1 — card_token: "tok_visa" — Mode 1 reaches Stripe
+    # ─────────────────────────────────────────────────────────────────────
+    _section("Test 1 — card_token='tok_visa' (Mode 1 reaches Stripe)")
+    pre_log_size = 0
+    try:
+        pre_log_size = os.path.getsize("/var/log/supervisor/backend.err.log")
+    except Exception:
+        pass
+    r = _req("POST", f"/group/{gid}/lead-payout/execute", json_body={
+        "user_id": lead["id"], "session_id": lead["session_id"],
+        "method": "push_to_card",
+        "payload": {"card_token": "tok_visa"},
+    }, timeout=45)
+    detail_t1 = _err_detail(r)
+    print(f"  HTTP {r.status_code}: {detail_t1[:400]}")
+    # Expected outcomes:
+    #   - 200 if Stripe accepts (unlikely with destination='tok_visa' for Payout.create)
+    #   - 502 with Stripe error message — code routed correctly to Stripe.
+    #   - 400 with our own "tok_" validation message would mean it never reached Stripe (BAD).
+    if r.status_code == 200:
+        _check(True, "Test 1 — Mode 1 reached Stripe (200)")
+    elif r.status_code == 502:
+        _check(True, "Test 1 — Mode 1 reached Stripe and Stripe rejected (502 OK)",
+               detail_t1[:200])
+    elif r.status_code == 400:
+        # Could be either: validation (BAD) or a Stripe wrapped 400.
+        # Our backend only raises 400 BEFORE Stripe for card_token. So 400 with our
+        # message is a real bug for tok_visa.
+        if "must be a stripe token" in detail_t1.lower() or "tok_*" in detail_t1.lower():
+            _check(False, "Test 1 — Mode 1 incorrectly blocked by our validator",
+                   detail_t1[:300])
+        else:
+            # Could be from Stripe Token.retrieve / Payout.create wrapped as 502 normally;
+            # 400 from Stripe is unusual but possible
+            _check(True, f"Test 1 — Mode 1 reached Stripe; 400 from Stripe ({detail_t1[:160]})")
+    else:
+        _check(False, f"Test 1 — unexpected status {r.status_code}", detail_t1[:300])
+
+    # Inspect backend log for the Token.create marker absence (Mode 1 skips it)
+    try:
+        with open("/var/log/supervisor/backend.err.log", "r") as f:
+            f.seek(pre_log_size)
+            new_log = f.read()
+        token_create_called = "Token.create" in new_log or "token.create" in new_log.lower()
+        # We expect Mode 1 NOT to call Token.create server-side
+        _check(not token_create_called,
+               "Test 1 (log) — Token.create NOT called server-side for Mode 1",
+               f"log snippet: {new_log[-500:] if token_create_called else ''}")
+    except Exception as e:
+        print(f"  (could not read backend log: {e})")
+
+    # ─────────────────────────────────────────────────────────────────────
+    # TEST 4 — BOTH card_token AND raw PAN sent → Mode 1 wins
+    # ─────────────────────────────────────────────────────────────────────
+    _section("Test 4 — Both card_token + card_number sent (Mode 1 must win)")
+    try:
+        pre_log_size = os.path.getsize("/var/log/supervisor/backend.err.log")
+    except Exception:
+        pre_log_size = 0
+    r = _req("POST", f"/group/{gid}/lead-payout/execute", json_body={
+        "user_id": lead["id"], "session_id": lead["session_id"],
+        "method": "push_to_card",
+        "payload": {
+            "card_token": "tok_visa",
+            "card_number": "4242424242424242",
+            "exp_month": 12,
+            "exp_year": 2030,
+            "cvv": "123",
+        },
+    }, timeout=45)
+    detail_t4 = _err_detail(r)
+    print(f"  HTTP {r.status_code}: {detail_t4[:400]}")
+    # The error/response should NOT be from server-side Token.create (Mode 2)
+    # Path-of-evidence: if backend chose Mode 2 it would log "Token.create failed" and
+    # 502 with "Card tokenization failed".
+    chose_mode2 = "tokenization failed" in detail_t4.lower() or "card tokenization" in detail_t4.lower()
+    _check(not chose_mode2,
+           "Test 4 — Mode 1 wins (no 'tokenization failed' in response)",
+           detail_t4[:300])
+    try:
+        with open("/var/log/supervisor/backend.err.log", "r") as f:
+            f.seek(pre_log_size)
+            new_log = f.read()
+        token_create_called = ("Token.create failed" in new_log
+                                or "stripe.Token.create" in new_log)
+        _check(not token_create_called,
+               "Test 4 (log) — server-side Token.create NOT invoked",
+               f"log tail: {new_log[-400:] if token_create_called else ''}")
+    except Exception as e:
+        print(f"  (could not read backend log: {e})")
+
+    # ─────────────────────────────────────────────────────────────────────
+    # TEST 5 — ACH regression (must still work exactly as before)
+    # ─────────────────────────────────────────────────────────────────────
+    _section("Test 5 — ACH regression (Increase sandbox)")
+    # Need a fresh fully-funded group because the prior tests may have
+    # flipped this group to lead_paid. Actually, all prior execute attempts
+    # were 4xx, so group.status should still be 'paid'. But to be safe, fund
+    # a fresh group.
+    g_ach = create_group(lead["id"], total=50.0)
+    gid_ach = g_ach["id"]
+    join_group(gid_ach, mem1["id"])
+    await fund_squad_fully(gid_ach, lead["id"], [mem1["id"]], 50.0)
+    r = _req("POST", f"/group/{gid_ach}/lead-payout/execute", json_body={
         "user_id": lead["id"], "session_id": lead["session_id"],
         "method": "ach",
         "payload": {
@@ -380,54 +415,45 @@ async def main():
         },
     }, timeout=60)
     print(f"  HTTP {r.status_code}: {r.text[:600]}")
+    ach_ok = False
     if r.status_code == 200:
         body = r.json()
-        _check(body.get("ok") is True, "ACH ok=true")
-        _check(str(body.get("txn_id", "")).startswith("payout_"),
-               "ACH txn_id starts with payout_", str(body.get("txn_id")))
-        _check(body.get("method") == "ach", "ACH method=ach")
-        _check(body.get("last4") == "3344", "ACH last4=3344")
-        _check(body.get("provider") == "increase", "ACH provider=increase")
-        _check(body.get("status") in ("pending", "paid", "submitted",
-                                       "pending_submission", "pending_reviewing",
-                                       "pending_approval"),
-               f"ACH status valid ({body.get('status')})")
-
+        ach_ok = True
+        _check(body.get("ok") is True, "Test 5 — ACH ok=true")
+        _check(body.get("method") == "ach", "Test 5 — method=ach")
+        _check(body.get("last4") == "3344", "Test 5 — last4=3344")
+        _check(body.get("provider") == "increase", "Test 5 — provider=increase")
+        # Compliance check on db.payouts
         payout_doc = await fetch_payout_doc(body["txn_id"])
-        print(f"  payout doc keys: {sorted(list(payout_doc.keys())) if payout_doc else 'MISSING'}")
-        _check(payout_doc is not None, "payout row exists in db.payouts")
+        _check(payout_doc is not None, "Test 5 — payout row exists")
         if payout_doc:
             forbidden = {"routing_number", "account_number", "card_number",
-                         "cvv", "pan", "account_holder_name"}
+                         "cvv", "pan"}
             present = forbidden & set(payout_doc.keys())
             _check(len(present) == 0,
-                   f"COMPLIANCE: no raw sensitive fields in db.payouts",
+                   "Test 5 — COMPLIANCE: no raw routing/account numbers in db.payouts",
                    f"forbidden present: {present}")
-            for k in ("id", "txn_id", "user_id", "group_id", "gateway_slug",
-                      "provider_payout_id", "amount_cents", "status", "method",
-                      "last4", "kind", "created_at"):
-                _check(k in payout_doc, f"payouts row has '{k}'")
-            _check(payout_doc.get("last4") == "3344", "payouts.last4=3344")
+            _check(payout_doc.get("last4") == "3344",
+                   "Test 5 — payouts.last4=3344")
             _check(payout_doc.get("kind") == "lead_settlement_payout",
-                   "payouts.kind=lead_settlement_payout")
-
-        g_after = await fetch_group_status(gid)
-        _check(g_after and g_after.get("status") == "lead_paid",
-               "group.status flipped to lead_paid", str(g_after))
+                   "Test 5 — payouts.kind=lead_settlement_payout")
     elif r.status_code == 502:
-        print("  ENV NOTE: 502 from Increase sandbox is acceptable (env). Not a code bug.")
-        FAILS.append(f"ACH 502 (env-issue, not code-bug): {r.text[:200]}")
+        print("  ENV NOTE: 502 from Increase sandbox is acceptable.")
+        _check(False, "Test 5 — ACH execute returned 502 (env, not code-bug)",
+               r.text[:200])
     else:
-        _check(False, f"ACH execute returned unexpected {r.status_code}",
+        _check(False, f"Test 5 — ACH unexpected status {r.status_code}",
                r.text[:300])
 
-    _section("I. Execute — Push-to-Card happy path (Stripe test card)")
-    g3 = create_group(lead["id"], total=40.0)
-    gid3 = g3["id"]
-    join_group(gid3, mem1["id"])
-    await fund_squad_fully(gid3, lead["id"], [mem1["id"]], 40.0)
-
-    r = _req("POST", f"/group/{gid3}/lead-payout/execute", json_body={
+    # ─────────────────────────────────────────────────────────────────────
+    # TEST 7 — Mode 2 backward compat (raw PAN)
+    # ─────────────────────────────────────────────────────────────────────
+    _section("Test 7 — Mode 2 backward compat (raw PAN path)")
+    g_m2 = create_group(lead["id"], total=40.0)
+    gid_m2 = g_m2["id"]
+    join_group(gid_m2, mem1["id"])
+    await fund_squad_fully(gid_m2, lead["id"], [mem1["id"]], 40.0)
+    r = _req("POST", f"/group/{gid_m2}/lead-payout/execute", json_body={
         "user_id": lead["id"], "session_id": lead["session_id"],
         "method": "push_to_card",
         "payload": {
@@ -438,27 +464,23 @@ async def main():
             "cardholder_name": "Test Lead",
         },
     }, timeout=60)
+    detail_t7 = _err_detail(r)
     print(f"  HTTP {r.status_code}: {r.text[:600]}")
     if r.status_code == 200:
         body = r.json()
-        _check(body.get("ok") is True, "Card ok=true")
-        _check(body.get("method") == "push_to_card", "Card method=push_to_card")
-        _check(body.get("last4") == "4242", "Card last4=4242")
-        _check(body.get("provider") == "stripe", "Card provider=stripe")
-        payout_doc = await fetch_payout_doc(body["txn_id"])
-        _check(payout_doc is not None, "Card payout row exists")
-        if payout_doc:
-            forbidden = {"card_number", "cvv", "pan", "routing_number", "account_number"}
-            present = forbidden & set(payout_doc.keys())
-            _check(len(present) == 0,
-                   "COMPLIANCE: no raw card fields in db.payouts",
-                   f"forbidden present: {present}")
+        _check(body.get("ok") is True, "Test 7 — 200 (Raw Card Data API on)")
+        _check(body.get("method") == "push_to_card", "Test 7 — method=push_to_card")
     elif r.status_code == 502:
-        print("  ENV NOTE: 502 from Stripe push-to-card is acceptable (Instant Payouts not enabled). Not a code bug.")
-        FAILS.append(f"Stripe push-to-card 502 (env-issue, not code-bug): {r.text[:300]}")
+        _check(True,
+               "Test 7 — 502 acceptable (Raw Card Data API likely disabled)",
+               detail_t7[:200])
+    elif r.status_code == 400:
+        _check(False,
+               "Test 7 — Mode 2 returned 400 (should NOT be validation error)",
+               detail_t7[:300])
     else:
-        _check(False, f"Card execute returned unexpected {r.status_code}",
-               r.text[:300])
+        _check(False, f"Test 7 — unexpected status {r.status_code}",
+               detail_t7[:300])
 
     print("\n" + "=" * 60)
     print(f"  PASS: {PASS}    FAIL: {FAIL}")

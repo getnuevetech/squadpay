@@ -36,7 +36,7 @@ const TABS: Tab[] = [
   { key: 'home', label: 'Home', href: '/', icon: Home },
   { key: 'activity', label: 'Activity', href: '/activity', icon: List },
   { key: 'create', label: '', href: '/create', icon: Plus },
-  { key: 'support', label: 'Support', href: '/contact', icon: HeartHandshake },
+  { key: 'support', label: 'Support', href: '/contact', icon: Headset },
   { key: 'settings', label: 'Settings', href: '/settings', icon: SettingsIcon },
 ];
 

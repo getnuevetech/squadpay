@@ -609,7 +609,7 @@ def attach_phase_bc_routes(api_router: APIRouter, db, get_current_admin, require
         brand = cfg.get("brand") or {}
         return JSONResponse(
             content={
-                "support_email": brand.get("support_email") or "help@getsquadpay.com",
+                "support_email": brand.get("support_email") or "support@getsquadpay.com",
                 "default_tip_suggestions": brand.get("default_tip_suggestions") or [15, 18, 20],
                 "currency": brand.get("currency") or "USD",
             },

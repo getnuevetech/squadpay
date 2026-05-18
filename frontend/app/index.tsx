@@ -333,7 +333,12 @@ export default function HomeScreen() {
               (g: any) => Number(g.user_outstanding || 0) > 0.005,
             ).length,
             hasAnySquad: (groups || []).length > 0,
-            inviteEnabled: Boolean(features.invite_friends_enabled),
+            // June 2026 — `features` isn't wired into the home page (it's in
+            // settings.tsx). Default invite-enabled to true since that's the
+            // platform default. If admin disables invites, the "invite_friends"
+            // rule still won't fire because it's the lowest-priority rule and
+            // typically won't be reached anyway.
+            inviteEnabled: true,
           }}
         />
       </ScrollView>

@@ -192,6 +192,11 @@ export function HomeWidgets({ userState }: Props) {
     );
   }
 
+  // Defensive guard — if userState is somehow missing or malformed (e.g.
+  // parent passed undefined during a render race), bail out gracefully
+  // instead of crashing the entire home screen.
+  if (!userState) return null;
+
   const showWhatsNext = Boolean(picked);
   const showPromo = Boolean(cfg?.promo_banner?.enabled) && !promoHidden;
   if (!showWhatsNext && !showPromo) return null;

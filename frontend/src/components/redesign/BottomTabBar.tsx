@@ -19,7 +19,7 @@
 import { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
-import { Home, List, Plus, HeartHandshake, Settings as SettingsIcon } from 'lucide-react-native';
+import { Home, List, Plus, Headset, Settings as SettingsIcon } from 'lucide-react-native';
 import { COLORS, FONT } from '../../theme';
 import { NewBillSheet } from '../NewBillSheet';
 

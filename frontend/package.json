@@ -46,6 +46,7 @@
     "expo-symbols": "~1.0.8",
     "expo-system-ui": "~6.0.9",
     "expo-web-browser": "~15.0.10",
+    "libphonenumber-js": "^1.13.2",
     "lucide-react-native": "^1.14.0",
     "marked": "14",
     "react": "19.1.0",

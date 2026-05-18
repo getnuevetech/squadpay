@@ -20,6 +20,7 @@ import { refreshUser, saveUser } from '../../../src/session';
 import { COLORS, FONT, RADIUS, SHADOW, SPACING } from '../../../src/theme';
 import { toast } from '../../../src/components/Toast';
 import { friendlySmsError } from '../../../src/sms_errors';
+import { PhoneInput, isValidUSPhone } from '../../../src/components/PhoneInput';
 
 type Kind = 'lead' | 'repay' | 'contribute';
 type VerifyStep = 'idle' | 'phone' | 'otp';
@@ -293,8 +294,8 @@ export default function PayScreen() {
 
   const sendOtp = async () => {
     const cleaned = phone.trim();
-    if (cleaned.length < 7) {
-      Alert.alert('Enter a valid phone number');
+    if (!isValidUSPhone(cleaned)) {
+      Alert.alert('Enter a valid US mobile number');
       return;
     }
     setVerifyLoading(true);
@@ -703,16 +704,11 @@ export default function PayScreen() {
               {verifyStep === 'phone' && (
                 <>
                   <Text style={styles.fieldLabel}>Phone number</Text>
-                  <TextInput
+                  <PhoneInput
                     testID="pay-verify-phone-input"
                     value={phone}
                     onChangeText={setPhone}
-                    placeholder="555 123 4567"
-                    placeholderTextColor={COLORS.disabledText}
-                    keyboardType="phone-pad"
-                    style={styles.input}
                     autoFocus
-                    returnKeyType="next"
                     onSubmitEditing={sendOtp}
                   />
                   <Button

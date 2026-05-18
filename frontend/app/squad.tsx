@@ -145,7 +145,10 @@ export default function SquadScreen() {
           }}
         />
       )}
-      <BottomTabBar active="squad" />
+      <BottomTabBar active="settings" />
+      {/* June 2026 — Squad is no longer a primary tab. When reached via the
+          "Friends & Squad" row in Settings, highlight the Settings tab as
+          the breadcrumb. */}
     </SafeAreaView>
   );
 }

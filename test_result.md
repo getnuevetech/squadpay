@@ -15588,6 +15588,118 @@ agent_communication:
 
 
 ---
+## 2026-05-18 — Phone validation hardening + Home page declutter + Tab IA reshuffle
+
+frontend:
+  - task: "Strict US mobile phone input (libphonenumber-js + reusable component)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/src/components/PhoneInput.tsx + auth.tsx + group/[id]/pay.tsx"
+    needs_retesting: false
+    status_history:
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         NEW reusable <PhoneInput> component using libphonenumber-js's
+         AsYouType('US') formatter + parsePhoneNumberFromString validation.
+
+         Features:
+         - keyboardType="phone-pad" on native, inputMode="tel" on web
+           (numeric keyboard ONLY — no alpha input).
+         - Auto-formats as the user types: "5551234567" → "(555) 123-4567".
+         - Hard-strips non-digits, caps at 11 digits (10-digit US or
+           11 with leading "1").
+         - Inline error "Enter a valid US mobile number" on blur for
+           anything libphonenumber rejects (bad area code, exchange,
+           length, etc.).
+         - Exposes helpers `isValidUSPhone(digits)` and `toE164(digits)`
+           for parent screens.
+
+         Wired into:
+         - /app/frontend/app/auth.tsx (sign-in / sign-up phone input).
+         - /app/frontend/app/group/[id]/pay.tsx (contributor verification
+           phone input). Both replaced legacy `cleaned.length < 7`
+           validation with strict US-mobile check.
+
+         OUT OF SCOPE: admin search boxes ("Search name / phone / code")
+         remain free-text since they accept name OR phone OR invite code.
+
+  - task: "Home page declutter — remove inline 'Your bills' list"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/index.tsx"
+    needs_retesting: false
+    status_history:
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         Founder mandate: home should be action-focused, not data-heavy.
+         REMOVED: the "Your bills" section (list header + "See all" link
+         + FlatList of bill rows).
+         KEPT: the FeaturedBillCard at top (already shows the user's most
+         actionable squad).
+         Users still reach the full bill list via the Activity tab in the
+         bottom tab bar.
+
+  - task: "Bottom tab bar IA — replace Squad with Support"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/src/components/redesign/BottomTabBar.tsx"
+    needs_retesting: false
+    status_history:
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         New IA: Home / Activity / + / **Support** / Settings.
+         - Support tab routes to /contact (customer-service ticket form).
+         - Squad screen still exists at /squad but is now reached via the
+           Settings menu row "Friends & Squad" (added in settings.tsx).
+         - BottomTabBar.tsx active-path resolver updated:
+             /contact* → support
+             /settings* → settings
+             (no more /squad branch)
+         - /app/frontend/app/squad.tsx now passes active="settings" to
+           BottomTabBar so the breadcrumb correctly highlights Settings.
+
+  - task: "Settings menu — 'Friends & Squad' row added"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/settings.tsx"
+    needs_retesting: false
+    status_history:
+      -working: "NA"
+       -agent: "main"
+       -comment: |
+         NEW Settings row (right after Invite friends):
+           icon: Users (lucide)
+           label: "Friends & Squad"
+           sub:   "See the people you split with most."
+           onPress: router.push('/squad')
+
+agent_communication:
+    -agent: "main"
+    -message: |
+        Three-phase UX iteration shipped (frontend-only — no backend changes).
+
+        Phase 1 — Strict mobile phone validation:
+          Built reusable PhoneInput component (libphonenumber-js); wired
+          into auth + pay screens. Numeric keyboard everywhere, auto-format,
+          E.164 + US-mobile syntax validation, hard-cap at 11 digits.
+
+        Phase 2 — Home declutter:
+          Removed the "Your bills" inline list + "See all" link. Activity
+          tab in the bottom bar now owns that destination.
+
+        Phase 3 — Tab IA reshuffle:
+          Bottom tab bar is now Home / Activity / + / Support / Settings.
+          Squad moved to a Settings row "Friends & Squad". Support tab
+          points to existing /contact page.
+
+        Frontend rebuild confirmed clean (3173 modules, 87ms hot reload).
+        No backend testing required — no backend changes.
+
+
+---
 ## 2026-05-18 — Stripe Elements (PCI-safe card tokenization) wired into Settle flow
 
 backend:

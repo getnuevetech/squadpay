@@ -31,6 +31,7 @@ import {
   ShieldAlert,
   Trash2,
   AlertTriangle,
+  Users,
 } from 'lucide-react-native';
 import { COLORS, FONT, RADIUS, SPACING } from '../src/theme';
 import { refreshUser, clearUser, loadSessionId } from '../src/session';
@@ -146,6 +147,17 @@ export default function SettingsScreen() {
       icon: Gift,
       onPress: () => router.push('/invite'),
       hidden: !features.invite_friends_enabled,
+    },
+    {
+      // June 2026 — Squad was demoted from the bottom tab bar (replaced by
+      // Support). It still has its own screen but is now reached as a
+      // Settings row since it's a contacts directory rather than a
+      // primary navigation destination.
+      key: 'squad',
+      label: 'Friends & Squad',
+      sub: 'See the people you split with most.',
+      icon: Users,
+      onPress: () => router.push('/squad'),
     },
     {
       key: 'verify',

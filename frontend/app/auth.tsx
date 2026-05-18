@@ -17,6 +17,7 @@ import { api } from '../src/api';
 import { saveUser, loadUser } from '../src/session';
 import { COLORS, FONT, RADIUS, SPACING } from '../src/theme';
 import { friendlySmsError } from '../src/sms_errors';
+import { PhoneInput, isValidUSPhone } from '../src/components/PhoneInput';
 
 type Step = 'name' | 'phone' | 'otp';
 
@@ -140,8 +141,8 @@ export default function AuthScreen() {
   const submitPhone = async () => {
     const cleaned = phone.trim();
     setPhoneError(null);
-    if (cleaned.length < 7) {
-      setPhoneError('Enter a valid phone number');
+    if (!isValidUSPhone(cleaned)) {
+      setPhoneError('Enter a valid US mobile number');
       return;
     }
     // Persist T&C acceptance for fresh registration (fire-and-forget — UI is
@@ -413,20 +414,19 @@ export default function AuthScreen() {
                 ? 'Enter the phone number tied to your account. We\u2019ll send a 6-digit code.'
                 : 'Required to pay or receive money. We\u2019ll send a 6-digit code.'}
             </Text>
-            <TextInput
+            <PhoneInput
               testID="auth-phone-input"
               value={phone}
-              onChangeText={(t) => { setPhone(t); if (phoneError) setPhoneError(null); }}
-              placeholder="555 123 4567"
-              placeholderTextColor={COLORS.disabledText}
-              style={[styles.input, phoneError ? styles.inputError : null]}
-              keyboardType="phone-pad"
+              onChangeText={(d) => { setPhone(d); if (phoneError) setPhoneError(null); }}
+              externalError={phoneError}
               autoFocus
-              returnKeyType="next"
               onSubmitEditing={submitPhone}
             />
+            {/* PhoneInput renders its own inline error; auth-level errors flow
+                through externalError. We keep this hidden testID-anchor for
+                back-compat with existing tests. */}
             {phoneError ? (
-              <Text style={styles.inlineError} testID="auth-phone-error">{phoneError}</Text>
+              <Text style={{ height: 0, width: 0 }} testID="auth-phone-error">{phoneError}</Text>
             ) : null}
 
             {/* T&C agreement gate — required for first-time registration only.

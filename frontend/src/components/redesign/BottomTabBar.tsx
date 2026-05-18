@@ -1,6 +1,15 @@
 /**
- * Floating bottom tab bar matching Image 2 — 5 items with a raised center +
- * button. Mirrors the 5-tab IA: Home / Activity / + / Squad / Settings.
+ * Floating bottom tab bar — 5 items with a raised center + button.
+ *
+ * IA (June 2026 — founder mandate, supersedes the previous Squad slot):
+ *   Home / Activity / + / Support / Settings
+ *
+ * Why "Support" replaced "Squad" in the tab bar:
+ *   - Squad screen (`/squad`) is now reached via the Settings menu row
+ *     ("Friends & Squad") since it's a contacts directory rather than a
+ *     primary navigation destination.
+ *   - One-tap "Support" is a high-trust signal for a financial app; cutting
+ *     the path to customer service reduces complaints + escalations.
  *
  * Implementation note: this is a *visual* tab bar rendered on the home (and
  * other top-level) screens — not an expo-router Tabs() container, so it does
@@ -10,11 +19,11 @@
 import { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
-import { Home, MessageSquare, Plus, Users, Settings as SettingsIcon } from 'lucide-react-native';
+import { Home, MessageSquare, Plus, LifeBuoy, Settings as SettingsIcon } from 'lucide-react-native';
 import { COLORS, FONT } from '../../theme';
 import { NewBillSheet } from '../NewBillSheet';
 
-export type TabKey = 'home' | 'activity' | 'create' | 'squad' | 'settings';
+export type TabKey = 'home' | 'activity' | 'create' | 'support' | 'settings';
 
 type Tab = {
   key: TabKey;
@@ -27,7 +36,7 @@ const TABS: Tab[] = [
   { key: 'home', label: 'Home', href: '/', icon: Home },
   { key: 'activity', label: 'Activity', href: '/activity', icon: MessageSquare },
   { key: 'create', label: '', href: '/create', icon: Plus },
-  { key: 'squad', label: 'Squad', href: '/squad', icon: Users },
+  { key: 'support', label: 'Support', href: '/contact', icon: LifeBuoy },
   { key: 'settings', label: 'Settings', href: '/settings', icon: SettingsIcon },
 ];
 
@@ -52,7 +61,7 @@ export function BottomTabBar({ active, testID = 'bottom-tab-bar', onCenterPress 
 
   const computedActive: TabKey = active || (
     pathname?.startsWith('/activity') ? 'activity' :
-    pathname?.startsWith('/squad') ? 'squad' :
+    pathname?.startsWith('/contact') ? 'support' :
     pathname?.startsWith('/settings') ? 'settings' :
     pathname?.startsWith('/create') ? 'create' :
     'home'

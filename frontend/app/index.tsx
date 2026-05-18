@@ -317,75 +317,11 @@ export default function HomeScreen() {
         </LinearGradient>
 
         {/* ───── Light list section ───── */}
-        <View style={{ padding: SPACING.md }}>
-          <View style={styles.listHeader}>
-            <Text style={styles.listTitle}>Your bills</Text>
-            <TouchableOpacity onPress={() => router.push('/activity')} activeOpacity={0.7} testID="home-see-all">
-              <Text style={styles.listSeeAll}>See all</Text>
-            </TouchableOpacity>
-          </View>
-
-          {otherGroups.length === 0 ? (
-            <View style={styles.listEmpty}>
-              <Receipt color={COLORS.subtext} size={20} />
-              <Text style={styles.listEmptyText}>No other bills yet.</Text>
-            </View>
-          ) : (
-            <FlatList
-              data={otherGroups}
-              keyExtractor={(g) => g.id}
-              scrollEnabled={false}
-              renderItem={({ item }) => (
-                <Pressable
-                  onPress={() => {
-                    // Lead → Lead Dashboard. Member → Your Share.
-                    const isLead = item.lead_id === user.id;
-                    router.push(`/group/${item.id}/${isLead ? 'dashboard' : 'summary'}`);
-                  }}
-                  style={({ pressed }) => [styles.groupRow, pressed && { opacity: 0.95 }]}
-                  testID={`home-group-row-${item.id}`}
-                >
-                  <View style={styles.groupIcon}>
-                    <Receipt color={COLORS.primary} size={18} />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.groupTitle} numberOfLines={1}>{item.title}</Text>
-                    <Text style={styles.groupMeta}>
-                      {item.member_count} Squad members · ${Number(item.total || 0).toFixed(2)}
-                    </Text>
-                    {/* #8 — When the squad was created. Shown in compact
-                        relative form (e.g. "2h ago", "3d ago") so the user can
-                        glance and find the most recent bill quickly. */}
-                    {(item as any).created_at ? (
-                      <Text style={styles.groupMetaTimestamp} testID={`home-row-ts-${item.id}`}>
-                        {formatRelativeTime((item as any).created_at)} · {new Date((item as any).created_at).toLocaleDateString()}
-                      </Text>
-                    ) : null}
-                    {item.members_preview && item.members_preview.length > 0 ? (
-                      <View style={styles.memberStack}>
-                        {item.members_preview.slice(0, 4).map((m: any, idx: number) => (
-                          <View key={m.user_id} style={[styles.memberStackItem, { marginLeft: idx === 0 ? 0 : -10, zIndex: 10 - idx }]}>
-                            <AvatarRing name={m.name || '?'} seed={m.user_id} size={24} showLeadCrown={m.user_id === item.lead_id} />
-                          </View>
-                        ))}
-                        {item.member_count > 4 ? (
-                          <View style={[styles.memberStackItem, styles.memberStackMore, { marginLeft: -10 }]}>
-                            <Text style={styles.memberStackMoreText}>+{item.member_count - 4}</Text>
-                          </View>
-                        ) : null}
-                      </View>
-                    ) : null}
-                  </View>
-                  <StatusBadge
-                    status={(item as any).derived_status || (item.status === 'closed' ? 'settled' : item.status === 'paid' ? 'repaying' : 'contributing')}
-                    testID={`home-status-${item.id}`}
-                  />
-                  <ChevronRight color={COLORS.subtext} size={16} />
-                </Pressable>
-              )}
-            />
-          )}
-        </View>
+        {/* June 2026 — Founder mandate: home page is action-focused, not
+            data-heavy. The inline "Your bills" list (with its "See all"
+            link) was removed because Activity is reachable as a primary
+            tab in the bottom bar. The featured-bill card above still
+            shows the user's most-actionable squad at a glance. */}
       </ScrollView>
       <BottomTabBar active="home" />
     </View>
